@@ -1206,6 +1206,9 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
         a.take<uint8_t>(mb.hq, ok);
         a.take<float>(T * K, ok); a.take<float>(T * K, ok); a.take<float>(MMQ_GROUP * 4, ok);
         a.take<float>(T * K, ok);
+        // APR: the rotated copy of `mixed` for the MMQ path (carve's m.Xr) - it must be counted here too, or the MoE
+        // set outgrows the region `carve` sizes from this, and `init` fails with "do not fit" at any chunk
+        if (strata::kernels::cpu::hadamard_spec().any()) a.take<float>(T * N, ok);
     }
     return a.used;
 }
