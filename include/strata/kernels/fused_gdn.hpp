@@ -32,4 +32,16 @@ void fused_gdn_step_norm(float* state, const float* q, const float* k, const flo
                          const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
                          void* stream);
 
+/// qwen35 variant of `fused_gdn_step_norm`: y = rmsnorm(o) * gamma * silu(z).  When `q8` is non-null it also
+/// receives the Q8_1 blocks (36 B: half2 d/sum, then 32 int8 codes) of y, one per 32 columns, quantized with the
+/// same warp reductions as `native_quantize_q8_1` - so the ssm_out GEMV can consume it without a second pass.
+void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,
+                              const float* beta, const float* z, const float* gamma, float eps, float* y,
+                              void* q8, int h_k, int h_v, void* stream);
+
+/// `fused_gdn_conv_l2` plus the q-only output scale the qwen35 trunk applies after the L2 norm: heads
+/// `[0, q_heads)` are multiplied by `q_scale` (1/sqrt(S)) after normalization, k and v are untouched.
+void fused_gdn_conv_l2_qk(float* history, const float* qkv, const float* conv_w, float* h, int channels,
+                          int qk_heads, int q_heads, float q_scale, float eps, void* stream);
+
 }  // namespace strata::kernels
