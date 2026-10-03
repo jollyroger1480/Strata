@@ -72,6 +72,15 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream);
 
+// Residual-epilogue variants: y[row] = acc + res[row] (row-resolved in the GEMV) and partials[block] receives
+// that block's sum of squared outputs, so the caller's next rms-norm needs no separate add+reduce kernel.
+// partials has ceil(n_out / 4) float slots for both formats.
+void native_q6_k_mmvq_res(const void* weights, const void* x_q8_1, float* y, const float* res, float* partials,
+                          int n_in, int n_out, void* stream);
+
+void native_q8_0_mmvq_res(const void* weights, const void* x_q8_1, float* y, const float* res, float* partials,
+                          int n_in, int n_out, void* stream);
+
 void native_q6_k_f32(const void* weights, const float* x, void* scratch_q8_1,
                      float* y, int n_in, int n_out, int ncols, void* stream);
 

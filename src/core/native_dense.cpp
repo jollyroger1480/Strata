@@ -85,7 +85,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
-            if (gguf.get("general.architecture")) {
+            // A splitter may copy general.architecture into EVERY shard of a split (the Huihui
+            // abliterated re-split does), while the qwen4exp.* hparams live only in shard 1.  Run the
+            // full architecture guard only on the first shard; later shards take the split-metadata
+            // consistency check below whether or not they carry the architecture key.
+            if (gguf.get("general.architecture") && (!number || number->u == 0)) {
                 err = strata::check_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
