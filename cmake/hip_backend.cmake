@@ -29,7 +29,7 @@ foreach(_arch IN LISTS _strata_hip_norm)
     message(WARNING "Strata HIP: ${_base} builds, but it is not validated on a real card yet; please report results")
   else()
     message(FATAL_ERROR
-      "Strata HIP supports wave32 gfx1100, gfx1101, gfx1200 and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "
+      "Strata HIP supports wave32 gfx1100, gfx1101, gfx1200 and gfx1201 (unvalidated: gfx1102, gfx1030, gfx1034); "
       "CMAKE_HIP_ARCHITECTURES is '${CMAKE_HIP_ARCHITECTURES}'")
   endif()
   list(APPEND STRATA_HIP_ARCH_LIST "${_base}")
