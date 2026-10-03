@@ -2,6 +2,8 @@
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/core/geometry.hpp"
 
+#include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1 blocks stay finite
+
 #include <cuda_runtime.h>
 
 #include <cstdio>
@@ -15,16 +17,24 @@ static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "fused_gdn is
 constexpr int RG = 4;           // row groups
 constexpr int RPG = S / RG;     // 32 rows per thread
 
+// Same 36-byte block layout native_quantize_q8_1 produces: half2 (d, sum), then 32 int8 codes.
+struct Q8OutBlock {
+    uint32_t ds;
+    int8_t qs[32];
+};
+static_assert(sizeof(Q8OutBlock) == 36);
+
 // SILU: the output gate is SiLU(z) (Qwen3.6, qwen35moe) instead of sigmoid(z) (Flash-Next); a compile-time flag, so
 // the sigmoid instantiation is the kernel it was.
-template <bool SILU>
+template <bool SILU, bool WithQ8>
 __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict__ state, const float* __restrict__ q,
                                                                const float* __restrict__ k, const float* __restrict__ v,
                                                                const float* __restrict__ gate,
                                                                const float* __restrict__ beta,
                                                                const float* __restrict__ z,
                                                                const float* __restrict__ gamma, float eps,
-                                                               float* __restrict__ y, int h_k, int h_v) {
+                                                               float* __restrict__ y, uint8_t* __restrict__ q8,
+                                                               int h_k, int h_v) {
     __shared__ float sk[S], sq[S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -71,8 +81,21 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = rsqrtf(ss / (float) S + eps);
         const float zz = z[head * S + col];
-        if constexpr (SILU) y[head * S + col] = oc * scale * gamma[col] * (zz / (1.0f + __expf(-zz)));
-        else y[head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        const float gate_z = SILU ? zz / (1.0f + expf(-zz)) : 1.0f / (1.0f + expf(-zz));
+        const float yv = oc * scale * gamma[col] * gate_z;
+        y[head * S + col] = yv;
+        if constexpr (WithQ8) {
+            const float amax = warp_max32(fabsf(yv));
+            const float sum = warp_sum32(yv);
+            const float d = q8_1_finite(amax / 127.0f);      // #606: keep d/sum finite
+            const int8_t qc = q8_1_quant(yv, d, amax);
+            Q8OutBlock* blk = reinterpret_cast<Q8OutBlock*>(q8) + (size_t) head * 4 + (col >> 5);
+            blk->qs[col & 31] = qc;
+            if ((col & 31) == 0) {
+                const __half2 ds = q8_1_ds(d, sum);
+                blk->ds = *reinterpret_cast<const uint32_t*>(&ds);
+            }
+        }
     }
 }
 
@@ -154,15 +177,15 @@ void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 }
 
 namespace {
-template <bool SILU>
+template <bool SILU, bool WithQ8>
 void step_norm(float* state, const float* q, const float* k, const float* v, const float* gate, const float* beta,
-               const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, void* stream) {
+               const float* z, const float* gamma, float eps, float* y, uint8_t* q8, int h_k, int h_v, void* stream) {
     if (!state || !q || !k || !v || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v <= 0 || h_v % h_k) {
         std::fprintf(stderr, "fused_gdn_step_norm: invalid arguments\n");
         std::exit(1);
     }
-    gdn_step_norm_kernel<SILU><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, q, k, v, gate, beta,
-                                                                                         z, gamma, eps, y, h_k, h_v);
+    gdn_step_norm_kernel<SILU, WithQ8><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, q, k, v, gate,
+                                                                    beta, z, gamma, eps, y, q8, h_k, h_v);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "fused_gdn_step_norm: %s\n", cudaGetErrorString(e));
@@ -174,13 +197,20 @@ void step_norm(float* state, const float* q, const float* k, const float* v, con
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
                          const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
                          void* stream) {
-    step_norm<false>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+    step_norm<false, false>(state, q, k, v, gate, beta, z, gamma, eps, y, nullptr, h_k, h_v, stream);
 }
 
 void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,
                               const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k,
                               int h_v, void* stream) {
-    step_norm<true>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+    step_norm<true, false>(state, q, k, v, gate, beta, z, gamma, eps, y, nullptr, h_k, h_v, stream);
+}
+
+// Rapier (qwen35): the silu step that also quantizes y to Q8_1 blocks (the next GEMV's input).
+void fused_gdn_step_norm_silu_q8(float* state, const float* q, const float* k, const float* v, const float* gate,
+                                 const float* beta, const float* z, const float* gamma, float eps, float* y,
+                                 uint8_t* q8, int h_k, int h_v, void* stream) {
+    step_norm<true, true>(state, q, k, v, gate, beta, z, gamma, eps, y, q8, h_k, h_v, stream);
 }
 
 }  // namespace strata::kernels
