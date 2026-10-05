@@ -927,6 +927,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(gdn_chunk_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(gdn_chunk_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
     add_test(NAME gdn_chunk_parity COMMAND gdn_chunk_parity --selftest)
+
+    # v100/gdn-chunk: the micro benchmark (CUDA events, real GDN shapes): chunked vs recurrent prompt path.
+    add_executable(gdn_chunk_bench bench/gdn_chunk_bench.cpp)
+    target_include_directories(gdn_chunk_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(gdn_chunk_bench PRIVATE strata_prefill ${_strata_gpu_runtime_target})
   endif()
 
   add_executable(s2_gemv_q8_parity src/kernels/s2_gemv_q8_parity.cpp)
