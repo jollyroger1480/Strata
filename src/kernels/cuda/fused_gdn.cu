@@ -1,6 +1,8 @@
 // src/kernels/cuda/fused_gdn.cu - see include/strata/kernels/fused_gdn.hpp.
 #include "strata/kernels/fused_gdn.hpp"
 
+#include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1 blocks stay finite
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -96,12 +98,12 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
             // so the amax/sum reductions match native_quantize_q8_1's per-warp xor trees exactly.
             const float amax = warp_max32(fabsf(yv));
             const float sum = warp_sum32(yv);
-            const float d = amax / 127.0f;
-            const int8_t qc = amax == 0.0f ? 0 : (int8_t) roundf(yv / d);
+            const float d = q8_1_finite(amax / 127.0f);      // #606: keep d/sum finite (massive activations)
+            const int8_t qc = q8_1_quant(yv, d, amax);
             Q8OutBlock* blk = reinterpret_cast<Q8OutBlock*>(q8) + (size_t) head * 4 + (col >> 5);
             blk->qs[col & 31] = qc;
             if ((col & 31) == 0) {
-                const __half2 ds = __floats2half2_rn(d, sum);
+                const __half2 ds = q8_1_ds(d, sum);
                 blk->ds = *reinterpret_cast<const uint32_t*>(&ds);
             }
         }
