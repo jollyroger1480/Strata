@@ -442,7 +442,9 @@ __global__ void __launch_bounds__(128) gdn_chunk_wmma_kernel(float* __restrict__
 }
 #endif  // !HIPCC && __CUDA_ARCH__ >= 700
 
-// The grow-only per-thread workspace (one thread == one device/stream in this codebase's prefill paths).
+// The grow-only workspace, one per (thread, device): a layer split runs the chunked recurrence on more than
+// one card, and each card's pointers are only valid on that card - a single per-thread buffer would hand a
+// second card the first card's pointers.
 struct Ws {
     float* A = nullptr;      // [SEG][HV][CH][CH]
     float* P = nullptr;      // [SEG][HV][CH][CH]
@@ -453,30 +455,65 @@ struct Ws {
         if (A) cudaFree(A);
         if (P) cudaFree(P);
         if (gcum) cudaFree(gcum);
+        cudaGetLastError();   // a free of another device's pointer must not surface in the mallocs below
         cap = chunks;
         const size_t mat = chunks * HV * CH * CH;
         if (cudaMalloc((void**) &A, mat * sizeof(float)) != cudaSuccess ||
             cudaMalloc((void**) &P, mat * sizeof(float)) != cudaSuccess ||
             cudaMalloc((void**) &gcum, (size_t) chunks * CH * HV * sizeof(float)) != cudaSuccess) {
-            std::fprintf(stderr, "gdn_chunk: workspace alloc failed (%zu chunks)\n", chunks);
+            int dev = 0;
+            cudaGetDevice(&dev);
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            std::fprintf(stderr, "gdn_chunk: workspace alloc failed (%zu chunks, device %d, %.1f of %.1f MiB free): %s\n",
+                         chunks, dev, (double) fb / 1048576.0, (double) tb / 1048576.0,
+                         cudaGetErrorString(cudaGetLastError()));
             std::exit(1);
         }
+    }
+    ~Ws() {
+        // A prompt's stage threads are created per request (std::async in the layer split): without this, each
+        // request would leak its device's ~50 MB workspace until the card runs out.
+        if (A) cudaFree(A);
+        if (P) cudaFree(P);
+        if (gcum) cudaFree(gcum);
     }
 };
 
 Ws& ws() {
-    static thread_local Ws w;
-    return w;
+    static thread_local Ws w[8];   // [device]: the cards a layer split can run on in one process
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) {
+        cudaGetLastError();
+        dev = 0;
+    }
+    if (dev < 0 || dev >= 8) dev = 0;
+    return w[dev];
+}
+
+int gdn_chunk_cc_of(int dev) {
+    // Per DEVICE: a layer split runs on more than one card, and the capability is a card property - a
+    // process-global cache would dispatch a second card by the first card's capability.
+    static int cc[64] = {};
+    if (dev < 0 || dev >= 64) return 0;
+    if (cc[dev] == 0) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
+            cudaGetLastError();
+            return 0;
+        }
+        cc[dev] = p.major * 10 + p.minor;
+    }
+    return cc[dev];
 }
 
 int gdn_chunk_cc() {
-    static int cc = [] {
-        int dev = 0;
-        cudaDeviceProp p{};
-        if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return 0;
-        return p.major * 10 + p.minor;
-    }();
-    return cc;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) {
+        cudaGetLastError();
+        return 0;
+    }
+    return gdn_chunk_cc_of(dev);
 }
 
 }  // namespace
@@ -505,21 +542,39 @@ void gdn_chunk_recurrence(float* state, const float* h, const float* gate, const
     // tests flip it between launches).
     const char* forced_v = std::getenv("STRATA_GDN_CHUNK");
     const int forced = forced_v && *forced_v ? std::atoi(forced_v) : -1;
-    static const bool wmma_ok = [] {
-#if !defined(__HIPCC__) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
-        return gdn_chunk_cc() == 70;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) {
+        cudaGetLastError();
+        dev = 0;
+    }
+#if !defined(__HIPCC__)
+    const bool wmma_ok = gdn_chunk_cc_of(dev) == 70;
 #else
-        return false;
+    const bool wmma_ok = false;
 #endif
-    }();
-    const bool use_wmma = wmma_ok && forced != 2;
-    static std::once_flag attr_once;
-    std::call_once(attr_once, [] {
-        // both kernels stage past the 48 KB default: opt in
-        cudaFuncSetAttribute(gdn_chunk_kkt_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             2 * CH * (S + 1) * (int) sizeof(float));
-        cudaFuncSetAttribute(gdn_chunk_wmma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, WMMA_SMEM);
-    });
+    // The shared-memory opt-in is a property of the DEVICE's context, not the process: a layer split runs
+    // this call on more than one card, and each card needs its own cudaFuncSetAttribute before that card's
+    // past-48KB launches (a process-global std::call_once left the second card at the 48 KB default, and its
+    // first chunked launch failed with "invalid argument").  Per device, once; every attempt clears the
+    // runtime error so a refused opt-in cannot surface in a later check() as a spurious failure.
+    static std::mutex attr_mu;
+    static bool attr_done[64] = {};
+    static bool wmma_attr[64] = {};
+    {
+        std::lock_guard<std::mutex> lk(attr_mu);
+        if (dev >= 0 && dev < 64 && !attr_done[dev]) {
+            const cudaError_t ek = cudaFuncSetAttribute(gdn_chunk_kkt_kernel,
+                                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                        2 * CH * (S + 1) * (int) sizeof(float));
+            const cudaError_t ew = cudaFuncSetAttribute(gdn_chunk_wmma_kernel,
+                                                        cudaFuncAttributeMaxDynamicSharedMemorySize, WMMA_SMEM);
+            cudaGetLastError();
+            (void) ek;   // a refused opt-in leaves the FMA path's own launch to report it
+            wmma_attr[dev] = ew == cudaSuccess;
+            attr_done[dev] = true;
+        }
+    }
+    const bool use_wmma = wmma_ok && forced != 2 && dev >= 0 && dev < 64 && wmma_attr[dev];
     Ws& w = ws();
     const size_t chunks_total = (size_t) (T64 / CH);
     w.ensure(chunks_total < SEG ? (chunks_total ? chunks_total : 1) : SEG);
