@@ -8,6 +8,10 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/prefill/gemm.hpp"
+#include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1 blocks stay finite
+using strata::kernels::q8_1_finite;
+using strata::kernels::q8_1_quant;
+using strata::kernels::q8_1_ds;
 #include "strata/prefill/kernels.hpp"
 
 extern "C" void qwythos_rms_rows_f16(const float* x, const float* w, uint16_t* y, int T, int K, float eps, void* stream);
@@ -488,10 +492,10 @@ __global__ void rms_quant_apply_kernel(const float* __restrict__ x, const float*
         const float v = x[base + lane] * w[base + lane] * inv;
         const float amax = warp_max32(fabsf(v));
         const float sum = warp_sum32(v);
-        const float d = amax / 127.0f;
-        const int8_t q = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
+        const float d = q8_1_finite(amax / 127.0f);          // #606: keep d/sum finite (massive activations)
+        const int8_t q = q8_1_quant(v, d, amax);
         y[blk].qs[lane] = q;
-        if (lane == 0) y[blk].ds = make_half2(d, sum);
+        if (lane == 0) y[blk].ds = q8_1_ds(d, sum);
     }
 }
 
@@ -522,11 +526,11 @@ __global__ void swiglu_quant_kernel(const float* __restrict__ up, const float* _
     const float v = g / (1.0f + expf(-g)) * up[i];
     const float amax = warp_max32(fabsf(v));
     const float sum = warp_sum32(v);
-    const float d = amax / 127.0f;
+    const float d = q8_1_finite(amax / 127.0f);              // #606: keep d/sum finite (massive activations)
     const int lane = threadIdx.x & 31;
-    const int8_t q = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
+    const int8_t q = q8_1_quant(v, d, amax);
     y[i >> 5].qs[lane] = q;
-    if (lane == 0) y[i >> 5].ds = make_half2(d, sum);
+    if (lane == 0) y[i >> 5].ds = q8_1_ds(d, sum);
 }
 
 // o *= sigmoid(z) + Q8_1 quantize, one warp per 32-column block (the wo GEMV input).
@@ -537,11 +541,11 @@ __global__ void sig_mul_quant_kernel(const float* __restrict__ o, const float* _
     const float v = o[i] * (1.0f / (1.0f + expf(-g[i])));
     const float amax = warp_max32(fabsf(v));
     const float sum = warp_sum32(v);
-    const float d = amax / 127.0f;
+    const float d = q8_1_finite(amax / 127.0f);              // #606: keep d/sum finite (massive activations)
     const int lane = threadIdx.x & 31;
-    const int8_t q = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
+    const int8_t q = q8_1_quant(v, d, amax);
     y[i >> 5].qs[lane] = q;
-    if (lane == 0) y[i >> 5].ds = make_half2(d, sum);
+    if (lane == 0) y[i >> 5].ds = q8_1_ds(d, sum);
 }
 
 // beta = sigmoid(beta_proj) and gate = softplus(alpha + dt) * ssm_a in one launch (two 32-wide vectors).
