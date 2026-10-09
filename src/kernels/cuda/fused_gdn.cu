@@ -17,6 +17,17 @@ static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "fused_gdn is
 constexpr int RG = 4;           // row groups
 constexpr int RPG = S / RG;     // 32 rows per thread
 
+__device__ __forceinline__ float warp_max32(float v) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    return v;
+}
+__device__ __forceinline__ float warp_sum32(float v) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    return v;
+}
+
 // Same 36-byte block layout native_quantize_q8_1 produces: half2 (d, sum), then 32 int8 codes.
 struct Q8OutBlock {
     uint32_t ds;
