@@ -1298,6 +1298,35 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     return true;
 }
 
+// STRATA_DRAFT_TIMING=1: where a draft round's time goes, from cudaEvent pairs around each graph launch (GPU time of the round
+// graph and of each step, and the idle gap the host's decision leaves between two steps) and the host's own wall time.
+namespace {
+struct DraftTiming {
+    bool on = false;
+    cudaEvent_t eb[16] = {}, ea[16] = {};
+    double round_ms = 0, step_ms = 0, gap_ms = 0, wall_ms = 0, tail_ms = 0;
+    int64_t rounds = 0, steps = 0;
+    DraftTiming() {
+        const char* e = std::getenv("STRATA_DRAFT_TIMING");
+        on = e != nullptr && e[0] == '1';
+    }
+    void init() {
+        if (!on || eb[0] != nullptr) return;
+        for (int i = 0; i < 16; ++i)
+            if (cudaEventCreate(&eb[i]) != cudaSuccess || cudaEventCreate(&ea[i]) != cudaSuccess) { on = false; (void) cudaGetLastError(); return; }
+    }
+    void report() const {
+        if (rounds == 0) return;
+        const double r = (double) rounds;
+        std::fprintf(stderr, "strata mtp draft timing: %lld rounds, %.2f steps/round: wall %.3f ms = round graph %.3f + steps %.3f GPU "
+                             "(%.3f per step) + host gaps between graphs %.3f + tail %.3f (per round)\n",
+                     (long long) rounds, (double) steps / r, wall_ms / r, round_ms / r, step_ms / r,
+                     steps > 0 ? step_ms / (double) steps : 0.0, gap_ms / r, tail_ms / r);
+    }
+};
+DraftTiming g_dt;
+}  // namespace
+
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
@@ -1385,10 +1414,14 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         prefetch_ple(drafts[last]);
         n = max_steps;
     } else if (max_steps > 0) {
+        g_dt.init();
+        const bool dt = g_dt.on;
+        if (dt) cudaEventRecord(g_dt.eb[0], cs_);
         if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
             err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
+        if (dt) cudaEventRecord(g_dt.ea[0], cs_);
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
         progress_at("mtp draft: waiting for the GPU");   // #2065: a stall here read as "decode", the verify window before it
@@ -1407,10 +1440,12 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (probs) probs[0] = pj;
         n = 1;
         for (int j = 1; j < max_steps && pj >= min_p; ++j) {
+            if (dt) cudaEventRecord(g_dt.eb[j], cs_);
             if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
                 err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
+            if (dt) cudaEventRecord(g_dt.ea[j], cs_);
             (void) cudaStreamQuery(cs_);
             prefetch_ple(drafts[j - 1]);
             wait_step(j);
@@ -1420,9 +1455,24 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             ++n;
         }
         prefetch_ple(drafts[n - 1]);
+        const Clock::time_point t_pre_sync = Clock::now();
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
             return false;
+        }
+        if (dt) {
+            float ms = 0;
+            double r = 0, s = 0, gp = 0;
+            if (cudaEventElapsedTime(&ms, g_dt.eb[0], g_dt.ea[0]) == cudaSuccess) r = ms;
+            for (int j = 1; j < n; ++j) {
+                if (cudaEventElapsedTime(&ms, g_dt.eb[j], g_dt.ea[j]) == cudaSuccess) s += ms;
+                if (cudaEventElapsedTime(&ms, g_dt.ea[j - 1], g_dt.eb[j]) == cudaSuccess) gp += ms;
+            }
+            g_dt.round_ms += r; g_dt.step_ms += s; g_dt.gap_ms += gp;
+            g_dt.steps += n - 1; ++g_dt.rounds;
+            g_dt.wall_ms += ms_since(t0);
+            g_dt.tail_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_pre_sync).count();
+            if (g_dt.rounds % 300 == 0) g_dt.report();
         }
     }
     for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
