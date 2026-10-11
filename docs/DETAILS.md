@@ -1710,6 +1710,9 @@ the pairs in which the switched arm won). They are here so you can try them on y
   constructing the pool; swap selection, per-layer callbacks and residency updates stay unchanged. On an RTX 5090 /
   Ryzen 9 9950X, a paired 4K three-prompt test averaged 142.82 -> 207.75 tok/s. Other GPUs and drivers remain untested;
   see the [reproducer, settings and limitations](../bench/results/2026-10-11-rtx-5090-callback-affinity/README.md).
+- **`STRATA_ADAPT_SIGNAL=host`: the overlap's per-layer "landed" signal as a host function** (the 0.1.43 way). From 0.1.43.1 the default is a
+  4-byte stream-ordered copy into pinned memory, which needs no driver callback thread: on a 20-core desktop (RTX 3060) the host
+  functions still cost ~7 ms per window with the thread started early, because the pool's workers occupy every other CPU.
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
