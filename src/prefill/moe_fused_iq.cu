@@ -1243,6 +1243,16 @@ bool d_covered(int t) {
 #endif
         ;
 }
+// d_covered on this device: STRATA_PF_F16=1 also takes Q8_0 down on gfx11 without STRATA_PF_FUSED_KQ - the F16 kernel
+// has no minimum term, and its output already differs from the int8 kernels' (UD-IQ4_XS: the five Q8_0-down layers
+// would otherwise leave the fused path for MMQ).
+bool d_covered_on(int t, const DevInfo& d) {
+#if defined(__HIPCC__)
+    if (t == T_Q8_0 && !d.w12 && f16::requested()) return true;
+#endif
+    (void) d;
+    return d_covered(t);
+}
 
 template <int T, bool GU>
 void launch(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Tables& tb, const void* act,
@@ -1284,14 +1294,15 @@ bool native_supported(int gu_type, int d_type) {
         const char* v = std::getenv("STRATA_PF_FUSED");
         return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0);
     }();
-    if (off || env == 0 || !gu_covered(gu_type) || !d_covered(d_type)) return false;
+    if (off || env == 0 || !gu_covered(gu_type)) return false;
 #if !defined(__HIPCC__)
     if (env < 0) return false;   // the default is gfx12 (HIP) only
 #endif
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
     const DevInfo& d = dev_info();
-    if (env < 0) return d.ok && d.w12;
-    return d.ok && (requested() || d.w12);
+    if (!d.ok || !d_covered_on(d_type, d)) return false;
+    if (env < 0) return d.w12;
+    return requested() || d.w12;
 }
 
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream) {
@@ -1305,7 +1316,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
                     const int32_t* src, void* ha, float* dm, void* stream) {
     if (b.e1 <= b.e0 || n <= 0) return;
     const DevInfo& d = dev_info();
-    if (!d.ok || !gu_covered(g.gu_type) || !d_covered(g.d_type)) {
+    if (!d.ok || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d)) {
         std::fprintf(stderr, "prefill fused experts (native): types %d / %d are not covered here\n", g.gu_type, g.d_type);
         std::exit(1);
     }
