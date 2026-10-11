@@ -3,6 +3,7 @@
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/platform/memory.hpp"
 
@@ -43,7 +44,28 @@ bool in_range(const std::string& name) {
 }
 // S23 experiment (STRATA_HC_Q8=1): the hyper-connection projections' Q8_0 bytes for the verify read
 bool hc_q8_env() {
-    static const bool on = [] { const char* v = std::getenv("STRATA_HC_Q8"); return v != nullptr && v[0] == '1'; }();
+    // STRATA_HC_Q8: 1 = on (the GGUF's own Q8_0 projections, or - a bf16 pack - a Q8_0 copy quantized at load); 0 = off;
+    // unset / auto = on for gfx12 (RDNA4: the R9700 decode +2.5 to +4%, KL 0.0003-0.0010 over its noise floor) unless
+    // STRATA_GFX12_DEFAULTS=0, off elsewhere
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_HC_Q8");
+        if (v != nullptr && v[0] == '1') return true;
+        if (v != nullptr && v[0] != '\0' && std::strcmp(v, "auto") != 0) return false;
+#if defined(STRATA_USE_HIP)
+        const char* d = std::getenv("STRATA_GFX12_DEFAULTS");
+        if (d != nullptr && d[0] == '0') return false;
+        int dev = 0;
+        cudaDeviceProp p;
+        const bool g12 = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+        (void) cudaGetLastError();
+        if (g12) std::fprintf(stderr, "strata: gfx12 (RDNA4): the hyper-connection projections are read as Q8_0 (quantized at load, "
+                                      "decode faster, answers differ slightly); STRATA_HC_Q8=0 keeps the bf16 read\n");
+        return g12;
+#else
+        return false;
+#endif
+    }();
     return on;
 }
 bool hc_q8_name(const std::string& name) {
