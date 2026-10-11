@@ -1704,7 +1704,7 @@ the pairs in which the switched arm won). They are here so you can try them on y
   `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`; otherwise the log says why it is off. RTX A4000, 6 interleaved pairs each,
   decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%), IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%),
   IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time.
-- **`STRATA_ADAPT_CALLBACK_WARMUP=1` (Linux CUDA, opt-in): initialize the CUDA host-callback thread before the CPU
+- **`STRATA_ADAPT_CALLBACK_WARMUP` (Linux, on by default since 0.1.43.1; =0 turns it off): start the GPU host-callback thread before the CPU
   pool pins the host thread.** A callback thread created later can inherit the host's one-CPU affinity and compete
   with the verifier spinning for its signal (#1975). The warm-up runs and synchronizes one no-op host callback before
   constructing the pool; swap selection, per-layer callbacks and residency updates stay unchanged. On an RTX 5090 /

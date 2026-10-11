@@ -43,7 +43,7 @@ latencies should not be treated as unprofiled production measurements.
 
 ## Opt-in warm-up and inference comparison
 
-Set `STRATA_ADAPT_CALLBACK_WARMUP=1` and leave `STRATA_ADAPT_OVERLAP=1`.
+The warm-up is on by default (`STRATA_ADAPT_CALLBACK_WARMUP=0` turns it off, for comparison).
 The candidate initializes and synchronizes a no-op CUDA host callback before
 constructing `ExpertPool`, leaving its worker free to run on the process's
 original allowed CPUs. It does not change swap selection, notifications,
