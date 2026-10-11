@@ -1,4 +1,5 @@
-// src/prefill/moe_f16_kq.hpp - gfx11: the K-quant prompt experts on the F16 matrix cores (moe_f16_kq.cu).
+// src/prefill/moe_f16_kq.hpp - gfx11: the K-quant prompt experts on the F16 matrix cores (moe_f16_kq.cu; the switch,
+// STRATA_PF_F16=1 with STRATA_PF_FUSED_KQ=1, is moe_f16_common.cuh's).
 // Internal to moe_fused_iq.cu, which owns the native experts' tables and launches.
 #pragma once
 
@@ -11,9 +12,6 @@
 
 namespace strata::prefill::fused::f16kq {
 
-/// STRATA_PF_F16_KQ=1 (on top of STRATA_PF_FUSED=1 and STRATA_PF_FUSED_KQ=1): Q4_K / Q5_K gate/up and Q5_1 down
-/// take these kernels.
-bool requested();
 /// The gate/up type has a kernel here (and this build has gfx11 device code).
 bool covers(int gu_type);
 
