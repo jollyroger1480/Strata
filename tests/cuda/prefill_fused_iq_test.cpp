@@ -397,7 +397,11 @@ void reference_part(const Pair& p, cudaStream_t s) {
     const Err e2 = compare(y_f, frow, ref2, pair, (size_t) rows);
     std::printf("  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS %.3e  worst %.3e\n",
                 e2.rms, e2.worst);
-    if (e2.rms > 2e-3 || e2.worst > 3e-2)
+    // STRATA_PF_F16_KQ=1: the K-quant gate/up runs on F16 weights (moe_f16_kq.cu), so H's int8 rounding meets values
+    // a few F16 ulps from the int8 model's; the FP32 reference checks below stay as they are
+    const char* f16e = std::getenv("STRATA_PF_F16_KQ");
+    const bool f16 = f16e != nullptr && f16e[0] == '1' && (p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K);
+    if (e2.rms > (f16 ? 5e-3 : 2e-3) || e2.worst > 3e-2)
         throw std::runtime_error(std::string(p.name) + ": the fused path differs from its own arithmetic's model");
     if (mq) std::printf("  MMQ   vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", em.rms, em.worst);
     std::printf("  fused vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", ef.rms, ef.worst);

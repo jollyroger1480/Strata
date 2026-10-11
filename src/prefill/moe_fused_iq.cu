@@ -22,6 +22,10 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
+#if defined(__HIPCC__)
+#include "moe_f16_kq.hpp"
+#endif
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -1200,7 +1204,9 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         const uint8_t* xa8 = (const uint8_t*) xa;
         uint8_t* ha8 = (uint8_t*) ha;
 #define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, NW_LB><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)
-        switch (g.gu_type) {
+        // STRATA_PF_F16_KQ=1: the K-quant gate/up on the F16 matrix cores (moe_f16_kq.cu); down stays below
+        if (f16kq::requested() && f16kq::covers(g.gu_type)) f16kq::gate_up(b, g, tb.ts, tb.tiles, tb.off, n, n_expert, tiles, xa8, src, ha8, s);
+        else switch (g.gu_type) {
             case T_IQ2_XXS: STRATA_NW_GU(T_IQ2_XXS); break;
             case T_IQ2_XS: STRATA_NW_GU(T_IQ2_XS); break;
             case T_IQ2_S: STRATA_NW_GU(T_IQ2_S); break;
