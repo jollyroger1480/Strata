@@ -222,6 +222,17 @@ bool slot_ckpt_move_env() {
     }();
     return on;
 }
+// STRATA_SLOT_COPY_BATCHSYNC=1 (read once; off by default): the direct slot copy (STRATA_SLOT_COPY_DIRECT) only queues
+// its copies on each device's private copy stream and synchronizes every device once at the end, instead of waiting
+// for each of its ~116 copies.  A streamed K/V state's residency refresh waits for its copies through an event.  The
+// same copies in the same order on one stream, so the slot holds the same bytes
+bool slot_copy_batchsync_env() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_SLOT_COPY_BATCHSYNC");
+        return v && v[0] != '0';
+    }();
+    return on;
+}
 
 // perf-review D-4: the lent slots are refilled with queued copies and one wait; STRATA_REFILL_BLOCKING=1 waits on each
 // A file-backed arena on AMD (STRATA_ARENA_MMAP; the engine raises ROCclr's pin-in-place threshold, see main): an
@@ -10213,16 +10224,18 @@ int main(int argc, char** argv) {
             // before the caller reuses the sessions (its zeroing runs on non-blocking streams, not ordered against these)
             auto failed = [&]() { (void) sync_all(); return false; };
             if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
+            // STRATA_SLOT_COPY_BATCHSYNC: every copy is only queued, and the sync_all below is the one wait per device
+            const bool queued = slot_copy_batchsync_env();
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 strata::core::SessionState& main_ss = k == 0 ? ss : stages[k - 1]->ss;
                 strata::core::SessionState& slot_ss = *bslot_ss[k][(size_t) b];
                 strata::core::SessionState& from = into_slot ? main_ss : slot_ss;
                 strata::core::SessionState& to = into_slot ? slot_ss : main_ss;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                if (!strata::core::conversation_checkpoint_copy(from, to, ids, g, e)) return failed();
+                if (!strata::core::conversation_checkpoint_copy(from, to, ids, g, e, queued)) return failed();
                 for (int64_t j = 0; j < from.qsa_alloc; ++j)
                     if (!strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
-                                                            to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                                                            to.qsa_states[to.qsa_ord0 + j], g, upto, true, e, queued))
                         return failed();
             }
             if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
