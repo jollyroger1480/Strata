@@ -4939,6 +4939,29 @@ int main(int argc, char **argv) try {
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
+    // #1980: the host mirror and the "REFUSED" count above cover the first stage only. A later stage whose cache does not
+    // hold all of its layers' experts has no mirror entry for the rest, and with STRATA_VERIFY_NO_HOST no host answers for
+    // them: the device plan reads a bad address and the card is lost at the first verify window (2x Arc Pro B60, xe CAT
+    // fault). Refuse at the start with the same message, and say how to get a complete load.
+    if (multi_gpu) {
+        const bool no_host_split = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
+        int64_t later_misses = 0;
+        for (auto& stp : stages) {
+            const GpuStage& st = *stp;
+            later_misses += std::max<int64_t>(0, (st.le - st.lb) * g.n_expert - (int64_t) st.cache.slots());
+        }
+        if (later_misses > 0 && no_host_split) {
+            std::fprintf(stderr, "strata generate: REFUSED: %lld experts of the later layer-split stages are neither in VRAM nor mirrored "
+                                 "(the host mirror covers the first stage only); with STRATA_VERIFY_NO_HOST the device plan cannot run them "
+                                 "and the card is lost at the first verify window - set STRATA_STAGE_TRIM=1 (with --layer-split N) to free "
+                                 "each card's duplicate dense weights, lower --max-context or --vram-reserve-mib, or unset "
+                                 "STRATA_VERIFY_NO_HOST\n", (long long) later_misses);
+            return 2;
+        }
+        if (later_misses > 0)
+            std::fprintf(stderr, "strata generate: layer split: %lld experts of the later stages are not in VRAM (served by the host)\n",
+                         (long long) later_misses);
+    }
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
