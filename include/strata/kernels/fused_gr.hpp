@@ -49,6 +49,9 @@ struct FusedGrArgs {
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
 void fused_gr_read(const FusedGrArgs& a, void* stream);
+/// STRATA_HC_Q8 on a bf16 pack: `out` (n_blocks * 34 bytes) = the Q8_0 blocks (fp16 d = amax / 127, round(x / d), ggml's
+/// reference rounding) of `n_blocks * 32` bf16 values on the device.
+void fused_gr_quantize_q8_0(const uint16_t* bf16, uint8_t* out, int64_t n_blocks, void* stream);
 
 /// Plan v0.3 P6: the same read for up to 8 tokens that share the weights (a verify window): the weights are read
 /// once for all of them.  `a[t]` is token t's arguments (its own R, pending write, lo, rs, inject, mixed; the four

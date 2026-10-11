@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/platform/memory.hpp"
 
@@ -346,6 +347,30 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     weights_.push_back(p);
                     hc_q8_bytes += bytes;
                 }
+        }
+        if (hc_q8_requested()) {
+            // a bf16 pack stores no Q8_0 copy: quantize the layers' down / up projections from the arena's bf16 on the
+            // GPU (the inject rows stay bf16, 82 KB; the final mixer stays bf16: it runs once a window)
+            uint64_t made = 0;
+            for (auto& [name, ref] : table.table_) {
+                if (ref.hc_q8 != nullptr || ref.data == nullptr || name.rfind("blk.", 0) != 0 || !in_range(name) ||
+                    !hc_q8_name(name) || !(name.ends_with("_down.weight") || name.ends_with("_up.weight"))) continue;
+                if (ref.ne0 % 32 != 0 || ref.elements != ref.ne0 * ref.ne1 || ref.bytes != (uint64_t) ref.elements * 2) {
+                    err = "native dense (STRATA_HC_Q8): the arena copy of " + name + " is not bf16"; return false;
+                }
+                const uint64_t nb = (uint64_t) ref.elements / 32, bytes = nb * 34;
+                void* p = nullptr;
+                if (cudaMalloc(&p, bytes) != cudaSuccess) { err = "native dense (STRATA_HC_Q8) alloc " + name; return false; }
+                strata::kernels::fused_gr_quantize_q8_0((const uint16_t*) ref.data, (uint8_t*) p, (int64_t) nb, nullptr);
+                ref.hc_q8 = p;
+                weights_.push_back(p);
+                hc_q8_bytes += bytes;
+                allocated += alloc_bytes(bytes);
+                ++made;
+            }
+            if (made && (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)) {
+                err = "native dense (STRATA_HC_Q8): quantizing the projections failed"; return false;
+            }
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
         void* allocation = nullptr;
