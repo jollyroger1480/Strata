@@ -10,8 +10,9 @@
 //     by every wave;
 //   - the epilogue applies SwiGLU and writes H as int8 per 32 features (with the codes' sum), the form the existing
 //     down kernels read.
-// The output differs from native_w11_kernel's (F16 weights instead of int8 sub-blocks), like STRATA_PF_FUSED_KQ's
-// does from the MMQ path.
+// Q5_1 down takes the same structure (down_kernel): H staged as F16, the codes and high bits packed in LDS, FP32
+// outputs at the routed rows.  The output differs from native_w11_kernel's (F16 weights instead of int8 sub-blocks),
+// like STRATA_PF_FUSED_KQ's does from the MMQ path.
 //
 // Adapted from gufo 97b8645f: src/models/qwen38_flash_next/kernels/rocm/kernels.hip.cpp
 // (RoutedF16GEMMKernel and its helpers).
@@ -99,6 +100,76 @@ __device__ __forceinline__ void codes_to_halves(uint32_t codes, __half2 magic, _
 #endif
 }
 
+// The int8 activation (or H) rows of a work item, staged as F16 per stage: BN rows x 8 chunks of 8 values, chunk
+// sub = kb * 4 + quarter, into LDS [sub][row] (stride BN + 1) - the B fragments' layout of the F16 WMMA.  A row past
+// the item's end is zero.
+template <int BN> struct ActStage {
+    static constexpr int FETCH = BN * 8 / THREADS, STRIDE = BN + 1, BYTES = 2 * 4 * STRIDE * 16;
+    const uint8_t* src[FETCH];
+    int slot[FETCH], sub[FETCH];
+    uint2 codes[FETCH];
+    float d[FETCH];
+    // rows[t]: the row of item row t in `base` (rows of `ld` bytes), or -1
+    __device__ __forceinline__ void init(const uint8_t* base, size_t ld, const int* rows, int tid) {
+#pragma unroll
+        for (int i = 0; i < FETCH; ++i) {
+            const int chunk = tid + i * THREADS, t = chunk >> 3, c = chunk & 7;
+            src[i] = rows[t] >= 0 ? base + (size_t) rows[t] * ld : nullptr;
+            slot[i] = c * STRIDE + t;
+            sub[i] = c;
+        }
+    }
+    __device__ __forceinline__ void fetch(int s) {
+#pragma unroll
+        for (int i = 0; i < FETCH; ++i) {
+            if (src[i] != nullptr) {
+                const uint8_t* p = src[i] + (size_t) s * AB;
+                codes[i] = *reinterpret_cast<const uint2*>(p + 8 * sub[i]);
+                d[i] = *reinterpret_cast<const float*>(p + 64 + 4 * (sub[i] >> 2));
+            } else {
+                codes[i] = make_uint2(0u, 0u);
+                d[i] = 0.0f;
+            }
+        }
+    }
+    __device__ __forceinline__ void commit(uint4* s_act) const {
+#pragma unroll
+        for (int i = 0; i < FETCH; ++i) {
+            const uint32_t ws[2] = {codes[i].x, codes[i].y};
+            __half2 h[4];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const uint32_t wd = ws[j >> 1] >> (16 * (j & 1));
+                const float lo = (float) (int8_t) (wd & 0xFFu), hi = (float) (int8_t) ((wd >> 8) & 0xFFu);
+                h[j] = __floats2half2_rn(lo * d[i], hi * d[i]);
+            }
+            s_act[slot[i]] = make_uint4(__builtin_bit_cast(uint32_t, h[0]), __builtin_bit_cast(uint32_t, h[1]),
+                                        __builtin_bit_cast(uint32_t, h[2]), __builtin_bit_cast(uint32_t, h[3]));
+        }
+    }
+};
+
+// Two F16 WMMAs (K 32) of a wave's 16 weight rows against each live 16-row tile of the staged activations.
+template <int BN>
+__device__ __forceinline__ void mma_tiles(v8f (&acc)[BN / 16], v16h a_lo, v16h a_hi, const uint4* s_act, int kb, int sub_lane,
+                                          int live_tiles) {
+    constexpr int STRIDE = ActStage<BN>::STRIDE;
+#pragma unroll
+    for (int j = 0; j < BN / 16; ++j) {
+        asm volatile("" ::: "memory");   // one token tile's fragments live at a time (gufo: hoisting spills)
+        if (j >= live_tiles) continue;
+        const uint4* frag = s_act + (kb * 4) * STRIDE + j * 16 + sub_lane;
+        uint4 bq[4];
+#pragma unroll
+        for (int q = 0; q < 4; ++q) bq[q] = frag[q * STRIDE];
+        v16h b_lo, b_hi;
+        __builtin_memcpy(&b_lo, &bq[0], 32);
+        __builtin_memcpy(&b_hi, &bq[2], 32);
+        acc[j] = wmma_f16(a_lo, b_lo, acc[j]);
+        acc[j] = wmma_f16(a_hi, b_hi, acc[j]);
+    }
+}
+
 // BN: tokens per work item, fused::group's 64-row tile or two consecutive tiles of one expert (128)
 template <int WT, int BN>
 __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const NativeGeom geo, const int32_t* __restrict__ ts,
@@ -117,9 +188,7 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
     constexpr int CODE_BYTES = BM * 2 * 16;
     constexpr int HIGH_BYTES = Q5K ? 2 * BM * 4 : 0;
     constexpr int SCALE_BYTES = 2 * BM * 4;
-    constexpr int ACT_STRIDE = BN + 1;
-    constexpr int ACT_BYTES = 2 * 4 * ACT_STRIDE * 16;
-    constexpr int STAGE_BYTES = CODE_BYTES + HIGH_BYTES + SCALE_BYTES + ACT_BYTES;
+    constexpr int STAGE_BYTES = CODE_BYTES + HIGH_BYTES + SCALE_BYTES + ActStage<BN>::BYTES;
     constexpr int EPI_STRIDE = 18, EPI_PLANE = 16 * EPI_STRIDE;
     static_assert(8 * EPI_PLANE * 4 <= STAGE_BYTES, "the epilogue planes fit the stage");
     __shared__ __attribute__((aligned(16))) uint8_t lds[STAGE_BYTES];
@@ -155,20 +224,8 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
         uint4 code_cache[4];   // the block's four nibble groups, this thread's chunk of each
         uint32_t f_high = 0;
         int f_sb32 = 0;
-        // Activation fetch: BN tokens x 8 chunks of 8 values per stage; chunk sub = kb * 4 + quarter.
-        constexpr int ACT_FETCH = BN * 8 / THREADS;
-        const uint8_t* a_src[ACT_FETCH];
-        int a_slot[ACT_FETCH], a_sub[ACT_FETCH];
-        uint2 a_codes[ACT_FETCH];
-        float a_d[ACT_FETCH];
-#pragma unroll
-        for (int i = 0; i < ACT_FETCH; ++i) {
-            const int chunk = tid + i * THREADS, t = chunk >> 3, sub = chunk & 7;
-            const int tok = srow[t];
-            a_src[i] = tok >= 0 ? act + (size_t) tok * ACT_LD : nullptr;
-            a_slot[i] = sub * ACT_STRIDE + t;
-            a_sub[i] = sub;
-        }
+        ActStage<BN> as;
+        as.init(act, ACT_LD, srow, tid);   // the tokens' activation rows
 
         const auto fetch_stage = [&](int s) {
             const int kb0 = 2 * s;
@@ -205,17 +262,7 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
                 for (int i = 0; i < 8; ++i) hb |= gather_bit(qh[i], sb32) << (4 * i);
                 f_high = hb;
             }
-#pragma unroll
-            for (int i = 0; i < ACT_FETCH; ++i) {
-                if (a_src[i] != nullptr) {
-                    const uint8_t* p = a_src[i] + (size_t) s * AB;
-                    a_codes[i] = *reinterpret_cast<const uint2*>(p + 8 * a_sub[i]);
-                    a_d[i] = *reinterpret_cast<const float*>(p + 64 + 4 * (a_sub[i] >> 2));
-                } else {
-                    a_codes[i] = make_uint2(0u, 0u);
-                    a_d[i] = 0.0f;
-                }
-            }
+            as.fetch(s);
         };
 
         const auto commit_stage = [&]() {
@@ -234,19 +281,7 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
             const __half2 dm = __builtin_bit_cast(__half2, f_header.x);
             const float scale = __low2float(dm) * (float) sc, offset = __high2float(dm) * (float) mn;
             s_scale[f_c * BM + row] = __builtin_bit_cast(uint32_t, __floats2half2_rn(scale, -offset));
-#pragma unroll
-            for (int i = 0; i < ACT_FETCH; ++i) {
-                const uint32_t ws[2] = {a_codes[i].x, a_codes[i].y};
-                __half2 h[4];
-#pragma unroll
-                for (int j = 0; j < 4; ++j) {
-                    const uint32_t wd = ws[j >> 1] >> (16 * (j & 1));
-                    const float lo = (float) (int8_t) (wd & 0xFFu), hi = (float) (int8_t) ((wd >> 8) & 0xFFu);
-                    h[j] = __floats2half2_rn(lo * a_d[i], hi * a_d[i]);
-                }
-                s_act[a_slot[i]] = make_uint4(__builtin_bit_cast(uint32_t, h[0]), __builtin_bit_cast(uint32_t, h[1]),
-                                              __builtin_bit_cast(uint32_t, h[2]), __builtin_bit_cast(uint32_t, h[3]));
-            }
+            as.commit(s_act);
         };
 
         v8f acc[TOK_TILES];
@@ -274,20 +309,7 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
                 v16h a_lo, a_hi;
                 __builtin_memcpy(&a_lo, &h[0], 32);
                 __builtin_memcpy(&a_hi, &h[8], 32);
-#pragma unroll
-                for (int j = 0; j < TOK_TILES; ++j) {
-                    asm volatile("" ::: "memory");   // one token tile's fragments live at a time (gufo: hoisting spills)
-                    if (j >= live_tok_tiles) continue;
-                    const uint4* frag = s_act + (kb * 4) * ACT_STRIDE + j * 16 + sub_lane;
-                    uint4 bq[4];
-#pragma unroll
-                    for (int q = 0; q < 4; ++q) bq[q] = frag[q * ACT_STRIDE];
-                    v16h b_lo, b_hi;
-                    __builtin_memcpy(&b_lo, &bq[0], 32);
-                    __builtin_memcpy(&b_hi, &bq[2], 32);
-                    acc[j] = wmma_f16(a_lo, b_lo, acc[j]);
-                    acc[j] = wmma_f16(a_hi, b_hi, acc[j]);
-                }
+                mma_tiles<BN>(acc, a_lo, a_hi, s_act, kb, sub_lane, live_tok_tiles);
             }
         };
 
@@ -349,9 +371,123 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
 #endif
 }
 
+// Q5_1 down: 128 of the 2560 output rows (DNFB items per tile) against a tile's (or pair's) H rows, K = 640 in 10
+// stages; the products are the routed rows' FP32 outputs in `dm` (native_w11_kernel<T_Q5_1, false>'s).  gufo's
+// RoutedF16GEMMKernel<kQ5_1>: a K block's 16 code bytes and its high-bit word in LDS, w = q d + m per wave.
+constexpr int D_ROWS = 128, DNFB = 2560 / D_ROWS, D_NS = 640 / 64, H_LD = D_NS * AB;
+template <int BN>
+__global__ void __launch_bounds__(THREADS) down_kernel(const Batch b, const NativeGeom geo, const int32_t* __restrict__ ts,
+                                                       const int2* __restrict__ tiles, const int32_t* __restrict__ off,
+                                                       const uint8_t* __restrict__ h, float* __restrict__ dm) {
+#if STRATA_F16KQ_DEVICE
+    static_assert(BN == kTileRows || BN == 2 * kTileRows, "one tile or a pair");
+    constexpr int CODE_BYTES = D_ROWS * 2 * 16, HIGH_BYTES = 2 * D_ROWS * 4, SCALE_BYTES = 2 * D_ROWS * 4;
+    constexpr int STAGE_BYTES = CODE_BYTES + HIGH_BYTES + SCALE_BYTES + ActStage<BN>::BYTES;
+    static_assert(8 * 256 * 4 <= STAGE_BYTES, "the epilogue's 16 x 16 tile per wave fits the stage");
+    __shared__ __attribute__((aligned(16))) uint8_t lds[STAGE_BYTES];
+    __shared__ int srow[BN];
+    auto* s_codes = reinterpret_cast<uint4*>(lds);
+    auto* s_high = reinterpret_cast<uint32_t*>(lds + CODE_BYTES);
+    auto* s_scale = reinterpret_cast<uint32_t*>(lds + CODE_BYTES + HIGH_BYTES);
+    auto* s_act = reinterpret_cast<uint4*>(lds + CODE_BYTES + HIGH_BYTES + SCALE_BYTES);
+
+    const int tid = threadIdx.x, wave = tid >> 5, lane = tid & 31, sub_lane = lane & 15, half_id = lane >> 4;
+    const int f_c = tid & 1;   // this thread's K block of its weight row
+    const auto swizzle = [](int row, int c) { return row * 2 + (c ^ ((row >> 2) & 1)); };
+    const __half2 magic = __floats2half2_rn(-1024.0f, -1024.0f);
+
+    const int t0 = ts[b.e0], w = blockIdx.x;
+    if (w >= (ts[b.e1] - t0) * DNFB) return;
+    const int2 tl = tiles[t0 + w / DNFB];
+    const int fb = w % DNFB, e = tl.x, row0 = tl.y;
+    if (BN > kTileRows && ((t0 + w / DNFB - ts[e]) & 1)) return;   // the second tile of a pair: its first takes it
+    const int nrows = min(BN, off[e + 1] - row0);
+    const int live_tiles = (nrows + 15) / 16;
+    if (tid < BN) srow[tid] = tid < nrows ? row0 + tid : -1;   // H is indexed by the routed row
+    __syncthreads();
+
+    const uint2* f_ptr = reinterpret_cast<const uint2*>(b.blob[e - b.e0] + geo.down_off +
+                                                        (size_t) (fb * D_ROWS + (tid >> 1)) * geo.d_row);
+    uint4 f_codes;
+    uint32_t f_high = 0, f_dm = 0;
+    ActStage<BN> as;
+    as.init(h, H_LD, srow, tid);
+    const auto fetch_stage = [&](int s) {
+        const uint2* words = f_ptr + (2 * s + f_c) * 3;   // block_q5_1: {d, m}, qh, qs[16]
+        const uint2 w0 = words[0], w1 = words[1], w2 = words[2];
+        f_codes = make_uint4(w1.x, w1.y, w2.x, w2.y);
+        f_high = w0.y;
+        f_dm = w0.x;
+        as.fetch(s);
+    };
+    const auto commit_stage = [&]() {
+        const int row = tid >> 1;
+        s_codes[swizzle(row, f_c)] = f_codes;
+        s_high[f_c * D_ROWS + row] = f_high;
+        s_scale[f_c * D_ROWS + row] = f_dm;   // the half2 (d, m): w = q d + m
+        as.commit(s_act);
+    };
+    v8f acc[BN / 16];
+#pragma unroll
+    for (int j = 0; j < BN / 16; ++j) acc[j] = v8f{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const auto compute_stage = [&]() {
+        const int row = wave * 16 + sub_lane;
+        const uint4 raw[2] = {s_codes[swizzle(row, 0)], s_codes[swizzle(row, 1)]};
+#pragma unroll
+        for (int kb = 0; kb < 2; ++kb) {
+            const __half2 sb = __builtin_bit_cast(__half2, s_scale[kb * D_ROWS + row]);
+            const __half2 scale2 = __low2half2(sb), bias2 = __high2half2(sb);
+            // elements 0-15 are the low nibbles of the 16 code bytes, 16-31 the high, plus bit j of the high-bit word
+            const uint32_t words[4] = {raw[kb].x, raw[kb].y, raw[kb].z, raw[kb].w};
+            const uint32_t hb = s_high[kb * D_ROWS + row];
+            __half2 hh[16];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const uint32_t lo = (words[i] & 0x0F0F0F0FU) | spread_high_bits((hb >> (4 * i)) & 0xFU);
+                const uint32_t hi = ((words[i] >> 4U) & 0x0F0F0F0FU) | spread_high_bits((hb >> (16 + 4 * i)) & 0xFU);
+                codes_to_halves(lo, magic, scale2, bias2, hh[2 * i], hh[2 * i + 1]);
+                codes_to_halves(hi, magic, scale2, bias2, hh[8 + 2 * i], hh[8 + 2 * i + 1]);
+            }
+            v16h a_lo, a_hi;
+            __builtin_memcpy(&a_lo, &hh[0], 32);
+            __builtin_memcpy(&a_hi, &hh[8], 32);
+            mma_tiles<BN>(acc, a_lo, a_hi, s_act, kb, sub_lane, live_tiles);
+        }
+    };
+    fetch_stage(0);
+    for (int s = 0; s < D_NS; ++s) {
+        commit_stage();
+        __syncthreads();
+        if (s + 1 < D_NS) fetch_stage(s + 1);
+        compute_stage();
+        __syncthreads();
+    }
+    // Each wave's 16 x 16 tile through LDS ([token][row]), then 16 consecutive FP32 rows per routed row.
+    float* tile = reinterpret_cast<float*>(lds) + wave * 256;
+    const int r0 = fb * D_ROWS + wave * 16;
+#pragma unroll
+    for (int j = 0; j < BN / 16; ++j) {
+        if (j >= live_tiles) break;   // uniform
+#pragma unroll
+        for (int l = 0; l < 8; ++l) tile[sub_lane * 16 + 2 * l + half_id] = acc[j][l];
+        __builtin_amdgcn_wave_barrier();
+#pragma unroll
+        for (int q = 0; q < 8; ++q) {
+            const int flat = q * 32 + lane, t = j * 16 + (flat >> 4);
+            if (t < nrows) dm[(size_t) (row0 + t) * 2560 + r0 + (flat & 15)] = tile[flat];
+        }
+        __builtin_amdgcn_wave_barrier();
+    }
+#else
+    (void) b; (void) geo; (void) ts; (void) tiles; (void) off; (void) h; (void) dm;
+    __builtin_trap();
+#endif
+}
+
 // Two tiles a work item when an expert has a tile's rows or more on average.  gfx1151, Q4_K, top 10 over 512 experts,
 // one 128-expert launch, ms (64 / 128): 1024 tokens 1.22 / 1.28, 2048 1.51 / 1.64, 4096 2.73 / 2.48, 8192 4.76 / 4.59,
-// 16384 9.19 / 8.46.  STRATA_PF_F16_KQ_BN=64|128 forces one.
+// 16384 9.19 / 8.46; Q5_1 down 2048 1.02 / 1.04, 4096 1.61 / 1.48, 16384 5.29 / 4.83.  STRATA_PF_F16_KQ_BN=64|128 forces
+// one.
 int pick_bn(int64_t n, int n_expert) {
     static const int forced = [] {
         const char* v = std::getenv("STRATA_PF_F16_KQ_BN");
@@ -381,6 +517,15 @@ bool requested() {
 }
 
 bool covers(int gu_type) { return gu_type == T_Q4_K || gu_type == T_Q5_K; }
+
+bool covers_down(int d_type) { return d_type == GGML_TYPE_Q5_1; }
+
+void down(const Batch& b, const NativeGeom& g, const int32_t* ts, const int2* tiles, const int32_t* off, int64_t n, int n_expert,
+          int64_t work_bound, const uint8_t* h, float* dm, cudaStream_t s) {
+    const unsigned grid = (unsigned) std::max<int64_t>(1, work_bound * DNFB);
+    if (pick_bn(n, n_expert) == 2 * kTileRows) down_kernel<2 * kTileRows><<<grid, THREADS, 0, s>>>(b, g, ts, tiles, off, h, dm);
+    else down_kernel<kTileRows><<<grid, THREADS, 0, s>>>(b, g, ts, tiles, off, h, dm);
+}
 
 void gate_up(const Batch& b, const NativeGeom& g, const int32_t* ts, const int2* tiles, const int32_t* off, int64_t n,
              int n_expert, int64_t work_bound, const uint8_t* act, const int32_t* src, uint8_t* out, cudaStream_t s) {

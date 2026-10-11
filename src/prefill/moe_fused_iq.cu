@@ -1204,7 +1204,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         const uint8_t* xa8 = (const uint8_t*) xa;
         uint8_t* ha8 = (uint8_t*) ha;
 #define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, NW_LB><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)
-        // STRATA_PF_F16_KQ=1: the K-quant gate/up on the F16 matrix cores (moe_f16_kq.cu); down stays below
+        // STRATA_PF_F16_KQ=1: the K-quant gate/up and Q5_1 down on the F16 matrix cores (moe_f16_kq.cu)
         if (f16kq::requested() && f16kq::covers(g.gu_type)) f16kq::gate_up(b, g, tb.ts, tb.tiles, tb.off, n, n_expert, tiles, xa8, src, ha8, s);
         else switch (g.gu_type) {
             case T_IQ2_XXS: STRATA_NW_GU(T_IQ2_XXS); break;
@@ -1218,7 +1218,8 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         }
 #undef STRATA_NW_GU
 #define STRATA_NW_D(T) do { if (occ_d) native_w11_kernel<T, false, true, NW_LB><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); else native_w11_kernel<T, false><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); } while (0)
-        if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
+        if (f16kq::requested() && f16kq::covers_down(g.d_type)) f16kq::down(b, g, tb.ts, tb.tiles, tb.off, n, n_expert, tiles, ha8, dm, s);
+        else if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
         else if (g.d_type == T_Q5_1) STRATA_NW_D(T_Q5_1);
         else if (g.d_type == T_Q8_0) STRATA_NW_D(T_Q8_0);
         else STRATA_NW_D(T_IQ4_NL);
