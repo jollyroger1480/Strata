@@ -7,6 +7,7 @@
 
 namespace strata::core {
 class WeightTable;
+struct WeightRef;
 
 // Experimental GDN/QSA/shared-expert projection overrides. Upload unchanged native GGUF
 // blocks once, then attach them to the matching canonical WeightRef. Unsupported
@@ -39,6 +40,14 @@ public:
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
+    /// STRATA_HC_Q8=1: the hyper-connection down / up projections of the layers live only as Q8_0 (the bf16 copy is not
+    /// loaded: `add_hc_skip` puts their rows in the arena's skip set, `load` quantizes them from the pack file).
+    static bool hc_q8_requested();
+    static bool add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip);
+    /// A projection's bf16 values for a path that has no Q8 kernel (the prompt path's GEMMs, the single-token read): the
+    /// resident copy, or - when the row was skipped - the Q8_0 copy dequantized into a per-stream scratch (`slot` 0 / 1:
+    /// two matrices alive at once).  nullptr if there is neither.
+    static const uint16_t* hc_bf16_view(const WeightRef& w, void* stream, int slot);
     uint64_t weight_bytes() const { return bytes_; }
     /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
     uint64_t allocated_bytes() const { return allocated_; }
