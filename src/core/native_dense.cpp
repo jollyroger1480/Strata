@@ -212,12 +212,15 @@ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set
 
 // STRATA_HC_Q8 without a bf16 copy: the two dequantization scratches (one bf16 matrix each) of `hc_bf16_view`, per device,
 // allocated by `load` - never on first use, so a graph capture cannot meet the allocation
-static void* g_hc_scratch[64][2] = {};
+static void* g_hc_scratch[64][2][2] = {};     // [device][class][slot]
+static cudaEvent_t g_hc_ev[64][2] = {};        // [device][slot]: the prompt path's last reader of the slot
+static bool g_hc_ev_set[64][2] = {};
 
 NativeDense::~NativeDense() {
     for (auto& dev : g_hc_scratch)
-        for (void*& b : dev)
-            if (b != nullptr && std::find(weights_.begin(), weights_.end(), b) != weights_.end()) b = nullptr;
+        for (auto& cl : dev)
+            for (void*& b : cl)
+                if (b != nullptr && std::find(weights_.begin(), weights_.end(), b) != weights_.end()) b = nullptr;
     for (const void* p : packed_keys_) strata::kernels::native_q8_0_packed_unregister(p);
     if (scratch_) cudaFree(scratch_);
     for (void* p : weights_) cudaFree(p);
@@ -425,13 +428,19 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             for (const auto& [name, ref] : table.table_)
                 if (ref.hc_q8 != nullptr && ref.data == nullptr) elems = (std::max)(elems, (uint64_t) ref.elements);
             int dev = 0;
-            if (elems != 0 && cudaGetDevice(&dev) == cudaSuccess && dev >= 0 && dev < 64 && g_hc_scratch[dev][0] == nullptr)
-                for (int i = 0; i < 2; ++i) {
-                    void* b = nullptr;
-                    if (cudaMalloc(&b, (size_t) elems * 2) != cudaSuccess) { err = "native dense (STRATA_HC_Q8): scratch alloc"; return false; }
-                    weights_.push_back(b);
-                    g_hc_scratch[dev][i] = b;
-                }
+            if (elems != 0 && cudaGetDevice(&dev) == cudaSuccess && dev >= 0 && dev < 64 && g_hc_scratch[dev][0][0] == nullptr) {
+                for (int c = 0; c < 2; ++c)
+                    for (int i = 0; i < 2; ++i) {
+                        void* b = nullptr;
+                        if (cudaMalloc(&b, (size_t) elems * 2) != cudaSuccess) { err = "native dense (STRATA_HC_Q8): scratch alloc"; return false; }
+                        weights_.push_back(b);
+                        g_hc_scratch[dev][c][i] = b;
+                    }
+                for (int i = 0; i < 2; ++i)
+                    if (g_hc_ev[dev][i] == nullptr && cudaEventCreateWithFlags(&g_hc_ev[dev][i], cudaEventDisableTiming) != cudaSuccess) {
+                        err = "native dense (STRATA_HC_Q8): scratch event"; return false;
+                    }
+            }
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
         void* allocation = nullptr;
@@ -486,16 +495,25 @@ bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>
     return true;
 }
 
-const uint16_t* NativeDense::hc_bf16_view(const WeightRef& w, void* stream, int slot) {
+const uint16_t* NativeDense::hc_bf16_view(const WeightRef& w, void* stream, int slot, int cls) {
     if (w.data != nullptr) return (const uint16_t*) w.data;
     if (w.hc_q8 == nullptr) return nullptr;
     // the device's scratch (allocated at load, one pair per device): the prompt path and the single-token read run one
     // after the other on a device, and each use is stream-ordered after the previous GEMM that read the slot
     int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64 || slot < 0 || slot > 1) return nullptr;
-    void* buf = g_hc_scratch[dev][slot];
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64 || slot < 0 || slot > 1 || cls < 0 || cls > 1) return nullptr;
+    void* buf = g_hc_scratch[dev][cls][slot];
     if (buf == nullptr) return nullptr;
+    // the prompt path: the scratch may still be read by a GEMM another stream enqueued (batch serving: several slots' prompts)
+    if (cls == 0 && g_hc_ev_set[dev][slot]) cudaStreamWaitEvent((cudaStream_t) stream, g_hc_ev[dev][slot], 0);
     strata::kernels::fused_gr_dequant_q8_0((const uint8_t*) w.hc_q8, (uint16_t*) buf, w.elements / 32, stream);
     return (const uint16_t*) buf;
+}
+
+void NativeDense::hc_bf16_release(void* stream, int slot, int cls) {
+    int dev = 0;
+    if (cls != 0 || slot < 0 || slot > 1 || cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64 || g_hc_ev[dev][slot] == nullptr) return;
+    cudaEventRecord(g_hc_ev[dev][slot], (cudaStream_t) stream);
+    g_hc_ev_set[dev][slot] = true;
 }
 } // namespace strata::core

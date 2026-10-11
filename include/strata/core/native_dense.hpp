@@ -47,7 +47,11 @@ public:
     /// A projection's bf16 values for a path that has no Q8 kernel (the prompt path's GEMMs, the single-token read): the
     /// resident copy, or - when the row was skipped - the Q8_0 copy dequantized into a per-stream scratch (`slot` 0 / 1:
     /// two matrices alive at once).  nullptr if there is neither.
-    static const uint16_t* hc_bf16_view(const WeightRef& w, void* stream, int slot);
+    /// `cls` 0 = the prompt path (a scratch pair shared by its streams, ordered by events: `hc_bf16_release` after the
+    /// last GEMM that reads the slot), 1 = the layer / session read (its own pair: it is captured into graphs, where an
+    /// event wait on an outside event is illegal). The scratches are allocated by `load`, never on first use.
+    static const uint16_t* hc_bf16_view(const WeightRef& w, void* stream, int slot, int cls);
+    static void hc_bf16_release(void* stream, int slot, int cls);
     uint64_t weight_bytes() const { return bytes_; }
     /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
     uint64_t allocated_bytes() const { return allocated_; }

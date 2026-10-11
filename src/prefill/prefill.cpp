@@ -2570,8 +2570,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 core::WeightRef wd_q8, wu_q8;
                 if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
                     wd_q8 = *wd; wu_q8 = *wu;
-                    wd_q8.data = core::NativeDense::hc_bf16_view(*wd, m.cs, 0);
-                    wu_q8.data = core::NativeDense::hc_bf16_view(*wu, m.cs, 1);
+                    wd_q8.data = core::NativeDense::hc_bf16_view(*wd, m.cs, 0, 0);
+                    wu_q8.data = core::NativeDense::hc_bf16_view(*wu, m.cs, 1, 0);
                     if (!wd_q8.data || !wu_q8.data) { err = "prefill: the Q8_0 hyper-connection projections could not be dequantized"; return false; }
                     wd = &wd_q8; wu = &wu_q8;
                 }
@@ -2636,6 +2636,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                              m.mixed_bf_lo);
                 }
 
+                if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
+                    core::NativeDense::hc_bf16_release(m.cs, 0, 0);
+                    core::NativeDense::hc_bf16_release(m.cs, 1, 0);
+                }
                 if (half == 0 && !core::is_qsa_layer(g, l)) {
                     // ======================= GDN =======================
                     const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
