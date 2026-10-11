@@ -6987,8 +6987,15 @@ int main(int argc, char **argv) try {
         }
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
+        int32_t* usage_dev_srv = nullptr;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        // 0.1.44 --expert-profile-save under STRATA_VERIFY_NO_HOST (no adaptive tier, so no host-side counts): the device
+        // plan counts every routed expert of the verify windows and the saved profile is ranked from those counts.
+        if (mirror_table_d && !o.expert_profile_save.empty()) {
+            usage_dev_srv = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
+            dpct::get_in_order_queue().memset(usage_dev_srv, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
+        }
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev_srv);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -7769,7 +7776,9 @@ int main(int argc, char **argv) try {
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
         if (!o.expert_profile_save.empty() && !all_experts_resident) {
-            if (drive.d.usage.empty() || host_res.empty())
+            if (usage_dev_srv != nullptr) {
+                // the device plan's routing counts (STRATA_VERIFY_NO_HOST): read when the profile is written
+            } else if (drive.d.usage.empty() || host_res.empty())
                 std::fprintf(stderr, "strata serve: --expert-profile-save needs the adaptive tier (--adapt-every and "
                                      "--adapt-swaps above 0) and --expert-profile: nothing will be saved\n");
             else
@@ -8315,6 +8324,38 @@ int main(int argc, char **argv) try {
         // #477: write the learned profile (between requests and at QUIT: a prompt's lent slots are back by then).
         // A swap still in flight counts as done - its expert is resident once the copy lands.  `why`: for the log.
         auto save_profile = [&](const char* why) {
+            if (usage_dev_srv != nullptr) {
+                // The cache and the mirror are fixed (no swaps under NO_HOST), so every pair is ranked by its device
+                // count mixed with the start's ranking (a short conversation must not wipe the prior).
+                const size_t n = (size_t) (g.n_layers * g.n_expert);
+                std::vector<int32_t> uh(n);
+                dpct::get_in_order_queue().memcpy(uh.data(), usage_dev_srv, n * 4).wait();
+                double total = 0;
+                for (int32_t c : uh) total += (double) c;
+                // prior mass by rank: exponential with lambda 2 (the shipped ranking holds ~70% of the routing in its
+                // first 47% of pairs, section 8 of notes-143-intel), worth `prior_entries` routed entries (800k: about one 150-token x 8 prompt session; 60k lost 36% on a different kind of text, 800k lost 18% and kept +13..19% on the trained kind)
+                const double lam = 2.0;
+                double prior_entries = 800000.0;
+                if (const char* pe = std::getenv("STRATA_PROFILE_PRIOR_ENTRIES")) prior_entries = std::max(0.0, std::atof(pe));
+                std::vector<double> hv(n, 0.0);
+                for (size_t i = 0; i < n; ++i) hv[i] = (double) uh[i];
+                for (size_t r = 0; r < profile_loaded.size(); ++r) {
+                    const auto [l, e] = profile_loaded[r];
+                    if (l < 0 || l >= g.n_layers || e < 0 || e >= g.n_expert) continue;
+                    const double x = (double) r / (double) n;
+                    hv[(size_t) (l * g.n_expert + e)] += prior_entries * lam * std::exp(-lam * x) / (1.0 - std::exp(-lam)) / (double) n;
+                }
+                std::vector<uint8_t> none(n, 0);
+                std::string e;
+                const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, none, hv, profile_loaded);
+                if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e))
+                    std::fprintf(stderr, "strata serve: expert profile saved to %s (%s, %.0f routed entries counted on the device)\n",
+                                 o.expert_profile_save.c_str(), why, total);
+                else
+                    std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+                profile_saved_at = Clock::now();
+                return;
+            }
             if (heat.empty()) return;
             std::vector<uint8_t> resident(host_res.size(), 0);
             for (size_t i = 0; i < host_res.size(); ++i) resident[i] = host_res[i] >= 0;
@@ -9131,7 +9172,7 @@ int main(int argc, char **argv) try {
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
-            if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
+            if ((!heat.empty() || usage_dev_srv != nullptr) && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
             if (line == "QUIT") break;

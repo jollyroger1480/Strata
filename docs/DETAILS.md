@@ -597,6 +597,7 @@ it instead of the config's `--expert-profile` when it is a profile of the same m
 before). A relative path is in the Strata folder; one file per model, and a profile per project works the same way
 (point the key at another file). The file is a fingerprint of what you used the model for: it stays on your PC.
 Without the key nothing is counted or written. Setup rewrites the config when run again: add the key again then.
+On an Intel Arc card with `STRATA_VERIFY_NO_HOST` (the SYCL default on Battlemage, no adaptive tier) the profile is ranked from the device's own routing counts and applies at the next start; a profile learned from one kind of text speeds that kind up (code, +13-19% decode on the Arc Pro B70, same tokens) and slows other kinds (prose, -18%), so keep one file per kind of work.
 
 **The expert cache size is a budget, and on Windows an over-sized one pages instead of failing.** `--expert-cache N`
 (`"expert_cache": N`) is `N` times the largest expert blob, and the engine compares it only with the free VRAM it
