@@ -79,6 +79,12 @@ void swiglu(const float*, float*, int64_t, int64_t, bool, void*) {}
 void swiglu_scaled(const float*, float*, int64_t, int64_t, const int32_t*, int, const float*, int64_t, void*) {}
 void down_row_scales(float*, const int32_t*, int, const float*, int64_t, void*) {}
 void iota(int32_t*, int64_t, void*) {}
+bool tab_built() { return false; }
+bool tab_fits(int, int64_t) { return false; }
+size_t overread_bytes(int, int64_t) { return 0; }
+int direct_mode() { return 0; }
+size_t direct_slot_guard() { return 0; }
+void prep_group(const GuardTab&, size_t, void*, void*, size_t, void*) {}
 }  // namespace strata::prefill::mmq
 #endif
 #ifndef STRATA_PREFILL_FUSED
