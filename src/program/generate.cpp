@@ -8477,6 +8477,14 @@ int main(int argc, char** argv) {
         // #613: why the last checkpoint_at failed - a failed device sync is the GPU itself (a hang Windows then resets),
         // not the checkpoint, and the error says so
         std::string ckpt_why;
+        // STRATA_TRACE: what each checkpoint cost - the device syncs, the copies into RAM (the vectors' first fill
+        // included), the eviction that frees one - one line per checkpoint; with the prompt's read parts summed per
+        // request for a batch admission's line (below, at BADM)
+        const bool ckpt_trace = std::getenv("STRATA_TRACE") != nullptr;
+        struct ReqTimes {
+            int ckpts = 0;
+            double sync_ms = 0.0, save_ms = 0.0, evict_ms = 0.0, read_ms = 0.0, windows_ms = 0.0;
+        } req_times;
         auto gpu_sync_ok = [&]() -> bool {
             const cudaError_t e = cudaDeviceSynchronize();
             if (e == cudaSuccess) return true;
@@ -8505,13 +8513,34 @@ int main(int argc, char** argv) {
                 c.block_pos = std::move((*parts)[0].block_pos);
                 for (size_t i = 1; i < parts->size(); ++i) c.stage_parts.push_back(std::move((*parts)[i]));
             } else {
-                if (!gpu_sync_ok() || !checkpoint_save(c, ss, g)) return false;
+                Clock::time_point t0 = Clock::now();
+                auto lap = [&](double& acc) {   // (STRATA_TRACE only)
+                    if (!ckpt_trace) return;
+                    const Clock::time_point t1 = Clock::now();
+                    acc += std::chrono::duration<double, std::milli>(t1 - t0).count();
+                    t0 = t1;
+                };
+                double sync_ms = 0.0, save_ms = 0.0;
+                if (!gpu_sync_ok()) return false;
+                lap(sync_ms);
+                if (!checkpoint_save(c, ss, g)) return false;
+                lap(save_ms);
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
                     part.ids = c.ids;
-                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g)) return false;
+                    if (!gpu_sync_ok()) return false;
+                    lap(sync_ms);
+                    if (!checkpoint_save(part, st->ss, g)) return false;
                     c.stage_parts.push_back(std::move(part));
+                    lap(save_ms);
+                }
+                if (ckpt_trace) {
+                    ++req_times.ckpts;
+                    req_times.sync_ms += sync_ms;
+                    req_times.save_ms += save_ms;
+                    std::fprintf(stderr, "strata trace: checkpoint at %lld: sync %.1f ms, save %.1f ms (%zu stage(s))\n",
+                                 (long long) L, sync_ms, save_ms, stages.size() + 1);
                 }
             }
             c.used = ++check_clock;
@@ -8525,6 +8554,8 @@ int main(int argc, char** argv) {
                 tail_ckpt_len = -1;   // the flagged tail was dropped and a normal checkpoint takes its length
             }
             checks.push_back(std::move(c));
+            const Clock::time_point te0 = Clock::now();
+            const size_t before_evict = checks.size();
             while ((int) checks.size() > o.prompt_cache) {
                 std::vector<uint64_t> stamps;
                 std::vector<char> is_tail;
@@ -8547,6 +8578,12 @@ int main(int argc, char** argv) {
                 const size_t victim = strata::program::conv_cache::eviction_victim(
                     stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
+            }
+            if (ckpt_trace && checks.size() < before_evict) {
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - te0).count();
+                req_times.evict_ms += ms;
+                std::fprintf(stderr, "strata trace: checkpoint at %lld: %zu evicted in %.1f ms\n", (long long) L,
+                             before_evict - checks.size(), ms);
             }
             return true;
         };
@@ -10291,6 +10328,11 @@ int main(int argc, char** argv) {
             for (int t = 0; t < GS; ++t) if (bs[(size_t) (gi * GS + t)].active) return true;
             return false;
         };
+        // STRATA_TRACE: the drain before the line in hand (an admission's first phase), and when the first rows came
+        // after a batch admission (the pipeline's refill after BADM) or after a drain for another line (drain + refill)
+        double line_drain_ms = 0.0, adm_drain_ms = 0.0;
+        const char* rows_wait = nullptr;   // what the next rows are timed from (rows_wait_t)
+        Clock::time_point rows_wait_t{};
         // one turn: serve every running stage, hand finished groups on, start what can start
         auto pump = [&](bool may_start) -> bool {
             ++pipe_tick;
@@ -10348,6 +10390,11 @@ int main(int argc, char** argv) {
                     }
                 }
                 std::fflush(stdout);
+                if (rows_wait != nullptr) {
+                    std::fprintf(stderr, "strata trace: first rows %.1f ms after %s\n",
+                                 std::chrono::duration<double, std::milli>(Clock::now() - rows_wait_t).count(), rows_wait);
+                    rows_wait = nullptr;
+                }
                 ++bt_windows;
                 G.inflight = false;
             }
@@ -10412,13 +10459,28 @@ int main(int argc, char** argv) {
             return true;
         };
         for (;;) {
+            line_drain_ms = 0.0;
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
                     if (!(piped ? pump(true) : batch_step())) return 1;
                     continue;
                 }
                 // a request reads its prompt through every stage: the groups in flight finish first
-                if (piped && line.rfind("BSTOP ", 0) != 0 && !pipe_drain()) return 1;
+                if (piped && line.rfind("BSTOP ", 0) != 0) {
+                    const int in_flight = trace ? (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) {
+                                                      return G.inflight; }) : 0;
+                    const auto td = Clock::now();
+                    if (!pipe_drain()) return 1;
+                    if (trace) {   // STRATA_TRACE: what the drain before this line cost (BGEN: an admission's first phase)
+                        line_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                        std::fprintf(stderr, "strata trace: drain for %.*s: %d groups in flight, %.1f ms\n",
+                                     (int) std::min(line.find(' '), line.size()), line.c_str(), in_flight, line_drain_ms);
+                        const bool timed = in_flight > 0 && line.rfind("BYIELD", 0) == 0;
+                        rows_wait = timed ? "the drain for BYIELD started" : nullptr;
+                        rows_wait_t = td;
+                        std::fflush(stderr);
+                    }
+                }
             } else if (!next_line(line)) {
                 break;
             }
@@ -10429,7 +10491,12 @@ int main(int argc, char** argv) {
                 if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
                 continue;
             }
-            if (line.rfind("BYIELD", 0) == 0) continue;   // for a prompt read that has ended meanwhile
+            if (line.rfind("BYIELD", 0) == 0) {   // for a prompt read that has ended meanwhile
+                if (trace && piped)
+                    std::fprintf(stderr, "strata trace: BYIELD dropped, %d groups in flight\n",
+                                 (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) { return G.inflight; }));
+                continue;
+            }
             if (line.rfind("VRAM", 0) == 0) {   // #533 (above): between requests, not a request
                 std::string verr;
                 if (batch_on()) verr = "VRAM: not while batch slots are decoding";
@@ -10458,6 +10525,7 @@ int main(int argc, char** argv) {
                 }
                 admit_slot = (int) b;
                 admit_max_new = mn;
+                adm_drain_ms = line_drain_ms;
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
@@ -11295,6 +11363,7 @@ int main(int argc, char** argv) {
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
             tr("request", n, geni ? 1 : 0);
+            req_times = ReqTimes{};
             if (use_mtp) mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
             conversations.limit_reuse(read_from);
@@ -11882,9 +11951,10 @@ int main(int argc, char** argv) {
                 const bool sp_ok = win ? read_windows(at, to, err) : read_part(at, to, err);
                 if (sp_ok) pp_exact = true;
                 if (trace) {
+                    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - tsp).count();
+                    (win ? req_times.windows_ms : req_times.read_ms) += ms;
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),
-                                 win ? "windows" : "batched",
-                                 std::chrono::duration<double, std::milli>(Clock::now() - tsp).count());
+                                 win ? "windows" : "batched", ms);
                     std::fflush(stderr);
                 }
                 if (!sp_ok && nf_hit) {   // #879: DONE nonfinite (the lent slots are refilled below)
@@ -13049,10 +13119,12 @@ int main(int argc, char** argv) {
                     bs[(size_t) admit_slot].cached = false;   // its sessions may be half written
                     cont = false;
                 }
+                const auto tc1 = Clock::now();
                 if (cont) {
                     ver.set_slot_sampling(admit_slot, req_sp);   // the request's own sampling, row by row
                     BSlot& sl = bs[(size_t) admit_slot];
                     sl = BSlot{};
+                    const auto tc2 = Clock::now();   // (the slot's old checkpoints freed)
                     sl.active = true;
                     sl.x = x;
                     sl.p = p;
@@ -13076,11 +13148,32 @@ int main(int argc, char** argv) {
                         if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
                             std::equal(c.ids.begin(), c.ids.end(), live.begin()))
                             best = &c;
+                    const auto tc3 = Clock::now();
                     if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                    const auto tc4 = Clock::now();
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
-                                 (long long) live.size(), std::chrono::duration<double, std::milli>(Clock::now() - tc0).count());
+                                 (long long) live.size(), std::chrono::duration<double, std::milli>(tc4 - tc0).count());
+                    if (trace) {   // STRATA_TRACE: the admission's phases (ms), from the drain before BGEN to this copy
+                        auto span = [](Clock::time_point a, Clock::time_point b) {
+                            return std::chrono::duration<double, std::milli>(b - a).count();
+                        };
+                        const double ck = req_times.sync_ms + req_times.save_ms + req_times.evict_ms;
+                        std::fprintf(stderr, "strata trace: admission of slot %d: drain %.1f, prompt %.1f (read %.1f, "
+                                             "windows %.1f, %d checkpoint(s) %.1f = sync %.1f + save %.1f + evict %.1f, "
+                                             "rest %.1f), first window %.1f, slot copy %.1f, slot freed %.1f, "
+                                             "checkpoint copy %.1f\n", admit_slot, adm_drain_ms, prompt_ms,
+                                     req_times.read_ms, req_times.windows_ms, req_times.ckpts, ck, req_times.sync_ms,
+                                     req_times.save_ms, req_times.evict_ms,
+                                     prompt_ms - req_times.read_ms - req_times.windows_ms - ck, decode_ms, span(tc0, tc1),
+                                     span(tc1, tc2), span(tc3, tc4));
+                    }
                 }
                 std::printf("BADM %d %d\n", admit_slot, cont ? 1 : 0);
+                if (trace && piped && cont) {
+                    rows_wait = "the admission";
+                    rows_wait_t = Clock::now();
+                }
+                adm_drain_ms = 0.0;
                 std::fflush(stdout);
                 admit_slot = -1;
             }
