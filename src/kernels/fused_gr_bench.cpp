@@ -181,6 +181,9 @@ int main(int argc, char** argv) {
                 cudaMemcpy(p, dio, (size_t) T * HC * 4, cudaMemcpyDeviceToHost);
                 if (q) { img.resize((size_t) T * (N / 32) * 36); cudaMemcpy(img.data(), dqm, img.size(), cudaMemcpyDeviceToHost); }
             }
+            unsigned long long hq = 1469598103934665603ull;   // FNV-1a of the Q8 read's outputs and q8_1 image
+            for (size_t b = 0; b < o[1].size() * 4; ++b) hq = (hq ^ ((const unsigned char*) o[1].data())[b]) * 1099511628211ull;
+            for (size_t b = 0; b < img.size(); ++b) hq = (hq ^ img[b]) * 1099511628211ull;
             double num = 0, den = 0, nm = 0, dm = 0;
             for (size_t i = 0; i < (size_t) T * LR; ++i) { num += std::pow(o[1][i] - o[0][i], 2); den += std::pow(o[0][i], 2); }
             for (size_t i = (size_t) T * LR; i < (size_t) T * (LR + N); ++i) { nm += std::pow(o[1][i] - o[0][i], 2); dm += std::pow(o[0][i], 2); }
@@ -198,8 +201,8 @@ int main(int argc, char** argv) {
                     qn += std::pow(d * (int8_t) b[4 + j] - ref, 2); qd2 += ref * ref;
                 }
             }
-            std::printf("Q8 vs bf16 T %d apply %d | rel rms lo %.4f mixed %.4f | max |dR,dinject| %.3g | q8_1 image vs mixed rel rms %.4f\n", T, apply,
-                        std::sqrt(num / den), std::sqrt(nm / dm), rn, std::sqrt(qn / qd2));
+            std::printf("Q8 vs bf16 T %d apply %d | rel rms lo %.4f mixed %.4f | max |dR,dinject| %.3g | q8_1 image vs mixed rel rms %.4f | hash %016llx\n", T, apply,
+                        std::sqrt(num / den), std::sqrt(nm / dm), rn, std::sqrt(qn / qd2), hq);
         }
     }
     if (cold_sets > 1) {
