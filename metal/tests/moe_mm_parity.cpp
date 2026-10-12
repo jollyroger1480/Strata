@@ -4,6 +4,7 @@
 //
 //   moe_mm_parity [--gu Q2_0] [--dn Q2_0] [--T 256] [--tile 32,64,64,4]          parity (64 experts)
 //   moe_mm_parity --bench [--gu ..] [--dn ..] [--T 2048] [--tile ..]            per-layer time, 512 experts
+#include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
 
@@ -90,9 +91,12 @@ int main(int argc, char** argv) {
     const std::string dtl = std::to_string(TM) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
     mtl::Constants probe;
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
-    mtl::Pipeline pgu = v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl)
+    const bool k4 = coop_k4(cx);
+    if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
+    mtl::Pipeline pgu = v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4))
                            : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
-                  pdn = cx.pipeline(lib, (v3 ? "mm_down3_" : v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
+                  pdn = v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
+                           : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
                   pgat = cx.pipeline(lib, "mm_gather");
     MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)TM, (uint32_t)nblk};
     auto encode = [&](int layer, std::vector<mtl::Dispatch>& ds, bool plan, bool gemm) {

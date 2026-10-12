@@ -17,6 +17,7 @@
 // Every dense matrix is dequantized to fp16 (dq_f16) once a chunk, before its GEMM.  After the last chunk: the final
 // HC read and the LM head on the LAST row only (the decode kernels: gr_norm / gr_down / gr_up, GEMV, argmax).
 // Left out: the PLE path and the MTP draft.
+#include "coop_probe.h"
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
@@ -100,6 +101,8 @@ int main(int argc, char** argv) {
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::printf("kernels compiled in %.1f s\n", mtl::now_s() - tc0);
     std::map<std::string, mtl::Pipeline> pcache;
+    const bool k4 = coop_k4(cx);
+    std::printf("matmul2d right-input layout: %s\n", k4 ? "runs of 4 k (per-lane run decoders)" : "other (per-element decode)");
     auto P = [&](int l, const std::string& fn, const mtl::Constants& c = {}, const std::string& key = "") -> const mtl::Pipeline* {
         const std::string k = key.empty() ? fn : key;
         auto it = pcache.find(k);
@@ -123,12 +126,14 @@ int main(int argc, char** argv) {
     const char* hc_env = std::getenv("PC_HC");
     const std::string hc_mode = hc_env ? hc_env : "fused";   // fused | plain
     const char* qsa_env = std::getenv("PC_QSA");
-    const std::string qsa_mode = qsa_env ? qsa_env : "mm";   // mm (matrix units) | v1 (qsa_attn, fp32)
+    // mm (matrix units; not on the M4's layout yet: qsa_attn_mm writes nothing there) | v1 (qsa_attn, fp32)
+    const std::string qsa_mode = qsa_env ? qsa_env : (k4 ? "mm" : "v1");
     // the expert GEMMs: "v2" (threadgroup-staged weights) or "v3:TM,TN,TK,SG" (register operands, TN rows a simdgroup)
     const char* gu_env = std::getenv("PC_GU");
     const char* dn_env = std::getenv("PC_DN");
     // defaults (M5 Max, moe_mm_parity --v3 --bench): gate/up 16,32,32,4 (every format), down 16,64,32,2
-    const std::string gu_mode = gu_env ? gu_env : "v3:auto", dn_mode = dn_env ? dn_env : "v3:16,64,32,2";
+    // without the M5's right-input layout (the M4) the per-element v3 decode is slower than v2: v2 there
+    const std::string gu_mode = gu_env ? gu_env : (k4 ? "v3:auto" : "v2"), dn_mode = dn_env ? dn_env : (k4 ? "v3:16,64,32,2" : "v2");
     auto v3_tile = [](const std::string& m, int* t) { std::sscanf(m.c_str() + 3, "%d,%d,%d,%d", &t[0], &t[1], &t[2], &t[3]); };
     int gu3[4] = {16, 64, 16, 2}, dn3[4] = {16, 64, 16, 2};
     if (gu_mode.rfind("v3:", 0) == 0 && gu_mode != "v3:auto") v3_tile(gu_mode, gu3);
@@ -364,7 +369,7 @@ int main(int argc, char** argv) {
                 if (qsa_mode == "mm") {
                     const uint32_t nq = (uint32_t)T * 24 * 256;
                     D(P(lqsa, "qsa_q_f16"), {mtl::Arg::B(qcur), mtl::Arg::B(qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256, "qsa attn");
-                    D(P(lqsa, "qsa_attn_mm"), {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
+                    D(P(lqsa, "qsa_attn_mm", mtl::Constants().b(7, k4)), {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
                                                mtl::Arg::B(vsc[qi]), mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)},
                       QCHUNKS, 2, 32, "qsa attn", T);
                 } else
@@ -415,7 +420,7 @@ int main(int argc, char** argv) {
             g.ind_off = 8 * 4;
             push(g, "experts");
             mtl::Dispatch gu;
-            gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type))
+            gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type), mtl::Constants().b(7, k4))
                          : P(lib, "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2", mtl::Constants().i(5, 0));
             gu.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             gu.tg[0] = gu_v3 ? 32 * gu3[3] : 64;
@@ -423,7 +428,7 @@ int main(int argc, char** argv) {
             gu.ind_off = 2 * 4;
             push(gu, "experts gu");
             mtl::Dispatch dn;
-            dn.p = dn_v3 ? P(lib, "mm_down3_" + std::to_string(ed.type) + "_" + tl3(dn3))
+            dn.p = dn_v3 ? P(lib, "mm_down3_" + std::to_string(ed.type) + "_" + tl3(dn3), mtl::Constants().b(7, k4))
                          : P(lib, "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2"));
             dn.args = {mtl::Arg::B(W), mtl::Arg::B(HS), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             dn.tg[0] = dn_v3 ? 32 * dn3[3] : 64;

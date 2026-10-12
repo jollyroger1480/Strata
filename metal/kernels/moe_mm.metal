@@ -373,6 +373,13 @@ MMDN2(T_IQ4_NL, 16, 64, 32, 2) MMDN2(T_IQ4_NL, 16, 64, 64, 2) MMDN2(T_IQ4_NL, 16
 // no threadgroup staging and no barriers in the K loop.  Each simdgroup owns TN output rows; a threadgroup SG * TN.
 // The right input's element layout (tests/coop_layout): runs of 4 consecutive k at one n, so a lane decodes 4 values
 // at a time (W4<F>).  Activations: the gathered fp16 rows from device memory.
+#ifndef STRATA_COOP_K4
+#define STRATA_COOP_K4
+// function constant 7: the right-input cooperative tensor holds runs of 4 consecutive k at one n per lane (the M5's
+// layout; tests/coop_layout).  false (the M4: runs of 2 n at one k): every element decoded on its own.
+constant bool COOP_K4 [[function_constant(7)]];
+constant bool coop_k4 = is_function_constant_defined(COOP_K4) ? COOP_K4 : true;
+#endif
 template <int F> struct W4;
 // the four weights k .. k + 3 (k % 4 == 0) of a row, in quant.metal's deq arithmetic (code * scale in fp32), as fp16
 static inline half4 w4_signed(uint g, uint s, float sc) {
@@ -570,6 +577,14 @@ kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[
         if (accg.is_valid_element(i)) { accg[i] = 0.0f; accu[i] = 0.0f; }
     for (int k0 = 0; k0 < int(a.n_embd); k0 += TK) {
         const uint16_t cap = rg.get_capacity(), half_cap = cap / 2;
+        if (!coop_k4) {
+            for (uint16_t i = 0; i < cap; ++i) {
+                const auto ix = rg.get_multidimensional_index(i);
+                const int k = k0 + ix[0], n = ix[1];
+                rg[i] = W4<F>::run(g0 + ulong(n) * a.gu_row, k & ~3, tab)[k & 3];
+                ru[i] = W4<F>::run(u0 + ulong(n) * a.gu_row, k & ~3, tab)[k & 3];
+            }
+        } else
 #pragma clang loop unroll(full)
         for (uint16_t i = 0; i < half_cap; i += 4) {
             const auto ix = rg.get_multidimensional_index(i);
@@ -633,6 +648,13 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
     for (uint16_t i = 0; i < acc.get_capacity(); ++i)
         if (acc.is_valid_element(i)) acc[i] = 0.0f;
     for (int k0 = 0; k0 < int(a.n_ff); k0 += TK) {
+        if (!coop_k4) {
+            for (uint16_t i = 0; i < rw.get_capacity(); ++i) {
+                const auto ix = rw.get_multidimensional_index(i);
+                const int k = k0 + ix[0];
+                rw[i] = W4<F>::run(w0 + ulong(ix[1]) * a.d_row, k & ~3, tab)[k & 3];
+            }
+        } else
 #pragma clang loop unroll(full)
         for (uint16_t i = 0; i < rw.get_capacity(); i += 4) {
             const auto ix = rw.get_multidimensional_index(i);

@@ -2,12 +2,14 @@
 // (fp32, itself checked by qsa_parity), both followed by qsa_merge: the attention output of T query tokens on random
 // int8 caches, within the budget (all cells, causal) and past it (2051 selected cells per token); then the speed.
 //   qsa_prompt_parity [--bench]
+#include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <vector>
@@ -20,6 +22,8 @@ double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v
 
 int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    const bool noflash = std::getenv("QSA_NOFLASH") != nullptr;
     mtl::Context cx;
     const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     std::printf("device %s\n", cx.device_name().c_str());
@@ -34,8 +38,8 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < ksc.bytes / 2; ++i) { ksc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); vsc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); }
     for (size_t i = 0; i < (size_t)T * QH * QD; ++i) qcur.as<float>()[i] = r.sym() * 3.0f;
     for (size_t i = 0; i < (size_t)T * QH * 2 * QD; ++i) qfull.as<float>()[i] = r.sym();
-    mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm"),
-                  pq = cx.pipeline(lib, "qsa_q_f16"), pf = cx.pipeline(lib, "qsa_flash");
+    mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm", mtl::Constants().b(7, coop_k4(cx))),
+                  pq = cx.pipeline(lib, "qsa_q_f16"), pf = cx.pipeline(lib, "qsa_flash", mtl::Constants().b(7, coop_k4(cx)));
     mtl::Buffer xf = cx.alloc(2 * (size_t)T * QH * QD);
     int fails = 0;
     for (uint32_t pos0 : {0u, 30000u}) {
@@ -75,6 +79,7 @@ int main(int argc, char** argv) {
             continue;
         }
         cx.run(ref_ds);
+        std::fill(part.as<float>(), part.as<float>() + part.bytes / 4, std::nanf(""));   // a kernel that writes nothing shows
         cx.run(mm_ds);
         double se = 0, sr = 0;
         for (size_t i = 0; i < (size_t)T * QH * QD; ++i) {
@@ -86,6 +91,7 @@ int main(int argc, char** argv) {
         const bool ok = rel < 3e-3;
         fails += !ok;
         std::printf("pos0 %5u, T %d: qsa_attn_mm vs qsa_attn (after merge) rel L2 %.2e  %s\n", pos0, T, rel, ok ? "PASS" : "FAIL");
+        if (noflash) continue;
         cx.run({fl});
         double sf = 0;
         for (size_t i = 0; i < (size_t)T * QH * QD; ++i) {

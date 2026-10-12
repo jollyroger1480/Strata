@@ -8,6 +8,13 @@
 // The operands are fp16 (q rounded from fp32; k, v = int8 * scale rounded): to rounding of qsa_attn's fp32.
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
+#ifndef STRATA_COOP_K4
+#define STRATA_COOP_K4
+// function constant 7: the right-input cooperative tensor holds runs of 4 consecutive k at one n per lane (the M5's
+// layout; tests/coop_layout).  false (the M4: runs of 2 n at one k): every element decoded on its own.
+constant bool COOP_K4 [[function_constant(7)]];
+constant bool coop_k4 = is_function_constant_defined(COOP_K4) ? COOP_K4 : true;
+#endif
 
 // grid (chunks, QKV, n_tok), 32 threads.  qh: the q heads as fp16 [t][QH][QD] (qcur rounded).
 kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* kq [[buffer(1)]],
@@ -47,6 +54,14 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
         for (uint16_t i = 0; i < acc.get_capacity(); ++i)
             if (acc.is_valid_element(i)) acc[i] = 0.0f;
         for (int k0 = 0; k0 < QD; k0 += 32) {
+            if (!coop_k4) {
+                for (uint16_t i = 0; i < rk.get_capacity(); ++i) {
+                    const auto ix = rk.get_multidimensional_index(i);
+                    const int k = k0 + ix[0], id = cid[ix[1]];
+                    const uint row = uint(id) * QKV + g;
+                    rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                }
+            } else
 #pragma clang loop unroll(full)
             for (uint16_t i = 0; i < rk.get_capacity(); i += 4) {
                 const auto ix = rk.get_multidimensional_index(i);
@@ -213,6 +228,14 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             for (uint16_t i = 0; i < s.get_capacity(); ++i)
                 if (s.is_valid_element(i)) s[i] = 0.0f;
             for (int k0 = d0; k0 < d0 + 64; k0 += 32) {
+                if (!coop_k4) {
+                    for (uint16_t i = 0; i < rk.get_capacity(); ++i) {
+                        const auto ix = rk.get_multidimensional_index(i);
+                        const int k = k0 + ix[0], id = cid[ix[1]];
+                        const uint row = uint(id) * QKV + g;
+                        rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                    }
+                } else
 #pragma clang loop unroll(full)
                 for (uint16_t i = 0; i < rk.get_capacity(); i += 4) {
                     const auto ix = rk.get_multidimensional_index(i);
