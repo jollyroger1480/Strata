@@ -212,15 +212,6 @@ MODELS = {
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
-    # EXPERIMENTAL (docs/UNSLOTH_Q4.md): Unsloth's 4-bit file; its 77 GB of experts do not fit a 64 GB PC, so the engine
-    # keeps a RAM budget of them (--resident-budget-gib, chosen below) and reads the rest from the GGUF on the SSD
-    "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
-                            "SSD on a 64 GB PC (7-8.5 tokens/s measured)", "download_gb": 111.3, "ram_gb": 48,
-                   "arena_gb": 77.0, "families": ("unsloth",), "budget": True, "nvidia_only": True,
-                   "experimental": True,
-                   # #967: images are allowed (the same base model and image encoder as UD-IQ4_XS), with a warning:
-                   # reported working by hand (#967, #971), not tested by us on this file
-                   "vision": True, "vision_untested": True},
     # #621: Unsloth's UD-IQ4_XS - IQ3_S gate/up experts with IQ4_NL (43 layers) or Q8_0 (5) downs, the dense side as
     # UD-Q4_K_XL's; three shards.  A regular choice from 0.1.39 (no longer experimental).  Its 59.5 GB of experts: a
     # RAM budget of them, like UD-Q4_K_XL, but far fewer read from the SSD on a 64 GB PC and none from ~80 GB of RAM.
@@ -230,6 +221,32 @@ MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
+    # Unsloth's 4-bit file (docs/UNSLOTH_Q4.md); experimental until MODEL-UPDATE Phase 2.  Its 77 GB of experts stay in
+    # RAM from ~94 GB of RAM (unsloth_budget); on a 64 GB PC the engine keeps a RAM budget of them
+    # (--resident-budget-gib, chosen below) and reads the rest from the GGUF on the SSD.  It runs on AMD too (R9700:
+    # the quality yardstick and the decode/prompt numbers in docs/QUANTS.md), so it is no longer NVIDIA-only (#429).
+    "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic): K-quant experts, between UD-IQ4_XS and UD-Q5_K_XL in quality",
+                   "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth",), "budget": True,
+                   # #967: images are allowed (the same base model and image encoder as UD-IQ4_XS), with a warning:
+                   # reported working by hand (#967, #971), not tested by us on this file
+                   "vision": True, "vision_untested": True},
+    # MODEL-UPDATE: Unsloth's larger files (docs/QUANTS.md).  The same GGUF-in-place mode: every expert in RAM where it
+    # fits with UNSLOTH_RESIDENT_BESIDE_GB more (unsloth_budget), else a RAM budget of them and the rest read from the
+    # SSD while it answers - so "ram_gb" is the all-in-RAM need, and below it setup asks first (default no).  Their
+    # shards 2 (the head) and 3 (the 54 GB Q8_0 PLE table) are the same bytes in all three files.  UD-Q5_K_XL and
+    # UD-Q6_K_XL need the Q6_K expert kernels every engine has from MODEL-UPDATE Phase 1 on (Q5: layer 2's gate/up).
+    "UD-Q5_K_XL": {"about": "5-bit (Unsloth Dynamic): Q5_K experts with Q8_0 downs, close to Q8_0 in quality",
+                   "download_gb": 158.3, "ram_gb": 108, "arena_gb": 98.4, "families": ("unsloth",), "budget": True,
+                   "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 44),
+                   "vision": True},
+    "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic): Q6_K experts with Q8_0 downs",
+                   "download_gb": 169.2, "ram_gb": 118, "arena_gb": 109.2, "families": ("unsloth",), "budget": True,
+                   "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 44),
+                   "vision": True},
+    "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
+             "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
+             "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 38),
+             "vision": True},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -252,8 +269,49 @@ UNSLOTH_IQ4_XS_SHARDS = {
     "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf":
         (43836407744, "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"),
 }
+# MODEL-UPDATE: UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 at the same revision (sizes and SHA-256: the Hub's LFS pointers; shards
+# 2 and 3 are byte-identical across the three)
+UNSLOTH_BIG_SHARDS = {
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf":
+        (10946618, "610922cdb1afe1094e95d7a3e86b12ee33317ebbf7320ac9344e21b6ae4bb69f"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf":
+        (49990245824, "9ee6bbe462e6830864382d629101490625b1c95afa15492b7ad550c7bed2dd13"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf":
+        (49882416192, "0b2437f661f584030cb5aeb8fb1bb70f6422518a6746bfcc0304167c7b6b8beb"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf":
+        (3320101792, "55dd96c5ad0863b06b6393151b9ad0ac727b8d58a62e02a296ca5d5ddbfee4a3"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf":
+        (10946624, "8bdc6bad55b6699f46f60708829932ff4018d7ac9bd309c388534fa31753bdb7"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf":
+        (49814108512, "0ea4b599880a5a52fcd9c188ba1443f646c69c96571904ddbd6a79246a01a997"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf":
+        (49419317344, "9948e81ae8368144b135a7403d8c0f2cf9a6c2f9f692313865855b2832e696c9"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf":
+        (14838313984, "e4ae255234f42b18012f6d6eec5bf615b57479b7e0a0233c47436a321ffeec3f"),
+    "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf":
+        (10946624, "2dabcbb53ca537a7947bc7d20414fd464eeaf4d66d43021b5b2556cc87544ad2"),
+    "Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf":
+        (49446841216, "bfa634025fabbd2658bf7694bc80b90e571699c768723f844c934c7ef06c691a"),
+    "Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf":
+        (49668930400, "232a8f14cc0fa4262e7efe8593774b136fe40909e39c7a020342ddaa27259a97"),
+    "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf":
+        (34015618784, "538a93bca918064983409a41187ad4c68640f9aced6f29564da8f551bf86d7a5"),
+}
 UNSLOTH_ENGINE = (0, 1, 32)     # the first engine setup configures for UD-Q4_K_XL (0.1.31 ran it by hand)
 UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and the file cache the rest is read through
+UNSLOTH_MIN_RAM_GB = 48         # the RAM-budget mode below which setup says an Unsloth file does not fit (UD-Q4_K_XL's floor)
 # Contexts past 262144 (the model's trained length) extend it by rope scaling: for the context it will
 # serve the setup resolves the method (yarn, or one question when interactive) and derives the factor
 # from the final context (final / 262144, at least 1) itself (below), keeps an explicit
@@ -288,15 +346,15 @@ FAMILIES = {
               "profile": "expert-profile-coder.bin"},
     # Unsloth's UD-IQ4_XS (three shards, #621; a regular choice from 0.1.39) and the EXPERIMENTAL UD-Q4_K_XL (four)
     # of the original model (docs/UNSLOTH_Q4.md); "experimental" and "vision" are per model (MODELS)
-    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's ~4-bit quantizations",
-                "about": "UD-IQ4_XS: a 94 GB download; with less than ~80 GB of RAM part of its experts are read from "
-                         "the SSD (UD-Q4_K_XL, 111 GB: experimental)",
+    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 4- to 8-bit quantizations",
+                "about": "UD-IQ4_XS (94 GB download) to Q8_0 (188 GB): every expert in RAM from ~80 GB (UD-IQ4_XS) "
+                         "to ~136 GB (Q8_0) of RAM, else part of them read from the SSD",
                 "hf": hf("unsloth/Qwen3.8-Flash-Next-GGUF") + "{q}/",
                 "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00004.gguf", "shards": 4, "tag": "unsloth-",
                 "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
-                "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+                "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS}},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1580,9 +1638,8 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
 GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32))"
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
-                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only: other GGUFs (Unsloth's "
-                   "UD-IQ3_XXS or "
-                   "UD-Q2_K_XL, K-quants) cannot be used")
+                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 "
+                   "only: other GGUFs (Unsloth's UD-IQ3_XXS or UD-Q2_K_XL, other K-quant files) cannot be used")
 
 
 def gguf_unsupported(name: str) -> str | None:
@@ -1657,6 +1714,23 @@ def resident_budget_gib(model, ram, kv_ram_gb=0.0) -> int:
     RAM; at most all of them, at least 8.  64 GB: 40, the measured setting (docs/UNSLOTH_Q4.md)."""
     gib = round(ram) - UNSLOTH_RAM_LEFT_GB - math.ceil(kv_ram_gb)
     return max(8, min(gib, int(MODELS[model]["arena_gb"] / 1.073741824)))
+
+
+# MODEL-UPDATE Phase 2: Unsloth's files keep every expert in RAM (a pinned arena, as ISTA's files do) where the experts
+# and this much more fit the PC's RAM; the RAM budget (--resident-budget-gib: the hottest experts in RAM, the rest read
+# from the GGUF in place) only below that.  The rule and the 16 GiB are sergqwer's fork (sergqwer/strata-nvfp4,
+# 0.1.42-nvfp4.2, MIT): there, on 128 GB with an RTX 5090, UD-Q4_K_XL decoded at 169 tokens/s and read a 32K prompt in
+# 4.9 s with every expert in RAM, against 118 tokens/s and 30 s in the budget mode.
+UNSLOTH_RESIDENT_BESIDE_GB = 16
+
+
+def unsloth_budget(model, ram, gpu=None, asked=None) -> bool:
+    """Does setup write the RAM-budget mode (--resident-budget-gib) for this Unsloth file: asked for (--resident-budget-gib
+    N), a unified-memory APU (#1715: there the budget and the GPU's cache are the same RAM, and the all-in-RAM mode was
+    measured on discrete cards only), or its experts with UNSLOTH_RESIDENT_BESIDE_GB beside them do not fit this PC's RAM
+    (GiB, ram_gb()).  Else every expert is kept in RAM, as for ISTA's files."""
+    return asked is not None or bool((gpu or {}).get("uma")) or \
+        ram < MODELS[model]["arena_gb"] / 1.073741824 + UNSLOTH_RESIDENT_BESIDE_GB
 
 
 UMA_EXPERTS = 24576            # the Flash-Next model's experts (48 layers x 512): the most an expert cache can hold
@@ -5200,16 +5274,21 @@ def main() -> int:
         any_fits = False
         for m, d in MODELS.items():
             verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
-            if d.get("budget"):
+            if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
+                verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
+            elif d.get("budget"):
                 verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
                            f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "
-                           "read from the SSD" if ram >= d["ram_gb"] else "does not fit")
-                if hip:                                # #429: not run on AMD yet (its prompt kernels are CUDA-only)
-                    verdict += " - NVIDIA only so far, untested on AMD"
+                           "read from the SSD" if ram >= d["ram_gb"] else
+                           f"slow here: {resident_budget_gib(m, ram)} GiB of its "
+                           f"{int(d['arena_gb'] / 1.073741824)} GiB of experts in RAM, the rest read from the SSD "
+                           "(setup asks first)" if ram >= UNSLOTH_MIN_RAM_GB else "does not fit")
             elif low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
                 verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
                                                  else "the rest is read from the SSD as needed)"))
+            if d.get("budget") and hip and d.get("nvidia_only"):   # #429: not run on AMD yet
+                verdict += " - NVIDIA only so far, untested on AMD"
             any_fits = any_fits or not verdict.startswith("does not fit")
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
         if not any_fits:
@@ -5252,24 +5331,35 @@ def main() -> int:
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("budget"):
-            say(f"  {i}) {m} {d['about']}; download {d['download_gb']:.0f} GB, keeps ~"
-                f"{resident_budget_gib(m, ram)} GB of its {d['arena_gb']:.0f} GB of experts in RAM{fit}")
+            keeps = (f"~{resident_budget_gib(m, ram)} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
+                     else "all")
+            say(f"  {i}) {m} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
+                f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
         if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
+    if family == "unsloth":                            # MODEL-UPDATE: the largest file whose experts all fit in RAM
+        in_ram = [m for m in names if MODELS[m].get("budget") and not MODELS[m].get("experimental")
+                  and not unsloth_budget(m, ram, gpu, a.resident_budget_gib)]
+        best = max(in_ram, key=lambda m: MODELS[m]["arena_gb"]) if in_ram else \
+            ("UD-IQ4_XS" if "UD-IQ4_XS" in names else names[0])
+        rec = str(names.index(best) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
+    in_budget = bool(MODELS[model].get("budget")) and unsloth_budget(model, ram, gpu, a.resident_budget_gib)
     if MODELS[model].get("budget"):
-        # Unsloth's UD-Q4_K_XL: a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM mode (no
-        # experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode had no layer split) unless
-        # the RAM holds the GGUFs and 24 GB more: then several, without the budget, if asked for (#498).  #642: from
-        # RESIDENT_SPLIT_ENGINE several GPUs, when asked for, keep the budget (unsloth_together)
+        # Unsloth's files: every expert in RAM where they fit with UNSLOTH_RESIDENT_BESIDE_GB beside them (Phase 2,
+        # unsloth_budget), as ISTA's.  Else a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM
+        # mode (no experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode had no layer split)
+        # unless the RAM holds the GGUFs and 24 GB more: then several, without the budget, if asked for (#498).  #642:
+        # from RESIDENT_SPLIT_ENGINE several GPUs, when asked for, keep the budget (unsloth_together)
         if MODELS[model].get("experimental"):
-            warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
-                 "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
+            warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md)" + (
+                 ": most of its experts are read from the SSD while it answers, so it is several times slower than the "
+                 "2-3-bit models" if in_budget else "") + "; quality checked against llama.cpp")
         if hip and MODELS[model].get("nvidia_only"):
             # #429 (jkuepker): checked before the 111 GB download.  The HIP engine has no prompt kernels for its
             # Q4_K / Q5_K experts (STRATA_MMQ_KQUANTS is CUDA-only) and it has not been run on AMD: asked, not refused
@@ -5279,19 +5369,26 @@ def main() -> int:
                          f"or --model {model} --yes to try it on AMD anyway", "  Try it anyway?")
             warn(f"installing {model} on an AMD card, as you chose (please report how it runs)")
         if ram < MODELS[model]["ram_gb"]:
+            have = resident_budget_gib(model, ram)
+            total = int(MODELS[model]["arena_gb"] / 1.073741824)
             confirm_risk(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB: "
-                         f"its RAM budget would be {resident_budget_gib(model, ram)} GiB, so nearly every expert is "
-                         "read from the SSD while it answers (very slow), and it may run out of RAM",
-                         bool(a.model), a.yes, f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC "
-                         f"has {ram:.0f} GB", f"choose one of the 2-3-bit models, or --model {model} --yes to "
-                         "install it anyway", "  Install it anyway?")
+                         f"it would keep {have} GiB of its {total} GiB of experts in RAM and read the other "
+                         f"{total - have} GiB from the SSD while it answers (single-digit tokens/s on most SSDs), and "
+                         "it may run out of RAM", bool(a.model), a.yes,
+                         f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB",
+                         f"choose a smaller size, or --model {model} --yes to install it anyway", "  Install it anyway?")
             warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
-        budget = budget_choice(model, ram, a.resident_budget_gib)
-        if multi and not unsloth_together(a, model, ram, gpu, chosen):
-            multi, sel, chosen = [], [gpu["index"]], [gpu]
-        q4_split = bool(multi) and not resident_split()   # #498: on several GPUs without the RAM budget (#642: kept)
-        if not q4_split:
-            ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
+        if in_budget:
+            budget = budget_choice(model, ram, a.resident_budget_gib)
+            if multi and not unsloth_together(a, model, ram, gpu, chosen):
+                multi, sel, chosen = [], [gpu["index"]], [gpu]
+            q4_split = bool(multi) and not resident_split()   # #498: on several GPUs without the RAM budget (#642: kept)
+            if not q4_split:
+                ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
+        else:
+            ok(f"all {MODELS[model]['arena_gb']:.0f} GB of {model}'s experts in RAM (they and "
+               f"{UNSLOTH_RESIDENT_BESIDE_GB} GiB more fit this PC's {ram:.0f} GB; --resident-budget-gib N keeps only "
+               "N GiB of them)")
         if a.low_ram not in ("auto", "off"):
             warn(f"--low-ram {a.low_ram} does not apply to {model}: it always reads part of its experts from the files")
     elif a.resident_budget_gib is not None:
@@ -5516,7 +5613,8 @@ def main() -> int:
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
     engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
-    if budget is not None and engine_ver < need_engine:      # checked before the 94-111 GB download
+    # checked before the 94-188 GB download
+    if MODELS[model].get("budget") and engine_ver < need_engine:
         fail(f"{model} needs engine {'.'.join(map(str, need_engine))} or newer; this one is {meta.get('version')}",
              "update Strata (or compile the engine with --build) and run setup again")
     ok(f"engine: {eng / EXE}")

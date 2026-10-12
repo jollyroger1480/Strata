@@ -170,6 +170,100 @@ def cmd_run(a) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------------ prompt path
+PROMPT_LENS = (256, 512, 768, 1000)
+
+
+def cmd_prompt(a) -> int:
+    """The batched prompt path's answer: every segment's first 256 / 512 / 768 / 1000 tokens as a prompt (one request
+    each, no prompt cache), and the logits after it (STRATA_DUMP_FIRST_LOGITS: float32, the whole vocabulary)."""
+    cfg = json.load(open(a.config, encoding="utf-8-sig"))
+    st = json.load(open(a.ids))
+    out = pathlib.Path(a.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    for f in out.glob("first.*"):
+        f.unlink()
+    env = dict(os.environ)
+    env.update(cfg.get("env", {}))
+    if cfg.get("lib_dirs"):
+        env["LD_LIBRARY_PATH"] = ":".join(cfg["lib_dirs"] + [env.get("LD_LIBRARY_PATH", "")])
+    env.update(FIXED_ENV)
+    for kv in a.env or []:
+        k, _, v = kv.partition("=")
+        env[k] = v
+    env["STRATA_DUMP_FIRST_LOGITS"] = str(out / "first")
+    if mem_available_gb() < a.min_free_gb:
+        raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
+    args = engine_args(cfg, a.gpu_experts, max(PROMPT_LENS))
+    k = args.index("--short-read")
+    del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
+    k = args.index("--prefill")
+    args[k + 1] = "auto"
+    if a.wrap:
+        args = a.wrap.split() + args
+    errf = open(out / "stderr.txt", "w")
+    print("engine:", " ".join(args), flush=True)
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf, text=True,
+                         cwd=cfg.get("cwd"), env=env, bufsize=1)
+    for line in p.stdout:
+        if line.startswith("READY"):
+            break
+    else:
+        raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}/stderr.txt")
+    index = []
+    for s in st["segments"]:
+        for n in PROMPT_LENS:
+            p.stdin.write("GEN 1 " + ",".join(map(str, s["ids"][:n])) + "\n")
+            p.stdin.flush()
+            done = None
+            for line in p.stdout:
+                if line.startswith(("DONE", "ERR")):
+                    done = line.strip()
+                    break
+            if done is None or not done.startswith("DONE") or "nonfinite" in done:
+                p.kill()
+                raise SystemExit(f"{s['name']} {n}: the engine answered {done!r}")
+            index.append({"segment": s["name"], "tokens": n})
+    p.stdin.write("QUIT\n")
+    p.stdin.flush()
+    try:
+        p.wait(timeout=600)
+    except subprocess.TimeoutExpired:
+        p.kill()
+    errf.close()
+    (out / "index.json").write_text(json.dumps({"requests": index, "args": args, "env": a.env or []}, indent=1))
+    print(f"{len(index)} prompts")
+    return 0
+
+
+def cmd_pcompare(a) -> int:
+    import numpy as np
+    ref = pathlib.Path(a.ref)
+    idx = json.loads((ref / "index.json").read_text())["requests"]
+
+    def logp(d, i):
+        x = np.fromfile(d / f"first.{i}", dtype=np.float32).astype(np.float64)
+        x -= x.max()
+        return x - np.log(np.exp(x).sum())
+
+    print(f"reference: {ref}")
+    for run in a.runs:
+        r = pathlib.Path(run)
+        kls, agree = [], 0
+        for i in range(len(idx)):
+            if not (r / f"first.{i}").exists():
+                continue
+            lr, la = logp(ref, i), logp(r, i)
+            pr = np.exp(lr)
+            kls.append(float((pr * (lr - la)).sum()))
+            agree += int(lr.argmax() == la.argmax())
+        kls.sort()
+        n = len(kls)
+        print(f"{r.name:40s} prompts {n:3d}  top-1 {100 * agree / max(n, 1):6.2f}%  KL mean {sum(kls) / max(n, 1):.5f}  "
+              f"median {kls[n // 2] if n else float('nan'):.5f}  max {kls[-1] if n else float('nan'):.5f}")
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------ compare
 def read_run(path: str) -> dict:
     rows = open(path).read().splitlines()
@@ -260,13 +354,25 @@ def main() -> int:
     p.add_argument("--gpu-experts", action="store_true", help="--expert-cache 1500 instead of one slot (the experts on the GPU kernels)")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap", help="a command prefix for the engine, e.g. 'systemd-run --user --scope -p MemoryMax=200G'")
+    p = sub.add_parser("prompt", help="the batched prompt path's next-token logits after 20 prompts (a directory)")
+    p.add_argument("--config", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--ids", default=str(SET_DIR / "set.ids.json"))
+    p.add_argument("--env", action="append")
+    p.add_argument("--gpu-experts", action="store_true")
+    p.add_argument("--min-free-gb", type=float, default=16)
+    p.add_argument("--wrap")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
     p.add_argument("--segments", action="store_true")
     p.add_argument("--json")
+    p = sub.add_parser("pcompare", help="full-vocabulary KL and top-1 of `prompt` directories against a reference one")
+    p.add_argument("ref")
+    p.add_argument("runs", nargs="+")
     a = ap.parse_args()
-    return {"ids": cmd_ids, "run": cmd_run, "compare": cmd_compare}[a.cmd](a)
+    return {"ids": cmd_ids, "run": cmd_run, "prompt": cmd_prompt, "compare": cmd_compare,
+            "pcompare": cmd_pcompare}[a.cmd](a)
 
 
 if __name__ == "__main__":
