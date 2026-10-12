@@ -2746,7 +2746,8 @@ inline void dq_q2_0(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 }
 
 // llama.cpp's dequantize_q4_K / dequantize_q5_K (dequantize.cuh; q5_K's 64 threads folded onto 32) and the 32-value
-// blocks of Q5_1 / Q8_0, 8 of them per 256-value "superblock" (thread tid writes 8 values of block tid % 8).
+// blocks of Q5_1 / Q8_0, 8 of them per 256-value "superblock" (thread tid writes 8 values of block tid / 4; it was block
+// tid % 8, which scattered a sub-group's 2-byte stores 64 bytes apart: B70 Q5_1 / Q8_0 at 88-93 GB/s of FP16 against 250+).
 __dpct_inline__ void get_scale_min_k4(int j, const uint8_t *q, uint8_t &d,
                                       uint8_t &m) {
     if (j < 4) {
@@ -2803,64 +2804,78 @@ template <typename dst_t>
 inline void dq_q5_0(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     // symmetric: one delta (no min), the high bit folded in then centered by the format's fixed -16 offset
     const block_q5_0* x = (const block_q5_0*) vx + ibs * (QK_K / QK5_0);
-    const int ib = tid % 8, il = tid / 8;
+    const int ib = tid / 4, il = tid % 4;   // lanes 4b..4b+3 write block b: neighbouring lanes, neighbouring values
     const float d = sycl::vec<sycl::half, 1>(x[ib].d)
                         .convert<float, sycl::rounding_mode::automatic>()[0];
     uint32_t qh;
     memcpy(&qh, x[ib].qh, sizeof(qh));
     dst_t* y = yy + 32 * ib;
+    float v0[4], v1[4];
+#pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int iqs = 4 * il + j;
         const int xh_0 = ((qh >> (iqs + 0)) << 4) & 0x10;
         const int xh_1 = ((qh >> (iqs + 12))) & 0x10;
-        y[iqs] = cvt<dst_t>(((float) ((x[ib].qs[iqs] & 0xf) | xh_0) - 16.0f) * d);
-        y[iqs + 16] = cvt<dst_t>(((float) ((x[ib].qs[iqs] >> 4) | xh_1) - 16.0f) * d);
+        v0[j] = ((float) ((x[ib].qs[iqs] & 0xf) | xh_0) - 16.0f) * d;
+        v1[j] = ((float) ((x[ib].qs[iqs] >> 4) | xh_1) - 16.0f) * d;
     }
+    store_run<dst_t, 4>(y + 4 * il, v0);
+    store_run<dst_t, 4>(y + 16 + 4 * il, v1);
 }
 template <typename dst_t>
 inline void dq_q4_0(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_q4_0* x = (const block_q4_0*) vx + ibs * (QK_K / QK4_0);
-    const int ib = tid % 8, il = tid / 8;
+    const int ib = tid / 4, il = tid % 4;   // lanes 4b..4b+3 write block b: neighbouring lanes, neighbouring values
     const float d = sycl::vec<sycl::half, 1>(x[ib].d)
                         .convert<float, sycl::rounding_mode::automatic>()[0];
     dst_t* y = yy + 32 * ib;
+    float v0[4], v1[4];
+#pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int iqs = 4 * il + j;                   // llama.cpp's dequantize_q4_0 for value pairs iqs, iqs + 16
-        y[iqs] = cvt<dst_t>(((float) (x[ib].qs[iqs] & 0xf) - 8.0f) * d);
-        y[iqs + 16] = cvt<dst_t>(((float) (x[ib].qs[iqs] >> 4) - 8.0f) * d);
+        v0[j] = ((float) (x[ib].qs[iqs] & 0xf) - 8.0f) * d;
+        v1[j] = ((float) (x[ib].qs[iqs] >> 4) - 8.0f) * d;
     }
+    store_run<dst_t, 4>(y + 4 * il, v0);
+    store_run<dst_t, 4>(y + 16 + 4 * il, v1);
 }
 template <typename dst_t>
 inline void dq_q4_1(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_q4_1* x = (const block_q4_1*) vx + ibs * (QK_K / QK4_1);
-    const int ib = tid % 8, il = tid / 8;
+    const int ib = tid / 4, il = tid % 4;   // lanes 4b..4b+3 write block b: neighbouring lanes, neighbouring values
     const sycl::float2 dm =
         (x[ib].dm).template convert<float, sycl::rounding_mode::automatic>();
     dst_t* y = yy + 32 * ib;
+    float v0[4], v1[4];
+#pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int iqs = 4 * il + j;                   // llama.cpp's dequantize_q4_1 for value pairs iqs, iqs + 16
-        y[iqs] = cvt<dst_t>((float)(x[ib].qs[iqs] & 0xf) * dm.x() + dm.y());
-        y[iqs + 16] = cvt<dst_t>((float)(x[ib].qs[iqs] >> 4) * dm.x() + dm.y());
+        v0[j] = (float)(x[ib].qs[iqs] & 0xf) * dm.x() + dm.y();
+        v1[j] = (float)(x[ib].qs[iqs] >> 4) * dm.x() + dm.y();
     }
+    store_run<dst_t, 4>(y + 4 * il, v0);
+    store_run<dst_t, 4>(y + 16 + 4 * il, v1);
 }
 template <typename dst_t>
 inline void dq_q5_1(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_q5_1* x = (const block_q5_1*) vx + ibs * (QK_K / QK5_1);
-    const int ib = tid % 8, il = tid / 8;
+    const int ib = tid / 4, il = tid % 4;   // lanes 4b..4b+3 write block b: neighbouring lanes, neighbouring values
     const sycl::float2 dm =
         (x[ib].dm).template convert<float, sycl::rounding_mode::automatic>();
     uint32_t qh;
     memcpy(&qh, x[ib].qh, sizeof(qh));
     dst_t* y = yy + 32 * ib;
+    float v0[4], v1[4];
+#pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int iqs = 4 * il + j;                   // llama.cpp's dequantize_q5_1 for value pairs iqs, iqs + 16
         const int xh_0 = ((qh >> (iqs + 0)) << 4) & 0x10;
         const int xh_1 = ((qh >> (iqs + 12))) & 0x10;
-        y[iqs] =
-            cvt<dst_t>((float)((x[ib].qs[iqs] & 0xf) | xh_0) * dm.x() + dm.y());
-        y[iqs + 16] =
-            cvt<dst_t>((float)((x[ib].qs[iqs] >> 4) | xh_1) * dm.x() + dm.y());
+        v0[j] = (float)((x[ib].qs[iqs] & 0xf) | xh_0) * dm.x() + dm.y();
+        v1[j] = (float)((x[ib].qs[iqs] >> 4) | xh_1) * dm.x() + dm.y();
     }
+    store_run<dst_t, 4>(y + 4 * il, v0);
+    store_run<dst_t, 4>(y + 16 + 4 * il, v1);
 }
 template<typename dst_t>
 void dq_q6_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
@@ -2887,13 +2902,14 @@ void dq_q6_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
 template <typename dst_t>
 inline void dq_q8_0(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_q8_0* x = (const block_q8_0*) vx + ibs * (QK_K / QK8_0);
-    const int ib = tid % 8, il = tid / 8;
+    const int ib = tid / 4, il = tid % 4;   // lanes 4b..4b+3 write block b: neighbouring lanes, neighbouring values
     const float d = sycl::vec<sycl::half, 1>(x[ib].d)
                         .convert<float, sycl::rounding_mode::automatic>()[0];
     dst_t* y = yy + 32 * ib + 8 * il;
+    float v[8];
 #pragma unroll
-    for (int j = 0; j < 8; ++j)
-        y[j] = cvt<dst_t>((float)x[ib].qs[8 * il + j] * d);
+    for (int j = 0; j < 8; ++j) v[j] = (float)x[ib].qs[8 * il + j] * d;
+    store_run<dst_t, 8>(y, v);
 }
 
 // BF16 (the token embedding as the checkpoint ships it, tools/embd_bf16_pack.py): 8 values per thread.
