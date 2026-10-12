@@ -287,10 +287,19 @@ int main(int argc, char** argv) {
         for (int nt : ntoks) {
             double best = 1e9;
             Cfg bc{};
-            for (Cfg c : kCfgs) {
+            const bool gx = std::getenv("GEMV_X") != nullptr;   // gemvx_* (x staged in threadgroup memory)
+            const uint32_t tgm = (uint32_t)(4 * nt * (s.n_in + s.n_in / 16) + 15) / 16 * 16;
+            for (Cfg c : gx ? std::vector<Cfg>{{32, 1, 4, 1}, {32, 2, 4, 1}, {16, 1, 4, 1}, {16, 2, 4, 1}, {8, 1, 4, 1},
+                                               {8, 2, 4, 1}, {4, 2, 4, 1}, {16, 2, 8, 1}, {8, 2, 8, 1}, {16, 4, 4, 1},
+                                               {32, 2, 8, 1}, {2, 2, 4, 1}}
+                            : kCfgs) {
                 if (!cfg_ok(c, s.type, s.n_in)) continue;
                 if (!all && !(c.K == 1 || s.n_in >= 6144)) continue;
-                mtl::Pipeline p = cx.pipeline(lib, kname(s.type, c), mtl::Constants().i(0, nt));
+                if (gx && tgm > 32768) continue;
+                const std::string kn = gx ? "gemvx_" + std::to_string(s.type) + "_" + std::to_string(c.L) + "_" + std::to_string(c.R) +
+                                                 "_" + std::to_string(c.S)
+                                          : kname(s.type, c);
+                mtl::Pipeline p = cx.pipeline(lib, kn, mtl::Constants().i(0, nt).i(9, std::getenv("GEMV_PROBE") ? std::atoi(std::getenv("GEMV_PROBE")) : 0));
                 GemvArgs a{(uint32_t)s.n_in, (uint32_t)s.n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)s.n_in,
                            (uint32_t)s.n_out};
                 std::vector<mtl::Dispatch> ds;
@@ -302,6 +311,7 @@ int main(int argc, char** argv) {
                               mtl::Arg::B(xp, plane * 4), mtl::Arg::B(y), mtl::Arg::V(a)};
                     d.grid[0] = (s.n_out + rows_per_tg(c) - 1) / rows_per_tg(c);
                     d.tg[0] = c.S * 32;
+                    if (gx) d.tg_mem = tgm;
                     ds.push_back(d);
                 }
                 cx.warm(ds, 0.05);

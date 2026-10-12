@@ -6,6 +6,17 @@
 // (an AND keeps a field in place, so the code arrives multiplied by 2^k), the x values are pre-scaled by 2^-k here:
 // exact in float.
 
+// the threadgroup-memory form (x staged once per threadgroup; the same values)
+static inline void load16(threadgroup const float* p, thread float* xs) {
+    threadgroup const float4* v = (threadgroup const float4*)p;
+    for (int j = 0; j < 4; ++j) {
+        const float4 a = v[j];
+        xs[4 * j] = a.x;
+        xs[4 * j + 1] = a.y;
+        xs[4 * j + 2] = a.z;
+        xs[4 * j + 3] = a.w;
+    }
+}
 static inline void load16(device const float* p, thread float* xs) {
     device const float4* v = (device const float4*)p;
     for (int j = 0; j < 4; ++j) {
@@ -36,14 +47,14 @@ template <> struct XKind<T_Q3_K> { enum { K = XK_P2 }; };
 
 // X<F>::load(xp, s16, u, xs, xsum): unit u's prepared x (xp = the token's row of the format's kind, s16 = its sums)
 template <int F> struct X {
-    static inline void load(device const float* xp, device const float*, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P, int u, thread float* xs, thread float* xsum) {
         constexpr int UNIT = fmt<F>::UNIT;
         for (int k = 0; k < UNIT; k += 16) load16(xp + u * UNIT + k, xs + k);
         xsum[0] = xsum[1] = 0.0f;
     }
 };
 template <> struct X<T_Q2_0> {
-    static inline void load(device const float* xp, device const float* s16, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
         load16(xp + 16 * u, xs);
         xsum[0] = s16[u];
         xsum[1] = 0.0f;
@@ -51,7 +62,7 @@ template <> struct X<T_Q2_0> {
 };
 // Q4_K / Q5_K: unit (block b, chunk c, half m): run0 at 256b + 64c + 16m, run1 = run0 + 32
 template <> struct X<T_Q4_K> {
-    static inline void load(device const float* xp, device const float* s16, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
         const int p0 = 256 * (u >> 3) + 64 * ((u >> 1) & 3) + 16 * (u & 1);
         load16(xp + p0, xs);
         load16(xp + p0 + 32, xs + 16);
@@ -60,13 +71,13 @@ template <> struct X<T_Q4_K> {
     }
 };
 template <> struct X<T_Q5_K> {
-    static inline void load(device const float* xp, device const float* s16, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
         X<T_Q4_K>::load(xp, s16, u, xs, xsum);
     }
 };
 // Q6_K: unit (block b, half n, m, p): run0 at 256b + 128n + 32p + 16m, run1 = run0 + 64
 template <> struct X<T_Q6_K> {
-    static inline void load(device const float* xp, device const float* s16, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
         const int p0 = 256 * (u >> 3) + 128 * ((u >> 2) & 1) + 32 * (u & 1) + 16 * ((u >> 1) & 1);
         load16(xp + p0, xs);
         load16(xp + p0 + 64, xs + 16);
@@ -76,7 +87,7 @@ template <> struct X<T_Q6_K> {
 };
 // Q3_K: 32 contiguous, sums per 16
 template <> struct X<T_Q3_K> {
-    static inline void load(device const float* xp, device const float* s16, int u, thread float* xs, thread float* xsum) {
+    template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
         load16(xp + 32 * u, xs);
         load16(xp + 32 * u + 16, xs + 16);
         xsum[0] = s16[2 * u];

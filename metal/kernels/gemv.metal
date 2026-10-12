@@ -16,6 +16,10 @@ struct GemvArgs {
 };
 
 constant int NTOK [[function_constant(0)]];   // tokens of the window (1..8): the token loops are specialised
+// a bench probe (function constant 9): 1 = tokens past the first reuse token 0's x (no load; wrong values),
+// 2 = tokens past the first skip the combine (wrong values)
+constant int GEMV_PROBE [[function_constant(9)]];
+constant int gemv_probe = is_function_constant_defined(GEMV_PROBE) ? GEMV_PROBE : 0;
 
 template <int F, int LPR, int NR, int SG, int KS>
 kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[buffer(1)]],
@@ -39,14 +43,29 @@ kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[b
     device const uchar* rp[NR];
     for (int r = 0; r < NR; ++r) rp[r] = W + (ulong)min(row0 + r, int(a.n_out) - 1) * a.row_bytes;
     const int s16n = int(a.n_in) / 16;
+    if (gemv_probe == 3) {
+        // rows outer, tokens inner: one row's decoded unit in registers at a time (x re-read per row from L1)
+        for (int u = u0 + li; u < u1; u += LPR)
+            for (int r = 0; r < NR; ++r) {
+                float q[UNIT];
+                float4 sc;
+                Dec<F>::run(rp[r], u, q, sc, tab);
+                for (int t = 0; t < NTOK; ++t) {
+                    float xs[UNIT], xsum[2];
+                    X<F>::load(xp + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+                    acc[r][t] += unit_combine<UNIT>(q, sc, xs, xsum);
+                }
+            }
+    } else
     for (int u = u0 + li; u < u1; u += LPR) {
         float q[NR][UNIT];
         float4 sc[NR];
         for (int r = 0; r < NR; ++r) Dec<F>::run(rp[r], u, q[r], sc[r], tab);
+        float xs[UNIT], xsum[2];
         for (int t = 0; t < NTOK; ++t) {
-            float xs[UNIT], xsum[2];
-            X<F>::load(xp + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
-            for (int r = 0; r < NR; ++r) acc[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
+            if (gemv_probe != 1 || t == 0) X<F>::load(xp + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+            if (gemv_probe != 2 || t == 0)
+                for (int r = 0; r < NR; ++r) acc[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
         }
     }
     constexpr int RPT = RS * RG * NR;
@@ -189,3 +208,56 @@ kernel void gemv_cat(device const uchar* W [[buffer(0)]], device const float* xp
 #define GVC_(F, L, R, S) template [[host_name("gemvc_" #F "_" #L "_" #R "_" #S)]] kernel decltype(gemv_cat<F, L, R, S>) gemv_cat<F, L, R, S>;
 #define GVC(F, L, R, S) GVC_(F, L, R, S)
 GVC(T_BF16, 32, 1, 4) GVC(T_BF16, 32, 1, 8) GVC(T_BF16, 16, 1, 4) GVC(T_BF16, 32, 2, 4)
+
+// gemv_x: gemv (KS = 1) with the window's prepared x (the format's plane, NTOK rows, and its per-16 sums) staged in
+// threadgroup memory once per threadgroup, so the per-unit x reads of every token come from threadgroup memory
+// instead of L1 (on the M4 the x traffic through L1 - 4 B a weight a token, shared by the rows in a simdgroup - is
+// what a window token costs).  Same tile meaning and the same arithmetic as gemv_<F>_<LPR>_<NR>_<SG>_1: bitwise.
+// Dynamic threadgroup memory 0: 4 * NTOK * (n_in + n_in / 16) bytes.
+template <int F, int LPR, int NR, int SG>
+kernel void gemv_x(device const uchar* W [[buffer(0)]], device const float* xp [[buffer(1)]],
+                   device const float* s16 [[buffer(2)]], device float* y [[buffer(3)]], constant GemvArgs& a [[buffer(4)]],
+                   threadgroup float* xt [[threadgroup(0)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int UNIT = fmt<F>::UNIT, RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    const int n = int(a.n_in), s16n = n / 16;
+    threadgroup float* st = xt + NTOK * n;
+    for (int t = 0; t < NTOK; ++t) {
+        device const float4* src = (device const float4*)(xp + t * int(a.x_stride));
+        threadgroup float4* dst = (threadgroup float4*)(xt + t * n);
+        for (int i = tid; i < n / 4; i += SG * 32) dst[i] = src[i];
+        for (int i = tid; i < s16n; i += SG * 32) st[t * s16n + i] = s16[t * s16n + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int li = lane % LPR;
+    const int row0 = int(tg.x) * SG * RG * NR + (sg * RG + lane / LPR) * NR;
+    const int U = n / UNIT;
+    float acc[NR][8];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) acc[r][t] = 0.0f;
+    device const uchar* rp[NR];
+    for (int r = 0; r < NR; ++r) rp[r] = W + (ulong)min(row0 + r, int(a.n_out) - 1) * a.row_bytes;
+    for (int u = li; u < U; u += LPR) {
+        float q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec<F>::run(rp[r], u, q[r], sc[r], tab);
+        for (int t = 0; t < NTOK; ++t) {
+            float xs[UNIT], xsum[2];
+            X<F>::load((threadgroup const float*)(xt + t * n), (threadgroup const float*)(st + t * s16n), u, xs, xsum);
+            for (int r = 0; r < NR; ++r) acc[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) {
+            const float v = lane_sum<LPR>(acc[r][t]);
+            if (li == 0 && row0 + r < int(a.n_out)) y[t * int(a.y_stride) + row0 + r] = v;
+        }
+}
+#define GVX(F, L, R, S) template [[host_name("gemvx_" #F "_" #L "_" #R "_" #S)]] kernel decltype(gemv_x<F, L, R, S>) gemv_x<F, L, R, S>;
+#define GVX_SET(F) GVX(F, 32, 1, 4) GVX(F, 32, 2, 4) GVX(F, 16, 1, 4) GVX(F, 16, 2, 4) GVX(F, 8, 1, 4) GVX(F, 8, 2, 4) \
+                   GVX(F, 4, 2, 4) GVX(F, 16, 2, 8) GVX(F, 8, 2, 8) GVX(F, 16, 4, 4) GVX(F, 32, 2, 8) GVX(F, 2, 2, 4)
+GVX_SET(T_BF16) GVX_SET(T_Q8_0) GVX_SET(T_Q4_0) GVX_SET(T_Q5_0) GVX_SET(T_IQ4_NL) GVX_SET(T_IQ4_XS) GVX_SET(T_Q2_0)
+GVX_SET(T_IQ3_S) GVX_SET(T_Q3_K) GVX_SET(T_Q4_K) GVX_SET(T_Q5_K) GVX_SET(T_Q6_K)

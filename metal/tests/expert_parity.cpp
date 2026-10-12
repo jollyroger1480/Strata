@@ -36,7 +36,7 @@ struct MoeArgs {
 };
 
 int type_of(const std::string& s) {
-    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL})
+    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS})
         if (s == ref::type_name(t)) return t;
     std::fprintf(stderr, "unknown type %s\n", s.c_str());
     std::exit(2);
