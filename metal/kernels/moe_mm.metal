@@ -750,15 +750,16 @@ template <> struct W8<T_Q6_K> {
         const float d = rdh(bl + 208);
         device const char* sc = (device const char*)(bl + 192 + 8 * n);
         const float dsa = d * float(sc[2 * qd]), dsb = d * float(sc[1 + 2 * qd]);
-        float4 wa, wb;
-        for (int i = 0; i < 4; ++i) {
-            const int qa = int(((qd >> 1) ? (ql[i] >> 4) : (ql[i] & 15)) | (((qh[i] >> (2 * qd)) & 3) << 4)) - 32;
-            const int qb = int(((qd >> 1) ? (ql[16 + i] >> 4) : (ql[16 + i] & 15)) | (((qh[16 + i] >> (2 * qd)) & 3) << 4)) - 32;
-            wa[i] = dsa * float(qa);
-            wb[i] = dsb * float(qb);
-        }
-        a = half4(wa);
-        b = half4(wb);
+        // the 4-byte runs as two ushorts each (210-byte blocks: 2-aligned)
+        device const ushort* l2 = (device const ushort*)ql;
+        device const ushort* h2 = (device const ushort*)qh;
+        const uint la = uint(l2[0]) | (uint(l2[1]) << 16), lb = uint(l2[8]) | (uint(l2[9]) << 16);
+        const uint ha = uint(h2[0]) | (uint(h2[1]) << 16), hb = uint(h2[8]) | (uint(h2[9]) << 16);
+        const uint sl = (qd >> 1) ? 4u : 0u, shh = uint(2 * qd);
+        const uint4 qa = (uint4(as_type<uchar4>((la >> sl) & 0x0F0F0F0Fu)) | (uint4(as_type<uchar4>((ha >> shh) & 0x03030303u)) << 4));
+        const uint4 qb = (uint4(as_type<uchar4>((lb >> sl) & 0x0F0F0F0Fu)) | (uint4(as_type<uchar4>((hb >> shh) & 0x03030303u)) << 4));
+        a = half4(dsa * (float4(qa) - 32.0f));
+        b = half4(dsb * (float4(qb) - 32.0f));
     }
 };
 
