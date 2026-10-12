@@ -25,10 +25,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <sys/mman.h>
+#include <thread>
 #include <vector>
 
 namespace strata::metal_engine {
@@ -75,8 +77,17 @@ public:
               int64_t max_cells, std::string& err);
     bool run(int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
     bool commit(int n_keep, std::string& err);
+    bool finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0);
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return n_vocab_; }
+    bool ready() const { return cx_ != nullptr; }
+    void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
+    // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
+    bool mtp_load(const std::string& gguf, int max_t, std::string& err);
+    bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
+    bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
+                   float min_p, int* n_drafts, std::string& err);
+    bool mtp_loaded() const { return mtp_on_; }
 
 private:
     const gguf::Tensor& T(const std::string& name) const {
@@ -95,17 +106,33 @@ private:
         ds.push_back(std::move(d));
     }
     void gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride,
-              int ntok, size_t y_off = 0);
+              int ntok, size_t y_off = 0, const mtl::Buffer* wb = nullptr);
     void xprep(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const Act& out, int n);
     void gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, bool apply, const Act& out, bool final_, int ntok);
     void layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0);
     void ple_cpu(int T);
+    // the MTP layer: the input branches + attention HC read + K/V append for `n` rows (srcR rows, host tokens) at
+    // cells cell0..; with `full` (n == 1) the rest of the layer too and the draft head into mlm_/tokout_
+    void mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR, size_t src_off, int n, const int32_t* tokens,
+                    int64_t cell0, bool full);
+    void gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, mtl::Buffer& Rb, const mtl::Buffer& bo,
+                   const mtl::Buffer& inj_in, const mtl::Buffer& inj_out, bool apply, const Act& out, bool final_, int ntok);
+    const gguf::Tensor& TM(const std::string& name) const {
+        const gguf::Tensor* x = fm_.find(name);
+        if (!x) { std::fprintf(stderr, "strata metal: the MTP model has no tensor %s\n", name.c_str()); std::exit(2); }
+        return *x;
+    }
+    size_t NM(const std::string& name) const {   // the folded (1 + w) copy of an F32 norm of the MTP model
+        auto it = mnorm_off_.find(name);
+        if (it == mnorm_off_.end()) { std::fprintf(stderr, "strata metal: no MTP norm %s\n", name.c_str()); std::exit(2); }
+        return it->second;
+    }
 
     strata::core::SessionState* ss_ = nullptr;
     gguf::File f_;
     std::unique_ptr<mtl::Context> cx_;
     mtl::Buffer W_;
-    int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1;
+    int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
     int max_t_ = 1;
@@ -115,17 +142,42 @@ private:
     // buffers
     mtl::Buffer R_, bo_, inj_[2], xn_, lo_, qkv_, z_, al_, be_, yg_, logits_, ids_, wts_, plan_, h_, ye_, gsh_, ush_,
         ysh_, sg_, qfull_, kcur_, vcur_, iqr_, ikr_, qcur_, qidx_, scores_, qids_, part_, cs_, lm_, apv_, api_, tokout_,
-        emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_;
+        emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_, keyn_, qn_, gated_, normW_, pleHist_;
     Act XA_, XF_, XY_, XQ_, XH_, XE_;
     int cur_inj_ = 0;
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
-    std::vector<int> hpar_;          // per GDN layer: which history buffer holds the committed history
+    int hp_ = 0;                     // which of the two history buffers holds the committed conv history (all layers)
+    // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
+    struct Cached {
+        std::vector<mtl::Dispatch> ds;
+        std::vector<std::pair<int, int>> qsa;   // (dispatch, kind): 0 QsaArgs n_tok = T, 1 the merge (MAXT), 2 the scores
+    };
+    std::map<int, Cached> wcache_;
+    std::vector<std::pair<int, int>>* rec_ = nullptr;
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
     bool ple_on_ = false;
     int last_T_ = 0;
+    double last_gpu_ms_ = 0;
+    int last_n_disp_ = 0;
     int32_t last_tokens_[MAXT] = {};
     std::vector<float> last_norm_;   // the window's normalized PLE rows (T x hc_dim), for commit
+    // the Q8_0 copies of the hyper-connection matrices (the default; STRATA_HC_Q8=0: the BF16 originals)
+    bool hc_q8_ = false;
+    mtl::Buffer Q8_;
+    std::map<std::string, size_t> q8off_;
+    // MTP
+    bool mtp_on_ = false;
+    int lmtp_ = -1;
+    gguf::File fm_;
+    mtl::Buffer Wm_, mnorm_, mR_, memb_, men_, me2_, mhn_, mh2_, midx_, mbo_, minj_[2], mqids_, mlm_;
+    std::map<std::string, size_t> mnorm_off_;
+    std::vector<mtl::Buffer> mkq_, mvq_, mksc_, mvsc_, mtail_, mdead_, mpooled_;
+    // the draft head over a token subset (data/draft_vocab.bin, as the CUDA drafter): its rows gathered from the head
+    mtl::Buffer mhead_;
+    gguf::Tensor mhead_t_;
+    std::vector<int32_t> dvocab_;
+    Act XEn_, XHn_;
 };
 
 bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1,
@@ -149,6 +201,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
+    lple_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
 
     const int MAXC = (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2;
     max_cells_ = MAXC;
@@ -167,6 +220,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     // the GDN layers' window inputs, kept per layer so commit() can fold the accepted prefix into the state
     qkvL_ = A(4 * (size_t) 36 * MAXT * 10240); alL_ = A(4 * (size_t) 36 * MAXT * 48); beL_ = A(4 * (size_t) 36 * MAXT * 48);
     zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
+    keyn_ = A(4 * MAXT * 10240); qn_ = A(4 * MAXT * 10240); gated_ = A(4 * MAXT * 10240); normW_ = A(4 * MAXT * 10240);
+    pleHist_ = A(4 * 9 * 10240);
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
     // RoPE: cos/sin [pos][32] for the first 64 dims, NEOX pairs (i, i + 32), in double as build_rope_table
@@ -184,7 +239,6 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             gst_.push_back(A(4 * 128 * 48 * 128));
             ghist_[0].push_back(A(4 * 10240 * 3));
             ghist_[1].push_back(A(4 * 10240 * 3));
-            hpar_.push_back(0);
         } else {
             kq_.push_back(A((size_t) MAXC * 2 * 256));
             vq_.push_back(A((size_t) MAXC * 2 * 256));
@@ -194,6 +248,44 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             dead_.push_back(A(4 * 128));
             pooled_.push_back(A(4 * (size_t) MB * 128));
         }
+    }
+    // ---- the HC read in Q8_0 (the owner's default on Metal, as STRATA_HC_Q8 on gfx12): the BF16 down / up / inject
+    // matrices quantized once at load (ggml's q8_0 rule, ref_quant), read by gr_down_q8 / gr_up_q8
+    {
+        const char* e = std::getenv("STRATA_HC_Q8");
+        hc_q8_ = !(e && std::string(e) == "0");
+    }
+    if (hc_q8_) {
+        const double tq = now_ms();
+        size_t tot = 0;
+        std::vector<std::string> names;
+        for (const auto& kv : f_.tensors) {
+            const gguf::Tensor& x = kv.second;
+            if (x.type != ref::BF16 || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+            uint64_t ne = 1;
+            for (uint64_t d : x.shape) ne *= d;
+            q8off_[x.name] = tot;
+            names.push_back(x.name);
+            tot += ne / 32 * 34;
+        }
+        Q8_ = cx_->alloc((tot + 4095) / 4096 * 4096);
+        std::vector<std::thread> th;
+        const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        for (unsigned k = 0; k < nth; ++k)
+            th.emplace_back([&, k] {
+                std::vector<float> tmp;
+                for (size_t i = k; i < names.size(); i += nth) {
+                    const gguf::Tensor& x = *f_.find(names[i]);
+                    uint64_t ne = 1;
+                    for (uint64_t d : x.shape) ne *= d;
+                    tmp.resize(ne);
+                    ref::dequant(ref::BF16, (const uint8_t*) f_.map + x.offset, tmp.data(), ne);
+                    ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
+                }
+            });
+        for (auto& x : th) x.join();
+        std::fprintf(stderr, "strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): %zu matrices, %.0f MB, made in %.0f ms\n",
+                     names.size(), tot / 1e6, now_ms() - tq);
     }
     ple_on_ = ss.ple.ready() && f_.find("blk.1.ple_key.weight") != nullptr;
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
@@ -205,7 +297,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
 }
 
 void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const Act& x, const mtl::Buffer& y,
-                  size_t y_stride, int ntok, size_t y_off) {
+                  size_t y_stride, int ntok, size_t y_off, const mtl::Buffer* wb) {
     const int n_in = (int) t.shape[0], n_out = t.shape.size() > 1 ? (int) t.shape[1] : 1;
     const int ty = t.type;
     int L = 16, Rr = 1, S = 4, K = 1;
@@ -219,8 +311,8 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
                (uint32_t) y_stride};
     mtl::Dispatch d;
     d.p = p;
-    d.args = {mtl::Arg::B(W_, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)), mtl::Arg::B(x.b, x.plane_bytes() * 4),
-              mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
+    d.args = {mtl::Arg::B(wb ? *wb : W_, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
+              mtl::Arg::B(x.b, x.plane_bytes() * 4), mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
     const int rpt = (S / K) * (32 / L) * Rr;
     d.grid[0] = (n_out + rpt - 1) / rpt;
     d.tg[0] = S * 32;
@@ -253,18 +345,23 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     d1.grid[1] = ntok;
     d1.tg[0] = 256;
     push(ds, d1);
+    const mtl::Buffer& WB = hc_q8_ ? Q8_ : W_;
+    const size_t od = hc_q8_ ? q8off_.at(tdn.name) : tdn.offset, oi = hc_q8_ ? q8off_.at(tin.name) : tin.offset,
+                 ou = hc_q8_ ? q8off_.at(tup.name) : tup.offset;
     mtl::Dispatch d2;
-    d2.p = P(lib_, "gr_down_8_8", mtl::Constants().i(1, ntok), "gr_down_8_8#" + std::to_string(ntok));
-    d2.args = {mtl::Arg::B(W_, tdn.offset), mtl::Arg::B(W_, tin.offset), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
+    const char* dn = hc_q8_ ? "gr_down_q8_8_8" : "gr_down_8_8";
+    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
+    d2.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_[1 - cur_inj_]), mtl::Arg::V(a)};
     d2.grid[0] = LR + HC;
     d2.tg[0] = 256;
     push(ds, d2);
     mtl::Dispatch d3;
-    d3.p = P(lib_, "gr_up", mtl::Constants().i(1, ntok), "gr_up#" + std::to_string(ntok));
+    const char* up = hc_q8_ ? "gr_up_q8" : "gr_up";
+    d3.p = P(lib_, up, mtl::Constants().i(1, ntok), std::string(up) + "#" + std::to_string(ntok));
     GrArgs au = a;
     au.n_tok = MAXT;   // the plane stride of the prepared activation
-    d3.args = {mtl::Arg::B(W_, tup.offset), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
+    d3.args = {mtl::Arg::B(WB, ou), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
     d3.grid[0] = N / 16;
     d3.tg[0] = 256;
     push(ds, d3);
@@ -291,7 +388,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         GdnArgs a{16, 48, 10240, self_commit ? 1u : 0u, eps_, 0};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
-        const int hp = hpar_[(size_t) gi];
+        const int hp = hp_;
         d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
                   mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                   mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
@@ -301,7 +398,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.grid[0] = 48;
         d.tg[0] = 512;
         push(ds, d);
-        if (self_commit) hpar_[(size_t) gi] = 1 - hp;   // the history ping-pong turns with every commit
+        (void) self_commit;   // the history ping-pong turns after the window (run) or at commit
         xprep(ds, yg_, XY_, 6144);
         gemv(ds, T(b + "ssm_out.weight"), XY_, bo_, N, ntok);
     } else {
@@ -329,6 +426,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.grid[1] = ntok;
         d.tg[0] = 256;
         push(ds, d);
+        if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch s;
         s.p = P(lqsa_, "qsa_score", {}, "qsa_score");
         s.args = {mtl::Arg::B(qidx_), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(scores_),
@@ -337,12 +435,14 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         s.grid[1] = ntok;
         s.tg[0] = 256;
         push(ds, s);
+        if (rec_) rec_->push_back({(int) ds.size() - 1, 2});
         mtl::Dispatch k;
         k.p = P(lqsa_, "qsa_topk2", {}, "qsa_topk");
         k.args = {mtl::Arg::B(scores_), mtl::Arg::B(qids_), mtl::Arg::V(a)};
         k.grid[0] = ntok;
         k.tg[0] = 1024;
         push(ds, k);
+        if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch at;
         at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
         at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
@@ -352,6 +452,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         at.grid[2] = ntok;
         at.tg[0] = 256;
         push(ds, at);
+        if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch m;
         m.p = P(lqsa_, "qsa_merge", {}, "qsa_merge");
         QsaArgs am = a;
@@ -361,6 +462,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         m.grid[1] = ntok;
         m.tg[0] = 256;
         push(ds, m);
+        if (rec_) rec_->push_back({(int) ds.size() - 1, 1});
         gemv(ds, T(b + "attn_output.weight"), XQ_, bo_, N, ntok);
     }
     // ---- the MoE
@@ -504,8 +606,7 @@ void Window::ple_cpu(int Tn) {
 }
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
-    (void) head;
-    if (Tn < 1 || Tn > max_t_) { err = "metal window: window size out of range"; return false; }
+    if (Tn < 1 || Tn > MAXT || (head && Tn > max_t_)) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
     const double t0 = now_ms();
     // ---- the embeddings (CPU dequant of the token rows straight into the shared buffer), broadcast to the streams
@@ -516,9 +617,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[t] * rb, r, N);
         for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
     }
-    // ---- the PLE rows (the table read is the shared host code's), projected on the GPU in the first command buffer
-    std::vector<mtl::Dispatch> ds;
-    nb_ = false;
+    // ---- the PLE rows (the table read is the shared host code's), projected on the GPU
     if (ple_on_) {
         strata::core::SessionState& ss = *ss_;
         uint32_t rows[MAXT * strata::kernels::PLE_N_HEADS];
@@ -529,6 +628,27 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             prev[1] = tokens[t];
         }
         if (!ss.ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
+    }
+    const int key = (Tn * 2 + (head ? 1 : 0)) * 2 + hp_;
+    auto hit = wcache_.find(key);
+    if (hit != wcache_.end()) {
+        // the same window shape: only the positions change (QSA's cells, the score grid)
+        Cached& c = hit->second;
+        for (const auto& [i, kind] : c.qsa) {
+            mtl::Dispatch& d = c.ds[(size_t) i];
+            QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) (kind == 1 ? MAXT : Tn), eps_};
+            std::memcpy(d.args.back().bytes.data(), &a, sizeof a);
+            if (kind == 2) d.grid[0] = (uint32_t) (((pos0 + Tn) / 4 + 1 + 7) / 8);
+        }
+        last_gpu_ms_ = 1000.0 * cx_->run_graph(c.ds);
+        last_n_disp_ = (int) c.ds.size();
+        return finish(Tn, tokens, pos0, head, out, t0);
+    }
+    Cached& cw = wcache_[key];
+    rec_ = &cw.qsa;
+    std::vector<mtl::Dispatch>& ds = cw.ds;
+    nb_ = false;
+    if (ple_on_) {
         xprep(ds, emb_, XE_, N);
         gemv(ds, T("blk.1.ple_key.weight"), XE_, pkey_, 10240, Tn);
         nb_ = true;
@@ -548,16 +668,35 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         d1.grid[1] = Tn;
         d1.tg[0] = 256;
         push(ds, d1);
-        cx_->run_graph(ds);
-        ple_cpu(Tn);
-        ds.clear();
-        nb_ = false;
+        // the PLE block on the GPU (msl/ple.metal): norms, gate, conv, the residual update
+        struct PleArgs { uint32_t n_embd, hc; float eps; } pa{N, HC, strata::kernels::NG_RMS_EPS};
+        auto off = [&](const char* n) { return T(n).offset; };
+        mtl::Dispatch g1, g2, g3, g4;
+        g1.p = P(lple_, "ple_gnorm", {}, "ple_gnorm");
+        g1.args = {mtl::Arg::B(pkey_), mtl::Arg::B(W_, off("blk.1.ple_norm_key.weight")), mtl::Arg::B(keyn_), mtl::Arg::V(pa)};
+        g1.grid[0] = HC; g1.grid[1] = Tn; g1.tg[0] = 256;
+        push(ds, g1);
+        g2.p = g1.p;
+        g2.args = {mtl::Arg::B(R_), mtl::Arg::B(W_, off("blk.1.ple_norm_query.weight")), mtl::Arg::B(qn_), mtl::Arg::V(pa)};
+        g2.grid[0] = HC; g2.grid[1] = Tn; g2.tg[0] = 256;
+        nb_ = true;   // beside the key norm
+        push(ds, g2);
+        g3.p = P(lple_, "ple_gate_norm", {}, "ple_gate_norm");
+        g3.args = {mtl::Arg::B(keyn_), mtl::Arg::B(qn_), mtl::Arg::B(pval_), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
+                   mtl::Arg::B(gated_), mtl::Arg::B(normW_), mtl::Arg::V(pa)};
+        g3.grid[0] = HC; g3.grid[1] = Tn; g3.tg[0] = 256;
+        push(ds, g3);
+        g4.p = P(lple_, "ple_conv_add", {}, "ple_conv_add");
+        g4.args = {mtl::Arg::B(pleHist_), mtl::Arg::B(normW_), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")),
+                   mtl::Arg::B(gated_), mtl::Arg::B(R_), mtl::Arg::V(pa)};
+        g4.grid[0] = HC * N / 256; g4.grid[1] = Tn; g4.tg[0] = 256;
+        push(ds, g4);
     }
     for (int l = 1; l < 48; ++l) layer(ds, l, Tn, pos0);
     // ---- the final mixer and the head
     gr_read(ds, "output_hc", true, XA_, true, Tn);
-    gemv(ds, T("output.weight"), XA_, lm_, (size_t) n_vocab_, Tn);
-    {
+    if (head) gemv(ds, T("output.weight"), XA_, lm_, (size_t) n_vocab_, Tn);
+    if (head) {
         ArgArgs a{(uint32_t) n_vocab_, 120};
         mtl::Dispatch d1, d2;
         d1.p = P(lsmp_, "argmax_part", {}, "argmax_part");
@@ -572,12 +711,19 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         d2.tg[0] = 256;
         push(ds, d2);
     }
-    cx_->run_graph(ds);
-    for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
+    rec_ = nullptr;
+    last_gpu_ms_ = 1000.0 * cx_->run_graph(ds);
+    last_n_disp_ = (int) ds.size();
+    return finish(Tn, tokens, pos0, head, out, t0);
+}
+
+bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0) {
+    if (Tn == 1) hp_ = 1 - hp_;   // a one-token window committed its GDN steps
+    for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
     for (int t = 0; t < Tn; ++t) last_tokens_[t] = tokens[t];
     static const bool trace = std::getenv("STRATA_METAL_TRACE") != nullptr;
-    if (trace) {
+    if (trace && head) {
         // the pick and its margin over the runner-up (a near tie says a backend difference may flip it)
         const float* lg = lm_.as<float>();
         int i1 = -1, i2 = -1;
@@ -585,8 +731,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             if (i1 < 0 || lg[i] > lg[i1]) { i2 = i1; i1 = i; }
             else if (i2 < 0 || lg[i] > lg[i2]) i2 = i;
         }
-        std::fprintf(stderr, "strata metal: window pos %lld token %d -> %d (top %d %.4f, 2nd %d %.4f, margin %.4f) %.2f ms\n",
-                     (long long) pos0, tokens[0], out[0], i1, lg[i1], i2, lg[i2], lg[i1] - lg[i2], now_ms() - t0);
+        std::fprintf(stderr, "strata metal: window pos %lld token %d -> %d (top %d %.4f, 2nd %d %.4f, margin %.4f) %.2f ms (GPU %.2f ms, %d dispatches)\n",
+                     (long long) pos0, tokens[0], out[0], i1, lg[i1], i2, lg[i2], lg[i1] - lg[i2], now_ms() - t0, last_gpu_ms_, last_n_disp_);
     }
     return true;
 }
@@ -608,7 +754,7 @@ bool Window::commit(int n_keep, std::string& err) {
             GdnArgs a{16, 48, 10240, 1u, eps_, 0};
             mtl::Dispatch d;
             d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
-            const int hp = hpar_[(size_t) gi];
+            const int hp = hp_;
             d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
                       mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                       mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
@@ -618,16 +764,16 @@ bool Window::commit(int n_keep, std::string& err) {
             d.tg[0] = 512;
             nb_ = true;   // the layers' folds are independent of each other
             push(ds, d);
-            hpar_[(size_t) gi] = 1 - hp;
         }
         cx_->run_graph(ds);
+        hp_ = 1 - hp_;
     }
     strata::core::SessionState& ss = *ss_;
     for (int t = 0; t < n_keep; ++t) {
         if (ple_on_) {
-            const float* norm = last_norm_.data() + (size_t) t * NG_HC_DIM;
+            const float* norm = normW_.as<float>() + (size_t) t * NG_HC_DIM;
             for (int c = 0; c < NG_HC_DIM; ++c) {
-                float* col = ple_hist_.data() + (size_t) c * NG_HIST;
+                float* col = pleHist_.as<float>() + (size_t) c * NG_HIST;
                 for (int r = 0; r + 1 < NG_HIST; ++r) col[r] = col[r + 1];
                 col[NG_HIST - 1] = norm[c];
             }
@@ -635,6 +781,338 @@ bool Window::commit(int n_keep, std::string& err) {
         ss.ple_prev[0] = ss.ple_prev[1];
         ss.ple_prev[1] = last_tokens_[t];
     }
+    return true;
+}
+
+
+// ================================================================================================ the MTP draft layer
+bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err) {
+    (void) max_t;
+    if (!fm_.open(gguf_path, err)) return false;
+    madvise(fm_.map, fm_.map_bytes, MADV_WILLNEED);
+    Wm_ = cx_->wrap(fm_.map, fm_.map_bytes);
+    if (Wm_.handle == nullptr) { err = "metal mtp: cannot wrap " + gguf_path; return false; }
+    // vLLM's GemmaRMSNorm scales by (1 + w): the F32 norms folded once (tools/mtp_rt.py does the same for CUDA)
+    size_t tot = 0;
+    for (const auto& kv : fm_.tensors)
+        if (kv.second.type == 0) { mnorm_off_[kv.first] = tot; tot += (kv.second.bytes + 255) / 256 * 256; }
+    mnorm_ = cx_->alloc(tot + 256);
+    for (const auto& kv : mnorm_off_) {
+        const gguf::Tensor& x = fm_.tensors.at(kv.first);
+        const float* src = (const float*) ((const uint8_t*) fm_.map + x.offset);
+        float* dst = (float*) (mnorm_.as<uint8_t>() + kv.second);
+        for (uint64_t i = 0; i < x.bytes / 4; ++i) dst[i] = src[i] + 1.0f;
+    }
+    lmtp_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
+    auto A = [&](size_t bytes) { return cx_->alloc(bytes); };
+    const int MAXC = (int) max_cells_, MB = MAXC / 4 + 2;
+    mR_ = A(4 * MAXT * HC * N); memb_ = A(4 * MAXT * N); men_ = A(4 * MAXT * N); me2_ = A(4 * MAXT * N);
+    mhn_ = A(4 * MAXT * HC * N); mh2_ = A(4 * HC * MAXT * N); midx_ = A(4 * MAXT * 640); mbo_ = A(4 * MAXT * N);
+    minj_[0] = A(4 * MAXT * HC); minj_[1] = A(4 * MAXT * HC); mqids_ = A(4 * MAXT * 2051); mlm_ = A(4 * (size_t) n_vocab_);
+    auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
+    XEn_ = act(N); XHn_ = act(N);
+    mkq_.push_back(A((size_t) MAXC * 2 * 256)); mvq_.push_back(A((size_t) MAXC * 2 * 256));
+    mksc_.push_back(A(2 * (size_t) MAXC * 2 * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
+    mtail_.push_back(A(4 * 4 * 128)); mdead_.push_back(A(4 * 128)); mpooled_.push_back(A(4 * (size_t) MB * 128));
+    {
+        std::string vp;
+        if (const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB")) vp = e;
+        else vp = std::string(STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
+        FILE* f = vp == "full" ? nullptr : std::fopen(vp.c_str(), "rb");
+        if (f) {
+            int32_t id;
+            while (std::fread(&id, 4, 1, f) == 1) if (id >= 0 && id < n_vocab_) dvocab_.push_back(id);
+            std::fclose(f);
+        }
+        if (!dvocab_.empty()) {
+            const gguf::Tensor& h = T("output.weight");
+            const size_t rb = ref::row_bytes(h.type, N);
+            mhead_ = A(dvocab_.size() * rb + 4096);
+            for (size_t i = 0; i < dvocab_.size(); ++i)
+                std::memcpy(mhead_.as<uint8_t>() + i * rb, (const uint8_t*) f_.map + h.offset + (size_t) dvocab_[i] * rb, rb);
+            mhead_t_ = h;
+            mhead_t_.offset = 0;
+            mhead_t_.shape = {(uint64_t) N, (uint64_t) dvocab_.size()};
+            mhead_t_.bytes = dvocab_.size() * rb;
+        }
+    }
+    mtp_on_ = true;
+    std::fprintf(stderr, "strata metal: MTP draft layer from %s (%.2f GB, %zu norms folded), draft head over %s tokens\n",
+                 gguf_path.c_str(), fm_.file_bytes / 1e9, mnorm_off_.size(),
+                 dvocab_.empty() ? "all" : std::to_string(dvocab_.size()).c_str());
+    return true;
+}
+
+void Window::gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, mtl::Buffer& Rb, const mtl::Buffer& bo,
+                       const mtl::Buffer& inj_in, const mtl::Buffer& inj_out, bool apply, const Act& out, bool final_,
+                       int ntok) {
+    const gguf::Tensor& tdn = TM(pre + ".input_mix_weight_down.weight");
+    const gguf::Tensor& tup = TM(pre + ".input_mix_weight_up.weight");
+    const gguf::Tensor& tin = final_ ? tdn : TM(pre + ".block_inject_weight.weight");
+    GrArgs a{N, HC, LR, (uint32_t) ntok, apply ? 1u : 0u, eps_};
+    mtl::Dispatch d1;
+    d1.p = P(lib_, "gr_norm", {}, "gr_norm");
+    d1.args = {mtl::Arg::B(Rb), mtl::Arg::B(bo), mtl::Arg::B(inj_in), mtl::Arg::B(mnorm_, NM(pre + ".hc_norm.weight")),
+               mtl::Arg::B(xn_), mtl::Arg::V(a)};
+    d1.grid[0] = HC; d1.grid[1] = ntok; d1.tg[0] = 256;
+    push(ds, d1);
+    mtl::Dispatch d2;
+    d2.p = P(lib_, "gr_down_8_8", mtl::Constants().i(1, ntok), "gr_down_8_8#" + std::to_string(ntok));
+    d2.args = {mtl::Arg::B(Wm_, tdn.offset), mtl::Arg::B(Wm_, tin.offset), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
+               mtl::Arg::B(inj_out), mtl::Arg::V(a)};
+    d2.grid[0] = LR + HC; d2.tg[0] = 256;
+    push(ds, d2);
+    mtl::Dispatch d3;
+    d3.p = P(lib_, "gr_up", mtl::Constants().i(1, ntok), "gr_up#" + std::to_string(ntok));
+    GrArgs au = a;
+    au.n_tok = MAXT;
+    d3.args = {mtl::Arg::B(Wm_, tup.offset), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
+    d3.grid[0] = N / 16; d3.tg[0] = 256;
+    push(ds, d3);
+}
+
+void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR, size_t src_off, int n, const int32_t* tokens,
+                        int64_t cell0, bool full) {
+    struct RmsArgs { uint32_t n; float eps; };
+    struct XpArgs { uint32_t n, n_tok, plane_tok, stride; };
+    struct CombArgs { uint32_t n, hc, n_tok, h_stride; };
+    // ---- the embedding rows (host tokens: dequantized on the CPU into the shared buffer)
+    const gguf::Tensor& te = T("token_embd.weight");
+    const size_t rb = ref::row_bytes(te.type, N);
+    for (int i = 0; i < n; ++i)
+        ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[i] * rb, memb_.as<float>() + (size_t) i * N, N);
+    const std::string L = "mtp.layers.0.";
+    auto rms = [&](const mtl::Buffer& x, size_t xo, const std::string& w, mtl::Buffer& y, int width, int rows) {
+        mtl::Dispatch d;
+        d.p = P(lmtp_, "mtp_rms", {}, "mtp_rms");
+        RmsArgs a{(uint32_t) width, eps_};
+        d.args = {mtl::Arg::B(x, xo), mtl::Arg::B(mnorm_, NM(w)), mtl::Arg::B(y), mtl::Arg::V(a)};
+        d.grid[0] = rows; d.tg[0] = 256;
+        push(ds, d);
+    };
+    auto xp = [&](const mtl::Buffer& x, size_t xo, const Act& out, int width, int rows, int stride) {
+        mtl::Dispatch d;
+        d.p = P(lmtp_, "mtp_xprep", {}, "mtp_xprep");
+        XpArgs a{(uint32_t) width, (uint32_t) rows, MAXT, (uint32_t) stride};
+        d.args = {mtl::Arg::B(x, xo), mtl::Arg::B(out.b), mtl::Arg::V(a)};
+        d.grid[0] = (width / 16 * rows + 255) / 256; d.tg[0] = 256;
+        push(ds, d);
+    };
+    auto gm = [&](const std::string& name, const Act& x, const mtl::Buffer& y, size_t y_stride, int rows, size_t y_off = 0) {
+        // a GEMV on the MTP model's tensor (the window's gemv() reads the main model's buffer)
+        const gguf::Tensor& tt = TM(name);
+        const int n_in = (int) tt.shape[0], n_out = tt.shape.size() > 1 ? (int) tt.shape[1] : 1, ty = tt.type;
+        int Lq = 16, Rr = 1, S = 4, K = 1;
+        if (n_in >= 6144) { Lq = 32; Rr = 1; S = 8; K = 2; }
+        else if (n_in == 640) { Lq = 8; Rr = 1; S = 4; K = 1; }
+        else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { Lq = 32; Rr = 1; S = 4; K = 1; }
+        const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(Lq) + "_" + std::to_string(Rr) + "_" +
+                               std::to_string(S) + "_" + std::to_string(K);
+        GemvArgs a{(uint32_t) n_in, (uint32_t) n_out, (uint32_t) rows, (uint32_t) ref::row_bytes(ty, n_in), (uint32_t) n_in,
+                   (uint32_t) y_stride};
+        mtl::Dispatch d;
+        d.p = P(lib_, fn, mtl::Constants().i(0, rows), fn + "#" + std::to_string(rows));
+        d.args = {mtl::Arg::B(Wm_, tt.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)), mtl::Arg::B(x.b, x.plane_bytes() * 4),
+                  mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
+        const int rpt = (S / K) * (32 / Lq) * Rr;
+        d.grid[0] = (n_out + rpt - 1) / rpt; d.tg[0] = S * 32;
+        push(ds, d);
+    };
+    // ---- e = fc_embedding(rms(embed(tok)) * (1 + w)),  h = fc_hidden per stream (rms_10240(R) * (1 + w)),  R = h + e
+    rms(memb_, 0, "mtp.pre_fc_norm_embedding.weight", men_, N, n);
+    xp(men_, 0, XEn_, N, n, N);
+    gm("mtp.fc_embedding.weight", XEn_, me2_, N, n);
+    rms(srcR, src_off, "mtp.pre_fc_norm_hidden.weight", mhn_, HC * N, n);
+    for (int c = 0; c < HC; ++c) {
+        xp(mhn_, (size_t) c * N * 4, XHn_, N, n, HC * N);
+        gm("mtp.fc_hidden.weight", XHn_, mh2_, N, n, (size_t) c * MAXT * N * 4);
+    }
+    {
+        mtl::Dispatch d;
+        d.p = P(lmtp_, "mtp_combine", {}, "mtp_combine");
+        CombArgs a{N, HC, (uint32_t) n, (uint32_t) (MAXT * N)};
+        d.args = {mtl::Arg::B(mh2_), mtl::Arg::B(me2_), mtl::Arg::B(mR_), mtl::Arg::V(a)};
+        d.grid[0] = (n * HC * N + 255) / 256; d.tg[0] = 256;
+        push(ds, d);
+    }
+    // ---- the attention hyper-connection, K/V (and the indexer keys) into the layer's own cache
+    gr_read_m(ds, L + "attn_hyper_connection", mR_, mbo_, minj_[1], minj_[0], false, XA_, false, n);
+    gm(L + "self_attn.k_proj.weight", XA_, kcur_, 512, n);
+    nb_ = true;
+    gm(L + "self_attn.v_proj.weight", XA_, vcur_, 512, n);
+    nb_ = true;
+    gm(L + "self_attn.indexer.index_qk_proj.weight", XA_, midx_, 640, n);
+    if (full) {
+        nb_ = true;
+        gm(L + "self_attn.q_proj.weight", XA_, qfull_, 12288, n);
+    }
+    QsaArgs qa{(uint32_t) cell0, 0, (uint32_t) max_cells_, (uint32_t) n, eps_};
+    {
+        mtl::Dispatch d;
+        d.p = P(lqsa_, "qsa_prep", {}, "qsa_prep");
+        d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(midx_), mtl::Arg::B(midx_, 512 * 4),
+                  mtl::Arg::B(mnorm_, NM(L + "self_attn.q_norm.weight")), mtl::Arg::B(mnorm_, NM(L + "self_attn.k_norm.weight")),
+                  mtl::Arg::B(mnorm_, NM(L + "self_attn.indexer.q_layernorm.weight")),
+                  mtl::Arg::B(mnorm_, NM(L + "self_attn.indexer.k_layernorm.weight")),
+                  mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(mkq_[0]), mtl::Arg::B(mvq_[0]),
+                  mtl::Arg::B(mksc_[0]), mtl::Arg::B(mvsc_[0]), mtl::Arg::B(mtail_[0]), mtl::Arg::B(mdead_[0]),
+                  mtl::Arg::B(mpooled_[0]), mtl::Arg::V(qa)};
+        d.grid[0] = 33; d.grid[1] = n; d.tg[0] = 256;
+        push(ds, d);
+    }
+    if (!full) return;
+    // ---- dense attention over the window of cells up to this one (the draft layer's rule), the output gate, o_proj
+    {
+        int* ids = mqids_.as<int>();
+        const int64_t first = std::max<int64_t>(0, cell0 - 2050);
+        for (int64_t c = first; c <= cell0; ++c) ids[c - first] = (int) c;
+        mtl::Dispatch at;
+        at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
+        at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(mkq_[0]), mtl::Arg::B(mvq_[0]), mtl::Arg::B(mksc_[0]), mtl::Arg::B(mvsc_[0]),
+                   mtl::Arg::B(mqids_), mtl::Arg::B(part_), mtl::Arg::V(qa)};
+        at.grid[0] = 33; at.grid[1] = 2; at.grid[2] = 1; at.tg[0] = 256;
+        push(ds, at);
+        mtl::Dispatch m;
+        m.p = P(lqsa_, "qsa_merge", {}, "qsa_merge");
+        QsaArgs am = qa;
+        am.n_tok = MAXT;
+        m.args = {mtl::Arg::B(part_), mtl::Arg::B(qfull_), mtl::Arg::B(XQ_.b), mtl::Arg::V(am)};
+        m.grid[0] = 24; m.grid[1] = 1; m.tg[0] = 256;
+        push(ds, m);
+        gm(L + "self_attn.o_proj.weight", XQ_, mbo_, N, 1);
+    }
+    // ---- the MLP hyper-connection (the attention write folded in), the MoE, the write + final mixer, the head
+    gr_read_m(ds, L + "mlp_hyper_connection", mR_, mbo_, minj_[0], minj_[1], true, XF_, false, 1);
+    gm(L + "mlp.gate.weight", XF_, logits_, 512, 1);
+    nb_ = true;
+    gm(L + "mlp.shared_expert.gate_proj.weight", XF_, gsh_, NFF, 1);
+    nb_ = true;
+    gm(L + "mlp.shared_expert.up_proj.weight", XF_, ush_, NFF, 1);
+    nb_ = true;
+    gm(L + "mlp.shared_expert_gate.weight", XF_, sg_, 1, 1);
+    {
+        MoeArgs a{};
+        const gguf::Tensor &tgu = TM(L + "mlp.experts.gate_up_proj"), &td = TM(L + "mlp.experts.down_proj");
+        a.gu_row = (uint32_t) ref::row_bytes(tgu.type, N);
+        a.d_row = (uint32_t) ref::row_bytes(td.type, NFF);
+        a.gate_off = tgu.offset;
+        a.up_off = tgu.offset + (uint64_t) NFF * a.gu_row;   // [gate rows | up rows] per expert
+        a.down_off = td.offset;
+        a.gu_stride = (uint64_t) a.gu_row * 2 * NFF;
+        a.d_stride = (uint64_t) a.d_row * N;
+        a.n_embd = N; a.n_ff = NFF; a.n_tok = 1; a.topk = TOPK; a.n_expert = NEXP;
+        const bool dq2 = td.type == ref::Q2_0;
+        const int gl = 32, gr = 1, gs = 4, dl = dq2 ? 8 : 4, dr = dq2 ? 1 : 2, ds_ = 4;
+        a.gx_gu = NFF / (gs * (32 / gl) * gr);
+        a.gx_dn = N / (ds_ * (32 / dl) * dr);
+        mtl::Dispatch r;
+        r.p = P(lib_, "moe_route", {}, "moe_route");
+        r.args = {mtl::Arg::B(logits_), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
+        r.tg[0] = 512;
+        push(ds, r);
+        {
+            GlueArgs ga{NFF, MAXT, N, TOPK};
+            mtl::Dispatch d;
+            d.p = P(lib_, "swiglu_prep", {}, "swiglu_prep");
+            d.args = {mtl::Arg::B(gsh_), mtl::Arg::B(ush_), mtl::Arg::B(XH_.b), mtl::Arg::V(ga)};
+            d.grid[0] = NFF / 16; d.grid[1] = 1; d.tg[0] = 16;
+            nb_ = true;
+            push(ds, d);
+        }
+        const std::string gun = "moe_gu_" + std::to_string(tgu.type) + "_" + std::to_string(gl) + "_" + std::to_string(gr) +
+                                "_" + std::to_string(gs);
+        const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
+                                std::to_string(dr) + "_" + std::to_string(ds_);
+        mtl::Dispatch g;
+        g.p = P(lib_, gun, {}, gun);
+        g.args = {mtl::Arg::B(Wm_), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tgu.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
+                  mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
+        g.tg[0] = 32 * gs;
+        g.indirect = &plan_;
+        g.ind_off = P_IGU * 4;
+        push(ds, g);
+        nb_ = true;
+        gm(L + "mlp.shared_expert.down_proj.weight", XH_, ysh_, N, 1);
+        mtl::Dispatch dd;
+        dd.p = P(lib_, dnn, {}, dnn);
+        dd.args = {mtl::Arg::B(Wm_), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
+        dd.tg[0] = 32 * ds_;
+        dd.indirect = &plan_;
+        dd.ind_off = P_IDN * 4;
+        push(ds, dd);
+        GlueArgs ca{N, 1, N, TOPK};
+        mtl::Dispatch cb;
+        cb.p = P(lib_, "moe_combine_sh", {}, "moe_combine_sh");
+        cb.args = {mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::B(ysh_), mtl::Arg::B(sg_), mtl::Arg::B(mbo_), mtl::Arg::V(ca)};
+        cb.grid[0] = (N + 255) / 256; cb.tg[0] = 256;
+        push(ds, cb);
+    }
+    // the layer's write (R updated in place: the next draft step's input residual) and the final mixer
+    gr_read_m(ds, "mtp.hyper_connection_mixer", mR_, mbo_, minj_[1], minj_[0], true, XA_, true, 1);
+    const int64_t nv = dvocab_.empty() ? n_vocab_ : (int64_t) dvocab_.size();
+    if (dvocab_.empty()) gemv(ds, T("output.weight"), XA_, mlm_, (size_t) n_vocab_, 1);
+    else gemv(ds, mhead_t_, XA_, mlm_, (size_t) nv, 1, 0, &mhead_);
+    {
+        ArgArgs a{(uint32_t) nv, 120};
+        mtl::Dispatch d1, d2;
+        d1.p = P(lsmp_, "argmax_part", {}, "argmax_part");
+        d1.args = {mtl::Arg::B(mlm_), mtl::Arg::B(apv_), mtl::Arg::B(api_), mtl::Arg::V(a)};
+        d1.grid[0] = 120; d1.grid[1] = 1; d1.tg[0] = 256;
+        push(ds, d1);
+        d2.p = P(lsmp_, "argmax_final", {}, "argmax_final");
+        d2.args = {mtl::Arg::B(apv_), mtl::Arg::B(api_), mtl::Arg::B(tokout_), mtl::Arg::V(a)};
+        d2.grid[0] = 1; d2.tg[0] = 256;
+        push(ds, d2);
+    }
+}
+
+// the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
+bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+    if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    for (int64_t c = 0; c < n; c += MAXT) {
+        const int k = (int) std::min<int64_t>(MAXT, n - c);
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        mtp_encode(ds, R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false);
+        cx_->run_graph(ds);
+    }
+    return true;
+}
+
+// One round (mtp.hpp's draft()): the window's rows 0..a-1 caught up (K/V), then the full layer on row a (draft 0) and
+// on its own output for the next drafts; each step's pick read by the host (its embedding is the next step's input).
+bool Window::mtp_draft(int Tn, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
+                       float min_p, int* n_drafts, std::string& err) {
+    if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    (void) Tn;
+    int n = 0;
+    int32_t tok = tokens[a];
+    for (int j = 0; j < max_steps; ++j) {
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        if (j == 0) {
+            if (a > 0) mtp_encode(ds, R_, 0, a, tokens, p, false);
+            mtp_encode(ds, R_, (size_t) a * HC * N * 4, 1, &tok, p + a, true);
+        } else {
+            mtp_encode(ds, mR_, 0, 1, &tok, p + a + j, true);
+        }
+        cx_->run_graph(ds);
+        const int32_t di = tokout_.as<int32_t>()[0];
+        const int32_t d = dvocab_.empty() ? di : dvocab_[(size_t) di];
+        // the draft's probability: softmax of the draft head's logits at the pick
+        const float* lg = mlm_.as<float>();
+        const float mx = lg[di];
+        const int64_t nv = dvocab_.empty() ? n_vocab_ : (int64_t) dvocab_.size();
+        double s = 0.0;
+        for (int64_t i = 0; i < nv; ++i) s += std::exp((double) (lg[i] - mx));
+        const float pj = (float) (1.0 / s);
+        drafts[j] = d;
+        if (probs) probs[j] = pj;
+        tok = d;
+        ++n;
+        if (min_p > 0.0f && pj < min_p) break;
+    }
+    if (n_drafts) *n_drafts = n;
     return true;
 }
 
@@ -648,21 +1126,97 @@ bool Window::copy_logits(int t, float* host) const {
 namespace {
 std::string g_shard1;
 }
+void window_register(void* w);
+bool mtp_load_pending(Window* w, std::string& err);
 void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
 
-void* window_create() { return new Window(); }
-void window_destroy(void* w) { delete (Window*) w; }
+// One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
+namespace {
+Window* g_the_window = nullptr;
+}
+void* window_create() {
+    if (g_the_window == nullptr) g_the_window = new Window();
+    return g_the_window;
+}
+void window_destroy(void* w) {
+    if (w != nullptr && w == g_the_window) {
+        delete g_the_window;
+        g_the_window = nullptr;
+        window_register(nullptr);
+    }
+}
 bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int max_t, int64_t max_cells,
                  int64_t* n_vocab, std::string& err) {
-    if (g_shard1.empty()) { err = "metal window: the model shard is not set (--native SHARD1)"; return false; }
-    if (!((Window*) w)->init(g, ss, g_shard1, max_t, max_cells, err)) return false;
-    *n_vocab = ((Window*) w)->vocab();
+    Window* x = (Window*) w;
+    if (!x->ready()) {
+        if (g_shard1.empty()) { err = "metal window: the model shard is not set (--native SHARD1)"; return false; }
+        if (!x->init(g, ss, g_shard1, MAXT, max_cells, err)) return false;
+        window_register(w);
+        if (!mtp_load_pending(x, err)) return false;
+    }
+    x->set_max_t(max_t);
+    *n_vocab = x->vocab();
     return true;
+}
+bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int64_t max_cells, std::string& err) {
+    int64_t nv = 0;
+    return window_init(window_create(), g, ss, MAXT, max_cells, &nv, err);
 }
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     return ((Window*) w)->run(T, tokens, pos0, head, out, err);
 }
 bool window_commit(void* w, int n_keep, std::string& err) { return ((Window*) w)->commit(n_keep, err); }
 bool window_copy_logits(void* w, int t, float* host) { return ((Window*) w)->copy_logits(t, host); }
+
+// the MTP hook (src/core/mtp.cpp under STRATA_GPU_METAL): the drafter lives beside the decode window it reads
+namespace {
+Window* g_window = nullptr;
+}
+void window_register(void* w) { g_window = (Window*) w; }
+// the engine loads the drafter before the decode window exists: the path is kept and the window loads it at its init
+std::string g_mtp_path;
+int g_mtp_max_t = 0;
+bool mtp_load(const std::string& rt_dir, int max_t, std::string& err) {
+    (void) err;
+    // the MTP model in GGUF form (tools/mtp_pack.py) beside the rt directory: STRATA_METAL_MTP_GGUF, else
+    // <rt>/../mtp-q2_0.gguf
+    std::string path;
+    if (const char* e = std::getenv("STRATA_METAL_MTP_GGUF")) path = e;
+    else {
+        std::string d = rt_dir;
+        while (!d.empty() && d.back() == '/') d.pop_back();
+        const size_t s = d.rfind('/');
+        path = (s == std::string::npos ? std::string(".") : d.substr(0, s)) + "/mtp-q2_0.gguf";
+    }
+    g_mtp_path = path;
+    g_mtp_max_t = max_t;
+    return true;
+}
+bool mtp_load_pending(Window* w, std::string& err) {
+    return g_mtp_path.empty() || w->mtp_load(g_mtp_path, g_mtp_max_t, err);
+}
+// Prefill::run's Metal side: the prompt read through the window, MAXT rows at a time (no head), each window
+// committed; on_chunk (the MTP's K/V) after each, with the window's final residual rows in place.
+bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
+                const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
+    if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
+    int32_t tk[MAXT], out[MAXT];
+    for (int64_t c = 0; c < n; c += MAXT) {
+        const int k = (int) std::min<int64_t>(MAXT, n - c);
+        for (int i = 0; i < k; ++i) tk[i] = (int32_t) tokens[c + i];
+        if (!g_window->run(k, tk, pos0 + c, false, out, err) || !g_window->commit(k, err)) return false;
+        if (on_chunk && !on_chunk(nullptr, k, pos0 + c, err)) return false;
+    }
+    return true;
+}
+bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+    if (g_window == nullptr) { err = "metal mtp: no decode window"; return false; }
+    return g_window->mtp_prefill(next_tokens, n, cell0, err);
+}
+bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
+               int* n_drafts, std::string& err) {
+    if (g_window == nullptr) { err = "metal mtp: no decode window"; return false; }
+    return g_window->mtp_draft(T, tokens, p, a, max_steps, drafts, probs, min_p, n_drafts, err);
+}
 
 }  // namespace strata::metal_engine

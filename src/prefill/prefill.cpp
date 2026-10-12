@@ -96,6 +96,16 @@ void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, 
 }  // namespace strata::prefill::fused
 #endif
 
+#if defined(STRATA_GPU_METAL)
+// The Metal backend reads a prompt through its decode window (metal/src/engine/window.cpp): init keeps the chunk, run
+// hands over, draft_kv declines (the MTP hook reads the window's rows itself).
+namespace strata::metal_engine {
+bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int64_t max_cells, std::string& err);
+bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
+                const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err);
+}  // namespace strata::metal_engine
+#endif
+
 namespace strata::prefill {
 namespace {
 
@@ -1062,6 +1072,12 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
                    void* stream, std::string& err, void* borrow, uint64_t borrow_bytes) {
     Impl& m = *impl_;
+#if defined(STRATA_GPU_METAL)
+    (void) wt; (void) src; (void) cache; (void) host_res; (void) stream; (void) borrow;
+    (void) borrow_bytes;
+    m.T = chunk > 0 ? chunk : 1;
+    return strata::metal_engine::window_ensure(g, ss, ss.qsa_states[ss.qsa_primary()].max_cells, err);
+#endif
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = (cudaStream_t) stream; m.stats = &stats_;
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
@@ -1347,6 +1363,11 @@ int64_t Prefill::chunk() const { return impl_->T; }
 bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0,
                        std::string& err, const char** why) {
     Impl& m = *impl_;
+#if defined(STRATA_GPU_METAL)
+    (void) m; (void) mtp; (void) R_rows; (void) next_tokens; (void) n; (void) cell0; (void) err;
+    if (why) *why = "the Metal window feeds the draft layer itself";
+    return false;
+#endif
     const core::OnDevice on_device(m.device);   // the stage's own GPU current (a layer split's drafter: the last stage)
     auto decline = [&](const char* reason) { if (why != nullptr) *why = reason; return false; };
     static const bool off = [] { const char* v = std::getenv("STRATA_MTP_BATCH"); return v != nullptr && v[0] == '0'; }();
@@ -4242,6 +4263,16 @@ bool Prefill::drain_pipeline(std::string& err) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = strata::metal_engine::prompt_run(tokens, n, pos0, on_chunk, err);
+        stats_.tokens += n;
+        stats_.chunks += 1;
+        stats_.ms_total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return ok;
+    }
+#endif
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;

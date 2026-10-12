@@ -115,7 +115,8 @@ add_library(strata_metal_kernels STATIC ${STRATA_METAL_ENGINE_SOURCES})
 target_include_directories(strata_metal_kernels PRIVATE src ${STRATA_ROOT}/third_party/ggml)
 target_compile_definitions(strata_metal_kernels PRIVATE
   STRATA_GGML_COMMON_DEFAULT="${GGML_COMMON}" STRATA_METAL_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/kernels"
-  STRATA_METAL_ENGINE_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/engine/msl")
+  STRATA_METAL_ENGINE_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/engine/msl"
+  STRATA_METAL_DATA_DEFAULT="${STRATA_ROOT}/data")
 target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp)

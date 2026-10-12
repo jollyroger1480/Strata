@@ -132,7 +132,6 @@ strata::core::RemoteExpertOpt::~RemoteExpertOpt() { strata::metal_engine::missin
 namespace strata::kernels { void add_inplace(float * p0, const float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::add_inplace"); } }
 namespace strata::kernels { void add_streams_broadcast(const float * p0, const float * p1, float * p2, int64_t p3, int p4, int p5, void * p6) { strata::metal_engine::missing("strata::kernels::add_streams_broadcast"); } }
 namespace strata::kernels { void argmax_rows(const float * p0, int p1, int p2, void * p3, int32_t * p4, void * p5) { strata::metal_engine::missing("strata::kernels::argmax_rows"); } }
-namespace strata::kernels { uint64_t argmax_rows_scratch_bytes(int p0) { strata::metal_engine::missing("strata::kernels::argmax_rows_scratch_bytes"); return {}; } }
 namespace strata::kernels { bool argmax_rows_wanted() { strata::metal_engine::missing("strata::kernels::argmax_rows_wanted"); return {}; } }
 namespace strata::kernels { void bf16_gemv(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::kernels::bf16_gemv"); } }
 namespace strata::kernels { void bf16_gemv_fp32_mmvf(const float * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::kernels::bf16_gemv_fp32_mmvf"); } }
@@ -203,7 +202,6 @@ namespace strata::kernels { void fused_gr_read(const FusedGrArgs & p0, void * p1
 namespace strata::kernels { bool fused_gr_read_multi(const FusedGrArgs * p0, int p1, float * p2, void * p3, unsigned long long * p4, int p5) { strata::metal_engine::missing("strata::kernels::fused_gr_read_multi"); return {}; } }
 namespace strata::kernels { bool fused_gr_supported(int64_t p0, int64_t p1, int64_t p2) { strata::metal_engine::missing("strata::kernels::fused_gr_supported"); return {}; } }
 namespace strata::kernels { void fwht256_cuda(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::fwht256_cuda"); } }
-namespace strata::kernels { void gather_rows(const uint8_t * p0, int64_t p1, const int32_t * p2, int64_t p3, uint8_t * p4, void * p5) { strata::metal_engine::missing("strata::kernels::gather_rows"); } }
 namespace strata::kernels { void gdn_ab_multi(const float * p0, const uint16_t * p1, const uint16_t * p2, const float * p3, const float * p4, float * p5, float * p6, int p7, int p8, int p9, void * p10) { strata::metal_engine::missing("strata::kernels::gdn_ab_multi"); } }
 namespace strata::kernels { void gdn_beta_gate(float * p0, int64_t p1, void * p2) { strata::metal_engine::missing("strata::kernels::gdn_beta_gate"); } }
 namespace strata::kernels { void gdn_conv_commit(float * p0, const float * p1, int p2, const int32_t * p3, void * p4) { strata::metal_engine::missing("strata::kernels::gdn_conv_commit"); } }
@@ -314,7 +312,6 @@ namespace strata::kernels { void rope_neox_apply(const float * p0, float * p1, i
 namespace strata::kernels { void route_prior_top10(const float * p0, const int32_t * p1, float p2, int32_t * p3, float * p4, int p5, void * p6) { strata::metal_engine::missing("strata::kernels::route_prior_top10"); } }
 namespace strata::kernels { void router_top10(const float * p0, int p1, int p2, int p3, int * p4, float * p5, void * p6) { strata::metal_engine::missing("strata::kernels::router_top10"); } }
 namespace strata::kernels { void row_top_prob(const float * p0, int p1, int p2, const int32_t * p3, float * p4, void * p5) { strata::metal_engine::missing("strata::kernels::row_top_prob"); } }
-namespace strata::kernels { uint64_t row_top_prob_scratch_bytes(int p0) { strata::metal_engine::missing("strata::kernels::row_top_prob_scratch_bytes"); return {}; } }
 namespace strata::kernels { void row_top_prob_split(const float * p0, int p1, int p2, const int32_t * p3, float * p4, void * p5, void * p6) { strata::metal_engine::missing("strata::kernels::row_top_prob_split"); } }
 namespace strata::kernels { void s2_gemv_q8(const uint8_t * p0, const uint8_t * p1, const float * p2, float * p3, int64_t p4, int64_t p5, int p6, void * p7) { strata::metal_engine::missing("strata::kernels::s2_gemv_q8"); } }
 namespace strata::kernels { void s_gemv_q8_0_split(const uint8_t * p0, const uint8_t * p1, const float * p2, const float * p3, float * p4, int64_t p5, int64_t p6, const SForm & p7, void * p8) { strata::metal_engine::missing("strata::kernels::s_gemv_q8_0_split"); } }
@@ -333,7 +330,6 @@ namespace strata::kernels { void window_ids(int32_t * p0, int p1, int p2, int32_
 auto strata::prefill::Gemm::bf16(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, float p7, int64_t p8) -> void { strata::metal_engine::missing("strata::prefill::Gemm::bf16"); }
 auto strata::prefill::Gemm::bf16_hcd_exact(const uint16_t * p0, int64_t p1, const uint16_t * p2, float * p3, int64_t p4, int64_t p5, int64_t p6) -> bool { strata::metal_engine::missing("strata::prefill::Gemm::bf16_hcd_exact"); return {}; }
 auto strata::prefill::Gemm::f16(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, float p7) -> void { strata::metal_engine::missing("strata::prefill::Gemm::f16"); }
-auto strata::prefill::Gemm::init_external(void * p0, uint16_t * p1, int64_t p2, void * p3, size_t p4, std::string & p5) -> bool { strata::metal_engine::missing("strata::prefill::Gemm::init_external"); return {}; }
 auto strata::prefill::Gemm::native(const uint16_t * p0, int p1, const void * p2, float * p3, int64_t p4, int64_t p5, int64_t p6, int64_t p7, float p8, int64_t p9) -> void { strata::metal_engine::missing("strata::prefill::Gemm::native"); }
 auto strata::prefill::Gemm::rebind(uint16_t * p0, int64_t p1, void * p2, size_t p3) -> void { strata::metal_engine::missing("strata::prefill::Gemm::rebind"); }
 namespace strata::prefill { void blob_dequant_f16(const uint8_t * p0, uint16_t * p1, uint16_t * p2, void * p3) { strata::metal_engine::missing("strata::prefill::blob_dequant_f16"); } }
@@ -361,12 +357,10 @@ namespace strata::prefill { void moe_combine_peer(const float * p0, const int32_
 namespace strata::prefill { void moe_combine_peer16(const float * p0, const int32_t * p1, const float * p2, const float * p3, const float * p4, const uint16_t * p5, int64_t p6, float * p7, int64_t p8, void * p9) { strata::metal_engine::missing("strata::prefill::moe_combine_peer16"); } }
 namespace strata::prefill { void peer_gather_add(float * p0, const float * p1, int64_t p2, const float * p3, const int32_t * p4, const int32_t * p5, const int32_t * p6, const int32_t * p7, int64_t p8, void * p9) { strata::metal_engine::missing("strata::prefill::peer_gather_add"); } }
 namespace strata::prefill { void peer_scatter_add(float * p0, const float * p1, const float * p2, const int32_t * p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::prefill::peer_scatter_add"); } }
-namespace strata::prefill { bool prompt_f16() { strata::metal_engine::missing("strata::prefill::prompt_f16"); return {}; } }
 namespace strata::prefill { void rms_rows(float * p0, const float * p1, int64_t p2, int64_t p3, int64_t p4, float p5, void * p6) { strata::metal_engine::missing("strata::prefill::rms_rows"); } }
 namespace strata::prefill { void rope(float * p0, int64_t p1, int64_t p2, int64_t p3, int64_t p4, int64_t p5, const strata::kernels::RopeScaling & p6, void * p7) { strata::metal_engine::missing("strata::prefill::rope"); } }
 namespace strata::prefill { void round_f16(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::round_f16"); } }
 namespace strata::prefill { void route(const float * p0, int32_t * p1, float * p2, int64_t p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::prefill::route"); } }
-namespace strata::prefill { void set_act_f16(bool p0) { strata::metal_engine::missing("strata::prefill::set_act_f16"); } }
 namespace strata::prefill { void split_q(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::split_q"); } }
 namespace strata::prefill { void sums_to_f16(const float * p0, uint16_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::sums_to_f16"); } }
 namespace strata::prefill { void swiglu_interleaved(const float * p0, uint16_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::swiglu_interleaved"); } }

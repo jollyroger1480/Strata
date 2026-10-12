@@ -156,4 +156,5 @@ void native_q6_k_unpack(const void*) {}   // nothing packed on Metal
 
 namespace strata::prefill {
 Gemm::~Gemm() {}   // nothing created on Metal (no prompt GEMMs yet)
+bool prompt_f16() { return false; }   // the CUDA/HIP prompt path's FP16 image mode: not used on Metal
 }  // namespace strata::prefill
