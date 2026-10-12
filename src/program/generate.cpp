@@ -8471,7 +8471,20 @@ int main(int argc, char** argv) {
                 for (int64_t l = 0; l <= g.n_layers; ++l) agate.ticks[(size_t) l] = {&agate, (int32_t) l};
                 agate.has.assign((size_t) g.n_layers, 0);
                 if (!ver.set_adapt_gate(&agate)) aov_why = "the device-planned layers (STRATA_VERIFY_DEVICE_PLAN) are on";
-                if (aov_why == nullptr && !(std::getenv("STRATA_ADAPT_SIGNAL") && std::getenv("STRATA_ADAPT_SIGNAL")[0] == 'h')) {
+                // #2188: on Windows the default is the host function.  Under WDDM a stream's work sits in the driver's
+                // command buffer until something flushes it, and nothing does while the host only spins on the pinned
+                // int: the first request stopped with "copies for layer 45 never landed".  STRATA_ADAPT_SIGNAL=copy asks
+                // for the stream-ordered copy there too (the enqueue then flushes the stream), =host everywhere.
+                const char* asig = std::getenv("STRATA_ADAPT_SIGNAL");
+#if defined(_WIN32)
+                const bool sig_copy = asig != nullptr && asig[0] == 'c';
+#else
+                const bool sig_copy = !(asig != nullptr && asig[0] == 'h');
+#endif
+                if (aov_why == nullptr && !sig_copy)
+                    std::fprintf(stderr, "strata serve: adaptive overlap signal: host functions%s\n",
+                                 asig == nullptr ? " (the Windows default, #2188; STRATA_ADAPT_SIGNAL=copy: a stream-ordered copy)" : "");
+                if (aov_why == nullptr && sig_copy) {
                     // the landing of each layer's copies is told by a stream-ordered D2H copy of the layer number into pinned memory
                     // (STRATA_ADAPT_SIGNAL=host: a host function instead). No callback thread has to be scheduled while the pool's workers spin on every other CPU
                     int32_t* vals = nullptr; void* hp = nullptr;
@@ -8661,6 +8674,9 @@ int main(int argc, char** argv) {
                 return false;
             }
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
+            // #2188: hand the copies and their landing signals to the GPU now.  WDDM batches a stream's work until a
+            // driver call flushes it, and the verify window only spins on the pinned int (Linux submits at once: no-op)
+            if (aov && agate.hland != nullptr && !swaps.empty()) (void) cudaStreamQuery(adapt_stream);
             (void) main_live;
             for (auto& st : stages)
                 if (st->adapt_live) {

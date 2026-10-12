@@ -1748,6 +1748,11 @@ the pairs in which the switched arm won). They are here so you can try them on y
 - **`STRATA_ADAPT_SIGNAL=host`: the overlap's per-layer "landed" signal as a host function** (the 0.1.43 way). From 0.1.43.1 the default is a
   4-byte stream-ordered copy into pinned memory, which needs no driver callback thread: on a 20-core desktop (RTX 3060) the host
   functions still cost ~7 ms per window with the thread started early, because the pool's workers occupy every other CPU.
+  **On Windows the host function stays the default** (0.1.44, #2188): under WDDM the copy and its signal waited in the
+  driver's command buffer while the window spun on the pinned int, and the first request stopped with "the adaptive
+  tier's copies for layer 45 never landed" (RTX 4070 SUPER, driver 617.42). `STRATA_ADAPT_SIGNAL=copy` asks for the copy
+  there; the engine now flushes the copy stream after queueing the swaps, which is meant to fix it but has not been run
+  on Windows yet.
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
