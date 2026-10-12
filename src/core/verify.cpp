@@ -1902,7 +1902,7 @@ bool Verifier::capture(int T, std::string& err) {
         std::fprintf(stderr, "\n%s\n", seq.c_str());
     }
 #endif
-#if !defined(STRATA_USE_HIP)   // a CUDA debug listing (node types, kernel names)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)   // a CUDA debug listing (node types, kernel names)
     if (std::getenv("STRATA_VERIFY_NODES") != nullptr) {   // what the window graph holds
         size_t nn = 0;
         cudaGraphGetNodes(graph, nullptr, &nn);
