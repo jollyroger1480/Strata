@@ -28,7 +28,7 @@ int rows_per_tg(Cfg c) { return (c.S / c.K) * (32 / c.L) * c.R; }
 int unit_of(int t) {
     switch (t) {
         case ref::Q2_0: case ref::IQ3_S: case ref::IQ3_XXS: case ref::IQ2_XXS: case ref::IQ2_XS: case ref::IQ2_S:
-        case ref::BF16: return 16;
+        case ref::BF16: case ref::F32: return 16;
         default: return 32;
     }
 }
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
     }
     if (!bench) {
         int fails = 0;
-        for (int t : {ref::BF16, ref::Q8_0, ref::Q4_0, ref::Q5_0, ref::IQ4_NL, ref::IQ4_XS, ref::Q2_0, ref::IQ3_S,
+        for (int t : {ref::F32, ref::BF16, ref::Q8_0, ref::Q4_0, ref::Q5_0, ref::IQ4_NL, ref::IQ4_XS, ref::Q2_0, ref::IQ3_S,
                       ref::Q3_K, ref::Q4_K, ref::Q5_K, ref::Q6_K}) {
             for (int n_in : {2560, 640, 10240}) {
                 if (n_in % ref::block_elems(t)) continue;

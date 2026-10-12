@@ -85,6 +85,18 @@ template <> struct X<T_Q6_K> {
         xsum[1] = s16[(p0 >> 4) + 4];
     }
 };
+// Q5_1: 32 contiguous raw x, the two per-16 sums formed from them (the GEMVs that read Q5_1 - the routed down - get
+// h without prepared sums)
+template <> struct X<T_Q5_1> {
+    template <typename P> static inline void load(P xp, P, int u, thread float* xs, thread float* xsum) {
+        load16(xp + 32 * u, xs);
+        load16(xp + 32 * u + 16, xs + 16);
+        float a = 0.0f, b = 0.0f;
+        for (int j = 0; j < 16; ++j) { a += xs[j]; b += xs[16 + j]; }
+        xsum[0] = a;
+        xsum[1] = b;
+    }
+};
 // Q3_K: 32 contiguous, sums per 16
 template <> struct X<T_Q3_K> {
     template <typename P> static inline void load(P xp, P s16, int u, thread float* xs, thread float* xsum) {
@@ -179,6 +191,14 @@ static inline void bytes2(ushort w, thread float* q) {
     q[1] = float(w & 0xFF00);
 }
 
+template <> struct Dec<T_Q5_1> {   // w = d q + m:  sum = d (q . x) + m (sum x)
+    static inline void run(device const uchar* row, int u, thread float* q, thread float4& sc, threadgroup const uint* tab) {
+        device const uchar* b = row + u * 24;
+        const float d = deq<T_Q5_1>(b, 0, q, tab), m = rdh(b + 2);
+        sc = float4(d, d, -m, -m);
+    }
+};
+
 template <> struct Dec<T_Q4_K> {
     static inline void run(device const uchar* row, int u, thread float* q, thread float4& sc, threadgroup const uint*) {
         device const uchar* b = row + (u >> 3) * 144;
@@ -259,6 +279,17 @@ template <> struct Dec<T_Q3_K> {
         }
         const float d1 = d * float(l1 - 32), d2 = d * float(l2 - 32);
         sc = float4(d1, d2, 4.0f * d1, 4.0f * d2);
+    }
+};
+
+template <> struct Dec<T_F32> {   // 16 floats a unit (the Unsloth files' router / alpha / beta / inject rows)
+    static inline void run(device const uchar* row, int u, thread float* q, thread float4& sc, threadgroup const uint*) {
+        device const float4* p = (device const float4*)(row + 64 * u);
+        for (int k = 0; k < 4; ++k) {
+            const float4 v = p[k];
+            q[4 * k] = v.x; q[4 * k + 1] = v.y; q[4 * k + 2] = v.z; q[4 * k + 3] = v.w;
+        }
+        sc = float4(1.0f, 1.0f, 0.0f, 0.0f);
     }
 };
 

@@ -39,7 +39,9 @@ int main(int argc, char** argv) {
     const int SETS = bench ? 48 : 1;
     const bool q8 = std::getenv("GR_Q8") != nullptr;   // the Q8_0 form of the HC matrices (gr_down_q8_*, gr_up_q8)
     const int wty = q8 ? ref::Q8_0 : ref::BF16;
-    const size_t wd_bytes = (size_t)LR * NIN * 2, wi_bytes = (size_t)HC * NIN * 2, wu_bytes = (size_t)NIN * LR * 2;
+    // GR_INJ_F32 (with GR_Q8): the inject rows as F32 (the Unsloth files), read by gr_down_q8f_*
+    const bool injf = q8 && std::getenv("GR_INJ_F32") != nullptr;
+    const size_t wd_bytes = (size_t)LR * NIN * 2, wi_bytes = (size_t)HC * NIN * 4, wu_bytes = (size_t)NIN * LR * 2;
     const size_t set_bytes = wd_bytes + wi_bytes + wu_bytes + NIN * 4;
     mtl::Buffer W = cx.alloc(set_bytes * SETS);
     ref::Rng rng(3);
@@ -57,7 +59,8 @@ int main(int argc, char** argv) {
             for (int m = 0; m < 3; ++m) {
                 std::vector<float> f(ns[m]);
                 ref::dequant(ref::BF16, b + offs[m], f.data(), ns[m]);
-                ref::quantize_q8_0(f.data(), ns[m], b + offs[m]);
+                if (m == 1 && injf) std::memcpy(b + offs[m], f.data(), 4 * ns[m]);
+                else ref::quantize_q8_0(f.data(), ns[m], b + offs[m]);
             }
         }
     }
@@ -78,7 +81,7 @@ int main(int argc, char** argv) {
     int fails = 0;
     for (int nt : ntoks) {
         mtl::Pipeline pn = cx.pipeline(lib, "gr_norm"),
-                      pd = cx.pipeline(lib, std::string(q8 ? "gr_down_q8_" : "gr_down_") + grd, mtl::Constants().i(1, nt)),
+                      pd = cx.pipeline(lib, std::string(injf ? "gr_down_q8f_" : q8 ? "gr_down_q8_" : "gr_down_") + grd, mtl::Constants().i(1, nt)),
                       pu = cx.pipeline(lib, q8 ? "gr_up_q8" : "gr_up", mtl::Constants().i(1, nt));
         for (int apply = 0; apply < 2; ++apply) {
             GrArgs a{N, HC, LR, (uint32_t)nt, (uint32_t)apply, 1e-6f};
@@ -122,7 +125,7 @@ int main(int argc, char** argv) {
                 const uint8_t* b = W.as<uint8_t>();
                 std::vector<float> wd((size_t)LR * NIN), wi((size_t)HC * NIN), wu((size_t)NIN * LR);
                 ref::dequant(wty, b, wd.data(), wd.size());
-                ref::dequant(wty, b + wd_bytes, wi.data(), wi.size());
+                ref::dequant(injf ? ref::F32 : wty, b + wd_bytes, wi.data(), wi.size());
                 ref::dequant(wty, b + wd_bytes + wi_bytes, wu.data(), wu.size());
                 const float* wn = (const float*)(b + wd_bytes + wi_bytes + wu_bytes);
                 Err eR, elo, einj, emix;

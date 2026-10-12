@@ -365,6 +365,13 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
 #define MMDN2(F, M, N, K, S) MMDN2_(F, M, N, K, S)
 #define MM_GU2_SET(F) MMGU2(F, 32, 64, 32, 2) MMGU2(F, 32, 32, 32, 2) MMGU2(F, 32, 64, 16, 2) MMGU2(F, 64, 32, 16, 2) MMGU2(F, 16, 32, 32, 2) MMGU2(F, 16, 64, 16, 2) MMGU2(F, 16, 128, 32, 4) MMGU2(F, 32, 64, 16, 4) MMGU2(F, 16, 32, 32, 1) MMGU2(F, 16, 64, 32, 4) MMGU2(F, 16, 64, 64, 2) MMGU2(F, 32, 64, 64, 4) MMGU2(F, 64, 64, 64, 4) MMGU2(F, 16, 32, 64, 2) MMGU2(F, 32, 64, 32, 4) MMGU2(F, 64, 64, 32, 4) MMGU2(F, 16, 64, 32, 2)
 #define MM_DN2_SET(F) MMDN2(F, 32, 64, 32, 2) MMDN2(F, 32, 32, 32, 2) MMDN2(F, 32, 64, 16, 2) MMDN2(F, 64, 32, 16, 2) MMDN2(F, 16, 32, 32, 2) MMDN2(F, 16, 64, 16, 2) MMDN2(F, 16, 128, 32, 4) MMDN2(F, 32, 64, 16, 4) MMDN2(F, 16, 32, 32, 1) MMDN2(F, 16, 64, 32, 4) MMDN2(F, 16, 64, 64, 2) MMDN2(F, 32, 64, 64, 4) MMDN2(F, 64, 64, 64, 4) MMDN2(F, 16, 32, 64, 2) MMDN2(F, 32, 64, 32, 4) MMDN2(F, 64, 64, 32, 4) MMDN2(F, 16, 64, 32, 2)
+#define MM_GU2_U32(F) MMGU2(F, 16, 64, 32, 2) MMGU2(F, 16, 64, 64, 2) MMGU2(F, 32, 64, 32, 2) MMGU2(F, 16, 32, 32, 2) \
+    MMGU2(F, 64, 64, 32, 4)
+#define MM_DN2_U32(F) MMDN2(F, 16, 64, 32, 2) MMDN2(F, 16, 64, 64, 2) MMDN2(F, 16, 32, 32, 2) MMDN2(F, 32, 32, 32, 2) \
+    MMDN2(F, 16, 128, 32, 4) MMDN2(F, 32, 64, 32, 2) MMDN2(F, 64, 64, 32, 4)
+// K-quants: the staged K chunk must hold whole units as DW places them (128 wide): TK 128
+#define MM_GU2_KQ(F) MMGU2(F, 16, 32, 128, 2) MMGU2(F, 16, 16, 128, 2) MMGU2(F, 32, 32, 128, 2) MMGU2(F, 16, 32, 128, 4)
+MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_U32(T_Q5_1) MM_DN2_U32(T_Q8_0)
 // IQ4_XS (UNIT 32): the K chunk must be >= 32
 MMGU2(T_IQ4_XS, 16, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 64, 64, 2) MMGU2(T_IQ4_XS, 32, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 32, 32, 2)
 MMGU2(T_IQ4_XS, 64, 64, 32, 4)
@@ -499,6 +506,77 @@ template <> struct W4<T_IQ4_NL> {   // 32 a block: d, 16 bytes; low nibbles are 
 
 // W8<F>: the runs k .. k + 3 and k + 16 .. k + 19 of a row (k % 32 < 16): one 32-group, so the per-group fields (scale,
 // sign word) are read once.  The generic one is two W4.
+// ---- the K-quant / legacy-quant W4 decoders (the UD-Q4/5/6_K_XL packs' experts): values k .. k + 3 (k % 4 == 0)
+// of a row in ref_quant's arithmetic (float), then fp16
+template <> struct W4<T_Q8_0> {   // 32 a block: d, int8 qs[32]
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 5) * 34;
+        const float d = rdh(b);
+        device const char* q = (device const char*)(b + 2 + (k & 31));
+        return half4(float4(float(q[0]), float(q[1]), float(q[2]), float(q[3])) * d);
+    }
+};
+template <> struct W4<T_Q5_1> {   // 32 a block: d, m, qh (32 bits), qs[16] (low nibbles 0..15, high 16..31)
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 5) * 24;
+        const float d = rdh(b), m = rdh(b + 2);
+        const uint hb = rd32(b + 4);
+        const int j = k & 31, o = j & 15, hi = j >> 4;
+        float4 w;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = b[8 + o + c];
+            const int x = int(hi ? (qv >> 4) : (qv & 15)) | int(((hb >> (j + c)) & 1) << 4);
+            w[c] = float(x) * d + m;
+        }
+        return half4(w);
+    }
+};
+template <> struct W4<T_Q4_K> {   // 256 a block: d, dmin, scales[12], qs[128] (64-chunks: low nibbles then high)
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 8) * 144;
+        const int j = k & 255, c = j >> 6, hi = (j >> 5) & 1, l = j & 31;
+        float s, mm;
+        scale_min_k4(2 * c + hi, b + 4, s, mm);
+        const float d1 = rdh(b) * s, m1 = rdh(b + 2) * mm;
+        device const uchar* q = b + 16 + 32 * c + l;
+        float4 w;
+        for (int i = 0; i < 4; ++i) w[i] = d1 * float(hi ? (q[i] >> 4) : (q[i] & 15)) - m1;
+        return half4(w);
+    }
+};
+template <> struct W4<T_Q5_K> {   // 256 a block: d, dmin, scales[12], qh[32], qs[128]
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 8) * 176;
+        const int j = k & 255, c = j >> 6, hi = (j >> 5) & 1, l = j & 31;
+        float s, mm;
+        scale_min_k4(2 * c + hi, b + 4, s, mm);
+        const float d1 = rdh(b) * s, m1 = rdh(b + 2) * mm;
+        device const uchar* qh = b + 16 + l;
+        device const uchar* ql = b + 48 + 32 * c + l;
+        const uint bit = 1u << (2 * c + hi);
+        float4 w;
+        for (int i = 0; i < 4; ++i)
+            w[i] = d1 * float(int(hi ? (ql[i] >> 4) : (ql[i] & 15)) + ((qh[i] & bit) ? 16 : 0)) - m1;
+        return half4(w);
+    }
+};
+template <> struct W4<T_Q6_K> {   // 256 a block: ql[128], qh[64], int8 scales[16], d; halves of 128
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 8) * 210;
+        const int j = k & 255, n = j >> 7, jj = j & 127, qd = jj >> 5, l = jj & 31;
+        device const uchar* ql = b + 64 * n + l + ((qd & 1) ? 32 : 0);
+        device const uchar* qh = b + 128 + 32 * n + l;
+        const float d = rdh(b + 208);
+        const float ds = d * float(((device const char*)(b + 192 + 8 * n))[l / 16 + 2 * qd]);
+        float4 w;
+        for (int i = 0; i < 4; ++i) {
+            const int q = int(((qd >> 1) ? (ql[i] >> 4) : (ql[i] & 15)) | (((qh[i] >> (2 * qd)) & 3) << 4)) - 32;
+            w[i] = ds * float(q);
+        }
+        return half4(w);
+    }
+};
+
 template <int F> struct W8 {
     static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
         a = W4<F>::run(row, k, tab);
@@ -741,8 +819,8 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
     MMGU3(F, 16, 32, 16, 2) MMGU3(F, 32, 32, 32, 2) MMGU3(F, 16, 64, 32, 1) MMGU3(F, 16, 64, 32, 4)     MMGU3(F, 16, 32, 16, 4) MMGU3(F, 16, 32, 32, 5) MMGU3(F, 16, 32, 16, 5) MMGU3(F, 16, 16, 32, 4) MMGU3(F, 16, 16, 32, 8)     MMGU3(F, 16, 16, 16, 8)
 #define MM3_DN(F) MMDN3(F, 16, 64, 32, 2) MMDN3(F, 16, 32, 32, 4) MMDN3(F, 32, 64, 32, 2) MMDN3(F, 16, 64, 64, 2) \
     MMDN3(F, 16, 32, 16, 2) MMDN3(F, 32, 32, 32, 2) MMDN3(F, 16, 64, 32, 1) MMDN3(F, 16, 64, 32, 4)     MMDN3(F, 16, 64, 16, 2) MMDN3(F, 16, 32, 16, 4) MMDN3(F, 16, 64, 32, 5) MMDN3(F, 16, 64, 16, 4)
-MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
-MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL)
+MM3_GU(T_Q4_K) MM3_GU(T_Q5_K) MM3_GU(T_Q6_K) MM3_GU(T_Q8_0) MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
+MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL) MM3_DN(T_Q5_1) MM3_DN(T_Q8_0)
 
 // mm_gu4: mm_gu3 with each decoded right operand (TN x TK weights of gate and of up) applied to MS 16-row token
 // tiles (a tile of 16 * MS rows from the plan, tm = 16 * MS): the decode, which bounds mm_gu3, is shared by MS times

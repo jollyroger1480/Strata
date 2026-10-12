@@ -101,3 +101,4 @@ kernel void router_route(device const uchar* W [[buffer(0)]], device const float
 }
 
 template [[host_name("router_route_30")]] kernel decltype(router_route<T_BF16>) router_route<T_BF16>;
+template [[host_name("router_route_0")]] kernel decltype(router_route<T_F32>) router_route<T_F32>;

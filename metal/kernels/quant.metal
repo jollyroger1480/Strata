@@ -13,7 +13,9 @@
 #define T_Q4_0 2
 #define T_Q3_K 11
 #define T_BF16 30
+#define T_F32 0
 #define T_Q5_0 6
+#define T_Q5_1 7
 #define T_Q8_0 8
 #define T_Q4_K 12
 #define T_Q5_K 13
@@ -44,9 +46,11 @@ template <> struct fmt<T_Q4_K>    { enum { QK = 256, BB = 144, UNIT = 32, TAB = 
 template <> struct fmt<T_Q5_K>    { enum { QK = 256, BB = 176, UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_Q6_K>    { enum { QK = 256, BB = 210, UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_BF16>    { enum { QK = 16,  BB = 32,  UNIT = 16, TAB = 1 }; };
+template <> struct fmt<T_F32>     { enum { QK = 16,  BB = 64,  UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_Q8_0>    { enum { QK = 32,  BB = 34,  UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_Q4_0>    { enum { QK = 32,  BB = 18,  UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_Q5_0>    { enum { QK = 32,  BB = 22,  UNIT = 32, TAB = 1 }; };
+template <> struct fmt<T_Q5_1>    { enum { QK = 32,  BB = 24,  UNIT = 32, TAB = 1 }; };
 
 static inline uint rd32(device const uchar* p) {
     device const ushort* s = (device const ushort*)p;
@@ -76,11 +80,13 @@ template <> inline void load_tab<T_Q2_0R>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q8_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q4_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q5_0>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q5_1>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q3_K>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q4_K>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q5_K>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q6_K>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_BF16>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_F32>(threadgroup uint*, ushort, ushort) {}
 
 static inline void load_signs(threadgroup uint* tab, int at, ushort tid, ushort nth) {
     threadgroup uchar* s = (threadgroup uchar*)(tab + at);
@@ -279,6 +285,21 @@ template <> inline float deq<T_Q5_0>(device const uchar* b, int, thread float* q
         q[j0 + 16] = float(int((v >> 4) & 15) | int(((hb >> (j0 + 16)) & 1) << 4)) - 16.0f;
         q[j1] = float(int((v >> 8) & 15) | int(((hb >> j1) & 1) << 4)) - 16.0f;
         q[j1 + 16] = float(int(v >> 12) | int(((hb >> (j1 + 16)) & 1) << 4)) - 16.0f;
+    }
+    return rdh(b);
+}
+
+// Q5_1: 32 = 1 unit; q = the 5-bit code (no offset; the min m is applied through the x sums), returns d
+template <> inline float deq<T_Q5_1>(device const uchar* b, int, thread float* q, threadgroup const uint*) {
+    const uint hb = rd32(b + 4);
+    device const ushort* p = (device const ushort*)(b + 8);
+    for (int j = 0; j < 8; ++j) {
+        const ushort v = p[j];
+        const int j0 = 2 * j, j1 = 2 * j + 1;
+        q[j0] = float(int(v & 15) | int(((hb >> j0) & 1) << 4));
+        q[j0 + 16] = float(int((v >> 4) & 15) | int(((hb >> (j0 + 16)) & 1) << 4));
+        q[j1] = float(int((v >> 8) & 15) | int(((hb >> j1) & 1) << 4));
+        q[j1 + 16] = float(int(v >> 12) | int(((hb >> (j1 + 16)) & 1) << 4));
     }
     return rdh(b);
 }
