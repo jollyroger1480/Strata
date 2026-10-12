@@ -37,6 +37,8 @@ int main(int argc, char** argv) {
     const int lib = cx.compile({"quant.metal", "units.metal", "gr.metal"});
     std::printf("device %s\n", cx.device_name().c_str());
     const int SETS = bench ? 48 : 1;
+    const bool q8 = std::getenv("GR_Q8") != nullptr;   // the Q8_0 form of the HC matrices (gr_down_q8_*, gr_up_q8)
+    const int wty = q8 ? ref::Q8_0 : ref::BF16;
     const size_t wd_bytes = (size_t)LR * NIN * 2, wi_bytes = (size_t)HC * NIN * 2, wu_bytes = (size_t)NIN * LR * 2;
     const size_t set_bytes = wd_bytes + wi_bytes + wu_bytes + NIN * 4;
     mtl::Buffer W = cx.alloc(set_bytes * SETS);
@@ -48,6 +50,16 @@ int main(int argc, char** argv) {
         ref::random_blocks(ref::BF16, b + wd_bytes + wi_bytes, NIN, LR, 33 + s, 0.1f);
         float* wn = (float*)(b + wd_bytes + wi_bytes + wu_bytes);
         for (int i = 0; i < NIN; ++i) wn[i] = 1.0f + 0.1f * rng.sym();
+        if (q8) {
+            // GR_Q8: the three matrices as Q8_0 (quantized from the BF16 values), each at its BF16 offset (it fits)
+            const size_t offs[3] = {0, wd_bytes, wd_bytes + wi_bytes};
+            const size_t ns[3] = {(size_t)LR * NIN, (size_t)HC * NIN, (size_t)NIN * LR};
+            for (int m = 0; m < 3; ++m) {
+                std::vector<float> f(ns[m]);
+                ref::dequant(ref::BF16, b + offs[m], f.data(), ns[m]);
+                ref::quantize_q8_0(f.data(), ns[m], b + offs[m]);
+            }
+        }
     }
     const int MAXT = 8;
     mtl::Buffer R = cx.alloc(4 * MAXT * NIN), R0 = cx.alloc(4 * MAXT * NIN), bo = cx.alloc(4 * MAXT * N),
@@ -60,8 +72,9 @@ int main(int argc, char** argv) {
     mtl::Pipeline pprep = cx.pipeline(lib, "xprep");
     int fails = 0;
     for (int nt : ntoks) {
-        mtl::Pipeline pn = cx.pipeline(lib, "gr_norm"), pd = cx.pipeline(lib, "gr_down_8_8", mtl::Constants().i(1, nt)),
-                      pu = cx.pipeline(lib, "gr_up", mtl::Constants().i(1, nt));
+        mtl::Pipeline pn = cx.pipeline(lib, "gr_norm"),
+                      pd = cx.pipeline(lib, q8 ? "gr_down_q8_8_8" : "gr_down_8_8", mtl::Constants().i(1, nt)),
+                      pu = cx.pipeline(lib, q8 ? "gr_up_q8" : "gr_up", mtl::Constants().i(1, nt));
         for (int apply = 0; apply < 2; ++apply) {
             GrArgs a{N, HC, LR, (uint32_t)nt, (uint32_t)apply, 1e-6f};
             std::memcpy(R.ptr, R0.ptr, R.bytes);
@@ -103,9 +116,9 @@ int main(int argc, char** argv) {
                 // reference
                 const uint8_t* b = W.as<uint8_t>();
                 std::vector<float> wd((size_t)LR * NIN), wi((size_t)HC * NIN), wu((size_t)NIN * LR);
-                ref::dequant(ref::BF16, b, wd.data(), wd.size());
-                ref::dequant(ref::BF16, b + wd_bytes, wi.data(), wi.size());
-                ref::dequant(ref::BF16, b + wd_bytes + wi_bytes, wu.data(), wu.size());
+                ref::dequant(wty, b, wd.data(), wd.size());
+                ref::dequant(wty, b + wd_bytes, wi.data(), wi.size());
+                ref::dequant(wty, b + wd_bytes + wi_bytes, wu.data(), wu.size());
                 const float* wn = (const float*)(b + wd_bytes + wi_bytes + wu_bytes);
                 Err eR, elo, einj, emix;
                 for (int t = 0; t < nt; ++t) {
