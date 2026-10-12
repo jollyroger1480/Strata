@@ -219,7 +219,8 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int) -> list[str]:
     (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16 read)."""
     return ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1]),
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "64",
-            "--prefill", "auto", "--spec", "2", "--mtp", str(rt), "--max-context", str(ctx)]
+            "--prefill", "auto", "--spec", "2", "--mtp", str(rt), "--max-context", str(ctx),
+            "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
 
 
 def mac_config(exe: Path, args: list, pack: Path, model_name: str, tag: str, port: int) -> dict:
