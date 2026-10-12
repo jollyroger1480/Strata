@@ -3317,8 +3317,21 @@ bool FileExpertSource::soft_commit_exchanges() {
     return true;
 }
 
+void FileExpertSource::fs_hold_staged(bool hold) {
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    if (fs == nullptr || n_expert_ <= 0) return;
+    for (const Exchange& x : staged_)
+        for (const size_t i : {x.in, x.out}) {
+            const int64_t layer = (int64_t) (i / (size_t) n_expert_);
+            const int32_t expert = (int32_t) (i % (size_t) n_expert_);
+            if (hold) fs->hold(layer, expert);
+            else fs->unhold(layer, expert);
+        }
+}
+
 int64_t FileExpertSource::commit_exchanges() {
     int64_t n = 0;
+    fs_hold_staged(true);   // #2134: both experts' bytes move (in's place takes out's bytes, out leaves its buffer)
     for (const Exchange& x : staged_)
         if (!soft_in_.empty()) soft_in_[x.out] = SIZE_MAX;
     for (const Exchange& x : staged_) {
@@ -3341,12 +3354,14 @@ int64_t FileExpertSource::commit_exchanges() {
         }
         override_[x.out] = nullptr;
     }
+    fs_hold_staged(false);
     staged_.clear();
     exchanges_ += n;
     return n;
 }
 
 void FileExpertSource::commit_copies() {
+    fs_hold_staged(true);   // #2134: held until commit_flip has pointed `out` at its new place
     if (exchange_storage_.active()) return;   // STRATA_EXCHANGE_ROTATE: ownership moves in commit_flip, nothing to copy
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_.empty() ? nullptr : override_[x.out];
@@ -3359,6 +3374,7 @@ void FileExpertSource::commit_copies() {
 
 int64_t FileExpertSource::commit_flip() {
     int64_t n = 0;
+    fs_hold_staged(true);   // (already held by commit_copies; idempotent)
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];
         if (exchange_storage_.active()) {   // STRATA_EXCHANGE_ROTATE: the same ownership transfer as commit_exchanges
@@ -3377,6 +3393,7 @@ int64_t FileExpertSource::commit_flip() {
             ++n;
         override_[x.out] = nullptr;
     }
+    fs_hold_staged(false);
     staged_.clear();
     exchanges_ += n;
     return n;
@@ -4873,6 +4890,26 @@ bool ForesightSwap::take(int64_t layer, int32_t expert, unsigned long long& ptr)
     return true;
 }
 
+void ForesightSwap::hold(int64_t layer, int32_t expert) {
+    if (layer < 0 || layer >= n_layers || expert < 0 || expert >= n_expert) return;
+    std::lock_guard<std::mutex> smu_lk(smu_);
+    const size_t key = (size_t) (layer * n_expert + expert);
+    const int s = where[key];
+    where[key] = kHeld;
+    if (s < 0) return;
+    Slot& sl = slot[(size_t) (layer * slots + s)];
+    sl.expert = kDropped;   // `loading` and `last_ref` stay: a copy in flight and a window that read it are waited for
+    sl.ready = false;
+    ++dropped;
+}
+
+void ForesightSwap::unhold(int64_t layer, int32_t expert) {
+    if (layer < 0 || layer >= n_layers || expert < 0 || expert >= n_expert) return;
+    std::lock_guard<std::mutex> smu_lk(smu_);
+    int16_t& w = where[(size_t) (layer * n_expert + expert)];
+    if (w == kHeld) w = -1;
+}
+
 void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) {
     std::lock_guard<std::mutex> smu_lk(smu_);
     request_locked(src, layer, expert, false);
@@ -4887,7 +4924,7 @@ void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
 void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t expert, bool predicted_copy) {
     if (failed.load(std::memory_order_relaxed)) return;
     const size_t key = (size_t) (layer * n_expert + expert);
-    if (where[key] >= 0) return;                        // already on its way
+    if (where[key] != -1) return;                       // already on its way, or held by an exchange (#2134)
     const uint64_t now = completed.load(std::memory_order_acquire);
     if (admit > 1 && !predicted_copy) {
         if (now > miss_at[key] + 4) miss_cnt[key] = 0;
@@ -4912,7 +4949,7 @@ void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t exp
             sl.loading = false;
             sl.ready = true;
         }
-        if (sl.expert < 0) { best = s; break; }
+        if (sl.expert == -1) { best = s; break; }      // never used (a dropped slot, kDropped, waits like a used one)
         if (sl.last_ref + (uint64_t) depth > now) continue;
         if (sl.last_ref < best_ref) { best_ref = sl.last_ref; best = s; }
     }
@@ -4944,6 +4981,7 @@ std::string ForesightSwap::report() const {
                   (unsigned long long) hits, (unsigned long long) copies, (unsigned long long) predicted,
                   (unsigned long long) pending, (unsigned long long) busy, (unsigned long long) over_budget, verify ? "" : "");
     std::string r = buf;
+    if (dropped > 0) r += ", " + std::to_string(dropped) + " dropped by exchanges";
     if (verify) r += ", verified " + std::to_string(verify_ok) + " ok / " + std::to_string(verify_bad) + " BAD";
     return r;
 }

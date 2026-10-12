@@ -8326,12 +8326,15 @@ int main(int argc, char** argv) {
             fs_swap.reset(strata::core::foresight_swap_from_env(g.n_layers, g.n_expert, card, devs));
             drive.d.fs = fs_swap.get();
             if (fs_swap && drive.d.lookahead != nullptr) lookahead.set_foresight(fs_swap.get());
+            src.set_foresight_swap(fs_swap.get());   // #2134: the exchanges hold the experts whose bytes they move
         }
-        // the look-ahead thread must not touch the swap space once it is gone (declared after it: destroyed first)
+        // the look-ahead thread and the exchanges must not touch the swap space once it is gone (declared after it:
+        // destroyed first)
         struct FsDetach {
             strata::core::RouterLookahead* la;
-            ~FsDetach() { la->set_foresight(nullptr); }
-        } fs_detach{&lookahead};
+            strata::core::FileExpertSource* src;
+            ~FsDetach() { la->set_foresight(nullptr); src->set_foresight_swap(nullptr); }
+        } fs_detach{&lookahead, &src};
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
         const bool all_experts_resident = !host_res.empty() &&
             std::all_of(host_res.begin(), host_res.end(), [](int32_t r) { return r >= 0; });

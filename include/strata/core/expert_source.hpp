@@ -625,6 +625,10 @@ public:
     /// (the caller's thread, between windows) points `out` there and drops the staging.  Returns how many were applied.
     void commit_copies();
     int64_t commit_flip();
+    /// #2134: the Foresight swap space (STRATA_FS_SLOTS), null = none.  Each commit above holds the staged experts in it
+    /// (ForesightSwap::hold: their slots are dropped and not refilled) while their bytes move, so no slot is served
+    /// with bytes copied from a place an exchange rewrote.
+    void set_foresight_swap(ForesightSwap* fs) { fs_swap_.store(fs, std::memory_order_release); }
     /// The compact copy's blob of `(layer, expert)`, or null; not counted as a read (any thread).
     const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
@@ -871,6 +875,8 @@ private:
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };
     std::vector<Exchange> staged_;
+    std::atomic<ForesightSwap*> fs_swap_{nullptr};   ///< set_foresight_swap
+    void fs_hold_staged(bool hold);
     std::vector<size_t> soft_in_;             ///< soft_commit_exchanges: per `out` index, the `in` whose place it will take (SIZE_MAX: none)
     const uint8_t* xstage_dev_ = nullptr;     ///< the exchange buffers' device alias (soft_commit_exchanges)
     uint8_t* xstage_ = nullptr;               ///< exchange buffers, `xstage_cap_ x xstage_blob_`
