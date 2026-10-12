@@ -102,7 +102,8 @@ int main(int argc, char** argv) {
         return *t;
     };
 
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal",
+                                "router.metal"});
     const int lgdn = cx.compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lqsa = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -177,6 +178,12 @@ int main(int argc, char** argv) {
     // ---- SLC prefetch (--prefetch): the next HC read's weights touched concurrently with the first projection GEMV
     // after the current read, so the latency-bound read finds them in the SLC
     const bool prefetch = std::getenv("CHAIN_PREFETCH") != nullptr;
+    const bool albe = std::getenv("CHAIN_ALBE") != nullptr;   // ssm_alpha + ssm_beta as one gemv_cat
+    // the router GEMV + moe_route as one router_route (default; CHAIN_ROUTE=0: separate)
+    const bool routef = !(std::getenv("CHAIN_ROUTE") && std::string(std::getenv("CHAIN_ROUTE")) == "0");
+    const bool combf = std::getenv("CHAIN_COMB") != nullptr;   // the MoE combine folded into the next gr_norm
+    bool comb_pending = false;
+    mtl::Buffer rcounter = cx.alloc(16);
     struct Range { const mtl::Buffer* b; size_t off, bytes; };
     std::vector<Range> pending;
     mtl::Buffer sink = cx.alloc(16);
@@ -219,6 +226,7 @@ int main(int argc, char** argv) {
         if (!pending.empty()) push_prefetch();
     };
     const mtl::Pipeline* pnorm = Pn(lib, "gr_norm", "gr_norm", {});
+    const mtl::Pipeline* pnormc = Pn(lib, "gr_norm_comb", "gr_norm_comb", {});
     ptouch = Pn(lib, "slc_touch", "slc_touch", {});
     const mtl::Pipeline* pdown = Pn(lib, "gr_down_8_8", "gr_down_8_8", mtl::Constants().i(1, ntok));
     const mtl::Pipeline* pup = Pn(lib, "gr_up", "gr_up", mtl::Constants().i(1, ntok));
@@ -320,6 +328,14 @@ int main(int argc, char** argv) {
         d1.p = pnorm;
         d1.args = {mtl::Arg::B(R), mtl::Arg::B(bo), mtl::Arg::B(inj[cur_inj]), mtl::Arg::B(W, tn.offset), mtl::Arg::B(xn),
                    mtl::Arg::V(a)};
+        if (comb_pending) {
+            // the MoE combine folded into this norm (gr_norm_comb; bitwise moe_combine_sh + gr_norm)
+            const uint32_t tk = TOPK;
+            d1.p = pnormc;
+            d1.args = {mtl::Arg::B(R), mtl::Arg::B(ye), mtl::Arg::B(inj[cur_inj]), mtl::Arg::B(W, tn.offset), mtl::Arg::B(xn),
+                       mtl::Arg::V(a), mtl::Arg::B(plan), mtl::Arg::B(ysh), mtl::Arg::B(sg), mtl::Arg::V(tk)};
+            comb_pending = false;
+        }
         d1.grid[0] = HC;
         d1.grid[1] = ntok;
         d1.tg[0] = 256;
@@ -383,9 +399,25 @@ int main(int argc, char** argv) {
             nb = true;
             gemv2(T(b + "attn_gate.weight"), XA, z, 6144, "gdn proj");
             nb = true;
-            gemv2(T(b + "ssm_alpha.weight"), XA, al, 48, "gdn proj");
-            nb = true;
-            gemv2(T(b + "ssm_beta.weight"), XA, be, 48, "gdn proj");
+            if (albe) {
+                // ssm_alpha + ssm_beta in one dispatch (gemv_cat; bitwise the two GEMVs)
+                const gguf::Tensor &ta = T(b + "ssm_alpha.weight"), &tb = T(b + "ssm_beta.weight");
+                const std::string fn = "gemvc_" + std::to_string(ta.type) + "_32_1_4";
+                mtl::Dispatch d;
+                d.p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
+                GemvArgs ga{(uint32_t)N, 96, (uint32_t)ntok, (uint32_t)ref::row_bytes(ta.type, N), (uint32_t)N, 48};
+                const uint32_t sp = 48;
+                d.args = {mtl::Arg::B(W, ta.offset), mtl::Arg::B(XA.b, XA.plane_bytes() * xkind(ta.type)),
+                          mtl::Arg::B(XA.b, XA.plane_bytes() * 4), mtl::Arg::B(al), mtl::Arg::V(ga), mtl::Arg::B(W, tb.offset),
+                          mtl::Arg::B(be), mtl::Arg::V(sp)};
+                d.grid[0] = 96 / 4;
+                d.tg[0] = 128;
+                push(d, "gdn proj", (double)ta.bytes + tb.bytes);
+            } else {
+                gemv2(T(b + "ssm_alpha.weight"), XA, al, 48, "gdn proj");
+                nb = true;
+                gemv2(T(b + "ssm_beta.weight"), XA, be, 48, "gdn proj");
+            }
             GdnArgs a{16, 48, 10240, 1, 1e-6f, fuse ? (uint32_t)(MAXT * 6144) : 0u};
             mtl::Dispatch d;
             d.p = pgdn;
@@ -459,8 +491,10 @@ int main(int argc, char** argv) {
         }
         // ---- MoE
         gr_read(b + "hc_ffn", true, XF, false);
-        gemv2(T(b + "ffn_gate_inp.weight"), XF, logits, 512, "router");
-        nb = true;
+        if (!routef) {
+            gemv2(T(b + "ffn_gate_inp.weight"), XF, logits, 512, "router");
+            nb = true;
+        }
         const bool pair = fuse && std::getenv("CHAIN_PAIR");   // measured slower (+0.11 ms): opt-in
         if (pair) {
             // the shared expert's gate + up + SwiGLU in one dispatch, h raw into XH's raw plane
@@ -507,11 +541,26 @@ int main(int argc, char** argv) {
             if (const char* e = std::getenv(dq2 ? "CHAIN_DN" : "CHAIN_DN4")) std::sscanf(e, "%d,%d,%d", &dl, &dr, &ds_);
             a.gx_gu = NFF / (gs * (32 / gl) * gr);
             a.gx_dn = N / (ds_ * (32 / dl) * dr);
-            mtl::Dispatch r;
-            r.p = proute;
-            r.args = {mtl::Arg::B(logits), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::B(plan), mtl::Arg::V(a)};
-            r.tg[0] = 512;
-            push(r, "router", 0);
+            if (routef) {
+                // the router GEMV + moe_route in one dispatch (router_route; bitwise), concurrent with the shared GEMVs
+                const gguf::Tensor& tr = T(b + "ffn_gate_inp.weight");
+                mtl::Dispatch r;
+                r.p = Pn(lib, "router_route_30", "router_route#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
+                GemvArgs ga{(uint32_t)N, 512, (uint32_t)ntok, (uint32_t)ref::row_bytes(tr.type, N), (uint32_t)N, 512};
+                r.args = {mtl::Arg::B(W, tr.offset), mtl::Arg::B(XF.b, 0), mtl::Arg::B(XF.b, XF.plane_bytes() * 4),
+                          mtl::Arg::B(logits), mtl::Arg::V(ga), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::B(plan),
+                          mtl::Arg::V(a), mtl::Arg::B(rcounter)};
+                r.grid[0] = 512 / 16;
+                r.tg[0] = 512;
+                nb = true;
+                push(r, "router", (double)tr.bytes);
+            } else {
+                mtl::Dispatch r;
+                r.p = proute;
+                r.args = {mtl::Arg::B(logits), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::B(plan), mtl::Arg::V(a)};
+                r.tg[0] = 512;
+                push(r, "router", 0);
+            }
             {
                 GlueArgs ga{NFF, MAXT, N, TOPK};
                 mtl::Dispatch d;
@@ -557,7 +606,8 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::B(ysh), mtl::Arg::B(sg), mtl::Arg::B(bo), mtl::Arg::V(a)};
             d.grid[0] = (ntok * N + 255) / 256;
             d.tg[0] = 256;
-            if (!(fold_comb && hc_mode != "3")) push(d, "shared", 0);   // else folded into the next HC read
+            if (combf && (hc_mode == "3" || hc_mode == "q8_3")) comb_pending = true;   // folded into the next gr_norm
+            else if (!(fold_comb && hc_mode != "3")) push(d, "shared", 0);   // else folded into the next HC read
         }
     }
     // ---- the final mixer and the head
