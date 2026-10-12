@@ -178,6 +178,9 @@ private:
     // holds it from init, restored after a window that selected).  STRATA_METAL_FUSE=0: off.
     bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
     bool qdirty_ = false;
+    // STRATA_METAL_KPROF=T (test tooling): once, after the 20th cached window of T tokens with the head, the GPU time
+    // of each kernel class alone (the window's own dispatches of that pipeline + weight role, run by themselves)
+    void kprof(const std::vector<mtl::Dispatch>& ds, int Tn);
     void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
@@ -730,6 +733,11 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         }
         const double r0 = now_ms();
         last_gpu_ms_ = 1000.0 * cx_->run_graph(c.ds);
+        {
+            static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
+            static int seen = 0;
+            if (kt == Tn && head && ++seen == 20) kprof(c.ds, Tn);
+        }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
         return finish(Tn, tokens, pos0, head, out, t0);
@@ -842,6 +850,51 @@ void Window::logpos(int Tn, const int32_t* tokens, int64_t pos0, bool head) {
     lp_top_.resize(64);
     lp_pos_ = pos0;
     lp_pend_ = true;
+}
+
+void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
+    std::map<const mtl::Pipeline*, std::string> pname;
+    for (const auto& [k, v] : pcache_) pname[&v] = k.substr(0, k.find('#'));
+    std::map<uint64_t, std::string> tname;
+    for (const auto& [k, v] : f_.tensors) {
+        std::string n = k;
+        if (n.rfind("blk.", 0) == 0) n = n.substr(n.find('.', 4) + 1);
+        tname[v.offset] = n;
+    }
+    std::map<size_t, std::string> q8name;
+    for (const auto& [k, v] : q8off_) {
+        std::string n = k;
+        if (n.rfind("blk.", 0) == 0) n = n.substr(n.find('.', 4) + 1);
+        q8name[v] = n;
+    }
+    std::map<std::string, std::vector<mtl::Dispatch>> by;
+    for (const auto& d : ds) {
+        std::string c = pname.count(d.p) ? pname[d.p] : "?";
+        if (!d.args.empty() && d.args[0].buf == &W_ && tname.count(d.args[0].off) && c.rfind("moe_", 0) != 0)
+            c += " " + tname[d.args[0].off];
+        else if (!d.args.empty() && d.args[0].buf == &Q8_) c += " " + (q8name.count(d.args[0].off) ? q8name[d.args[0].off] : std::string("Q8"));
+        mtl::Dispatch x = d;
+        x.barrier = true;
+        by[c].push_back(x);
+    }
+    auto med = [&](const std::vector<mtl::Dispatch>& v) {
+        std::vector<double> t;
+        for (int i = 0; i < 7; ++i) t.push_back(1000.0 * cx_->run_graph(v));
+        std::sort(t.begin(), t.end());
+        return t[3];
+    };
+    const double all = med(ds);
+    std::vector<std::pair<double, std::string>> rows;
+    double sum = 0;
+    for (const auto& [c, v] : by) {
+        const double m = med(v);
+        sum += m;
+        rows.push_back({m, c + " x" + std::to_string(v.size())});
+    }
+    std::sort(rows.rbegin(), rows.rend());
+    std::fprintf(stderr, "strata metal kprof: window T%d, %zu dispatches, GPU %.3f ms; classes alone (serialized) sum %.3f ms:\n",
+                 Tn, ds.size(), all, sum);
+    for (const auto& [m, c] : rows) std::fprintf(stderr, "strata metal kprof: %8.3f ms %5.1f%%  %s\n", m, 100.0 * m / sum, c.c_str());
 }
 
 Window::~Window() {
