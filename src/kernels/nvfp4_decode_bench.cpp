@@ -71,6 +71,19 @@ int main(int argc, char** argv) {
     } else {                                           // the other formats: fp16 block scales kept finite (|d| < 2)
         for (size_t i = 1; i < blobs.size(); i += 2) blobs[i] &= 0x3B;
     }
+    // NVFP4_BENCH_FILE=<experts.bin or its head>: the blobs are read from it (the first G whole blobs, cycled when it
+    // holds fewer), real GPTQ / ModelOpt weights instead of random ones
+    if (const char* fp = std::getenv("NVFP4_BENCH_FILE")) {
+        FILE* f = std::fopen(fp, "rb");
+        if (!f) { std::fprintf(stderr, "cannot open %s\n", fp); return 2; }
+        int have = 0;
+        while (have < G && std::fread(blobs.data() + (size_t) have * L.bytes, 1, L.bytes, f) == L.bytes) ++have;
+        std::fclose(f);
+        if (have == 0) { std::fprintf(stderr, "%s holds no whole blob\n", fp); return 2; }
+        for (int g = have; g < G; ++g)
+            std::memcpy(blobs.data() + (size_t) g * L.bytes, blobs.data() + (size_t) (g % have) * L.bytes, L.bytes);
+        std::printf("blobs: %d real from %s (cycled to %d)\n", have, fp, G);
+    }
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> x((size_t) T * N);
     for (float& v : x) v = nd(rng);
