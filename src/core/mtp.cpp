@@ -30,6 +30,7 @@
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -431,11 +432,19 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     cudaGetLastError();
 #endif
 #if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
-    // engine-latency, STRATA_MTP_HIP_PRIO=1 (opt-in): the draft stream at the highest priority.  ROCm hands out hardware
-    // queues per priority, so the drafter gets a queue of its own and its round no longer waits behind the commit graph
-    // that the verifier's stream launched just before it (the commit is only needed by the next window).
+    // engine-latency, STRATA_MTP_HIP_PRIO (default on gfx1200/gfx1201, =1 elsewhere opt-in, =0 off): the draft stream at the
+    // highest priority.  ROCm hands out hardware queues per priority (GPU_MAX_HW_QUEUES per level), so the drafter gets a
+    // queue of its own: its round no longer waits behind the commit graph that the verifier's stream launched just before
+    // it (the commit is only needed by the next window, and now runs beside the draft).  R9700, UD-Q4_K_XL: draft wall
+    // 5.8 -> 3.5 ms a window (notes-latency.md).
     {
-        static const bool hip_prio = [] { const char* v = std::getenv("STRATA_MTP_HIP_PRIO"); return v != nullptr && std::atoi(v) != 0; }();
+        static const bool hip_prio = [] {
+            if (const char* v = std::getenv("STRATA_MTP_HIP_PRIO"); v != nullptr && *v != 0) return std::atoi(v) != 0;
+            int dev = 0;
+            cudaDeviceProp prop{};
+            return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+                   strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName);
+        }();
         int lo = 0, hi = 0;
         if (hip_prio && hipDeviceGetStreamPriorityRange(&lo, &hi) == hipSuccess)
             prio = hipStreamCreateWithPriority(&cs_, hipStreamNonBlocking, hi) == hipSuccess;
