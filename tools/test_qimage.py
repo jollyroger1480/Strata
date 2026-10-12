@@ -68,7 +68,7 @@ class Choices(unittest.TestCase):
 
     def test_default_args(self):
         self.assertEqual(QI.default_args("cuda"), ["--diffusion-fa"])
-        self.assertEqual(QI.default_args("vulkan"), ["--diffusion-fa", "--vae-tiling"])
+        self.assertEqual(QI.default_args("vulkan"), ["--diffusion-fa", "--vae-tiling", "--vae-tile-overlap", "0.25"])
 
     def test_setup_recommends_never_forces(self):
         ns = argparse.Namespace(image_backend=None, image_quant=None)
@@ -137,7 +137,7 @@ class Config(unittest.TestCase):
     def test_section(self):
         c = QI.image_config("vulkan", "Q8_0", Path("/e/sd-cli"), Path("/m"), uma=True, lib_dirs=["/l"])
         self.assertEqual(c["diffusion_model"], str(Path("/m/qwen-image-2.1-turbo/qwen-image-2.1-turbo-Q8_0.gguf")))
-        self.assertEqual(c["args"], ["--diffusion-fa", "--vae-tiling"])
+        self.assertEqual(c["args"], ["--diffusion-fa", "--vae-tiling", "--vae-tile-overlap", "0.25"])
         self.assertTrue(c["uma"])
         self.assertEqual(c["gpu_policy"], "auto")
         from serve.images import ImageGen

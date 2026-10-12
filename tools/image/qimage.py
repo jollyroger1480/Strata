@@ -11,7 +11,8 @@ setup.py (--images qwen-image) and tools/image/install.py use these pieces; serv
             model card's choice).  Each file is checked against the SHA-256 the Hugging Face API lists for it at the
             pinned revision.
   defaults  8 steps, CFG 1, euler, Turbo's own sigmas (serve/images.py), --diffusion-fa; on Vulkan also --vae-tiling
-            (an untiled 1024x1024 VAE decode is one dispatch long enough to trip the amdgpu job timeout on a 780M).
+            (an untiled 1024x1024 VAE decode is one dispatch long enough to trip the amdgpu job timeout on a 780M)
+            with --vae-tile-overlap 0.25.
 """
 from __future__ import annotations
 
@@ -98,7 +99,9 @@ def pick_backend(gpu: dict | None, win: bool) -> str:
 
 def default_args(backend: str) -> list[str]:
     """sd-cli's fixed arguments besides the ones serve/images.py writes per request."""
-    return ["--diffusion-fa"] + (["--vae-tiling"] if backend == "vulkan" else [])
+    # Vulkan: 256-pixel tiles at a quarter's overlap, not sd.cpp's half: the 780M's 1024x1024 decode takes 23 s instead
+    # of 45 s, at an LPIPS of 0.012 against the half-overlap image (Q8_0's own distance to bf16 is ~0.03)
+    return ["--diffusion-fa"] + (["--vae-tiling", "--vae-tile-overlap", "0.25"] if backend == "vulkan" else [])
 
 
 def file_url(name: str, endpoint: str = "https://huggingface.co") -> str:

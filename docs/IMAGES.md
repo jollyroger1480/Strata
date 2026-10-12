@@ -36,8 +36,9 @@ out of the config).
 Backends: CUDA on NVIDIA (needs the CUDA Toolkit), HIP on AMD cards with their own memory (Linux, the same ROCm as the
 engine), Vulkan on AMD APUs/iGPUs (Radeon 780M, Strix Point/Halo), Intel Arc and AMD under Windows. A Linux PC without
 the Vulkan development files gets the LunarG Vulkan SDK unpacked into `third_party/` (no sudo); on Windows install the
-Vulkan SDK first. On Vulkan setup adds `--vae-tiling`: an untiled 1024x1024 VAE decode on a Radeon 780M is one GPU
-job long enough to trip the kernel driver's job timeout (no image).
+Vulkan SDK first. On Vulkan setup adds `--vae-tiling --vae-tile-overlap 0.25`: an untiled 1024x1024 VAE decode on a Radeon 780M is one
+GPU job long enough to trip the kernel driver's job timeout (no image), and a quarter's overlap decodes in half the
+time of sd.cpp's default half overlap.
 
 ## Use it
 
@@ -75,5 +76,13 @@ files takes a few seconds per image from the page cache.
 
 ## Speed
 
-Seconds per 1024x1024 image (8 steps) measured in the I1 tests are in `phaseA-tests/notes-qimage.md`
-(Radeon 780M: HIP Q8_0 ~131 s, Vulkan Q8_0 ~200 s with `--vae-tiling`).
+Seconds per image through the API, Q8_0, 8 steps (one `sd-cli` process per image, loading included):
+
+| GPU | backend | 1024x1024 | 512x512 |
+|---|---|---|---|
+| RTX A4000 16 GB | CUDA | 27 | 8.8 |
+| Radeon 780M (iGPU) | HIP | 131 | 29 |
+| Radeon 780M (iGPU) | Vulkan | 179 | 43 |
+
+On the 780M HIP is faster but runs through the ROCm path whose queue evictions reset this GPU on current firmware
+(a driver/firmware defect, not this feature; no reset was seen in these image runs); Vulkan is setup's default there, `--image-backend hip` picks HIP.
