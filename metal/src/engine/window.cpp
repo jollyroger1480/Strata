@@ -153,6 +153,11 @@ private:
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
     int hp_ = 0;                     // which of the two history buffers holds the committed conv history (all layers)
+    // commit(n) of a window of several tokens: the GDN fold of the kept prefix waits for the next window and runs at
+    // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
+    // the two (the drafter reads the window's rows and its own caches).  STRATA_METAL_LAZY_FOLD=0: at commit.
+    int pend_fold_ = 0;
+    void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
         std::vector<mtl::Dispatch> ds;
@@ -648,7 +653,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         }
         if (!ss.ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
     }
-    const int key = (Tn * 2 + (head ? 1 : 0)) * 2 + hp_;
+    const int key = (((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_;
+    const int fold_n = pend_fold_;
+    pend_fold_ = 0;
     auto hit = wcache_.find(key);
     if (hit != wcache_.end()) {
         // the same window shape: only the positions change (QSA's cells, the score grid)
@@ -667,6 +674,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     rec_ = &cw.qsa;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;
+    if (fold_n > 0) fold(ds, fold_n, 1 - hp_);   // the last window's commit (hp_ already turned)
     if (ple_on_) {
         xprep(ds, emb_, XE_, N);
         gemv(ds, T("blk.1.ple_key.weight"), XE_, pkey_, 10240, Tn);
@@ -756,6 +764,28 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
     return true;
 }
 
+void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
+    for (int l = 0; l < 48; ++l) {
+        if (l % 4 == 3) continue;
+        const int gi = l - l / 4;
+        const std::string b = "blk." + std::to_string(l) + ".";
+        const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
+        GdnArgs a{16, 48, 10240, 1u, eps_, 0};
+        mtl::Dispatch d;
+        d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
+        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+                  mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
+                  mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
+                  mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
+                  mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
+        d.grid[0] = 48;
+        d.tg[0] = 512;
+        nb_ = true;   // the layers' folds are independent of each other
+        push(ds, d);
+    }
+    nb_ = false;   // what follows reads the folded state: a barrier
+}
+
 bool Window::commit(int n_keep, std::string& err) {
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
@@ -763,28 +793,15 @@ bool Window::commit(int n_keep, std::string& err) {
         // the GDN layers: the kept prefix folded into the state (gdn_step over n_keep tokens from the window's own
         // inputs, with commit; bitwise the window's trajectory).  K/V and indexer cells past the prefix are rewritten
         // when those positions run again, before anything reads them.
-        std::vector<mtl::Dispatch> ds;
-        nb_ = false;
-        for (int l = 0; l < 48; ++l) {
-            if (l % 4 == 3) continue;
-            const int gi = l - l / 4;
-            const std::string b = "blk." + std::to_string(l) + ".";
-            const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
-            GdnArgs a{16, 48, 10240, 1u, eps_, 0};
-            mtl::Dispatch d;
-            d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
-            const int hp = hp_;
-            d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
-                      mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
-                      mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
-                      mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
-                      mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
-            d.grid[0] = 48;
-            d.tg[0] = 512;
-            nb_ = true;   // the layers' folds are independent of each other
-            push(ds, d);
+        static const bool lazy = !(std::getenv("STRATA_METAL_LAZY_FOLD") && std::string(std::getenv("STRATA_METAL_LAZY_FOLD")) == "0");
+        if (lazy) {
+            pend_fold_ = n_keep;   // folded at the start of the next window (from the history parity before the turn)
+        } else {
+            std::vector<mtl::Dispatch> ds;
+            nb_ = false;
+            fold(ds, n_keep, hp_);
+            cx_->run_graph(ds);
         }
-        cx_->run_graph(ds);
         hp_ = 1 - hp_;
     }
     strata::core::SessionState& ss = *ss_;
