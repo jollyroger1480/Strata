@@ -57,6 +57,15 @@ struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane;
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 struct GlueArgs { uint32_t n, n_tok, n_embd, topk; };
 struct ArgArgs { uint32_t n_vocab, parts; };
+// the routed gate/up's i-quant grids from constant memory (QUANT_CTAB, function constant 23 of quant.metal): bitwise
+// the threadgroup copy's values, 3-7% faster on the M5 Max; STRATA_METAL_CTAB=0 turns it off
+bool metal_ctab() {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_METAL_CTAB");
+        return !(e && std::string(e) == "0");
+    }();
+    return on;
+}
 
 int xkind(int t) {
     switch (t) {
@@ -749,8 +758,11 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
                                 std::to_string(dr) + "_" + std::to_string(ds_);
         mtl::Dispatch g;
         const mtl::Buffer& EW = stream_ ? st_->chunk(0) : W_;
-        const mtl::Constants ac = stream_ ? mtl::Constants().b(20, true) : mtl::Constants();
-        const std::string ak = stream_ ? "#arena" : "";
+        // function constant 23 (QUANT_CTAB): the i-quant grids from constant memory, no threadgroup copy (same values)
+        const bool ct = metal_ctab();
+        mtl::Constants ac = stream_ ? mtl::Constants().b(20, true) : mtl::Constants();
+        ac.b(23, ct);
+        const std::string ak = std::string(stream_ ? "#arena" : "") + (ct ? "#ct" : "");
         g.p = P(lib_, gun, ac, gun + ak);
         g.args = {mtl::Arg::B(EW), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
                   mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
@@ -1633,7 +1645,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
                                 std::to_string(dr) + "_" + std::to_string(ds_);
         mtl::Dispatch g;
-        g.p = P(lib_, gun, {}, gun);
+        g.p = P(lib_, gun, mtl::Constants().b(23, metal_ctab()), gun + (metal_ctab() ? "#ct" : ""));
         g.args = {mtl::Arg::B(Wm_), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tgu.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
                   mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
         g.tg[0] = 32 * gs;
