@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace {
-struct DqArgs { uint32_t n_in, n_out, row_bytes; };
+struct DqArgs { uint32_t n_in, n_out, row_bytes, perm; };
 struct GemmArgs { int M, N, K, pad; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -40,15 +41,27 @@ int main() {
         {"mpp_mm_half_16_64_2", 2, 16, 64, 2, true},   {"mpp_mm_bfloat_64_64_4", 3, 64, 64, 4, true},
         {"mpp_mm_bfloat_128_64_4", 3, 128, 64, 4, true}, {"mpp_mm_float_64_32_4", 4, 64, 32, 4, true},
         {"mpp_mm_float_64_64_4", 4, 64, 64, 4, true},  {"mpp_mm_float_128_64_4", 4, 128, 64, 4, true},
-        {"sg_mm_half", 2, 64, 64, 4, false},           {"sg_mm_float", 4, 64, 64, 4, false}};
+        {"sg_mm_half", 2, 64, 64, 4, false},           {"sg_mm_float", 4, 64, 64, 4, false},
+        {"mpp_mm_half_64_16_2", 2, 64, 16, 2, true},   {"mpp_mm_half_64_16_4", 2, 64, 16, 4, true},
+        {"mpp_mm_half_128_16_4", 2, 128, 16, 4, true}, {"mpp_mm_half_128_32_4", 2, 128, 32, 4, true},
+        {"mpp_mm_half_64_32_2", 2, 64, 32, 2, true},   {"mpp_mm_half_32_16_2", 2, 32, 16, 2, true},
+        {"mpp_mm_half_32_32_2", 2, 32, 32, 2, true},   {"mpp_mm_half_16_32_1", 2, 16, 32, 1, true},
+        {"mpp_mm_half_16_16_1", 2, 16, 16, 1, true},   {"mpp_mm_half_128_48_4", 2, 128, 48, 4, true},
+        {"mpp_mm_half_64_48_4", 2, 64, 48, 4, true}};
     struct Shape { const char* name; int M, N, K; };
     const std::vector<Shape> shapes = {{"square 4096^3", 4096, 4096, 4096},
                                        {"expert gu 128 tok x 1280 x 2560", 128, 1280, 2560},
                                        {"expert down 128 tok x 2560 x 640", 128, 2560, 640},
                                        {"dense qkv 2048 tok x 10240 x 2560", 2048, 4096, 2560},
-                                       {"expert gu 16 tok x 1280 x 2560", 16, 1280, 2560}};
+                                       {"expert gu 16 tok x 1280 x 2560", 16, 1280, 2560},
+                                       {"expert gu^T 1280 x 48 tok x 2560", 1280, 48, 2560},
+                                       {"expert gu^T 1280 x 16 tok x 2560", 1280, 16, 2560},
+                                       {"many gu^T 12800 x 48 tok x 2560", 12800, 48, 2560},
+                                       {"many gu 48 tok x 12800 x 2560", 48, 12800, 2560}};
     int filled = 0;
+    const char* only = std::getenv("MMB_ONLY");   // a substring of the kernel names to run
     for (const K& k : ks) {
+        if (only && k.name.find(only) == std::string::npos) continue;
         if (filled != k.elem) { fill(k.elem); filled = k.elem; }
         mtl::Pipeline p = cx.pipeline(lib, k.name);
         // correctness on a small product (M = tm*2, N = tn*2, K = 256) against the CPU

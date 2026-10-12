@@ -15,6 +15,8 @@ struct DqArgs {
     uint n_in;       // values per row
     uint n_out;      // rows
     uint row_bytes;
+    uint perm;       // 0: row r -> r; p > 0: row r = c * (n_out / p) + d -> d * p + c (the HC up matrix with the p
+                     // streams of an output interleaved, for gemm_hc_up's epilogue)
 };
 
 // one thread per unit: grid (units per row / 64, n_out), 64 threads
@@ -32,7 +34,9 @@ kernel void dq_f16(device const uchar* W [[buffer(0)]], device half* Wh [[buffer
     float w[UNIT];
     int p0, p1;
     DW<F>::run(W + ulong(r) * a.row_bytes, u, k0, w, p0, p1, tab);
-    device half* o = Wh + ulong(r) * a.n_in + k0;
+    const int q = a.perm ? int(a.n_out / a.perm) : 1;
+    const int ro = a.perm ? (r % q) * int(a.perm) + r / q : r;
+    device half* o = Wh + ulong(ro) * a.n_in + k0;
     for (int j = 0; j < H; ++j) {
         o[p0 + j] = half(w[j]);
         o[p1 + j] = half(w[H + j]);
