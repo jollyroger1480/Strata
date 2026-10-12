@@ -80,3 +80,62 @@ kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[b
                    GV_SET(T_Q2_0) GV_SET(T_IQ3_S) GV_SET(T_Q3_K) GV_SET(T_Q4_K) GV_SET(T_Q5_K) GV_SET(T_Q6_K)
 #endif
 GEMV_TYPES
+
+// The shared expert's gate and up in one dispatch: h[t][r] = silu(Wg[r] . x[t]) * (Wu[r] . x[t]), each with its own
+// format (and so its own prepared activation kind); h is written raw (its consumer reads raw activations).
+// KS = 1; tiles as gemv.  Buffers: Wg, xg (Wg's kind), Wu, xu (Wu's kind), s16, h, args (row_bytes = Wg's), rb_up.
+template <int F1, int F2, int LPR, int SG>
+kernel void gemv_pair(device const uchar* Wg [[buffer(0)]], device const float* xg [[buffer(1)]],
+                      device const uchar* Wu [[buffer(2)]], device const float* xu [[buffer(3)]],
+                      device const float* s16 [[buffer(4)]], device float* h [[buffer(5)]],
+                      constant GemvArgs& a [[buffer(6)]], constant uint& rb_up [[buffer(7)]],
+                      uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                      ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int U1 = fmt<F1>::UNIT, U2 = fmt<F2>::UNIT, RG = 32 / LPR;
+    constexpr int TB = fmt<F1>::TAB > fmt<F2>::TAB ? fmt<F1>::TAB : fmt<F2>::TAB;
+    threadgroup uint tab1[fmt<F1>::TAB];
+    threadgroup uint tab2[fmt<F2>::TAB];
+    (void)TB;
+    load_tab<F1>(tab1, tid, SG * 32);
+    load_tab<F2>(tab2, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int li = lane % LPR;
+    const int row = (int(tg.x) * SG + sg) * RG + lane / LPR;
+    const int rr = min(row, int(a.n_out) - 1);
+    device const uchar* rg = Wg + ulong(rr) * a.row_bytes;
+    device const uchar* ru = Wu + ulong(rr) * rb_up;
+    const int s16n = int(a.n_in) / 16;
+    float ag[8], au[8];
+    for (int t = 0; t < 8; ++t) ag[t] = au[t] = 0.0f;
+    for (int u = li; u < int(a.n_in) / U1; u += LPR) {
+        float q[U1];
+        float4 sc;
+        Dec<F1>::run(rg, u, q, sc, tab1);
+        for (int t = 0; t < NTOK; ++t) {
+            float xs[U1], xsum[2];
+            X<F1>::load(xg + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+            ag[t] += unit_combine<U1>(q, sc, xs, xsum);
+        }
+    }
+    for (int u = li; u < int(a.n_in) / U2; u += LPR) {
+        float q[U2];
+        float4 sc;
+        Dec<F2>::run(ru, u, q, sc, tab2);
+        for (int t = 0; t < NTOK; ++t) {
+            float xs[U2], xsum[2];
+            X<F2>::load(xu + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+            au[t] += unit_combine<U2>(q, sc, xs, xsum);
+        }
+    }
+    for (int t = 0; t < NTOK; ++t) {
+        const float gv = lane_sum<LPR>(ag[t]), uv = lane_sum<LPR>(au[t]);
+        if (li == 0 && row < int(a.n_out)) h[t * int(a.y_stride) + row] = gv / (1.0f + exp(-gv)) * uv;
+    }
+}
+
+#define GP_(F1, F2) template [[host_name("gemv_pair_" #F1 "_" #F2)]] kernel decltype(gemv_pair<F1, F2, 32, 4>) gemv_pair<F1, F2, 32, 4>;
+#define GP(F1, F2) GP_(F1, F2)
+#define GP_ROW(F1) GP(F1, T_IQ3_S) GP(F1, T_IQ4_XS) GP(F1, T_Q2_0) GP(F1, T_Q3_K) GP(F1, T_Q4_K) GP(F1, T_Q5_K) GP(F1, T_Q6_K)
+GP_ROW(T_IQ3_S) GP_ROW(T_IQ4_XS) GP_ROW(T_Q2_0) GP_ROW(T_Q3_K) GP_ROW(T_Q4_K) GP_ROW(T_Q5_K) GP_ROW(T_Q6_K)
+// Q2_0 with raw activations (the shared expert's down reading the pair's raw h)
+GV_SET(T_Q2_0R)

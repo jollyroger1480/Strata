@@ -171,8 +171,10 @@ int main(int argc, char** argv) {
         return &it->second;
     };
     // ---- GEMV by tensor, with a tile from the measured table
-    auto gemv2 = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c) {
-        const int n_in = (int)t.shape[0], n_out = t.shape.size() > 1 ? (int)t.shape[1] : 1, ty = t.type;
+    auto gemv2 = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c,
+                     int ty_override = -1) {
+        const int n_in = (int)t.shape[0], n_out = t.shape.size() > 1 ? (int)t.shape[1] : 1;
+        const int ty = ty_override >= 0 ? ty_override : t.type;
         int L = 16, Rr = 1, S = 4, K = 1;
         if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
         else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
@@ -180,7 +182,7 @@ int main(int argc, char** argv) {
         const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
                                std::to_string(S) + "_" + std::to_string(K);
         const mtl::Pipeline* p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
-        GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(ty, n_in), (uint32_t)n_in,
+        GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(t.type, n_in), (uint32_t)n_in,
                    (uint32_t)y_stride};
         mtl::Dispatch d;
         d.p = p;
@@ -405,9 +407,27 @@ int main(int argc, char** argv) {
         gr_read(b + "hc_ffn", true, XF, false);
         gemv2(T(b + "ffn_gate_inp.weight"), XF, logits, 512, "router");
         nb = true;
-        gemv2(T(b + "ffn_gate_shexp.weight"), XF, gsh, NFF, "shared");
-        nb = true;
-        gemv2(T(b + "ffn_up_shexp.weight"), XF, ush, NFF, "shared");
+        const bool pair = fuse && std::getenv("CHAIN_PAIR");   // measured slower (+0.11 ms): opt-in
+        if (pair) {
+            // the shared expert's gate + up + SwiGLU in one dispatch, h raw into XH's raw plane
+            const gguf::Tensor &tgs = T(b + "ffn_gate_shexp.weight"), &tus = T(b + "ffn_up_shexp.weight");
+            const std::string fn = "gemv_pair_" + std::to_string(tgs.type) + "_" + std::to_string(tus.type);
+            mtl::Dispatch d;
+            d.p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
+            GemvArgs ga{(uint32_t)N, (uint32_t)NFF, (uint32_t)ntok, (uint32_t)ref::row_bytes(tgs.type, N), (uint32_t)N,
+                        (uint32_t)NFF};
+            const uint32_t rbu = (uint32_t)ref::row_bytes(tus.type, N);
+            d.args = {mtl::Arg::B(W, tgs.offset), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tgs.type)),
+                      mtl::Arg::B(W, tus.offset), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tus.type)),
+                      mtl::Arg::B(XF.b, XF.plane_bytes() * 4), mtl::Arg::B(XH.b), mtl::Arg::V(ga), mtl::Arg::V(rbu)};
+            d.grid[0] = NFF / 4;
+            d.tg[0] = 128;
+            push(d, "shared", (double)tgs.bytes + tus.bytes);
+        } else {
+            gemv2(T(b + "ffn_gate_shexp.weight"), XF, gsh, NFF, "shared");
+            nb = true;
+            gemv2(T(b + "ffn_up_shexp.weight"), XF, ush, NFF, "shared");
+        }
         nb = true;
         gemv2(T(b + "ffn_gate_inp_shexp.weight"), XF, sg, 1, "shared");
         {
@@ -447,7 +467,8 @@ int main(int argc, char** argv) {
                 d.grid[1] = ntok;
                 d.tg[0] = 16;
                 nb = true;
-                push(d, "shared", 0);
+                if (!pair) push(d, "shared", 0);
+                nb = false;
             }
             const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" +
                                     std::to_string(gr) + "_" + std::to_string(gs);
@@ -462,7 +483,11 @@ int main(int argc, char** argv) {
             g.ind_off = P_IGU * 4;
             push(g, "experts", 10.0 * ntok * 2 * a.gu_stride);
             nb = true;
-            gemv2(T(b + "ffn_down_shexp.weight"), XH, ysh, N, "shared");
+            {
+                const gguf::Tensor& tds = T(b + "ffn_down_shexp.weight");
+                // with --fuse h is raw: a Q2_0 down reads it through the raw-activation decoder (type 142)
+                gemv2(tds, XH, ysh, N, "shared", pair && tds.type == ref::Q2_0 ? 142 : -1);
+            }
             mtl::Dispatch dd;
             dd.p = Pn(lib, dnn, dnn, {});
             dd.args = {mtl::Arg::B(W), mtl::Arg::B(h), mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::V(a), mtl::Arg::B(h)};
