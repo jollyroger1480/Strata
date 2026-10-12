@@ -183,6 +183,9 @@ int main(int argc, char** argv) {
     const bool routef = !(std::getenv("CHAIN_ROUTE") && std::string(std::getenv("CHAIN_ROUTE")) == "0");
     const bool combf = std::getenv("CHAIN_COMB") != nullptr;   // the MoE combine folded into the next gr_norm
     bool comb_pending = false;
+    // routed gate/up: the i-quant grids from constant memory (QUANT_CTAB, function constant 23; bitwise; default,
+    // CHAIN_CTAB=0: the threadgroup copy)
+    const bool ctabf = !(std::getenv("CHAIN_CTAB") && std::string(std::getenv("CHAIN_CTAB")) == "0");
     mtl::Buffer rcounter = cx.alloc(16);
     struct Range { const mtl::Buffer* b; size_t off, bytes; };
     std::vector<Range> pending;
@@ -578,7 +581,7 @@ int main(int argc, char** argv) {
             const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
                                     std::to_string(dr) + "_" + std::to_string(ds_);
             mtl::Dispatch g;
-            g.p = Pn(lib, gun, gun, {});
+            g.p = Pn(lib, gun, gun + (ctabf ? "#ct" : ""), mtl::Constants().b(23, ctabf));
             g.args = {mtl::Arg::B(W), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h), mtl::Arg::B(plan),
                       mtl::Arg::V(a), mtl::Arg::B(XF.b, XF.plane_bytes() * 4)};
             g.tg[0] = 32 * gs;
