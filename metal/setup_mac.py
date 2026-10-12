@@ -45,7 +45,44 @@ MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
     "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
     "IQ3_S": {"shard1_gb": 54.8, "tested": True},
+    # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
+    # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
+    # table stays in its shard on the SSD
+    "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": False, "family": "unsloth", "shards": 4,
+                   "missing": "the Metal expert kernels for Q4_K / Q5_1 (in progress)"},
+    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": False, "family": "unsloth", "shards": 6,
+                   "missing": "the Metal expert kernels for Q5_K / Q6_K (in progress)"},
+    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": False, "family": "unsloth", "shards": 6,
+                   "missing": "the Metal expert kernels for Q6_K (in progress)"},
 }
+# the Unsloth files at setup.py's pinned revision: name -> (bytes, SHA-256), the Hub's LFS pointers (UD-Q4_K_XL's
+# are setup.py's UNSLOTH_SHARDS)
+UD_SHARDS = {
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf": (10946618, "610922cdb1afe1094e95d7a3e86b12ee33317ebbf7320ac9344e21b6ae4bb69f"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf": (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00003-of-00006.gguf": (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf": (49990245824, "9ee6bbe462e6830864382d629101490625b1c95afa15492b7ad550c7bed2dd13"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf": (49882416192, "0b2437f661f584030cb5aeb8fb1bb70f6422518a6746bfcc0304167c7b6b8beb"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf": (3320101792, "55dd96c5ad0863b06b6393151b9ad0ac727b8d58a62e02a296ca5d5ddbfee4a3"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf": (10946624, "8bdc6bad55b6699f46f60708829932ff4018d7ac9bd309c388534fa31753bdb7"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf": (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf": (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf": (49814108512, "0ea4b599880a5a52fcd9c188ba1443f646c69c96571904ddbd6a79246a01a997"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf": (49419317344, "9948e81ae8368144b135a7403d8c0f2cf9a6c2f9f692313865855b2832e696c9"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf": (14838313984, "e4ae255234f42b18012f6d6eec5bf615b57479b7e0a0233c47436a321ffeec3f"),
+}
+
+
+def model_shard_names(model: str) -> list[str]:
+    """The model's files in order (shard 1 first)."""
+    n = MAC_MODELS[model].get("shards", 2)
+    if MAC_MODELS[model].get("family") == "unsloth":
+        return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+    return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
+
+
+def shard_sha(name: str):
+    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
 # IQ3_S, the best quality, is recommended from this much memory (Apple sells 96 and 128 GB: from 128); below it the
 # faster IQ3_XXS is, where it fits
 IQ3_S_FROM_GB = 110
@@ -60,7 +97,9 @@ OVERHEAD_GB = 8.0
 GPU_SHARE = 0.75
 CONTEXTS = [8192, 32768, 65536, 131072]
 MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
-             "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest"}
+             "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
+             "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
+             "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)"}
 TESTED_CONTEXT = 32768     # needles and the KL harness ran to 32K on the Mac
 
 
@@ -236,12 +275,27 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4)."""
-    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1]),
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
+    if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
+        args += ["--native-dense-gguf", str(shards[0])]
+    args += [
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "64",
             "--prefill", "auto", "--spec", "2"]
     args += ["--suffix-draft", "0"] if stream else ["--mtp", str(rt)]
     return args + ["--max-context", str(ctx),
                    "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
+
+
+def ple_shard(files: list) -> Path:
+    """The shard that holds the n-gram table (per_layer_token_embd)."""
+    sys.path.insert(0, str(ROOT / "metal" / "tools"))
+    import metal_repack as R
+    for f in files:
+        rd = R.Reader(f)
+        rd.f.close()
+        if any(t["name"] == R.PLE for t in rd.tensors):
+            return f
+    S.fail(f"no shard of {files[0].name} holds the n-gram table (per_layer_token_embd)")
 
 
 def mac_config(exe: Path, args: list, pack: Path, model_name: str, tag: str, port: int) -> dict:
@@ -284,8 +338,8 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen"], default="qwen",
-                    help="qwen = Qwen3.8-Flash-Next (the only family measured on a Mac so far)")
+    ap.add_argument("--family", choices=["qwen", "unsloth"], default=None,
+                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL (follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--port", type=int)
@@ -349,7 +403,10 @@ def main(argv=None) -> int:
     if ctx > TESTED_CONTEXT:
         S.say(f"  context {ctx}: measured on the Mac up to {TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
     S.ok(f"{model}, context {ctx}")
-    fam = S.FAMILIES[a.family]
+    family = MAC_MODELS[model].get("family", "qwen")
+    if a.family and a.family != family:
+        S.warn(f"--family {a.family}: {model} is a {family} file; using {family}")
+    fam = S.FAMILIES[family]
     tag = fam["tag"] + model
     need = (0 if a.gguf_dir else S.MODELS[model]["download_gb"]) + 6   # --gguf-dir: the files are there already
     if free < need:
@@ -373,19 +430,37 @@ def main(argv=None) -> int:
     S.step(5, f"downloading {fam['title']} {model}")
     models_dir = Path(a.gguf_dir) if a.gguf_dir else models_root / tag
     models_dir.mkdir(parents=True, exist_ok=True)
-    shards = [models_dir / S.model_file(fam, model, i) for i in (1, 2)]
-    for s in shards:
+    files = [models_dir / n for n in model_shard_names(model)]
+    for s in files:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
             continue
         S.download(fam["hf"].format(q=model) + s.name, s)
-    S.check_shards(shards)
+    S.check_shards(files)
+    for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
+        if shard_sha(s.name):
+            S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
 
     # ---- 6. the pack and the MTP draft layer
     S.step(6, "preparing the model for Strata")
     pack = S.find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    if len(files) > 2:
+        # many shards: the experts and dense tensors into one GGUF the GPU maps (or streams), the n-gram table read
+        # from its own shard (every tensor checked byte for byte: --verify)
+        native = data / "metal" / f"{tag.lower()}-metal.gguf"
+        native.parent.mkdir(parents=True, exist_ok=True)
+        if not (native.exists() and S.done(native)):
+            S.say(f"  Writing the model's experts and weights into one file for the GPU (one time, "
+                  f"{MAC_MODELS[model]['shard1_gb']:.0f} GB) ...")
+            S.run([sys.executable, str(ROOT / "metal" / "tools" / "metal_repack.py"), "--shard1", str(files[0]),
+                   "--out", str(native), "--verify"])
+            S.mark(native)
+        ple = ple_shard(files)
+        shards = [native, ple]
+    else:
+        shards = files
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
         S.run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack)], env=env)
     S.ok(f"model prepared: {pack}")
@@ -411,6 +486,7 @@ def main(argv=None) -> int:
     S.step(7, "writing the start script")
     port = a.port or 8080
     cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if a.host:
         cfg["host"] = a.host
     if a.api_key:

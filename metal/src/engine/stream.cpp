@@ -30,10 +30,13 @@ bool ExpertStream::wanted(const gguf::File& f, const mtl::Context& cx) {
     const char* e = std::getenv("STRATA_METAL_STREAM");
     if (e && std::string(e) == "1") return true;
     if (e && std::string(e) == "0") return false;
-    uint64_t exp = 0;
+    // auto: stream when the mapped weights (experts and dense) and ~12 GiB beside them (the prompt buffers, KV, the
+    // draft layer, macOS) do not fit the GPU working set.  M5 Max (115.4 GB): GSQ packs, IQ3_S and UD-Q4_K_XL stay
+    // resident, UD-Q5/Q6_K_XL stream; M4 32 GB (26.8 GB): every pack streams.
+    uint64_t all = 0;
     for (const auto& kv : f.tensors)
-        if (kv.first.find("_exps") != std::string::npos) exp += kv.second.bytes;
-    return (double) exp > 0.6 * (double) cx.recommended_working_set();
+        if (kv.first != "per_layer_token_embd.weight") all += kv.second.bytes;
+    return (double) all + 12.0 * (1ull << 30) > (double) cx.recommended_working_set();
 }
 
 ExpertStream::~ExpertStream() {
