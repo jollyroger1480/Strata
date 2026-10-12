@@ -30,7 +30,7 @@ bool in_range(const std::string& name) {
     return l >= g_layer_lb && l < g_layer_le;
 }
 // S23 experiment (STRATA_HC_Q8=1): the hyper-connection projections' Q8_0 bytes for the verify read
-bool hc_q8_requested() {
+bool hc_q8_env() {
     static const bool on = [] { const char* v = std::getenv("STRATA_HC_Q8"); return v != nullptr && v[0] == '1'; }();
     return on;
 }
@@ -106,6 +106,9 @@ struct Pending {
     DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
 };
 }
+
+// the shared header declares the static member (b60aab1b); this port only needs the env switch
+bool NativeDense::hc_q8_requested() { return hc_q8_env(); }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
                                std::set<std::string>& out, std::string& err) {
