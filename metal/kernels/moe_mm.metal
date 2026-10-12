@@ -42,14 +42,18 @@ kernel void mm_hist(device const int* ids [[buffer(0)]], device uint* bcnt [[buf
 }
 
 // one threadgroup of n_expert (<= 1024) threads.  boff[block][e] = expert e's rows before this block (within e);
-// eoff[e] = expert e's first padded row; tiles[i] = (expert, row0); meta[0] = n_tiles, meta[1] = padded rows,
-// meta[2..4] = an indirect grid (gx, n_tiles, 1) for the GEMMs, gx given in meta[2] by the host.
+// eoff[e] = expert e's first padded row; tiles[i] = (expert, row0); meta[0] = n_tiles, meta[1] = padded rows;
+// indirect grids: meta[2..4] = (gx_gu, n_tiles, 1) for the gate/up GEMM, meta[5..7] = (gx_down, n_tiles, 1) for the
+// down GEMM (gx_gu in meta[2], gx_down in meta[5] written by the host once), meta[8..10] = (rows, 1, 1) for mm_gather.
 kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[buffer(1)]],
                     device uint* eoff [[buffer(2)]], device int2* tiles [[buffer(3)]], device uint* meta [[buffer(4)]],
                     constant MmPlanArgs& a [[buffer(5)]],
                     ushort tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]],
                     ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup uint s_rows[32], s_tiles[32];
+    // simdgroups past the launched ones must count 0 (512 threads fill only 16 of the 32 slots)
+    if (tid < 32) { s_rows[tid] = 0; s_tiles[tid] = 0; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint e = tid;
     uint tot = 0;
     if (e < a.n_expert)
@@ -75,8 +79,13 @@ kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[b
     if (tid == 0) {
         meta[0] = all_tiles;
         meta[1] = all_rows;
-        meta[3] = all_tiles;
+        meta[3] = all_tiles;   // indirect grid of the gate/up GEMM: (meta[2] given, tiles, 1)
         meta[4] = 1;
+        meta[6] = all_tiles;   // of the down GEMM: (meta[5] given, tiles, 1)
+        meta[7] = 1;
+        meta[8] = all_rows;    // of the gather: (rows, 1, 1)
+        meta[9] = 1;
+        meta[10] = 1;
     }
 }
 
@@ -260,6 +269,10 @@ kernel void mm_gather(device const float* x [[buffer(0)]], device const int* srt
     for (uint k = tid; k < n; k += 256) o[k] = t >= 0 ? half(x[ulong(t) * n + k]) : half(0.0f);
 }
 
+// a probe for the bench (function constant 5): 1 = the weights not decoded (a cheap fill), 2 = no matrix multiply
+constant int MM_PROBE [[function_constant(5)]];
+constant int mm_probe = is_function_constant_defined(MM_PROBE) ? MM_PROBE : 0;
+
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
                    device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
@@ -286,12 +299,18 @@ kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[
         if (accg.is_valid_element(i)) { accg[i] = 0.0f; accu[i] = 0.0f; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (int k0 = 0; k0 < int(a.n_embd); k0 += TK) {
-        stage_w<F, TN, TK>(g0, a.gu_row, k0, wg, tab, tid, NTH);
-        stage_w<F, TN, TK>(u0, a.gu_row, k0, wu, tab, tid, NTH);
+        if (mm_probe == 1) {
+            for (int it = tid; it < TN * TK; it += NTH) { wg[it] = half(k0 & 7); wu[it] = half(it & 7); }
+        } else {
+            stage_w<F, TN, TK>(g0, a.gu_row, k0, wg, tab, tid, NTH);
+            stage_w<F, TN, TK>(u0, a.gu_row, k0, wu, tab, tid, NTH);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         tA = tX.template slice<TK, TM>(k0, row0);
-        op.run(tA, tG, accg);
-        op.run(tA, tU, accu);
+        if (mm_probe != 2) {
+            op.run(tA, tG, accg);
+            op.run(tA, tU, accu);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     for (uint16_t i = 0; i < accg.get_capacity(); ++i)

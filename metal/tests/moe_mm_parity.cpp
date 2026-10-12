@@ -87,7 +87,9 @@ int main(int argc, char** argv) {
     if (dn == ref::IQ4_NL && DTK < 32) DTK = 32;
     const std::string tl = std::to_string(TM) + "_" + std::to_string(TN) + "_" + std::to_string(TK) + "_" + std::to_string(SG);
     const std::string dtl = std::to_string(TM) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
-    mtl::Pipeline pgu = cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl),
+    mtl::Constants probe;
+    probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
+    mtl::Pipeline pgu = cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
                   pdn = cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
                   pgat = cx.pipeline(lib, "mm_gather");
     MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)TM, (uint32_t)nblk};
