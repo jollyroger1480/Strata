@@ -188,11 +188,11 @@
     "--mtp",
     "<T>/data/mtp/rt",
     "--max-context",
-    "32768",
+    "131072",
     "--kv",
     "int8",
-    "--resident-budget-gib",
-    "71"
+    "--kv-resident",
+    "32768"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -1040,11 +1040,11 @@
     "--mtp",
     "<T>/data/mtp/rt",
     "--max-context",
-    "32768",
+    "65536",
     "--kv",
     "int8",
-    "--resident-budget-gib",
-    "71"
+    "--kv-resident",
+    "32768"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
