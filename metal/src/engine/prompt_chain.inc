@@ -299,7 +299,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_" + tl3(b.gu3);
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2";
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + (eg.type == ref::IQ4_XS ? "_16_64_32_2" : "_16_64_16_2");   // IQ4_XS: K tile >= 32
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
         gu.args = {mtl::Arg::B(W_), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};

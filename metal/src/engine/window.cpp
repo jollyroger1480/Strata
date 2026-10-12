@@ -18,6 +18,7 @@
 #include "../../tests/coop_probe.h"
 
 #include "strata/core/layer.hpp"
+#include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/ngram.hpp"
 
@@ -101,6 +102,11 @@ public:
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
     bool streaming() const { return stream_; }
+    // --serve's conversation checkpoints: the window's running state (the GDN recurrences and conv histories, the
+    // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
+    bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
+    bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
+    void reset();   // a new sequence (session_zero): the running state zeroed
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
@@ -1191,6 +1197,73 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
     nb_ = false;   // what follows reads the folded state: a barrier
 }
 
+bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
+    (void) err;
+    if (pend_fold_ > 0) {   // the last commit's fold first: the checkpoint is the state after it
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        fold(ds, pend_fold_, 1 - hp_);
+        cx_->run_graph(ds);
+        pend_fold_ = 0;
+    }
+    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    c.gdn.resize(gst_.size() * (gs + hs));
+    for (size_t i = 0; i < gst_.size(); ++i) {
+        std::memcpy(c.gdn.data() + i * (gs + hs), gst_[i].ptr, gs);
+        std::memcpy(c.gdn.data() + i * (gs + hs) + gs, ghist_[hp_][i].ptr, hs);
+    }
+    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + 4 * 9 * 10240);
+    c.tails.resize(tail_.size() * ts);
+    c.dead.resize(dead_.size() * dsz);
+    for (size_t j = 0; j < tail_.size(); ++j) {
+        std::memcpy(c.tails.data() + j * ts, tail_[j].ptr, ts);
+        std::memcpy(c.dead.data() + j * dsz, dead_[j].ptr, dsz);
+    }
+    c.block_pos.clear();
+    return true;
+}
+
+void Window::reset() {
+    pend_fold_ = 0;
+    last_T_ = 0;
+    auto zero = [](const mtl::Buffer& b, size_t n) { std::memset(b.ptr, 0, n); };
+    for (size_t i = 0; i < gst_.size(); ++i) {
+        zero(gst_[i], 4 * 128 * 48 * 128);
+        zero(ghist_[0][i], 4 * 10240 * 3);
+        zero(ghist_[1][i], 4 * 10240 * 3);
+    }
+    zero(pleHist_, 4 * 9 * 10240);
+    for (size_t j = 0; j < tail_.size(); ++j) {
+        zero(tail_[j], 4 * 4 * 128);
+        zero(dead_[j], 4 * 128);
+    }
+    for (size_t j = 0; j < mtail_.size(); ++j) {
+        zero(mtail_[j], 4 * 4 * 128);
+        zero(mdead_[j], 4 * 128);
+    }
+}
+
+bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
+    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != (size_t) 4 * 9 * 10240 ||
+        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz) {
+        err = "metal window: the checkpoint is not this engine's (sizes differ)";
+        return false;
+    }
+    pend_fold_ = 0;   // the restored state replaces whatever was pending
+    last_T_ = 0;
+    for (size_t i = 0; i < gst_.size(); ++i) {
+        std::memcpy(gst_[i].ptr, c.gdn.data() + i * (gs + hs), gs);
+        std::memcpy(ghist_[hp_][i].ptr, c.gdn.data() + i * (gs + hs) + gs, hs);
+    }
+    std::memcpy(pleHist_.ptr, c.ple.data(), c.ple.size());
+    for (size_t j = 0; j < tail_.size(); ++j) {
+        std::memcpy(tail_[j].ptr, c.tails.data() + j * ts, ts);
+        std::memcpy(dead_[j].ptr, c.dead.data() + j * dsz, dsz);
+    }
+    return true;
+}
+
 bool Window::commit(int n_keep, std::string& err) {
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
@@ -2067,7 +2140,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gu.p = PP(p.lib, fn, c, fn + ak);
             gu.tg[0] = 32 * 4;
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2";
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + (eg.type == ref::IQ4_XS ? "_16_64_32_2" : "_16_64_16_2");   // IQ4_XS: K tile >= 32
             mtl::Constants c = mtl::Constants().i(5, 0);
             if (stream_) c.b(20, true);
             gu.p = PP(p.lib, fn, c, fn + ak);
@@ -2218,6 +2291,17 @@ bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionSt
 }
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     return ((Window*) w)->run(T, tokens, pos0, head, out, err);
+}
+void window_reset() {
+    if (g_the_window != nullptr && g_the_window->ready()) g_the_window->reset();
+}
+bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    return g_the_window->checkpoint_save(c, err);
+}
+bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    return g_the_window->checkpoint_restore(c, err);
 }
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();

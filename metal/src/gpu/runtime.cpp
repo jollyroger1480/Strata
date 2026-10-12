@@ -12,6 +12,7 @@
 // re-encoded by graph_launch (encoding measured at ~0.17 us per dispatch on the M5 Max).
 #define NS_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
+#include <execinfo.h>
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
@@ -187,6 +188,8 @@ void check_purged(const Alloc* a, const char* what) {
     if (a && a->purged) {
         std::fprintf(stderr, "strata metal runtime: a %s touches a device allocation of %.1f MB that was given back "
                              "(STRATA_METAL_KEEP_HOST_WEIGHTS=1 keeps it)\n", what, a->bytes / 1e6);
+        void* fr[48];
+        backtrace_symbols_fd(fr, backtrace(fr, 48), 2);   // which host code still reads it
         std::abort();
     }
 }
