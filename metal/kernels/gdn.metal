@@ -21,6 +21,8 @@ struct GdnArgs {
     uint channels;   // 10240 = (2 h_k + h_v) * 128
     uint commit;
     float eps;       // 1e-6
+    uint plane;      // 0: y only; else y is the raw plane of prepared activations (xprep layout, n = h_v * 128,
+                     // `plane` floats between planes) and the other planes and the per-16 sums are written too
 };
 
 kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buffer(1)]],
@@ -37,6 +39,7 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
     threadgroup float red[4][S];
     threadgroup float part[16];
     threadgroup float gb[2];
+    threadgroup float ys[S];
     const int h = int(tg.x), hk = h % int(a.h_k), hv = int(a.h_v);
     const int cb = sg & 3, ib = sg >> 2;
     const int j = 32 * cb + lane, i0 = 32 * ib;
@@ -117,9 +120,26 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
             const float tot = (part[0] + part[1]) + (part[2] + part[3]);
             const float rs = rsqrt(tot / float(S) + a.eps);
             const float zz = z[t * hv * S + h * S + j];
-            y[t * hv * S + h * S + j] = ((rs * o) * gamma[j]) * (1.0f / (1.0f + exp(-zz)));
+            const float yv = ((rs * o) * gamma[j]) * (1.0f / (1.0f + exp(-zz)));
+            y[t * hv * S + h * S + j] = yv;
+            if (a.plane) {
+                const float q2s[8] = {1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 0.0009765625f, 0.000244140625f,
+                                      0.00006103515625f};
+                const float p4s[4] = {1.0f, 0.00390625f, 1.52587890625e-05f, 5.9604644775390625e-08f};
+                device float* raw = y + t * hv * S + h * S + j;
+                const int jj = j & 15;
+                raw[a.plane] = yv * q2s[jj & 7];
+                raw[2 * a.plane] = yv * p4s[jj & 3];
+                raw[3 * a.plane] = (jj & 1) ? yv * 0.00390625f : yv;
+                ys[j] = yv;
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (a.plane && ib == 0 && (j & 15) == 0) {
+            float s0 = 0.0f, s1 = 0.0f;
+            for (int k = 0; k < 16; k += 2) { s0 += ys[j + k]; s1 += ys[j + k + 1]; }
+            y[4 * a.plane + t * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
+        }
     }
     if (a.commit) {
         for (int r = 0; r < 32; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];

@@ -27,12 +27,12 @@ constexpr int P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE, P_IGU = 4, P_IDN = 8;
 struct GemvArgs { uint32_t n_in, n_out, n_tok, row_bytes, x_stride, y_stride; };
 struct GrArgs { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; };
-struct GrArgs3 { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; uint32_t rb_down, rb_up; };
+struct GrArgs3 { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; uint32_t rb_down, rb_up, comb, topk; };
 struct MoeArgs {
     uint64_t gate_off, up_off, down_off, gu_stride, d_stride;
     uint32_t gu_row, d_row, n_embd, n_ff, n_tok, topk, n_expert, gx_gu, gx_dn, pad;
 };
-struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; };
+struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 struct GlueArgs { uint32_t n, n_tok, n_embd, topk; };
 struct ArgArgs { uint32_t n_vocab, parts; };
@@ -61,6 +61,8 @@ int main(int argc, char** argv) {
     int ntok = 1, ctx = 1000, reps = 10;
     bool skip_qsa = false, graph = false;
     std::string hc_mode = "3";   // 3: BF16, 3 dispatches; 2: BF16, 2 dispatches; q8: Q8_0 copies, 2 dispatches
+    bool fuse = false;           // the GDN y prep in the step; no QSA score/top-k within the selection budget
+    bool fold_comb = false;      // the MoE combine folded into the next 2-dispatch HC read (measured slower)
     std::string only;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -70,6 +72,8 @@ int main(int argc, char** argv) {
         else if (a == "--skip-qsa") skip_qsa = true;
         else if (a == "--graph") graph = true;
         else if (a == "--hc") hc_mode = argv[++i];
+        else if (a == "--fuse") fuse = true;
+        else if (a == "--fold-comb") fold_comb = true;
         else if (a == "--only") only = argv[++i];
     }
     gguf::File f;
@@ -140,6 +144,8 @@ int main(int argc, char** argv) {
             pooled.push_back(cx.alloc(4 * (size_t)MB * 128));
         }
     }
+    for (int t = 0; t < MAXT; ++t)
+        for (int c = 0; c < 2051; ++c) qids.as<int>()[t * 2051 + c] = c;
     for (auto& b : vsc) for (size_t i = 0; i < b.bytes / 2; ++i) b.as<uint16_t>()[i] = 0x2000;   // small fp16 scales
     for (auto& b : ksc) for (size_t i = 0; i < b.bytes / 2; ++i) b.as<uint16_t>()[i] = 0x2000;
 
@@ -239,8 +245,10 @@ int main(int argc, char** argv) {
             const int tt = std::min(ntok, 3);
             const std::string dn = std::string("gr_down3_") + (q8 ? "8_" : "30_") + std::to_string(tt) + "_2";
             const std::string up = std::string("gr_up3_") + (q8 ? "8" : "30");
+            // after an MoE (the next layer's mixer read, the final read) the combine is folded in here
+            const bool comb = fold_comb && apply && pre.find("hc_ffn") == std::string::npos;
             GrArgs3 a{N, HC, LR, MAXT, apply ? 1u : 0u, 1e-6f, (uint32_t)(q8 ? HC * N / 32 * 34 : HC * N * 2),
-                      (uint32_t)(q8 ? LR / 32 * 34 : LR * 2)};
+                      (uint32_t)(q8 ? LR / 32 * 34 : LR * 2), comb ? 1u : 0u, (uint32_t)TOPK};
             const mtl::Buffer& WB = q8 ? Q8 : W;
             const size_t od = q8 ? q8off.at(tdn.name) : tdn.offset, oi = q8 ? q8off.at(tin.name) : tin.offset,
                          ou = q8 ? q8off.at(tup.name) : tup.offset;
@@ -248,7 +256,7 @@ int main(int argc, char** argv) {
             d.p = Pn(lib, dn, dn + "#" + std::to_string(ntok), mtl::Constants().i(1, ntok));
             d.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(Rb[cur_r]), mtl::Arg::B(Rb[1 - cur_r]),
                       mtl::Arg::B(bo), mtl::Arg::B(Db[cur_d]), mtl::Arg::B(W, tn.offset), mtl::Arg::B(Db[1 - cur_d]),
-                      mtl::Arg::B(rsb), mtl::Arg::V(a)};
+                      mtl::Arg::B(rsb), mtl::Arg::V(a), mtl::Arg::B(plan), mtl::Arg::B(ye), mtl::Arg::B(ysh), mtl::Arg::B(sg)};
             d.grid[0] = (LR + HC + 15) / 16;
             d.grid[1] = HC;
             d.tg[0] = 256;
@@ -318,17 +326,17 @@ int main(int argc, char** argv) {
             gemv2(T(b + "ssm_alpha.weight"), XA, al, 48, "gdn proj");
             nb = true;
             gemv2(T(b + "ssm_beta.weight"), XA, be, 48, "gdn proj");
-            GdnArgs a{16, 48, 10240, 1, 1e-6f};
+            GdnArgs a{16, 48, 10240, 1, 1e-6f, fuse ? (uint32_t)(MAXT * 6144) : 0u};
             mtl::Dispatch d;
             d.p = pgdn;
             d.args = {mtl::Arg::B(gst[gi]), mtl::Arg::B(ghist[gi]), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                       mtl::Arg::B(z), mtl::Arg::B(W, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T(b + "ssm_dt.bias").offset),
-                      mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(yg),
+                      mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse ? XY.b : yg),
                       mtl::Arg::V(a), mtl::Arg::B(ghist2[gi])};
             d.grid[0] = 48;
             d.tg[0] = 512;
             push(d, "gdn step", 2.0 * 4 * 128 * 48 * 128);
-            xprep(yg, XY, 6144, "gdn proj");
+            if (!fuse) xprep(yg, XY, 6144, "gdn proj");
             gemv2(T(b + "ssm_out.weight"), XY, bo, N, "gdn proj");
             ++gi;
         } else if (!skip_qsa) {
@@ -354,19 +362,20 @@ int main(int argc, char** argv) {
             d.grid[1] = ntok;
             d.tg[0] = 256;
             push(d, "qsa attn", 0);
+            const bool sel = !(fuse && ctx + ntok <= 2051);   // within the budget the selection is the identity
             mtl::Dispatch s;
             s.p = qscore;
             s.args = {mtl::Arg::B(qidx), mtl::Arg::B(pooled[qi]), mtl::Arg::B(dead[qi]), mtl::Arg::B(scores), mtl::Arg::V(a)};
             s.grid[0] = ((ctx + ntok) / 4 + 1 + 7) / 8;
             s.grid[1] = ntok;
             s.tg[0] = 256;
-            push(s, "qsa attn", 0);
+            if (sel) push(s, "qsa attn", 0);
             mtl::Dispatch k;
             k.p = qtopk;
             k.args = {mtl::Arg::B(scores), mtl::Arg::B(qids), mtl::Arg::V(a)};
             k.grid[0] = ntok;
             k.tg[0] = 1024;
-            push(k, "qsa attn", 0);
+            if (sel) push(k, "qsa attn", 0);
             mtl::Dispatch at;
             at.p = qattn;
             at.args = {mtl::Arg::B(qcur), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]), mtl::Arg::B(vsc[qi]),
@@ -460,7 +469,7 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::B(ysh), mtl::Arg::B(sg), mtl::Arg::B(bo), mtl::Arg::V(a)};
             d.grid[0] = (ntok * N + 255) / 256;
             d.tg[0] = 256;
-            push(d, "shared", 0);
+            if (!(fold_comb && hc_mode != "3")) push(d, "shared", 0);   // else folded into the next HC read
         }
     }
     // ---- the final mixer and the head

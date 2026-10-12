@@ -17,7 +17,7 @@
 
 namespace {
 constexpr int S = 128, HK = 16, HV = 48, C = (2 * HK + HV) * S, MAXT = 8;
-struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; };
+struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 struct Err {
     double se = 0, sr = 0;
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
         std::memcpy(hist.as<float>() + l * C * 3, h0.ptr, 4 * C * 3);
     }
     auto disp = [&](const mtl::Pipeline& p, int layer, int commit, const mtl::Buffer& out) {
-        GdnArgs a{HK, HV, C, (uint32_t)commit, 1e-6f};
+        GdnArgs a{HK, HV, C, (uint32_t)commit, 1e-6f, 0};
         mtl::Dispatch d;
         d.p = &p;
         d.args = {mtl::Arg::B(state, 4 * st_elems * layer), mtl::Arg::B(hist, 4 * (size_t)C * 3 * layer), mtl::Arg::B(qkv),

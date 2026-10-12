@@ -18,7 +18,7 @@
 namespace {
 constexpr int N = 2560, HC = 4, LR = 320, NIN = HC * N, NR = LR + HC, MAXT = 8;
 struct GrArgs { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; };
-struct GrArgs3 { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; uint32_t rb_down, rb_up; };
+struct GrArgs3 { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; uint32_t rb_down, rb_up, comb, topk; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 struct Err {
     double se = 0, sr = 0;

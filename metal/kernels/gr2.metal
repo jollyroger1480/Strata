@@ -13,6 +13,10 @@
 // Per element the arithmetic is gr_norm's (fma(bo, g, R), then (R' * w) * rs); the K order differs (per stream, then
 // the 4 streams in order).
 
+#ifndef P_TOKENT
+#define P_TOKENT 532   // moe.metal's plan layout
+#endif
+
 struct GrArgs3 {
     uint n_embd;
     uint hc;
@@ -22,7 +26,20 @@ struct GrArgs3 {
     float eps;
     uint rb_down;    // bytes per row of w_down / w_inject
     uint rb_up;      // bytes per row of w_up
+    uint comb;       // 1: bo is not given; it is the MoE combine (moe_combine_sh's arithmetic) of buffers 10..13
+    uint topk;
 };
+
+// bo[t][d], given or the MoE combine: sum_k ye[entry(t, k)][d] (k in order) + sigmoid(sg[t]) * ysh[t][d]
+static inline float bo_at(device const float* bo, device const int* plan, device const float* ye,
+                          device const float* ysh, device const float* sg, constant GrArgs3& a, int t, int d) {
+    const int n = int(a.n_embd);
+    if (!a.comb) return bo[t * n + d];
+    float s = 0.0f;
+    for (uint j = 0; j < a.topk; ++j) s += ye[plan[P_TOKENT + t * int(a.topk) + j] * n + d];
+    const float gs = 1.0f / (1.0f + exp(-sg[t]));
+    return fma(gs, ysh[t * n + d], s);
+}
 
 template <int F, int TT, int RPS>
 kernel void gr_down3(device const uchar* w_down [[buffer(0)]], device const uchar* w_inject [[buffer(1)]],
@@ -30,6 +47,8 @@ kernel void gr_down3(device const uchar* w_down [[buffer(0)]], device const ucha
                      device const float* bo [[buffer(4)]], device const float* Dprev [[buffer(5)]],
                      device const float* wn [[buffer(6)]], device float* D [[buffer(7)]],
                      device float* rs_out [[buffer(8)]], constant GrArgs3& a [[buffer(9)]],
+                     device const int* plan [[buffer(10)]], device const float* ye [[buffer(11)]],
+                     device const float* ysh [[buffer(12)]], device const float* sgv [[buffer(13)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     constexpr int UNIT = fmt<F>::UNIT;
@@ -57,7 +76,7 @@ kernel void gr_down3(device const uchar* w_down [[buffer(0)]], device const ucha
             float ss = 0.0f;
             for (int d = tid; d < n; d += 256) {
                 float v = rt[d];
-                if (a.apply) v = fma(bo[(t0 + t) * n + d], g_tg[t], v);
+                if (a.apply) v = fma(bo_at(bo, plan, ye, ysh, sgv, a, t0 + t, d), g_tg[t], v);
                 xs_tg[t][d] = v;
                 ss = fma(v, v, ss);
                 if (tg.x == 0) Rout[(t0 + t) * NIN + c * n + d] = v;
@@ -193,6 +212,8 @@ kernel void gr_down3b(device const uchar* w_down [[buffer(0)]], device const uch
                       device const float* bo [[buffer(4)]], device const float* Dprev [[buffer(5)]],
                       device const float* wn [[buffer(6)]], device float* D [[buffer(7)]],
                       device float* rs_out [[buffer(8)]], constant GrArgs3& a [[buffer(9)]],
+                      device const int* plan [[buffer(10)]], device const float* ye [[buffer(11)]],
+                      device const float* ysh [[buffer(12)]], device const float* sgv [[buffer(13)]],
                       uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                       ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup float xs_tg[TT][2560];
@@ -229,7 +250,7 @@ kernel void gr_down3b(device const uchar* w_down [[buffer(0)]], device const uch
             float ss = 0.0f;
             for (int d = tid; d < n; d += 256) {
                 float v = rt[d];
-                if (a.apply) v = fma(bo[(t0 + t) * n + d], g_tg[t], v);
+                if (a.apply) v = fma(bo_at(bo, plan, ye, ysh, sgv, a, t0 + t, d), g_tg[t], v);
                 xs_tg[t][d] = v;
                 ss = fma(v, v, ss);
                 if (tg.x == 0) Rout[(t0 + t) * NIN + c * n + d] = v;
