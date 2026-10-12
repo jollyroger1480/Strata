@@ -84,6 +84,7 @@
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/family_layout.hpp"
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -2532,6 +2533,16 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
+            // a model family Strata recognises but has no engine path for yet (Qwen3.6-35B-A3B) is refused here,
+            // with a message that says so, before anything else about the file is judged
+            {
+                const strata::GgufFile meta(o.native_shards.front());
+                const std::string why = strata::model_family_not_supported(strata::model_family(meta));
+                if (strata::model_family(meta) != strata::ModelFamily::Unknown && !why.empty()) {
+                    std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), why.c_str());
+                    return 2;
+                }
+            }
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
             if (o.ple_gguf.empty() && !o.no_ple) {
@@ -2831,7 +2842,7 @@ int main(int argc, char** argv) {
                             ? "AVX1 128-bit (iq_avx1, the older-CPU build)"
                             : "ggml-cpu vec_dot (no AVX2: the older-CPU build)")
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
+    strata::core::ModelGeometry g;   // canonical defaults; with --native the model file's geometry below
     int64_t K = 10;
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
@@ -2845,16 +2856,26 @@ int main(int argc, char** argv) {
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
         if (!o.native_preset.empty()) {
-            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-            // is the authority on its own MoE shape - everything else in the geometry is unchanged
+            // The geometry is the model file's (core::geometry_from_gguf: every "<arch>.*" shape key), checked
+            // against the shapes this engine's kernels are built for.  The expert count and top-k are run-time
+            // sizes: a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10.
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                std::string gerr;
+                if (!strata::core::geometry_from_gguf(model_gguf, g, K, gerr)) {
+                    std::fprintf(stderr, "strata generate: %s\n", gerr.c_str());
+                    return 1;
+                }
+                const std::string mismatch = strata::core::compiled_geometry_mismatch(g);
+                if (!mismatch.empty()) {
+                    std::fprintf(stderr, "strata generate: %s: %s\n", o.native_preset.c_str(), mismatch.c_str());
+                    return 1;
+                }
+                const std::string p = std::string(strata::model_family_arch(g.family)) + ".";
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",

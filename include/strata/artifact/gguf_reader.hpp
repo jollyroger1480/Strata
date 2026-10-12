@@ -33,6 +33,7 @@
 #include <algorithm>
 
 #include "strata/artifact/gguf_split.hpp"
+#include "strata/artifact/model_family.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -209,6 +210,10 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     case 24:   // I8: raw bytes (the FP8 PLE table of tools/ple_fp8_pack.py)
         elems = 1;
         bytes = 1;
+        return true;
+    case 39:   // MXFP4: one E8M0 scale + 16 bytes of 4-bit values (Qwen3.6's MXFP4_MOE experts)
+        elems = 32;
+        bytes = 17;
         return true;
     case 42:
         elems = 64;
@@ -577,18 +582,54 @@ private:
     std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
-// ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
-// refused with a precise error rather than silently mis-run.
+// ---- architecture guard (P1.S2). The engine is specialised to known model families (model_family.hpp);
+// anything else must be refused with a precise error rather than silently mis-run.  `check_architecture` accepts
+// every family Strata knows (qwen4exp, qwen35moe); `check_engine_architecture` below also wants one this engine
+// runs.
 struct Qwen4ExpGuard {
     uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
              head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
                                   // fewer experts than the canonical 512; the graph reads the true value
 };
 
+/// The family of the model whose metadata shard is `g` (Unknown when it has no or another architecture).
+inline ModelFamily model_family(const GgufFile& g) {
+    const MetaValue* arch = g.get("general.architecture");
+    return arch ? model_family_from_arch(arch->s) : ModelFamily::Unknown;
+}
+
+/// Qwen3.6-35B-A3B's guard: every key the geometry is read from must be present (core::geometry_from_gguf),
+/// and the few that the layer pattern depends on must have the values the model has.
+inline std::string check_architecture_qwen35moe(const GgufFile& g) {
+    static const char* const keys[] = {
+        "qwen35moe.block_count", "qwen35moe.embedding_length", "qwen35moe.attention.head_count",
+        "qwen35moe.attention.head_count_kv", "qwen35moe.attention.key_length", "qwen35moe.attention.value_length",
+        "qwen35moe.expert_count", "qwen35moe.expert_used_count", "qwen35moe.expert_feed_forward_length",
+        "qwen35moe.expert_shared_feed_forward_length", "qwen35moe.ssm.conv_kernel", "qwen35moe.ssm.state_size",
+        "qwen35moe.ssm.group_count", "qwen35moe.ssm.time_step_rank", "qwen35moe.ssm.inner_size",
+        "qwen35moe.full_attention_interval", "qwen35moe.nextn_predict_layers",
+    };
+    for (const char* k : keys) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+    }
+    const MetaValue* nl = g.get("qwen35moe.block_count");
+    const MetaValue* mtp = g.get("qwen35moe.nextn_predict_layers");
+    if (mtp->u >= nl->u) return "qwen35moe.nextn_predict_layers is not smaller than qwen35moe.block_count";
+    if (g.get("qwen35moe.full_attention_interval")->u < 2)
+        return "qwen35moe.full_attention_interval must be at least 2 (the GDN / attention pattern)";
+    return {};
+}
+
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
+    const ModelFamily family = model_family_from_arch(arch->s);
+    if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(g);
+    if (family != ModelFamily::Qwen4Exp)
+        return "architecture is '" + arch->s + "', Strata reads 'qwen4exp' (Qwen3.8-Flash-Next) and 'qwen35moe' "
+               "(Qwen3.6-35B-A3B)";
     struct Req {
         const char* key;
         uint64_t want;
@@ -608,6 +649,14 @@ inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& wa
             return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
     }
     return {}; // empty == ok
+}
+
+/// The engine's guard: `check_architecture`, then a family this engine has a path for.  A recognised family
+/// it does not run yet (Qwen3.6) is refused with a message that says so.
+inline std::string check_engine_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
+    std::string err = check_architecture(g, want);
+    if (!err.empty()) return err;
+    return model_family_not_supported(model_family(g));
 }
 
 } // namespace strata

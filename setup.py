@@ -68,6 +68,7 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
 }
 
 
@@ -299,6 +300,29 @@ FAMILIES = {
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+# NEW-MODELS-PLAN.md T0: Qwen3.6-35B-A3B (GGUF architecture qwen35moe), Unsloth's GGUFs with the MTP block.  Setup knows
+# the family and downloads its files (pinned revision, size and SHA-256 checked: the Hub's LFS pointers), but this
+# engine has no path for it yet and refuses the file with "not supported yet".  Not in FAMILIES (the menu, the
+# installed configs, the packs): only --family qwen36 reaches it (preview_family).
+QWEN36_FILES = {
+    "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf": (22853663008, "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"),
+    "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf": (32611711264, "35fce994cd36104a7dc1bd8a4bdf13778145664c00fdef6773aebc9246e5019c"),
+    "Qwen3.6-35B-A3B-Q8_0.gguf": (37801097504, "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"),
+    "mmproj-F16.gguf": (899283584, "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"),
+}
+PREVIEW_FAMILIES = {
+    "qwen36": {"title": "Qwen3.6-35B-A3B", "by": "Qwen; GGUFs with the MTP layer by Unsloth", "arch": "qwen35moe",
+               "about": "35B mixture of experts with 3B active (256 experts, top-8): a smaller cousin of "
+                        "Qwen3.8-Flash-Next with the same tokenizer",
+               "hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "file": "Qwen3.6-35B-A3B-{q}.gguf", "tag": "qwen36-",
+               "mmproj_hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "mmproj": "mmproj-F16.gguf",
+               "name": "qwen3.6-35b-a3b", "license": "Apache 2.0: https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+               # RAM floors from the iGPU baselines (llama.cpp: 21 / 30 / 38 GB in use, plus the OS)
+               "models": {"UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
+                          "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic)", "ram_gb": 48},
+                          "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 48}},
+               "sha256": QWEN36_FILES},
+}
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
 ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection.gguf"
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
@@ -4824,10 +4848,57 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def preview_family(a) -> int:
+    """--family qwen36: a family setup knows but the engine does not run yet (PREVIEW_FAMILIES).  Downloads the chosen
+    size (pinned revision, size and SHA-256 checked) and, with --vision, the image encoder - and says plainly that
+    Strata cannot start it yet.  Nothing is configured: no engine, no pack, no start script."""
+    fam = PREVIEW_FAMILIES[a.family]
+    names = list(fam["models"])
+    say()
+    say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
+    warn(f"this Strata version does not run {fam['title']} yet (support is in development): setup downloads its "
+         "files, and the engine refuses them with a message until a version that runs it")
+    if a.model and a.model not in names:
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
+    ram = ram_gb()
+    for i, m in enumerate(names, 1):
+        d = fam["models"][m]
+        size = fam["sha256"][fam["file"].format(q=m)][0]
+        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
+    if a.check:
+        return 0
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], "1", a.yes)) - 1]
+    say(f"  Its license: {fam['license']}")
+    want = [fam["file"].format(q=model)]
+    if a.vision in ("yes", "gpu", "cpu"):
+        want.append(fam["mmproj"])
+    folder = Path(a.models_dir) / (fam["tag"] + model)
+    files = [folder / w for w in want]
+    left = sum(fam["sha256"][f.name][0] - (f.with_name(f.name + ".part").stat().st_size
+                                           if f.with_name(f.name + ".part").is_file() else 0)
+               for f in files if not (f.exists() and done(f))) / 1e9
+    if left and free_gb(folder) < left + 1:
+        fail(f"not enough free disk space in {folder}: need ~{left + 1:.0f} GB", "use --models-dir on a bigger drive")
+    step(5, f"downloading {fam['title']} {model}")
+    for f in files:
+        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else fam["hf"]) + f.name
+        download(url, f, "vision encoder" if f.name == fam["mmproj"] else None)
+        verify_sha256(f, *fam["sha256"][f.name])
+    ok(f"{fam['title']} {model}: {folder}")
+    say()
+    say(f"{fam['title']} is downloaded, but this Strata version cannot run it yet (its engine path is in "
+        "development); nothing was configured. Run setup again without --family qwen36 to install a model it runs.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5 (qwen36 = Qwen3.6-35B-A3B: download only, the "
+                         "engine does not run it yet)")
+    ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
+                                                                       for m in f["models"])])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4929,6 +5000,9 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
+        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
+                                                              if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -4953,6 +5027,8 @@ def main() -> int:
     roots = [data, *elsewhere]
     if a.models_dir is None:
         a.models_dir = str(data / "models")
+    if a.family in PREVIEW_FAMILIES:                   # a family the engine does not run yet: its files only
+        return preview_family(a)
 
     if a.rollback_engine:                              # #670
         return rollback_engine(12 if a.cuda == "12" else 13)
