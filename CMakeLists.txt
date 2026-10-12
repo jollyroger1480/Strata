@@ -609,6 +609,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
 
+  # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
+  # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
+  add_executable(strata-q36ref src/qwen35/q36ref.cu)
+  target_include_directories(strata-q36ref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+  target_link_libraries(strata-q36ref PRIVATE strata_warnings ${_strata_gpu_runtime_target})
+
   if(STRATA_ENABLE_HIP)
     enable_testing()
     set(_strata_hip_tests)
