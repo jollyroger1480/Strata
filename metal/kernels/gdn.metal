@@ -1,0 +1,128 @@
+// metal/kernels/gdn.metal - one GDN (gated delta-net) layer's recurrence for a window of tokens, fused end to end:
+//
+//   conv (4 taps, history [channels][3] oldest first) -> SiLU, on q (16 heads), k (16), v (48 heads) of 128
+//   q, k: L2 norm as native_gdn_l2_norm (rsqrt(sum/128 + eps/128), then x 1/sqrt(128), two roundings)
+//   gate = exp(softplus(alpha + dt) * a)  (softplus = v > 20 ? v : log1p(exp(v))),  beta = sigmoid(beta)
+//   kv_j = sum_i S[i][j] k[i];  delta_j = (v_j - gate * kv_j) * beta;  S = gate * S + k[i] delta_j
+//   o_j = (sum_i S[i][j] q[i]) / sqrt(128);  y_j = o_j * rsqrt(mean(o^2) + eps) * gamma_j * sigmoid(z_j)
+//
+// State layout as Strata's: S[(i * h_v + h) * 128 + j].  Value head h reads q/k head h % h_k.
+// One threadgroup per value head, 512 threads = 16 simdgroups: simdgroup s holds columns j = 32 (s % 4) + lane and
+// rows i = 32 (s / 4) .. + 32 of the head's 128 x 128 state in registers.  GDN_NTOK tokens run in order; with
+// `commit` the state and the conv history are written back after the last one (a verify window runs without commit,
+// the fold of m accepted tokens is the same kernel with GDN_NTOK = m and commit).
+
+constant int GDN_NTOK [[function_constant(2)]];
+
+struct GdnArgs {
+    uint h_k;        // 16
+    uint h_v;        // 48
+    uint channels;   // 10240 = (2 h_k + h_v) * 128
+    uint commit;
+    float eps;       // 1e-6
+};
+
+kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buffer(1)]],
+                     device const float* qkv [[buffer(2)]], device const float* alpha [[buffer(3)]],
+                     device const float* beta [[buffer(4)]], device const float* z [[buffer(5)]],
+                     device const float* conv_w [[buffer(6)]], device const float* dt [[buffer(7)]],
+                     device const float* ssm_a [[buffer(8)]], device const float* gamma [[buffer(9)]],
+                     device float* y [[buffer(10)]], constant GdnArgs& a [[buffer(11)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+                     ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    constexpr int S = 128;
+    threadgroup float qs[S], ks[S], vs[S];
+    threadgroup float red[4][S];
+    threadgroup float part[16];
+    threadgroup float gb[2];
+    const int h = int(tg.x), hk = h % int(a.h_k), hv = int(a.h_v);
+    const int cb = sg & 3, ib = sg >> 2;
+    const int j = 32 * cb + lane, i0 = 32 * ib;
+    const float scale = 1.0f / sqrt(float(S));
+
+    // the channel this thread convolves: 0..127 q of head hk, 128..255 k of head hk, 256..383 v of head h
+    int ch = -1;
+    if (tid < 128) ch = hk * S + tid;
+    else if (tid < 256) ch = int(a.h_k) * S + hk * S + (tid - 128);
+    else if (tid < 384) ch = 2 * int(a.h_k) * S + h * S + (tid - 256);
+    float hst[3] = {0.0f, 0.0f, 0.0f}, cw[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (ch >= 0) {
+        for (int k = 0; k < 3; ++k) hst[k] = hist[ch * 3 + k];
+        for (int k = 0; k < 4; ++k) cw[k] = conv_w[ch * 4 + k];
+    }
+    float st[32];
+    for (int r = 0; r < 32; ++r) st[r] = state[((i0 + r) * hv + h) * S + j];
+
+    for (int t = 0; t < GDN_NTOK; ++t) {
+        // conv + SiLU
+        float cv = 0.0f;
+        if (ch >= 0) {
+            const float in = qkv[t * int(a.channels) + ch];
+            const float vals[4] = {hst[0], hst[1], hst[2], in};
+            float s = 0.0f;
+            for (int k = 0; k < 4; ++k) s = fma(vals[k], cw[k], s);
+            s = s + 0.0f;
+            cv = s / (1.0f + exp(-s));
+            hst[0] = hst[1];
+            hst[1] = hst[2];
+            hst[2] = in;
+        }
+        // L2 norms of q (threads 0..127 = simdgroups 0..3) and k (128..255 = 4..7)
+        const float ssq = simd_sum(cv * cv);
+        if (lane == 0) part[sg] = ssq;
+        if (tid == 0) {
+            const float v = alpha[t * hv + h] + dt[h];
+            // log1p(e^v) (Kahan: log(u) * e / (u - 1), u = 1 + e; exact where 1 + e rounds to 1)
+            const float e = exp(v), u = 1.0f + e;
+            const float sp = v > 20.0f ? v : (u == 1.0f ? e : log(u) * e / (u - 1.0f));
+            gb[0] = exp(sp * ssm_a[h]);
+            gb[1] = 1.0f / (1.0f + exp(-beta[t * hv + h]));
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < 256) {
+            const int base = tid < 128 ? 0 : 4;
+            const float tot = (part[base] + part[base + 1]) + (part[base + 2] + part[base + 3]);
+            const float rs = rsqrt(tot / float(S) + a.eps / float(S));
+            const float nv = (rs * cv) * scale;
+            if (tid < 128) qs[tid] = nv;
+            else ks[tid - 128] = nv;
+        } else if (tid < 384) {
+            vs[tid - 256] = cv;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const float g = gb[0], be = gb[1];
+        // kv_j
+        float kv = 0.0f;
+        for (int r = 0; r < 32; ++r) kv = fma(st[r], ks[i0 + r], kv);
+        red[ib][j] = kv;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        kv = (red[0][j] + red[1][j]) + (red[2][j] + red[3][j]);
+        const float delta = (vs[j] - g * kv) * be;
+        float o = 0.0f;
+        for (int r = 0; r < 32; ++r) {
+            st[r] = fma(g, st[r], ks[i0 + r] * delta);
+            o = fma(st[r], qs[i0 + r], o);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        red[ib][j] = o;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // the readout and the output norm: column j's o (every i-block thread of the column holds the same value)
+        o = ((red[0][j] + red[1][j]) + (red[2][j] + red[3][j])) * scale;
+        const float osq = ib == 0 ? simd_sum(o * o) : 0.0f;
+        if (ib == 0 && lane == 0) part[cb] = osq;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (ib == 0) {
+            const float tot = (part[0] + part[1]) + (part[2] + part[3]);
+            const float rs = rsqrt(tot / float(S) + a.eps);
+            const float zz = z[t * hv * S + h * S + j];
+            y[t * hv * S + h * S + j] = ((rs * o) * gamma[j]) * (1.0f / (1.0f + exp(-zz)));
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (a.commit) {
+        for (int r = 0; r < 32; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
+        // q/k history: the threadgroups h < h_k own their q/k head (h == hk); v history: every head its own
+        if (ch >= 0 && (tid >= 256 || h < int(a.h_k)))
+            for (int k = 0; k < 3; ++k) hist[ch * 3 + k] = hst[k];
+    }
+}
