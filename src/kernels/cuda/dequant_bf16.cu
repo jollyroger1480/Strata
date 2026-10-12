@@ -271,11 +271,11 @@ bool dequant_wide_on() {
     if (env >= 0) return env != 0;
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes: sm_61, measured on a Tesla P40
     int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { (void) cudaGetLastError(); return false; }
     if (!per_dev[dev]) {
         int major = 0, minor = 0;
         if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
-            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { cudaGetLastError(); return false; }
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
         per_dev[dev] = major == 6 && minor == 1 ? 2 : 1;
     }
     return per_dev[dev] == 2;
