@@ -308,6 +308,9 @@ VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
           "cpu": {"max_tokens": 300, "reserve_mib": 700}}
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
+# MODEL-UPDATE Phase 1: the K-quant prompt kernels (Unsloth's UD-Q4/Q5/Q6_K_XL experts) are a library next to the CUDA
+# engine, opened only for those models; an engine without it runs them on the FP16 prompt path
+KQ_LIB = "strata_kq.dll" if WIN else "libstrata_kq.so"
 
 
 # ------------------------------------------------------------------------------------------------ output
@@ -3430,6 +3433,10 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                  f"this source is {source_version()}): the installed engine and its stamp are left as they were",
                  "the build folder " + str(bdir) + " may be configured for something else: delete it and run this again")
         shutil.copy2(bdir / EXE, eng / EXE)
+        if (bdir / KQ_LIB).exists():                      # built with it (Phase 1): it goes next to the engine
+            shutil.copy2(bdir / KQ_LIB, eng / KQ_LIB)
+        elif (eng / KQ_LIB).exists():                     # an older one of another build would only be refused
+            (eng / KQ_LIB).unlink()
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
