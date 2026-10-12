@@ -29,6 +29,52 @@ int main() {
     CHECK(restriction_possible(12, 4));
     CHECK(!restriction_possible(11, 4));
     CHECK(!restriction_possible(48, 1));
+
+    // #1440: two equal cards, 48 layers x 512 experts of ~2 MiB (IQ3_S-like).  Card 0 has more room than card 1 (the
+    // last stage also carries the drafter).  Every K whose two caches hold all their pairs predicts the same time.
+    {
+        const int64_t L = 48, E = 512, blob = 2 << 20, MiB = 1 << 20;
+        const std::vector<int64_t> room{29000 * MiB, 26200 * MiB};
+        std::vector<int64_t> need(L + 1, 0);
+        for (int64_t l = 0; l < L; ++l) need[(size_t) l + 1] = need[(size_t) l] + E * blob;
+        auto session = [&](int64_t lb, int64_t le) { return (le - lb) * 40 * MiB; };
+        std::vector<Placement> c;
+        for (int64_t k = 2; k < L; ++k) {
+            Placement p;
+            p.cuts = {k};
+            p.min_spare = min_spare(p.cuts, L, room, need, session);
+            // the miss term: the pairs a stage's cache cannot hold (each costs the same here)
+            double missing = 0;
+            for (int i = 0; i < 2; ++i) {
+                const int64_t lb = i == 0 ? 0 : k, le = i == 0 ? k : L;
+                const int64_t fit = (room[(size_t) i] - session(lb, le)) / blob;
+                const int64_t want = (le - lb) * E;
+                if (fit < want) missing += (double) (want - (fit > 0 ? fit : 0));
+            }
+            p.ms = 48 * 0.5 + 190.0 * missing / (double) (L * E);
+            c.push_back(p);
+        }
+        const size_t plain = fastest(c), head = pick_with_headroom(c, 0.002);
+        // the plain pick is the first full placement, and it leaves card 1 (almost) nothing
+        CHECK(c[plain].ms == c[head].ms);
+        CHECK(c[plain].cuts[0] < c[head].cuts[0]);
+        CHECK(c[plain].min_spare < 1024 * MiB);
+        CHECK(c[head].min_spare > 1536 * MiB);
+        // the pick is the most balanced full placement: no other full one keeps more on its tightest card
+        for (const Placement& p : c)
+            if (p.ms == c[plain].ms) CHECK(p.min_spare <= c[head].min_spare);
+        std::printf("split_rules_test: #1440 plain K=%lld (spare %lld MiB), headroom K=%lld (spare %lld MiB)\n",
+                    (long long) c[plain].cuts[0], (long long) (c[plain].min_spare / MiB), (long long) c[head].cuts[0],
+                    (long long) (c[head].min_spare / MiB));
+        // a slower placement is never taken for its headroom beyond the tolerance
+        std::vector<Placement> two{{{10}, 100.0, 0}, {{20}, 101.0, 5000 * MiB}};
+        CHECK(pick_with_headroom(two, 0.002) == 0);
+        CHECK(pick_with_headroom(two, 0.02) == 1);
+        // exact ties with equal spare keep the first (the old pick)
+        std::vector<Placement> same{{{10}, 100.0, 7}, {{20}, 100.0, 7}};
+        CHECK(pick_with_headroom(same, 0.0) == 0);
+        CHECK(pick_with_headroom({}, 0.1) == 0);
+    }
     if (failed == 0) std::printf("split_rules_test: ok\n");
     return failed ? 1 : 0;
 }

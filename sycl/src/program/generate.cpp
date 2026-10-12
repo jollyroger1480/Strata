@@ -65,6 +65,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/program/split_rules.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
@@ -3641,11 +3642,38 @@ int main(int argc, char **argv) try {
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
         int64_t best_held = 0, tried = 0;
+        // #1440: of the placements within STRATA_SPLIT_HEADROOM_TOL (default 0.2%) of the best predicted time, the one
+        // whose tightest card keeps the most VRAM beyond all its layers' experts (split_rules::pick_with_headroom).
+        // On by default here (a full xe card moves buffers to system memory instead of failing); STRATA_SPLIT_HEADROOM=0
+        // keeps the first best, as before.
+        static const bool split_headroom = [] {
+            const char* v = std::getenv("STRATA_SPLIT_HEADROOM");
+            return v == nullptr || std::atoi(v) != 0;
+        }();
+        const double headroom_tol =
+            std::getenv("STRATA_SPLIT_HEADROOM_TOL") ? std::atof(std::getenv("STRATA_SPLIT_HEADROOM_TOL")) : 0.002;
+        std::vector<int64_t> need_prefix((size_t) g.n_layers + 1, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            need_prefix[(size_t) l + 1] = need_prefix[(size_t) l] + (int64_t) g.n_expert * cost(l);
+        auto range_session = [&](int64_t lb, int64_t le) -> int64_t {
+            return (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
+        };
+        std::vector<strata::program::split_rules::Placement> scored;
+        std::vector<double> scored_mass;
+        std::vector<int64_t> scored_held;
+        auto score = [&](const std::vector<int64_t>& cuts, double ms, double hm, int64_t held) {
+            if (!split_headroom) return;
+            scored.push_back({cuts, ms, strata::program::split_rules::min_spare(cuts, g.n_layers, cap, need_prefix,
+                                                                                range_session)});
+            scored_mass.push_back(hm);
+            scored_held.push_back(held);
+        };
         auto consider = [&]() {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
             ++tried;
+            score(at, ms, hm, held);
             if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
         };
         const int64_t L = g.n_layers;
@@ -3722,6 +3750,7 @@ int main(int argc, char **argv) try {
                                           (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
                                           (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
                         ++tried;
+                        score({k1, k2, k3}, ms, hm / denom, held_at[a] + held_at[b] + held_at[c] + held_at[d]);
                         if (ms < best_ms) {
                             best = {k1, k2, k3};
                             best_ms = ms;
@@ -3736,6 +3765,27 @@ int main(int argc, char **argv) try {
             // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
             // 163,185 at five).  Nothing on this rig reaches it.
             proportional();
+        }
+        if (split_headroom && scored.size() > 1) {
+            const size_t first = strata::program::split_rules::fastest(scored);
+            const size_t pick = strata::program::split_rules::pick_with_headroom(scored, headroom_tol);
+            if (pick != first && scored[first].cuts == best) {
+                auto fmt_k = [](const std::vector<int64_t>& v) {
+                    std::string s;
+                    for (const int64_t k : v) s += (s.empty() ? "" : ",") + std::to_string(k);
+                    return s;
+                };
+                std::fprintf(stderr, "strata generate: layer split auto: K=%s instead of K=%s (predicted %.1f vs %.1f ms): its "
+                                     "tightest card keeps %.2f GiB beyond all its layers' experts, against %.2f GiB "
+                                     "(#1440: a full card can page to system memory); STRATA_SPLIT_HEADROOM=0 keeps K=%s\n",
+                             fmt_k(scored[pick].cuts).c_str(), fmt_k(best).c_str(), scored[pick].ms, best_ms,
+                             (double) scored[pick].min_spare / 1073741824.0,
+                             (double) scored[first].min_spare / 1073741824.0, fmt_k(best).c_str());
+                best = scored[pick].cuts;
+                best_ms = scored[pick].ms;
+                best_mass = scored_mass[pick];
+                best_held = scored_held[pick];
+            }
         }
         split_at = best;
         std::string ks;
