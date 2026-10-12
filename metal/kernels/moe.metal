@@ -199,6 +199,10 @@ static inline void gu_body(device const uchar* g0, device const uchar* u0, devic
         }
 }
 
+// bench probe (function constant 22): 1 = no table load (wrong values for the i-quants)
+constant int MOE_PROBE [[function_constant(22)]];
+constant int moe_probe = is_function_constant_defined(MOE_PROBE) ? MOE_PROBE : 0;
+
 template <int F, int LPR, int NR, int SG>
 kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[buffer(1)]],
                    device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
@@ -209,8 +213,10 @@ kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[
                    ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int RG = 32 / LPR;
     threadgroup uint tab[fmt<F>::TAB];
-    load_tab<F>(tab, tid, SG * 32);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (moe_probe != 1) {
+        load_tab<F>(tab, tid, SG * 32);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     const int g = int(tg.y);
     if (g >= plan[P_NG]) return;
     const int li = lane % LPR;
@@ -323,6 +329,8 @@ GU_SET(T_IQ2_XS)
 GU_SET(T_IQ2_S)
 GU_SET(T_IQ3_S)
 GU_SET(T_IQ4_XS)   // the IQ3_S pack's gate/up in one layer
+GU_SET(T_Q4_K) GU_SET(T_Q5_K) GU_SET(T_Q6_K) GU_SET(T_Q8_0)   // the UD-Q4/5/6_K_XL packs
+DN_SET(T_Q5_1) DN_SET(T_Q8_0)
 DN_SET(T_Q2_0)
 DN_SET(T_Q2_0R)
 DN_SET(T_IQ4_NL)

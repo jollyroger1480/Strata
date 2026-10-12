@@ -67,16 +67,17 @@ int main() {
     }
     // ---- router_route
     {
+        for (int rty : {ref::BF16, ref::F32}) {
         const int NE = 512;
-        const size_t rbr = ref::row_bytes(ref::BF16, N);
+        const size_t rbr = ref::row_bytes(rty, N);
         mtl::Buffer Wr = cx.alloc(rbr * NE), lg1 = cx.alloc(4 * MAXT * NE), lg2 = cx.alloc(4 * MAXT * NE),
                     id1 = cx.alloc(4 * MAXT * 10), id2 = cx.alloc(4 * MAXT * 10), w1 = cx.alloc(4 * MAXT * 10),
                     w2 = cx.alloc(4 * MAXT * 10), pl1 = cx.alloc(4 * P_INTS), pl2 = cx.alloc(4 * P_INTS), cnt = cx.alloc(16);
-        ref::random_blocks(ref::BF16, Wr.as<uint8_t>(), NE, N, 9, 0.05f);
+        ref::random_blocks(rty, Wr.as<uint8_t>(), NE, N, 9, 0.05f);
         mtl::Pipeline pr = cx.pipeline(lib, "moe_route");
         for (int nt = 1; nt <= 4; ++nt) {
-            mtl::Pipeline pg = cx.pipeline(lib, "gemv_30_32_1_4_1", mtl::Constants().i(0, nt)),
-                          pf = cx.pipeline(lib, "router_route_30", mtl::Constants().i(0, nt));
+            mtl::Pipeline pg = cx.pipeline(lib, "gemv_" + std::to_string(rty) + "_32_1_4_1", mtl::Constants().i(0, nt)),
+                          pf = cx.pipeline(lib, "router_route_" + std::to_string(rty), mtl::Constants().i(0, nt));
             const size_t s16 = (size_t)4 * 4 * MAXT * N;
             GemvArgs ga{(uint32_t)N, (uint32_t)NE, (uint32_t)nt, (uint32_t)rbr, (uint32_t)N, (uint32_t)NE};
             MoeArgs ma{};
@@ -111,7 +112,9 @@ int main() {
                      cnt.as<uint32_t>()[0] == 0;
             }
             fails += !ok;
-            std::printf("router_route ntok %d: logits, ids, w, plan bitwise (2 runs) %s\n", nt, ok ? "PASS" : "FAIL");
+            std::printf("router_route %s ntok %d: logits, ids, w, plan bitwise (2 runs) %s\n", ref::type_name(rty), nt,
+                        ok ? "PASS" : "FAIL");
+        }
         }
     }
     // ---- gr_norm_comb

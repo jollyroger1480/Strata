@@ -23,7 +23,7 @@ struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 int type_of(const std::string& s) {
-    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS})
+    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
         if (s == ref::type_name(t)) return t;
     std::exit(2);
 }
@@ -32,7 +32,8 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 16, SG = 2, DTN = -1, DTK = -1, DSG = -1;
-    bool bench = false, v2 = false, v3 = false;
+    bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false;
+    int MS = 1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--gu") gu = type_of(argv[++i]);
@@ -43,8 +44,11 @@ int main(int argc, char** argv) {
         else if (a == "--bench") bench = true;
         else if (a == "--v2") v2 = true;
         else if (a == "--v3") v2 = v3 = true;   // v2's gather + the register-operand GEMMs (TN per simdgroup)
+        else if (a == "--v4") { v2 = v3 = v4 = true; MS = std::atoi(argv[++i]); }   // mm_gu4 with MS 16-row subtiles
+        else if (a == "--v5") { v2 = v3 = true; v5 = true; }   // mm_gu5 (weight blocks staged in threadgroup memory)
     }
     if (bench && T == 256) T = 2048;
+    if (v4) TM = 16 * MS;   // the plan's tile height; mm_gu4's name carries MS instead
     mtl::Context cx;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
     const int NE = bench ? 512 : 64, LAYERS = bench ? 4 : 1;
@@ -93,7 +97,11 @@ int main(int argc, char** argv) {
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
     const bool k4 = coop_k4(cx);
     if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
-    mtl::Pipeline pgu = v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0))
+    mtl::Pipeline pgu = v5 ? cx.pipeline(lib, "mm_gu5_" + std::to_string(gu) + "_" + std::to_string(TN) + "_" + std::to_string(SG),
+                                         mtl::Constants().b(7, k4))
+                      : v4 ? cx.pipeline(lib, "mm_gu4_" + std::to_string(gu) + "_" + std::to_string(MS) + tl.substr(tl.find('_')),
+                                         mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0))
+                      : v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr))
                            : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
                   pdn = v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
                            : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),

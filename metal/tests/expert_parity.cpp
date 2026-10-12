@@ -36,7 +36,7 @@ struct MoeArgs {
 };
 
 int type_of(const std::string& s) {
-    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS})
+    for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
         if (s == ref::type_name(t)) return t;
     std::fprintf(stderr, "unknown type %s\n", s.c_str());
     std::exit(2);
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
         K.plan = cx.pipeline(lib, "moe_plan");
         K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
-        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a));
+        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr));
         K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;

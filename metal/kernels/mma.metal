@@ -38,6 +38,26 @@ template <> struct DW<T_Q2_0> {
         p1 = p0 + 8;
     }
 };
+template <> struct DW<T_Q5_1> {
+    static inline void run(device const uchar* row, int u, int k0, thread float* w, thread int& p0, thread int& p1,
+                           threadgroup const uint* tab) {
+        device const uchar* b = row + u * 24;
+        float q[32];
+        const float d = deq<T_Q5_1>(b, 0, q, tab), m = rdh(b + 2);
+        for (int j = 0; j < 32; ++j) w[j] = q[j] * d + m;
+        p0 = 32 * u - k0;
+        p1 = p0 + 16;
+    }
+};
+template <> struct DW<T_F32> {
+    static inline void run(device const uchar* row, int u, int k0, thread float* w, thread int& p0, thread int& p1,
+                           threadgroup const uint*) {
+        device const float* p = (device const float*)(row + 64 * u);
+        for (int j = 0; j < 16; ++j) w[j] = p[j];
+        p0 = 16 * u - k0;
+        p1 = p0 + 8;
+    }
+};
 template <> struct DW<T_BF16> {
     static inline void run(device const uchar* row, int u, int k0, thread float* w, thread int& p0, thread int& p1,
                            threadgroup const uint*) {
