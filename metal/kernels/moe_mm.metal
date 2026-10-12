@@ -708,6 +708,78 @@ template <> struct W8<T_IQ3_S> {
     }
 };
 
+// W8 for the K-quants and Q5_1: the lane's runs k and k + 16 (k % 32 < 16) share the block's scales / mins / high
+// bits; the 4-byte code runs read as one uint where the block layout keeps them 4-aligned (Q4_K 144-, Q5_K 176-,
+// Q5_1 24-byte blocks: rows of whole blocks start 4-aligned).  The same per-value arithmetic as W4.
+static inline float4 nib4(uint v, int hi) { const uint s = hi ? (v >> 4) : v; return float4(as_type<uchar4>(s & 0x0F0F0F0Fu)); }
+template <> struct W8<T_Q4_K> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint*, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 144;
+        const int j = k & 255, c = j >> 6, hi = (j >> 5) & 1, l = j & 31;
+        float s, mm;
+        scale_min_k4(2 * c + hi, bl + 4, s, mm);
+        const float d1 = rdh(bl) * s, m1 = rdh(bl + 2) * mm;
+        device const uint* q = (device const uint*)(bl + 16 + 32 * c + l);
+        const float4 qa = nib4(q[0], hi), qb = nib4(q[4], hi);
+        a = half4(d1 * qa - m1);
+        b = half4(d1 * qb - m1);
+    }
+};
+template <> struct W8<T_Q5_K> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint*, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 176;
+        const int j = k & 255, c = j >> 6, hi = (j >> 5) & 1, l = j & 31;
+        float s, mm;
+        scale_min_k4(2 * c + hi, bl + 4, s, mm);
+        const float d1 = rdh(bl) * s, m1 = rdh(bl + 2) * mm;
+        device const uint* qh = (device const uint*)(bl + 16 + l);
+        device const uint* ql = (device const uint*)(bl + 48 + 32 * c + l);
+        const uint sh = uint(2 * c + hi);
+        const float4 ha = float4(as_type<uchar4>((qh[0] >> sh) & 0x01010101u)) * 16.0f;
+        const float4 hb = float4(as_type<uchar4>((qh[4] >> sh) & 0x01010101u)) * 16.0f;
+        a = half4(d1 * (nib4(ql[0], hi) + ha) - m1);
+        b = half4(d1 * (nib4(ql[4], hi) + hb) - m1);
+    }
+};
+template <> struct W8<T_Q5_1> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint*, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 5) * 24;
+        const float d = rdh(bl), m = rdh(bl + 2);
+        const uint hb = rd32(bl + 4);
+        const int j = k & 15;   // runs at j and j + 16: the low nibbles of qs[j..j+3], then the high ones
+        const uint v = *(device const uint*)(bl + 8 + j);
+        float4 wa, wb;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = (v >> (8 * c)) & 0xFFu;
+            wa[c] = float(int(qv & 15) | int(((hb >> (j + c)) & 1) << 4)) * d + m;
+            wb[c] = float(int(qv >> 4) | int(((hb >> (j + 16 + c)) & 1) << 4)) * d + m;
+        }
+        a = half4(wa);
+        b = half4(wb);
+    }
+};
+template <> struct W8<T_Q6_K> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 210;
+        const int j = k & 255, n = j >> 7, jj = j & 127, qd = jj >> 5, l = jj & 31;   // l < 16; the pair at l + 16
+        device const uchar* ql = bl + 64 * n + l + ((qd & 1) ? 32 : 0);
+        device const uchar* qh = bl + 128 + 32 * n + l;
+        const float d = rdh(bl + 208);
+        device const char* sc = (device const char*)(bl + 192 + 8 * n);
+        const float dsa = d * float(sc[2 * qd]), dsb = d * float(sc[1 + 2 * qd]);
+        // the 4-byte runs as two ushorts each (210-byte blocks: 2-aligned)
+        device const ushort* l2 = (device const ushort*)ql;
+        device const ushort* h2 = (device const ushort*)qh;
+        const uint la = uint(l2[0]) | (uint(l2[1]) << 16), lb = uint(l2[8]) | (uint(l2[9]) << 16);
+        const uint ha = uint(h2[0]) | (uint(h2[1]) << 16), hb = uint(h2[8]) | (uint(h2[9]) << 16);
+        const uint sl = (qd >> 1) ? 4u : 0u, shh = uint(2 * qd);
+        const uint4 qa = (uint4(as_type<uchar4>((la >> sl) & 0x0F0F0F0Fu)) | (uint4(as_type<uchar4>((ha >> shh) & 0x03030303u)) << 4));
+        const uint4 qb = (uint4(as_type<uchar4>((lb >> sl) & 0x0F0F0F0Fu)) | (uint4(as_type<uchar4>((hb >> shh) & 0x03030303u)) << 4));
+        a = half4(dsa * (float4(qa) - 32.0f));
+        b = half4(dsb * (float4(qb) - 32.0f));
+    }
+};
+
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
                    device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
@@ -815,6 +887,18 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
                 const auto ix = rw.get_multidimensional_index(i);
                 const int k = k0 + ix[0];
                 rw[i] = W4<F>::run(w0 + ulong(ix[1]) * a.d_row, k & ~3, tab)[k & 3];
+            }
+        } else if (TK == 32) {
+            // the paired runs (element i + cap / 2 is (k + 16, n), the COOP_K4 layout): one W8 a pair
+            const uint16_t half_cap = rw.get_capacity() / 2;
+#pragma clang loop unroll(full)
+            for (uint16_t i = 0; i < half_cap; i += 4) {
+                const auto ix = rw.get_multidimensional_index(i);
+                half4 w, w2;
+                W8<F>::run(w0 + ulong(ix[1]) * a.d_row, k0 + ix[0], tab, w, w2);
+                rw[i] = w.x; rw[i + 1] = w.y; rw[i + 2] = w.z; rw[i + 3] = w.w;
+                const uint16_t j = i + half_cap;
+                rw[j] = w2.x; rw[j + 1] = w2.y; rw[j + 2] = w2.z; rw[j + 3] = w2.w;
             }
         } else
 #pragma clang loop unroll(full)
