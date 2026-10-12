@@ -1654,6 +1654,21 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
+// #1980: a start-up refusal ends the process here instead of returning from main.  Returning ran main's destructors
+// (the stages' caches, queues and Level Zero objects) in an order the UR loader did not survive: 2x Arc Pro B60, every
+// REFUSED start segfaulted in libur_loader after its message, and a trimmed one also left an xe page fault (bcs CAT error)
+// on the second card that hung the next start.  The device work queued so far finishes first; nothing is freed.
+[[noreturn]] static void refuse_exit(int code) {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    try {
+        for (unsigned int d = 0; d < dpct::device_count(); ++d) dpct::get_device(d).queues_wait_and_throw();
+    } catch (...) {
+    }
+    std::fflush(stderr);
+    std::_Exit(code);
+}
+
 int main(int argc, char **argv) try {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -4932,7 +4947,7 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: REFUSED: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
                                  "the device plan cannot run them and generation would lack a safe host fallback - raise "
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
-            return 2;
+            refuse_exit(2);
         }
         // The same rule after the start: the mirror holds the start's misses only, so an expert an adaptive swap moves
         // out of VRAM would be in neither, and the device plan would wait for a host that never serves it (every token
@@ -5040,7 +5055,7 @@ int main(int argc, char **argv) try {
                                  "and the card is lost at the first verify window - set STRATA_STAGE_TRIM=1 (with --layer-split N) to free "
                                  "each card's duplicate dense weights, lower --max-context or --vram-reserve-mib, or unset "
                                  "STRATA_VERIFY_NO_HOST\n", (long long) later_misses);
-            return 2;
+            refuse_exit(2);
         }
         if (later_misses > 0)
             std::fprintf(stderr, "strata generate: layer split: %lld experts of the later stages are not in VRAM (served by the host)\n",
@@ -7079,7 +7094,7 @@ int main(int argc, char **argv) try {
             usage_dev_srv = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
             dpct::get_in_order_queue().memset(usage_dev_srv, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
         }
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev_srv);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev_srv, (long long) (g.n_layers * g.n_expert));
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -12225,7 +12240,7 @@ int main(int argc, char **argv) try {
             usage_dev = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
             dpct::get_in_order_queue().memset(usage_dev, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
         }
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev, (long long) (g.n_layers * g.n_expert));
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
