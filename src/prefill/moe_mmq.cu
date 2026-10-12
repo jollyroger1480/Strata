@@ -7,11 +7,33 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 
+#include "strata/prefill/mmq_kq_abi.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 
 namespace strata::prefill::mmq {
+#if defined(STRATA_KQ_DSO)
+namespace kq {
+int abi_args_size() { return (int) sizeof(mmq_args); }
+}  // namespace kq
+#endif
 namespace {
+#if defined(STRATA_MMQ_KQUANTS)
+// MODEL-UPDATE Phase 1: the K-quant products through MMQ are opt-in at run time (STRATA_MMQ_KQ=1); on CUDA their
+// kernels are the strata_kq library (mmq_kq_loader.cpp), opened only then
+bool kq_ok() {
+#if defined(STRATA_KQ_DSO)
+    return kq::available();
+#else
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_MMQ_KQ");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on;
+#endif
+}
+#endif
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
@@ -127,13 +149,12 @@ bool supported(int t) {
         case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
-#ifdef STRATA_MMQ_KQUANTS
-        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1:   // Unsloth's UD-Q4_K_XL experts (CUDA)
-#if defined(__HIPCC__) || defined(STRATA_Q6K_EXPERTS)
-        case GGML_TYPE_Q6_K:   // HIP: the dense GGUF projections (STRATA_DENSE_MMQ); CUDA: only the opt-in -DSTRATA_Q6K_EXPERTS=ON build
-#endif
-#endif
             return true;
+#ifdef STRATA_MMQ_KQUANTS
+        // Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF projections (STRATA_DENSE_MMQ)
+        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1: case GGML_TYPE_Q6_K:
+            return kq_ok();
+#endif
         default:
             return false;
     }
@@ -213,12 +234,19 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_IQ4_NL: mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, a, s); break;
         case GGML_TYPE_IQ4_XS: mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, a, s); break;
         case GGML_TYPE_Q8_0: mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, a, s); break;
-#ifdef STRATA_MMQ_KQUANTS
+#if defined(STRATA_MMQ_KQUANTS) && defined(STRATA_KQ_DSO)
+        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_1: {
+            const int e = kq::run((int) t, &a, s);
+            if (e != 0) {
+                std::fprintf(stderr, "prefill mmq: the K-quant library failed on type %d (error %d)\n", (int) t, e);
+                std::exit(1);
+            }
+            break;
+        }
+#elif defined(STRATA_MMQ_KQUANTS)
         case GGML_TYPE_Q4_K: mul_mat_q_case<GGML_TYPE_Q4_K>(ctx, a, s); break;
         case GGML_TYPE_Q5_K: mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, a, s); break;
-#if defined(__HIPCC__) || defined(STRATA_Q6K_EXPERTS)
         case GGML_TYPE_Q6_K: mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, a, s); break;
-#endif
         case GGML_TYPE_Q5_1: mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, a, s); break;
 #endif
         default:

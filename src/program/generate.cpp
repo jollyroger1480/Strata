@@ -62,6 +62,9 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
+#if defined(STRATA_PREFILL_MMQ)
+#include "strata/prefill/moe_mmq.hpp"
+#endif
 #include "strata/core/native_dense.hpp"
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -2770,6 +2773,12 @@ int main(int argc, char** argv) {
                              f.gu_type, f.d_type);
                 return 1;
             }
+#if defined(STRATA_PREFILL_MMQ)
+            // MODEL-UPDATE Phase 1: the K-quants' prompt kernels (STRATA_MMQ_KQ=1) are a library of their own on CUDA
+            // (strata_kq): asking for the formats opens it now, before the expert cache takes the free VRAM
+            (void) strata::prefill::mmq::supported(f.gu_type);
+            (void) strata::prefill::mmq::supported(f.d_type);
+#endif
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
