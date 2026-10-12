@@ -174,6 +174,26 @@ int main(int argc, char** argv) {
         if (it == pcache.end()) it = pcache.emplace(key, cx.pipeline(l, fn, c)).first;
         return &it->second;
     };
+    // ---- SLC prefetch (--prefetch): the next HC read's weights touched concurrently with the first projection GEMV
+    // after the current read, so the latency-bound read finds them in the SLC
+    const bool prefetch = std::getenv("CHAIN_PREFETCH") != nullptr;
+    struct Range { const mtl::Buffer* b; size_t off, bytes; };
+    std::vector<Range> pending;
+    mtl::Buffer sink = cx.alloc(16);
+    const mtl::Pipeline* ptouch = nullptr;
+    auto push_prefetch = [&]() {
+        for (const Range& r : pending) {
+            const uint32_t n16 = (uint32_t)(r.bytes / 16);
+            mtl::Dispatch d;
+            d.p = ptouch;
+            d.args = {mtl::Arg::B(*r.b, r.off), mtl::Arg::B(sink), mtl::Arg::V(n16)};
+            d.grid[0] = (n16 + 1023) / 1024;
+            d.tg[0] = 256;
+            nb = true;
+            push(d, "prefetch", (double)r.bytes);
+        }
+        pending.clear();
+    };
     // ---- GEMV by tensor, with a tile from the measured table
     auto gemv2 = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c,
                      int ty_override = -1) {
@@ -196,8 +216,10 @@ int main(int argc, char** argv) {
         d.grid[0] = (n_out + rpt - 1) / rpt;
         d.tg[0] = S * 32;
         push(d, c, (double)t.bytes);
+        if (!pending.empty()) push_prefetch();
     };
     const mtl::Pipeline* pnorm = Pn(lib, "gr_norm", "gr_norm", {});
+    ptouch = Pn(lib, "slc_touch", "slc_touch", {});
     const mtl::Pipeline* pdown = Pn(lib, "gr_down_8_8", "gr_down_8_8", mtl::Constants().i(1, ntok));
     const mtl::Pipeline* pup = Pn(lib, "gr_up", "gr_up", mtl::Constants().i(1, ntok));
     const mtl::Pipeline* pdownq = Pn(lib, "gr_down_q8_8_8", "gr_down_q8_8_8", mtl::Constants().i(1, ntok));
@@ -316,6 +338,28 @@ int main(int argc, char** argv) {
         d3.tg[0] = 256;
         push(d3, "hc", (double)tup.bytes);
         cur_inj = 1 - cur_inj;
+        if (prefetch && !final_) {
+            // the next read: blk.l.hc_attn -> blk.l.hc_ffn -> blk.(l+1).hc_attn ... -> output_hc
+            std::string nx;
+            const size_t at = pre.find(".hc_attn");
+            if (at != std::string::npos) nx = pre.substr(0, at) + ".hc_ffn";
+            else {
+                const int l = std::atoi(pre.c_str() + 4);
+                nx = l == 47 ? std::string("output_hc") : "blk." + std::to_string(l + 1) + ".hc_attn";
+            }
+            const bool fin = nx == "output_hc";
+            for (const std::string& part : fin ? std::vector<std::string>{"_down", "_up"}
+                                               : std::vector<std::string>{"_down", "_inject", "_up"}) {
+                const gguf::Tensor& tt = T(nx + part + ".weight");
+                if (q83) {
+                    uint64_t ne = 1;
+                    for (uint64_t dd : tt.shape) ne *= dd;
+                    pending.push_back({&Q8, q8off.at(tt.name), (size_t)(ne / 32 * 34) / 16 * 16});
+                } else {
+                    pending.push_back({&W, tt.offset, (size_t)tt.bytes / 16 * 16});
+                }
+            }
+        }
     };
     auto xprep = [&](const mtl::Buffer& x, const Act& out, int n, const std::string& c) {
         mtl::Dispatch d;
