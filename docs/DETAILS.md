@@ -642,6 +642,28 @@ with the fallback off it still starts and degrades instead of failing - the slac
 worth more than the extra slots, which is the same ordering measured above (enkynakamura, #781; one 256-token sample
 per step, so the upper rows are noisy).
 
+**The free figure moves after startup.** The `... MiB of VRAM free with everything loaded` line is read before the
+verify windows are captured (each captured window, and each `--batch` slot layout, takes some tens of MiB: 538 MiB at
+that line was 395 MiB after the last capture in #2065, an RTX 4090 D with `--batch 2` at 262,144 context). Below about
+a gigabyte on Windows the driver can page GPU memory to system RAM instead of failing: decode fell from 91 to 3 tok/s
+at 70K tokens and then a window never finished, the watchdog stopping the engine after 60 s. From 0.1.43.1 each request
+re-reads the free VRAM, says `WARNING: only N MiB of VRAM free at the start of this request` once it is under 1 GiB
+(512 MiB elsewhere) with the `--vram-reserve-mib` that would leave room, and the stall report prints the figure. The
+engine only says it; the fix is a larger `--vram-reserve-mib`, a smaller `--max-context` or `--batch`, or
+`Prefer No Sysmem Fallback` for the engine.
+
+**A stall named "request" can be the OS paging the engine's own memory.** Before a request that switches
+conversation, the engine parks the outgoing one in RAM: copies of its running checkpoints and K/V, which then sit in
+ordinary memory until the conversation comes back. On a 64 GB PC with `--resident-budget-gib 40`, an 8 GiB conversation
+cache and a 256K context, the working set was 8-30 GB of 56 GB committed and the engine took about 190 page faults
+a second (under 1 MB/s if each is a pagefile read) in #2049: one silent step of more than 60 s, five times, on 0.1.41
+and 0.1.43 alike (thread dumps: the main thread inside the copy of the checkpoints, at the same instruction each time). The log's `verify window (last window, not the
+current stage) ... host at layer step 48; the GPU rang 48` line in that report is the previous request's last window,
+not the stalled one. From 0.1.43.1 the park is named in the stage (`request: parking the previous conversation`), its
+copies report progress to the watchdog, and Windows counts page faults at 8 a unit instead of 64 when it decides
+whether the file tier is busy. The cure for the slowness itself is memory: a smaller `--resident-budget-gib`, a smaller
+`--conversation-cache-mib`, or the pagefile on an SSD.
+
 ---
 
 ## Using it

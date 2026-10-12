@@ -3,6 +3,7 @@
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/progress.hpp"
 
 #include "strata/core/native_head.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -1317,6 +1318,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
+        progress_at("mtp draft: waiting for the GPU");   // #2065
         for (int j = 0; j + 1 < max_steps; ++j) {
             uint32_t spins = 0;
             while (((volatile int32_t*) h_out_)[j] < 0) {
@@ -1345,6 +1347,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
+        progress_at("mtp draft: waiting for the GPU");   // #2065: a stall here read as "decode", the verify window before it
         auto wait_step = [&](int j) {
             uint32_t spins = 0;
             while (((volatile int32_t*) h_out_)[j] < 0) {
