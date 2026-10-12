@@ -43,9 +43,14 @@ MIN_MACOS = (15, 0)        # MTLResidencySet (the engine keeps every buffer resi
 MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
     "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
-    # its gate/up experts are IQ4_XS: the Metal expert kernels have no IQ4_XS variant yet (the engine stops at load)
-    "IQ3_S": {"shard1_gb": 54.8, "tested": False, "missing": "the Metal expert kernels for its IQ4_XS experts"},
+    "IQ3_S": {"shard1_gb": 54.8, "tested": True},
 }
+# IQ3_S, the best quality, is recommended from this much memory (Apple sells 96 and 128 GB: from 128); below it the
+# faster IQ3_XXS is, where it fits
+IQ3_S_FROM_GB = 110
+# a pack that does not fit Metal's share streams its experts from the SSD (the engine decides by itself, f-mac-ssd):
+# measured on a 32 GB M4 Mac mini, one token per step (MTP is slower there: its layer's memory is worth more as cache)
+STREAM_MEASURED = {"Q2_0": "~14 tok/s", "IQ3_XXS": "~10 tok/s"}
 # beside the mapped file: the prompt kernels' buffers (chunks of 2,048 rows), the KV cache, the draft layer, the
 # Q8_0 copies of the hyper-connection matrices and the macOS desktop
 OVERHEAD_GB = 8.0
@@ -113,27 +118,33 @@ def model_need_gb(model: str) -> float:
     return MAC_MODELS[model]["shard1_gb"] + OVERHEAD_GB
 
 
+def streams(model: str, ram_gb: float) -> bool:
+    """The pack does not fit Metal's share of the memory: the engine streams its experts from the SSD."""
+    return model_need_gb(model) > gpu_budget_gb(ram_gb)
+
+
 def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
-    """The recommended pack and the notes that go with it.  The best quality whose mapped file fits Metal's share of
-    the memory, preferring the measured packs; nothing fits: Q2_0, with the SSD-streaming note."""
-    budget = gpu_budget_gb(ram_gb)
-    fits = [m for m in ("IQ3_XXS", "Q2_0") if model_need_gb(m) <= budget]
-    if MAC_MODELS["IQ3_S"]["tested"] and ram_gb >= 128 and model_need_gb("IQ3_S") <= budget:
-        fits.insert(0, "IQ3_S")
-    if fits:
-        return fits[0], []
-    return "Q2_0", [f"{ram_gb:.0f} GB of memory: no pack fits Metal's share of it ({budget:.0f} GB) with the model "
-                    "mapped whole. The SSD-streaming mode for 32-48 GB Macs is not in this build yet (docs/MAC.md); "
-                    "Q2_0 may still start, and pages from the SSD while it runs (much slower)"]
+    """The recommended pack and the notes that go with it: IQ3_S from IQ3_S_FROM_GB, else the best pack that stays
+    resident (IQ3_XXS, Q2_0); nothing fits: Q2_0 streamed from the SSD (the fastest there)."""
+    if ram_gb >= IQ3_S_FROM_GB and not streams("IQ3_S", ram_gb):
+        return "IQ3_S", []
+    for m in ("IQ3_XXS", "Q2_0"):
+        if not streams(m, ram_gb):
+            return m, []
+    return "Q2_0", [f"{ram_gb:.0f} GB of memory: no pack fits whole, so the engine streams the experts from the SSD "
+                    f"(automatic; measured on a 32 GB M4: Q2_0 {STREAM_MEASURED['Q2_0']}, IQ3_XXS "
+                    f"{STREAM_MEASURED['IQ3_XXS']}; smaller Macs are untested). Recommended: Q2_0, without the MTP "
+                    "draft layer (slower when streaming)"]
 
 
 def model_note(model: str, ram_gb: float) -> list[str]:
     """What a chosen pack risks on this Mac (said, never refused)."""
     notes = []
-    if model_need_gb(model) > gpu_budget_gb(ram_gb):
-        notes.append(f"{model} maps {MAC_MODELS[model]['shard1_gb']:.0f} GB and needs ~{model_need_gb(model):.0f} GB of "
-                     f"the {gpu_budget_gb(ram_gb):.0f} GB Metal keeps resident on this Mac: kept as you chose; it may page "
-                     "from the SSD or fail to load")
+    if streams(model, ram_gb):
+        notes.append(f"{model} needs ~{model_need_gb(model):.0f} GB of the {gpu_budget_gb(ram_gb):.0f} GB Metal keeps "
+                     "resident on this Mac: its experts stream from the SSD (automatic)"
+                     + (f"; measured on a 32 GB M4: {STREAM_MEASURED[model]}" if model in STREAM_MEASURED else
+                        "; not measured streaming"))
     if MAC_MODELS[model].get("missing"):
         notes.append(f"{model} does not run on this Metal engine yet ({MAC_MODELS[model]['missing']} are missing): the "
                      "engine will stop when it loads; kept as you chose (for testing a newer engine)")
@@ -214,13 +225,16 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int) -> list[str]:
-    """The Metal defaults: --spec 2 (measured best on the M5 Max, docs/MAC.md) and the Q8_0 hyper-connection read
-    (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16 read)."""
-    return ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1]),
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False) -> list[str]:
+    """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
+    hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
+    read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4)."""
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1]),
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "64",
-            "--prefill", "auto", "--spec", "2", "--mtp", str(rt), "--max-context", str(ctx),
-            "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
+            "--prefill", "auto", "--spec", "2"]
+    args += ["--suffix-draft", "0"] if stream else ["--mtp", str(rt)]
+    return args + ["--max-context", str(ctx),
+                   "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
 
 
 def mac_config(exe: Path, args: list, pack: Path, model_name: str, tag: str, port: int) -> dict:
@@ -370,21 +384,26 @@ def main(argv=None) -> int:
     S.ok(f"model prepared: {pack}")
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
-    if not (mtp / "mtp-q2_0.gguf").exists():
+    stream = streams(model, info["ram_gb"])
+    if stream:
+        S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "
+             "./setup.sh --setup on a Mac with more memory adds it")
+    elif not (mtp / "mtp-q2_0.gguf").exists():
         S.say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of")
         S.say("  MTP tensors are downloaded.")
         S.run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
               env={**env, "STRATA_SOURCE": S.model_source()})
         S.run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
                "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-    rt.mkdir(parents=True, exist_ok=True)              # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
-    S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
-    S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
+    if not stream:
+        rt.mkdir(parents=True, exist_ok=True)          # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
+        S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
+        S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
 
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream), pack, f"{fam['name']}-{model.lower()}", tag, port)
     if a.host:
         cfg["host"] = a.host
     if a.api_key:

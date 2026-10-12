@@ -58,18 +58,19 @@ class MacCheck(unittest.TestCase):
 
 class Recommendation(unittest.TestCase):
     def test_by_memory(self):
-        self.assertEqual(M.recommend_model(128)[0], "IQ3_XXS")    # IQ3_S is offered, not recommended (not measured)
+        self.assertEqual(M.recommend_model(128)[0], "IQ3_S")
         self.assertEqual(M.recommend_model(96)[0], "IQ3_XXS")
         self.assertEqual(M.recommend_model(64)[0], "Q2_0")
         rec, notes = M.recommend_model(32)
         self.assertEqual(rec, "Q2_0")
-        self.assertTrue(notes and "SSD" in notes[0])
+        self.assertTrue(notes and "stream" in notes[0] and "~14 tok/s" in notes[0])
+        self.assertTrue(M.streams("Q2_0", 32) and M.streams("Q2_0", 48) and not M.streams("Q2_0", 64))
 
     def test_a_bigger_choice_is_kept_with_a_note(self):
         notes = M.model_note("IQ3_XXS", 64)
-        self.assertTrue(any("kept as you chose" in n for n in notes))
+        self.assertTrue(any("stream from the SSD" in n for n in notes))
         self.assertEqual(M.model_note("Q2_0", 128), [])
-        self.assertTrue(any("does not run on this Metal engine yet" in n for n in M.model_note("IQ3_S", 128)))
+        self.assertEqual(M.model_note("IQ3_S", 128), [])
 
     def test_context(self):
         self.assertEqual(M.recommend_context(64), 32768)
@@ -86,6 +87,9 @@ class Config(unittest.TestCase):
         self.assertEqual(args[args.index("--mtp") + 1], str(Path("/d/mtp/rt")))
         self.assertIn("--expert-profile", args)
         self.assertNotIn("--hc-q8", args)                         # Q8_0 HC is the engine's own default on Metal
+        st = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768, stream=True)
+        self.assertNotIn("--mtp", st)                             # streaming: one token per step, no draft layer
+        self.assertEqual(st[st.index("--suffix-draft") + 1], "0")
 
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
