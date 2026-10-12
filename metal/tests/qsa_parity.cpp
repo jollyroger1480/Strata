@@ -37,10 +37,14 @@ int main(int argc, char** argv) {
     }
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64);
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    // QSA_TOPK=1: the v1 top-k; QSA_ATTN=1|2|3 (default 3): which attention (2 has its own chunking and merge)
+    const int av = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
+    const bool v2 = av == 2;
     mtl::Pipeline pprep = cx.pipeline(lib, "qsa_prep"), pscore = cx.pipeline(lib, "qsa_score"),
-                  ptopk = cx.pipeline(lib, "qsa_topk"), pattn = cx.pipeline(lib, "qsa_attn"),
-                  pmerge = cx.pipeline(lib, "qsa_merge");
+                  ptopk = cx.pipeline(lib, std::getenv("QSA_TOPK") ? "qsa_topk" : "qsa_topk2"),
+                  pattn = cx.pipeline(lib, av == 1 ? "qsa_attn" : av == 2 ? "qsa_attn2" : "qsa_attn3"),
+                  pmerge = cx.pipeline(lib, v2 ? "qsa_merge2" : "qsa_merge");
     const int MB = MAXC / 4 + 2;
     // per-cell inputs for every cell (context + window)
     const int NC = P + MAXT;
@@ -51,7 +55,7 @@ int main(int argc, char** argv) {
                 qidx = cx.alloc(4 * MAXT * IH * ID), kq = cx.alloc((size_t)MAXC * QKV * QD), vq = cx.alloc((size_t)MAXC * QKV * QD),
                 ksc = cx.alloc(2 * (size_t)MAXC * QKV * 4), vsc = cx.alloc(2 * (size_t)MAXC * QKV * 4), tail = cx.alloc(4 * 4 * ID),
                 dead = cx.alloc(4 * ID), pooled = cx.alloc(4 * (size_t)MB * ID), scores = cx.alloc(4 * (size_t)MAXT * MB),
-                ids = cx.alloc(4 * MAXT * BUDGET), part = cx.alloc(4 * (size_t)MAXT * NCH * QH * (QD + 2)),
+                ids = cx.alloc(4 * MAXT * BUDGET), part = cx.alloc(4 * (size_t)MAXT * 2 * NCH * QH * (QD + 2)),
                 xp = cx.alloc(4 * (4 * MAXT * QH * QD + MAXT * QH * QD / 16));
     ref::Rng r(23);
     for (size_t i = 0; i < qfull.bytes / 4; ++i) qfull.as<float>()[i] = r.sym() * 2.0f;
@@ -103,8 +107,8 @@ int main(int argc, char** argv) {
         at.p = &pattn;
         at.args = {mtl::Arg::B(qcur), mtl::Arg::B(kq), mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc),
                    mtl::Arg::B(ids), mtl::Arg::B(part), mtl::Arg::V(a)};
-        at.grid[0] = NCH;
-        at.grid[1] = QKV;
+        at.grid[0] = v2 ? (BUDGET + 31) / 32 : NCH;
+        at.grid[1] = v2 ? QKV * 2 : QKV;
         at.grid[2] = nt;
         at.tg[0] = 256;
         ds.push_back(at);

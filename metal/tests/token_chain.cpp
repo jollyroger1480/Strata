@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
 
     const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal"});
     const int lgdn = cx.compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
-    const int lqsa = cx.compile({"qsa.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lqsa = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::map<std::string, mtl::Pipeline> pcache;
 
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
                 kcur = cx.alloc(4 * MAXT * 512), vcur = cx.alloc(4 * MAXT * 512), iqr = cx.alloc(4 * MAXT * 512),
                 ikr = cx.alloc(4 * MAXT * 128), qcur = cx.alloc(4 * MAXT * 24 * 256), qidx = cx.alloc(4 * MAXT * 4 * 128),
                 scores = cx.alloc(4 * (size_t)MAXT * MB), qids = cx.alloc(4 * MAXT * 2051),
-                part = cx.alloc(4 * (size_t)MAXT * 33 * 24 * 258), cs = cx.alloc(8 * (size_t)(MAXC + 16) * 32),
+                part = cx.alloc(4 * (size_t)MAXT * 65 * 24 * 258), cs = cx.alloc(8 * (size_t)(MAXC + 16) * 32),
                 lm = cx.alloc(4 * (size_t)MAXT * 248320), apv = cx.alloc(4 * MAXT * 120), api = cx.alloc(4 * MAXT * 120),
                 tokout = cx.alloc(4 * MAXT);
     auto act = [&](int n) { Act a; a.n = n; a.b = cx.alloc(4 * ((size_t)4 * MAXT * n + (size_t)MAXT * n / 16)); return a; };
@@ -201,9 +201,11 @@ int main(int argc, char** argv) {
     const mtl::Pipeline* pgdn = Pn(lgdn, "gdn_step", "gdn_step", mtl::Constants().i(2, ntok));
     const mtl::Pipeline* qprep = Pn(lqsa, "qsa_prep", "qsa_prep", {});
     const mtl::Pipeline* qscore = Pn(lqsa, "qsa_score", "qsa_score", {});
-    const mtl::Pipeline* qtopk = Pn(lqsa, "qsa_topk", "qsa_topk", {});
-    const mtl::Pipeline* qattn = Pn(lqsa, "qsa_attn", "qsa_attn", {});
-    const mtl::Pipeline* qmerge = Pn(lqsa, "qsa_merge", "qsa_merge", {});
+    const int qav = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
+    const bool qv2 = qav == 2;
+    const mtl::Pipeline* qtopk = Pn(lqsa, std::getenv("QSA_TOPK") ? "qsa_topk" : "qsa_topk2", "qsa_topk", {});
+    const mtl::Pipeline* qattn = Pn(lqsa, qav == 1 ? "qsa_attn" : qv2 ? "qsa_attn2" : "qsa_attn3", "qsa_attn", {});
+    const mtl::Pipeline* qmerge = Pn(lqsa, qv2 ? "qsa_merge2" : "qsa_merge", "qsa_merge", {});
     const mtl::Pipeline* pam1 = Pn(lsmp, "argmax_part", "argmax_part", {});
     const mtl::Pipeline* pam2 = Pn(lsmp, "argmax_final", "argmax_final", {});
 
@@ -382,8 +384,8 @@ int main(int argc, char** argv) {
             at.p = qattn;
             at.args = {mtl::Arg::B(qcur), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]), mtl::Arg::B(vsc[qi]),
                        mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)};
-            at.grid[0] = 33;
-            at.grid[1] = 2;
+            at.grid[0] = qv2 ? 65 : 33;
+            at.grid[1] = qv2 ? 4 : 2;
             at.grid[2] = ntok;
             at.tg[0] = 256;
             push(at, "qsa attn", 2.0 * 2 * 512 * std::min(ctx, 2051));
