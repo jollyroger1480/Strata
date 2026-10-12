@@ -12537,6 +12537,13 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+#if defined(STRATA_GPU_METAL)
+        // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS
+        // locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(0);
+#endif
         return 0;
     }
 
