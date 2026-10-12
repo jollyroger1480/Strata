@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
         K.plan = cx.pipeline(lib, "moe_plan");
         K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
-        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a));
+        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr));
         K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;

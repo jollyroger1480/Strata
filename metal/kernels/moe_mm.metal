@@ -385,6 +385,13 @@ constant bool coop_k4 = is_function_constant_defined(COOP_K4) ? COOP_K4 : true;
 #endif
 template <int F> struct W4;
 // the four weights k .. k + 3 (k % 4 == 0) of a row, in quant.metal's deq arithmetic (code * scale in fp32), as fp16
+// the threadgroup forms of quant.metal's field readers (blocks staged in threadgroup memory)
+static inline uint rd32(threadgroup const uchar* p) {
+    threadgroup const ushort* s = (threadgroup const ushort*)p;
+    return uint(s[0]) | (uint(s[1]) << 16);
+}
+static inline float rdh(threadgroup const uchar* p) { return float(*(threadgroup const half*)p); }
+
 static inline half4 w4_signed(uint g, uint s, float sc) {
     const uchar4 v = as_type<uchar4>(g);
     const float4 q = float4((s & 1) ? -float(v[0]) : float(v[0]), (s & 2) ? -float(v[1]) : float(v[1]),
@@ -500,13 +507,14 @@ template <int F> struct W8 {
 };
 // (a W8<T_Q2_0> sharing the block scale was measured slower than the two W4 of the generic one: 5.5 vs 3.5-4.2 ms)
 template <> struct W8<T_IQ3_XXS> {
-    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
-        device const uchar* bl = row + (k >> 8) * 98;
+    template <typename P>
+    static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        const P bl = row + (k >> 8) * 98;
         const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
         const uint aux = rd32(bl + 2 + 64 + 4 * ib);
         threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 256);
         const float sc = rdh(bl) * (0.5f + float(aux >> 28)) * 0.5f;
-        device const uchar* qs = bl + 2 + 8 * ib + hh;
+        const P qs = bl + 2 + 8 * ib + hh;
         if (mm_probe == 3) {   // bench probe: no threadgroup-table lookups (wrong values)
             a = w4_signed(qs[2 * l] * 0x01010101u, aux, sc);
             b = w4_signed(qs[2 * l + 4] * 0x01010101u, aux >> 7, sc);
@@ -518,11 +526,11 @@ template <> struct W8<T_IQ3_XXS> {
             s0 = i0 | ((popcount(i0) & 1u) << 7);
             s1 = i1 | ((popcount(i1) & 1u) << 7);
         } else {
-            s0 = ks[(aux >> (7 * l)) & 127];
-            s1 = ks[(aux >> (7 * (l + 2))) & 127];
+            s0 = ksg(tab, 256, (aux >> (7 * l)) & 127);
+            s1 = ksg(tab, 256, (aux >> (7 * (l + 2))) & 127);
         }
-        a = w4_signed(tab[qs[2 * l]], hh ? s0 >> 4 : s0, sc);
-        b = w4_signed(tab[qs[2 * l + 4]], hh ? s1 >> 4 : s1, sc);
+        a = w4_signed(g_iq3xxs(tab, qs[2 * l]), hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(g_iq3xxs(tab, qs[2 * l + 4]), hh ? s1 >> 4 : s1, sc);
     }
 };
 template <> struct W8<T_IQ2_XXS> {
@@ -555,8 +563,9 @@ template <> struct W8<T_IQ2_XS> {
     }
 };
 template <> struct W8<T_IQ2_S> {
-    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
-        device const uchar* bl = row + (k >> 8) * 82;
+    template <typename P>
+    static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        const P bl = row + (k >> 8) * 82;
         const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
         const uint qh = bl[66 + ib], scb = bl[74 + ib];
         const float d = rdh(bl);
@@ -565,13 +574,14 @@ template <> struct W8<T_IQ2_S> {
         const uint s0 = bl[2 + 32 + 4 * ib + l], s1 = bl[2 + 32 + 4 * ib + l + 2];
         const float sc0 = d * (0.5f + float((scb >> (4 * (l >> 1))) & 15)) * 0.25f;
         const float sc1 = d * (0.5f + float((scb >> (4 * ((l + 2) >> 1))) & 15)) * 0.25f;
-        a = w4_signed(tab[2 * i0 + hh], hh ? s0 >> 4 : s0, sc0);
-        b = w4_signed(tab[2 * i1 + hh], hh ? s1 >> 4 : s1, sc1);
+        a = w4_signed(g_iq2s(tab, i0, hh), hh ? s0 >> 4 : s0, sc0);
+        b = w4_signed(g_iq2s(tab, i1, hh), hh ? s1 >> 4 : s1, sc1);
     }
 };
 template <> struct W8<T_IQ3_S> {
-    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
-        device const uchar* bl = row + (k >> 8) * 110;
+    template <typename P>
+    static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        const P bl = row + (k >> 8) * 110;
         const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
         const uint qh = bl[66 + ib], scb = bl[106 + (ib >> 1)];
         const float sc = rdh(bl) * float(1 + 2 * ((scb >> (4 * (ib & 1))) & 15));
@@ -581,8 +591,13 @@ template <> struct W8<T_IQ3_S> {
         const uint i1 = hh ? (uint(bl[2 + 8 * ib + 2 * l1 + 1]) | ((qh << (7 - 2 * l1)) & 256))
                            : (uint(bl[2 + 8 * ib + 2 * l1]) | ((qh << (8 - 2 * l1)) & 256));
         const uint s0 = bl[74 + 4 * ib + l], s1 = bl[74 + 4 * ib + l1];
-        a = w4_signed(tab[i0], hh ? s0 >> 4 : s0, sc);
-        b = w4_signed(tab[i1], hh ? s1 >> 4 : s1, sc);
+        if (mm_probe == 5) {   // bench probe: the loads and the scale, no grid lookup / sign math (wrong values)
+            a = half4(half(float(i0 ^ s0) * sc));
+            b = half4(half(float(i1 ^ s1) * sc));
+            return;
+        }
+        a = w4_signed(g_iq3s(tab, i0), hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(g_iq3s(tab, i1), hh ? s1 >> 4 : s1, sc);
     }
 };
 
@@ -716,3 +731,165 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
     MMDN3(F, 16, 32, 16, 2) MMDN3(F, 32, 32, 32, 2) MMDN3(F, 16, 64, 32, 1) MMDN3(F, 16, 64, 32, 4)     MMDN3(F, 16, 64, 16, 2) MMDN3(F, 16, 32, 16, 4) MMDN3(F, 16, 64, 32, 5) MMDN3(F, 16, 64, 16, 4)
 MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
 MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL)
+
+// mm_gu4: mm_gu3 with each decoded right operand (TN x TK weights of gate and of up) applied to MS 16-row token
+// tiles (a tile of 16 * MS rows from the plan, tm = 16 * MS): the decode, which bounds mm_gu3, is shared by MS times
+// as many token rows (more padding rows per expert, but the matrix ops are cheap next to the decode).  The same
+// per-row arithmetic as mm_gu3 (each 16-row op is mm_gu3's): bitwise for the rows both compute.  COOP_K4 layout only.
+template <int F, int MS, int TN, int TK, int SG>
+kernel void mm_gu4(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int TM = 16;
+    threadgroup float ot[SG][TM * TN];
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int2 tl = tiles[tg.y];
+    const int e = tl.x, row0 = tl.y, n0 = (int(tg.x) * SG + sg) * TN;
+    device const uchar* g0 = W + a.gate_off + ulong(e) * a.gu_stride + ulong(n0) * a.gu_row;
+    device const uchar* u0 = W + a.up_off + ulong(e) * a.gu_stride + ulong(n0) * a.gu_row;
+    constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    auto rg = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto ru = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto tA0 = tX.template slice<TK, TM>(0, row0);
+    auto tA1 = tX.template slice<TK, TM>(0, row0 + TM);
+#define MM4_DST op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tA0)>,                                                                __tensor_ops_detail::__remove_addrspace_t<decltype(rg)>, float>()
+    auto accg0 = MM4_DST;
+    auto accu0 = MM4_DST;
+    auto accg1 = MM4_DST;
+    auto accu1 = MM4_DST;
+#undef MM4_DST
+    using DT = decltype(accg0);
+    for (uint16_t i = 0; i < accg0.get_capacity(); ++i)
+        if (accg0.is_valid_element(i)) { accg0[i] = 0.0f; accu0[i] = 0.0f; accg1[i] = 0.0f; accu1[i] = 0.0f; }
+    for (int k0 = 0; k0 < int(a.n_embd); k0 += TK) {
+        const uint16_t cap = rg.get_capacity(), half_cap = cap / 2;
+#pragma clang loop unroll(full)
+        for (uint16_t i = 0; i < half_cap; i += 4) {
+            const auto ix = rg.get_multidimensional_index(i);
+            const int k = k0 + ix[0], n = ix[1];
+            device const uchar* rgw = g0 + ulong(n) * a.gu_row;
+            device const uchar* ruw = u0 + ulong(n) * a.gu_row;
+            half4 wg, wu, wg2, wu2;
+            W8<F>::run(rgw, k, tab, wg, wg2);
+            W8<F>::run(ruw, k, tab, wu, wu2);
+            rg[i] = wg.x; rg[i + 1] = wg.y; rg[i + 2] = wg.z; rg[i + 3] = wg.w;
+            ru[i] = wu.x; ru[i + 1] = wu.y; ru[i + 2] = wu.z; ru[i + 3] = wu.w;
+            const uint16_t j = i + half_cap;
+            rg[j] = wg2.x; rg[j + 1] = wg2.y; rg[j + 2] = wg2.z; rg[j + 3] = wg2.w;
+            ru[j] = wu2.x; ru[j + 1] = wu2.y; ru[j + 2] = wu2.z; ru[j + 3] = wu2.w;
+        }
+        tA0 = tX.template slice<TK, TM>(k0, row0);
+        op.run(tA0, rg, accg0);
+        op.run(tA0, ru, accu0);
+        if (MS > 1) {
+            tA1 = tX.template slice<TK, TM>(k0, row0 + TM);
+            op.run(tA1, rg, accg1);
+            op.run(tA1, ru, accu1);
+        }
+    }
+    for (int s = 0; s < MS; ++s) {
+        thread DT& ag = s == 0 ? accg0 : accg1;
+        thread DT& au = s == 0 ? accu0 : accu1;
+        for (uint16_t i = 0; i < ag.get_capacity(); ++i)
+            if (ag.is_valid_element(i)) {
+                const float g = ag[i];
+                ag[i] = g / (1.0f + exp(-g)) * au[i];
+            }
+        tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tO(ot[sg], dextents<int32_t, 2>(TN, TM));
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        ag.store(tO);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (int it = lane; it < TM * TN; it += 32) {
+            const int m = it / TN, f = it - m * TN;
+            HS[ulong(row0 + s * TM + m) * a.n_ff + n0 + f] = half(ot[sg][it]);
+        }
+    }
+}
+#define MMGU4_(F, M, N, K, S) template [[host_name("mm_gu4_" #F "_" #M "_" #N "_" #K "_" #S)]] kernel decltype(mm_gu4<F, M, N, K, S>) mm_gu4<F, M, N, K, S>;
+#define MMGU4(F, M, N, K, S) MMGU4_(F, M, N, K, S)
+#define MM4_GU(F) MMGU4(F, 2, 32, 32, 4) MMGU4(F, 2, 32, 32, 2) MMGU4(F, 2, 16, 32, 4) MMGU4(F, 1, 32, 32, 4)
+MM4_GU(T_Q2_0) MM4_GU(T_IQ3_XXS) MM4_GU(T_IQ2_XXS) MM4_GU(T_IQ2_XS) MM4_GU(T_IQ2_S) MM4_GU(T_IQ3_S) MM4_GU(T_IQ4_XS)
+
+// mm_gu5: mm_gu3 (COOP_K4 layout, TK 32) with the threadgroup's weight rows staged block by block (QK = 256 values a
+// row, gate and up) into threadgroup memory by coalesced ushort loads, the lanes decoding from there: the decode's
+// many small scattered device loads (2-6 a run) become threadgroup reads.  Same decoded values and the same matrix
+// ops as mm_gu3: bitwise.  Formats with 256-value blocks and a templated W8 (IQ3_S, IQ3_XXS, IQ2_S).
+template <int F, int TN, int SG>
+kernel void mm_gu5(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int TM = 16, TK = 32, BB = fmt<F>::BB, ROWS = SG * TN, RU = BB / 2;
+    threadgroup float ot[SG][TM * TN];
+    threadgroup uint tab[fmt<F>::TAB];
+    threadgroup ushort stg[2][ROWS * RU];
+    load_tab<F>(tab, tid, SG * 32);
+    const int2 tl = tiles[tg.y];
+    const int e = tl.x, row0 = tl.y, nt0 = int(tg.x) * ROWS, n0 = nt0 + sg * TN;
+    device const uchar* gt = W + a.gate_off + ulong(e) * a.gu_stride + ulong(nt0) * a.gu_row;
+    device const uchar* ut = W + a.up_off + ulong(e) * a.gu_stride + ulong(nt0) * a.gu_row;
+    constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    auto rg = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto ru = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto tA = tX.template slice<TK, TM>(0, row0);
+    auto accg = op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tA)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rg)>, float>();
+    auto accu = op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tA)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rg)>, float>();
+    for (uint16_t i = 0; i < accg.get_capacity(); ++i)
+        if (accg.is_valid_element(i)) { accg[i] = 0.0f; accu[i] = 0.0f; }
+    const int NB = int(a.n_embd) / 256;
+    for (int kb = 0; kb < NB; ++kb) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (int idx = tid; idx < ROWS * RU; idx += SG * 32) {
+            const int r = idx / RU, w = idx - r * RU;
+            stg[0][idx] = ((device const ushort*)(gt + ulong(r) * a.gu_row + kb * BB))[w];
+            stg[1][idx] = ((device const ushort*)(ut + ulong(r) * a.gu_row + kb * BB))[w];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (int ks = 0; ks < 8; ++ks) {
+            const int k0 = kb * 256 + ks * TK;
+            const uint16_t half_cap = rg.get_capacity() / 2;
+#pragma clang loop unroll(full)
+            for (uint16_t i = 0; i < half_cap; i += 4) {
+                const auto ix = rg.get_multidimensional_index(i);
+                const int kl = ks * TK + ix[0], n = sg * TN + ix[1];
+                // the block's row in the stage; W8 indexes block (k >> 8) = 0 of it with k = kl
+                threadgroup const uchar* rgw = (threadgroup const uchar*)(stg[0] + n * RU);
+                threadgroup const uchar* ruw = (threadgroup const uchar*)(stg[1] + n * RU);
+                half4 wg, wu, wg2, wu2;
+                W8<F>::run(rgw, kl, tab, wg, wg2);
+                W8<F>::run(ruw, kl, tab, wu, wu2);
+                rg[i] = wg.x; rg[i + 1] = wg.y; rg[i + 2] = wg.z; rg[i + 3] = wg.w;
+                ru[i] = wu.x; ru[i + 1] = wu.y; ru[i + 2] = wu.z; ru[i + 3] = wu.w;
+                const uint16_t j = i + half_cap;
+                rg[j] = wg2.x; rg[j + 1] = wg2.y; rg[j + 2] = wg2.z; rg[j + 3] = wg2.w;
+                ru[j] = wu2.x; ru[j + 1] = wu2.y; ru[j + 2] = wu2.z; ru[j + 3] = wu2.w;
+            }
+            tA = tX.template slice<TK, TM>(k0, row0);
+            op.run(tA, rg, accg);
+            op.run(tA, ru, accu);
+        }
+    }
+    for (uint16_t i = 0; i < accg.get_capacity(); ++i)
+        if (accg.is_valid_element(i)) {
+            const float g = accg[i];
+            accg[i] = g / (1.0f + exp(-g)) * accu[i];
+        }
+    tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tO(ot[sg], dextents<int32_t, 2>(TN, TM));
+    accg.store(tO);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    for (int it = lane; it < TM * TN; it += 32) {
+        const int m = it / TN, f = it - m * TN;
+        HS[ulong(row0 + m) * a.n_ff + n0 + f] = half(ot[sg][it]);
+    }
+}
+#define MMGU5_(F, N, S) template [[host_name("mm_gu5_" #F "_" #N "_" #S)]] kernel decltype(mm_gu5<F, N, S>) mm_gu5<F, N, S>;
+#define MMGU5(F, N, S) MMGU5_(F, N, S)
+MMGU5(T_IQ3_S, 32, 2) MMGU5(T_IQ3_S, 32, 1) MMGU5(T_IQ3_S, 16, 4) MMGU5(T_IQ3_XXS, 32, 2) MMGU5(T_IQ3_XXS, 32, 1)
+MMGU5(T_IQ3_XXS, 16, 4) MMGU5(T_IQ2_S, 32, 2) MMGU5(T_IQ2_S, 32, 1) MMGU5(T_IQ2_S, 16, 4)

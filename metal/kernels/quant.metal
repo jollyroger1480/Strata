@@ -58,6 +58,19 @@ static inline float rdh(device const uchar* p) { return float(*(device const hal
 // layout in `tab` (uint words): [0, G) the grid, [G, G + 32) ksigns_iq2xs as bytes; IQ4_NL/XS: 16 floats.
 template <int F> static inline void load_tab(threadgroup uint* tab, ushort tid, ushort nth);
 
+// QUANT_CTAB (function constant 23): the i-quant grids and the sign table read from ggml-common's constant arrays
+// instead of a threadgroup copy (no table load and no barrier wait at the threadgroup's start); the same values.
+constant bool QUANT_CTAB [[function_constant(23)]];
+constant bool ctab = is_function_constant_defined(QUANT_CTAB) && QUANT_CTAB;
+static inline uint ksg(threadgroup const uint* tab, int at, uint i) {
+    return ctab ? uint(ksigns_iq2xs[i]) : uint(((threadgroup const uchar*)(tab + at))[i]);
+}
+static inline uint g_iq3xxs(threadgroup const uint* tab, uint i) { return ctab ? iq3xxs_grid[i] : tab[i]; }
+static inline uint g_iq3s(threadgroup const uint* tab, uint i) { return ctab ? iq3s_grid[i] : tab[i]; }
+static inline uint g_iq2xxs(threadgroup const uint* tab, uint i, int w) { return ctab ? uint(iq2xxs_grid[i] >> (32 * w)) : tab[2 * i + w]; }
+static inline uint g_iq2xs(threadgroup const uint* tab, uint i, int w) { return ctab ? uint(iq2xs_grid[i] >> (32 * w)) : tab[2 * i + w]; }
+static inline uint g_iq2s(threadgroup const uint* tab, uint i, int w) { return ctab ? uint(iq2s_grid[i] >> (32 * w)) : tab[2 * i + w]; }
+
 template <> inline void load_tab<T_Q2_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q2_0R>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q8_0>(threadgroup uint*, ushort, ushort) {}
@@ -74,22 +87,27 @@ static inline void load_signs(threadgroup uint* tab, int at, ushort tid, ushort 
     for (int i = tid; i < 128; i += nth) s[i] = ksigns_iq2xs[i];
 }
 template <> inline void load_tab<T_IQ3_XXS>(threadgroup uint* tab, ushort tid, ushort nth) {
+    if (ctab) return;
     for (int i = tid; i < 256; i += nth) tab[i] = iq3xxs_grid[i];
     load_signs(tab, 256, tid, nth);
 }
 template <> inline void load_tab<T_IQ3_S>(threadgroup uint* tab, ushort tid, ushort nth) {
+    if (ctab) return;
     for (int i = tid; i < 512; i += nth) tab[i] = iq3s_grid[i];
     load_signs(tab, 512, tid, nth);
 }
 template <> inline void load_tab<T_IQ2_XXS>(threadgroup uint* tab, ushort tid, ushort nth) {
+    if (ctab) return;
     for (int i = tid; i < 256; i += nth) { tab[2 * i] = uint(iq2xxs_grid[i]); tab[2 * i + 1] = uint(iq2xxs_grid[i] >> 32); }
     load_signs(tab, 512, tid, nth);
 }
 template <> inline void load_tab<T_IQ2_XS>(threadgroup uint* tab, ushort tid, ushort nth) {
+    if (ctab) return;
     for (int i = tid; i < 512; i += nth) { tab[2 * i] = uint(iq2xs_grid[i]); tab[2 * i + 1] = uint(iq2xs_grid[i] >> 32); }
     load_signs(tab, 1024, tid, nth);
 }
 template <> inline void load_tab<T_IQ2_S>(threadgroup uint* tab, ushort tid, ushort nth) {
+    if (ctab) return;
     for (int i = tid; i < 1024; i += nth) { tab[2 * i] = uint(iq2s_grid[i]); tab[2 * i + 1] = uint(iq2s_grid[i] >> 32); }
     load_signs(tab, 2048, tid, nth);
 }
@@ -130,13 +148,12 @@ static inline void put_signed4(thread float* q, uint g, uint s) {
 template <> inline float deq<T_IQ3_XXS>(device const uchar* b, int ui, thread float* q, threadgroup const uint* tab) {
     const int ib = ui >> 1, h = ui & 1;
     const uint aux = rd32(b + 2 + 64 + 4 * ib);
-    threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 256);
     device const uchar* qs = b + 2 + 8 * ib + 4 * h;
     for (int l2 = 0; l2 < 2; ++l2) {
         const int l = 2 * h + l2;
-        const uint s = ks[(aux >> (7 * l)) & 127];
-        put_signed4(q + 8 * l2, tab[qs[2 * l2]], s);
-        put_signed4(q + 8 * l2 + 4, tab[qs[2 * l2 + 1]], s >> 4);
+        const uint s = ksg(tab, 256, (aux >> (7 * l)) & 127);
+        put_signed4(q + 8 * l2, g_iq3xxs(tab, qs[2 * l2]), s);
+        put_signed4(q + 8 * l2 + 4, g_iq3xxs(tab, qs[2 * l2 + 1]), s >> 4);
     }
     return rdh(b) * (0.5f + float(aux >> 28)) * 0.5f;
 }
@@ -145,13 +162,12 @@ template <> inline float deq<T_IQ3_XXS>(device const uchar* b, int ui, thread fl
 template <> inline float deq<T_IQ2_XXS>(device const uchar* b, int ui, thread float* q, threadgroup const uint* tab) {
     const int ib = ui >> 1, h = ui & 1;
     const uint a0 = rd32(b + 2 + 8 * ib), a1 = rd32(b + 2 + 8 * ib + 4);
-    threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 512);
     for (int l2 = 0; l2 < 2; ++l2) {
         const int l = 2 * h + l2;
         const uint idx = (a0 >> (8 * l)) & 255;
-        const uint s = ks[(a1 >> (7 * l)) & 127];
-        put_signed4(q + 8 * l2, tab[2 * idx], s);
-        put_signed4(q + 8 * l2 + 4, tab[2 * idx + 1], s >> 4);
+        const uint s = ksg(tab, 512, (a1 >> (7 * l)) & 127);
+        put_signed4(q + 8 * l2, g_iq2xxs(tab, idx, 0), s);
+        put_signed4(q + 8 * l2 + 4, g_iq2xxs(tab, idx, 1), s >> 4);
     }
     return rdh(b) * (0.5f + float(a1 >> 28)) * 0.25f;
 }
@@ -160,12 +176,11 @@ template <> inline float deq<T_IQ2_XXS>(device const uchar* b, int ui, thread fl
 template <> inline float deq<T_IQ2_XS>(device const uchar* b, int ui, thread float* q, threadgroup const uint* tab) {
     const int ib = ui >> 1, h = ui & 1;
     device const ushort* qs = (device const ushort*)(b + 2);
-    threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 1024);
     for (int l2 = 0; l2 < 2; ++l2) {
         const uint v = qs[4 * ib + 2 * h + l2];
-        const uint idx = v & 511, s = ks[v >> 9];
-        put_signed4(q + 8 * l2, tab[2 * idx], s);
-        put_signed4(q + 8 * l2 + 4, tab[2 * idx + 1], s >> 4);
+        const uint idx = v & 511, s = ksg(tab, 1024, v >> 9);
+        put_signed4(q + 8 * l2, g_iq2xs(tab, idx, 0), s);
+        put_signed4(q + 8 * l2 + 4, g_iq2xs(tab, idx, 1), s >> 4);
     }
     const uint sc = b[66 + ib];
     return rdh(b) * (0.5f + float((sc >> (4 * h)) & 15)) * 0.25f;
@@ -179,8 +194,8 @@ template <> inline float deq<T_IQ2_S>(device const uchar* b, int ui, thread floa
         const int l = 2 * h + l2;
         const uint idx = uint(b[2 + 4 * ib + l]) | ((qh << (8 - 2 * l)) & 0x300);
         const uint s = b[2 + 32 + 4 * ib + l];
-        put_signed4(q + 8 * l2, tab[2 * idx], s);
-        put_signed4(q + 8 * l2 + 4, tab[2 * idx + 1], s >> 4);
+        put_signed4(q + 8 * l2, g_iq2s(tab, idx, 0), s);
+        put_signed4(q + 8 * l2 + 4, g_iq2s(tab, idx, 1), s >> 4);
     }
     const uint sc = b[74 + ib];
     return rdh(b) * (0.5f + float((sc >> (4 * h)) & 15)) * 0.25f;
@@ -195,8 +210,8 @@ template <> inline float deq<T_IQ3_S>(device const uchar* b, int ui, thread floa
         const uint i1 = uint(b[2 + 8 * ib + 2 * l]) | ((qh << (8 - 2 * l)) & 256);
         const uint i2 = uint(b[2 + 8 * ib + 2 * l + 1]) | ((qh << (7 - 2 * l)) & 256);
         const uint s = b[74 + 4 * ib + l];
-        put_signed4(q + 8 * l2, tab[i1], s);
-        put_signed4(q + 8 * l2 + 4, tab[i2], s >> 4);
+        put_signed4(q + 8 * l2, g_iq3s(tab, i1), s);
+        put_signed4(q + 8 * l2 + 4, g_iq3s(tab, i2), s >> 4);
     }
     const uint sc = b[106 + (ib >> 1)];
     return rdh(b) * float(1 + 2 * ((sc >> (4 * (ib & 1))) & 15));
