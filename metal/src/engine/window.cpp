@@ -192,7 +192,7 @@ private:
     std::unique_ptr<ExpertStream> st_;
     bool stream_ = false, st_pred_ = false;
     std::vector<int>* cuts_ = nullptr;
-    mtl::Buffer predL_;              // 48 x MAXT x 512: layer l + 1's router logits from layer l's FFN input
+    mtl::Buffer predL_, predL2_;     // 48 x MAXT x 512: layer l + 1's (l + 2's) router logits from layer l's FFN input
     int seg_T_ = 0;
     bool stream_arena(std::string& err);
     double run_ds(Cached& c);
@@ -208,7 +208,8 @@ public:
     int win_n_[MAXT + 1] = {};
     double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
     void at_cut(int s) {
-        st_->at_layer(s, seg_T_, TOPK, ids_.as<int32_t>(), st_pred_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
+        st_->at_layer(s, seg_T_, TOPK, ids_.as<int32_t>(), st_pred_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
+                      predL2_.ptr ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
     }
 private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
@@ -399,6 +400,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         const char* e = std::getenv("STRATA_METAL_PREFETCH");
         st_pred_ = !(e && std::atoi(e) <= 0);
         if (st_pred_) predL_ = A(4 * (size_t) 48 * MAXT * 512);
+        if (st_pred_ && st_->ahead2() > 0) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
     }
     ple_on_ = ss.ple.ready() && f_.find("blk.1.ple_key.weight") != nullptr;
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
@@ -595,6 +597,11 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         nb_ = true;
         gemv(ds, T("blk." + std::to_string(l + 1) + ".ffn_gate_inp.weight"), XF_, predL_, 512, ntok,
              (size_t) l * MAXT * 512 * 4);
+        if (predL2_.ptr && l + 2 < 48) {
+            nb_ = true;
+            gemv(ds, T("blk." + std::to_string(l + 2) + ".ffn_gate_inp.weight"), XF_, predL2_, 512, ntok,
+                 (size_t) l * MAXT * 512 * 4);
+        }
     }
     nb_ = true;
     gemv(ds, T(b + "ffn_gate_shexp.weight"), XF_, gsh_, NFF, ntok);

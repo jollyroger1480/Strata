@@ -53,7 +53,9 @@ public:
     uint64_t down_in_slot(int l) const { return lay_[(size_t) l].gs + lay_[(size_t) l].us; }
     // The host's turn at layer l: ids = the window's T x topk routed ids; pred = T x 512 router logits of layer l + 1
     // computed from this layer's FFN input (nullptr: no read-ahead).
-    void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred);
+    // pred2: layer l + 2's, from the same input (STRATA_METAL_PREFETCH2 = its top-k, 0 = off)
+    void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr);
+    int ahead2() const { return pre_k2_; }
     void report(FILE* f) const;
     void reset_stats();
 
@@ -71,6 +73,7 @@ private:
     void cancel_slot(int s);
     void promote_slot(int s);
     void io_main();
+    void ahead(int ln, int T, const float* pred, int K);
     void submit(int slot, int l, int e, bool urgent);
     void wait_slot(int s);
 
@@ -91,7 +94,7 @@ private:
     std::deque<Job> urgent_q_, pre_q_;
     bool stop_ = false;
     int outstanding_ = 0;
-    int nio_ = 6, pre_k_ = 10, split_ = 2;
+    int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
     bool prefetch_ = true, fake_ = false;
     // stats
     uint64_t lookups_ = 0, hits_ = 0, pre_hits_ = 0, late_ = 0, misses_ = 0, pre_issued_ = 0, pre_cancel_ = 0, windows_ = 0;

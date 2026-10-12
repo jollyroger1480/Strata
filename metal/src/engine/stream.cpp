@@ -76,6 +76,7 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     nio_ = std::max(1, env_int("STRATA_METAL_IO_THREADS", 6));
     split_ = std::max(1, std::min(8, env_int("STRATA_METAL_READ_SPLIT", 2)));
     pre_k_ = env_int("STRATA_METAL_PREFETCH", 10);
+    pre_k2_ = env_int("STRATA_METAL_PREFETCH2", 0);
     prefetch_ = pre_k_ > 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
     fake_ = env_int("STRATA_METAL_STREAM_FAKE", 0) != 0;
@@ -384,7 +385,48 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     return true;
 }
 
-void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred) {
+// the experts a predicted routing names, most likely first (by the best logit over the window's tokens)
+void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
+    K = std::min(K, 32);
+    std::pair<float, int> pw[8 * 32];
+    int np = 0;
+    for (int t = 0; t < T; ++t) {
+        const float* lg = pred + (size_t) t * NE;
+        int top[32];
+        int nt = 0;
+        for (int e = 0; e < NE; ++e) {
+            if (nt < K) { top[nt++] = e; continue; }
+            int m = 0;
+            for (int j = 1; j < K; ++j) if (lg[top[j]] < lg[top[m]]) m = j;
+            if (lg[e] > lg[top[m]]) top[m] = e;
+        }
+        for (int j = 0; j < nt; ++j) {
+            int q = 0;
+            while (q < np && pw[q].second != top[j]) ++q;
+            if (q == np) pw[np++] = {lg[top[j]], top[j]};
+            else pw[q].first = std::max(pw[q].first, lg[top[j]]);
+        }
+    }
+    std::sort(pw, pw + np, [](const auto& a, const auto& b) { return a.first > b.first; });
+    bool any = false;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        for (int j = 0; j < np; ++j) {
+            const int key = ln * NE + pw[j].second;
+            const int s0 = where_[(size_t) key];
+            if (s0 >= 0) { lru_front(s0); continue; }
+            const int s = victim(lay_[(size_t) ln].cls);
+            if (s < 0) break;
+            submit(s, ln, pw[j].second, false);
+            lru_front(s);
+            ++pre_issued_;
+            any = true;
+        }
+    }
+    if (any) cv_.notify_all();
+}
+
+void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2) {
     const double t0 = now_ms();
     if (l == 0) ++windows_;
     int want[8 * 16];
@@ -452,48 +494,9 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
         });
         wait_ms_ += now_ms() - tw;
     }
-    // read-ahead for layer l + 1: each token's top pre_k_ of the predicted router logits
-    if (prefetch_ && pred && l + 1 < NL) {
-        int pw[8 * 32];
-        int np = 0;
-        const int K = std::min(pre_k_, 32);
-        for (int t = 0; t < T; ++t) {
-            const float* lg = pred + (size_t) t * NE;
-            int top[32];
-            int nt = 0;
-            for (int e = 0; e < NE; ++e) {
-                if (nt < K) { top[nt++] = e; }
-                else {
-                    int m = 0;
-                    for (int j = 1; j < K; ++j) if (lg[top[j]] < lg[top[m]]) m = j;
-                    if (lg[e] > lg[top[m]]) top[m] = e;
-                    else continue;
-                }
-            }
-            for (int j = 0; j < nt; ++j) {
-                bool dup = false;
-                for (int q = 0; q < np; ++q) dup |= pw[q] == top[j];
-                if (!dup) pw[np++] = top[j];
-            }
-        }
-        bool any = false;
-        {
-            std::lock_guard<std::mutex> g(mu_);
-            const int ln = l + 1;
-            for (int j = 0; j < np; ++j) {
-                const int key = ln * NE + pw[j];
-                const int s0 = where_[(size_t) key];
-                if (s0 >= 0) { lru_front(s0); continue; }
-                const int s = victim(lay_[(size_t) ln].cls);
-                if (s < 0) break;
-                submit(s, ln, pw[j], false);
-                lru_front(s);
-                ++pre_issued_;
-                any = true;
-            }
-        }
-        if (any) cv_.notify_all();
-    }
+    // read-ahead: layer l + 1 (each token's top pre_k_ of the predicted router logits), then layer l + 2 (top pre_k2_)
+    if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
+    if (pre_k2_ > 0 && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_);
     host_ms_ += now_ms() - t0;
 }
 
