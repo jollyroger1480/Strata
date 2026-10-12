@@ -170,11 +170,31 @@ int main(int argc, char** argv) {
             cx.run({disp(p2, 0, 0, y2)});
             prefix = std::memcmp(y.ptr, y2.ptr, 4 * HV * S * nt) == 0;
         }
-        const bool ok = untouched && same_y && prefix && ey.l2() < 1e-5 && es.l2() < 1e-5 && eh.l2() == 0;
+        // partial commit (commit = 0x100 | k): the state and history after the first k tokens, bitwise those of a
+        // k-token commit; y bitwise the verify window's
+        bool partial = true;
+        for (int k = 1; k < nt; ++k) {
+            mtl::Pipeline pk = cx.pipeline(lib, std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step", mtl::Constants().i(2, k));
+            mtl::Pipeline pn = cx.pipeline(lib, std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step", mtl::Constants().i(2, nt));
+            std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
+            std::memcpy(hist.ptr, h0.ptr, 4 * C * 3);
+            cx.run({disp(pk, 0, 1, y2)});
+            std::vector<float> sk(state.as<float>(), state.as<float>() + st_elems), hk(hist2.as<float>(), hist2.as<float>() + C * 3);
+            std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
+            cx.run({disp(pn, 0, 0, y)});
+            std::vector<float> yv(y.as<float>(), y.as<float>() + HV * S * nt);
+            std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
+            std::memset(hist2.ptr, 0xFF, 4 * C * 3);
+            cx.run({disp(pn, 0, 0x100 | k, y2)});
+            partial = partial && std::memcmp(state.ptr, sk.data(), 4 * st_elems) == 0 &&
+                      std::memcmp(hist2.ptr, hk.data(), 4 * C * 3) == 0 && std::memcmp(y2.ptr, yv.data(), 4 * HV * S * nt) == 0;
+        }
+        const bool ok = untouched && same_y && prefix && partial && ey.l2() < 1e-5 && es.l2() < 1e-5 && eh.l2() == 0;
         fails += !ok;
         std::printf("gdn parity ntok %d: y rel L2 %.2e, state %.2e, history %.1e; verify leaves state: %s, verify y == "
-                    "commit y: %s, first %d of a longer window bitwise: %s  %s\n", nt, ey.l2(), es.l2(), eh.l2(),
-                    untouched ? "yes" : "NO", same_y ? "yes" : "NO", nt, prefix ? "yes" : "NO", ok ? "PASS" : "FAIL");
+                    "commit y: %s, first %d of a longer window bitwise: %s, partial commits bitwise: %s  %s\n", nt, ey.l2(), es.l2(),
+                    eh.l2(), untouched ? "yes" : "NO", same_y ? "yes" : "NO", nt, prefix ? "yes" : "NO", partial ? "yes" : "NO",
+                    ok ? "PASS" : "FAIL");
     }
     std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
     return fails ? 1 : 0;

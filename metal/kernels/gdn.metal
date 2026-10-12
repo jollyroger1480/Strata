@@ -19,7 +19,9 @@ struct GdnArgs {
     uint h_k;        // 16
     uint h_v;        // 48
     uint channels;   // 10240 = (2 h_k + h_v) * 128
-    uint commit;
+    uint commit;     // 0: verify (no write); 1: commit after the last token; 0x100 | k (1 <= k <= GDN_NTOK): commit
+                     // the state and the conv history after the first k tokens, in place, while every token's y is
+                     // still computed (a window whose first k rows are kept) - bitwise the commit of a k-token step
     float eps;       // 1e-6
     uint plane;      // 0: y only; else y is the raw plane of prepared activations (xprep layout, n = h_v * 128,
                      // `plane` floats between planes) and the other planes and the per-16 sums are written too
@@ -60,6 +62,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
     float st[RPT];
     for (int r = 0; r < RPT; ++r) st[r] = state[((i0 + r) * hv + h) * S + j];
 
+    const int commit_at = a.commit == 1u ? GDN_NTOK : (a.commit >> 8) ? int(a.commit & 0xFFu) : 0;
     for (int t = 0; t < GDN_NTOK; ++t) {
         // conv + SiLU
         float cv = 0.0f;
@@ -139,20 +142,22 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
                 ys[j] = yv;
             }
         }
+        if (t + 1 == commit_at) {
+            // the state and the conv history after token t (registers: st after this token's update, hst after its
+            // shift); the state is read only before the loop, so in place is safe.  q/k history: the threadgroups
+            // h < h_k own their q/k head (h == hk); v history: every head its own - to hist_out, NOT in place: a q/k
+            // channel is read by the three threadgroups h % h_k at their start, and a threadgroup may start after its
+            // owner has finished (seen on the 10-core M4); the caller swaps the two
+            for (int r = 0; r < RPT; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
+            if (ch >= 0 && (tid >= 256 || h < int(a.h_k)))
+                for (int k = 0; k < 3; ++k) hist_out[ch * 3 + k] = hst[k];
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (a.plane && ib == 0 && (j & 15) == 0) {
             float s0 = 0.0f, s1 = 0.0f;
             for (int k = 0; k < 16; k += 2) { s0 += ys[j + k]; s1 += ys[j + k + 1]; }
             y[4 * a.plane + t * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
         }
-    }
-    if (a.commit) {
-        for (int r = 0; r < RPT; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
-        // q/k history: the threadgroups h < h_k own their q/k head (h == hk); v history: every head its own
-        // to hist_out, NOT in place: a q/k channel is read by the three threadgroups h % h_k at their start, and
-        // a threadgroup may start after its owner has finished (seen on the 10-core M4); the caller swaps the two
-        if (ch >= 0 && (tid >= 256 || h < int(a.h_k)))
-            for (int k = 0; k < 3; ++k) hist_out[ch * 3 + k] = hst[k];
     }
 }
 
