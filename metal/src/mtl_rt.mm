@@ -74,6 +74,10 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
         src += "#line 1 \"" + f + "\"\n" + read_file(p) + "\n";
     }
     MTLCompileOptions* o = [MTLCompileOptions new];
+    // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
+    // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.
+    fast_math = false;
+    if (const char* m = std::getenv("STRATA_METAL_MATH")) fast_math = std::string(m) == "fast";
     if (@available(macOS 15.0, *)) {
         o.mathMode = fast_math ? MTLMathModeFast : MTLMathModeSafe;
     } else {

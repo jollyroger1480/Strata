@@ -85,97 +85,104 @@ kernel void moe_plan(device const int* ids [[buffer(0)]], device const float* w 
 }
 
 // ---- gate + up + SwiGLU -------------------------------------------------------------------------------------------
-template <int F, int LPR, int NR, int NT>
-static inline void gu_rows(device const uchar* blob, device const float* x, device float* h, device const int* plan,
-                           int c, int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
-    constexpr int UNIT = fmt<F>::UNIT;
-    float ag[NR][NT], au[NR][NT];
+// One pass over a group's rows for all its entries (at most 8: an expert appears once per token).
+template <int F, int LPR, int NR, int SG>
+kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[buffer(1)]],
+                   device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
+                   constant MoeArgs& a [[buffer(4)]], device const float* xs16 [[buffer(5)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int UNIT = fmt<F>::UNIT, RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    device const uchar* blob = W + (ulong)plan[P_GEXP + g] * a.blob_bytes;
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const float* xt[8];
+    device const float* st[8];
+    for (int t = 0; t < 8; ++t) {
+        const int tok = plan[P_ETOK + c + min(t, ne - 1)];
+        xt[t] = x + tok * int(a.n_embd);
+        st[t] = xs16 + tok * int(a.n_embd / 16);
+    }
+    float ag[NR][8], au[NR][8];
     for (int r = 0; r < NR; ++r)
-        for (int t = 0; t < NT; ++t) ag[r][t] = au[r][t] = 0.0f;
-    device const float* xt[NT];
-    for (int t = 0; t < NT; ++t) xt[t] = x + plan[P_ETOK + c + t] * int(a.n_embd);
+        for (int t = 0; t < 8; ++t) ag[r][t] = au[r][t] = 0.0f;
     device const uchar* g0 = blob + (ulong)row0 * a.gu_row;
     device const uchar* u0 = blob + a.up_off + (ulong)row0 * a.gu_row;
     const int U = int(a.n_embd) / UNIT;
     for (int u = li; u < U; u += LPR) {
-        float xs[NT][UNIT];
-        for (int t = 0; t < NT; ++t) load_x<UNIT>(xt[t] + u * UNIT, xs[t]);
+        float qg[NR][UNIT], qu[NR][UNIT];
+        float4 cg[NR], cu[NR];
         for (int r = 0; r < NR; ++r) {
-            unit_dot<F, NT>(g0 + r * a.gu_row, u, xs, ag[r], tab);
-            unit_dot<F, NT>(u0 + r * a.gu_row, u, xs, au[r], tab);
+            Dec<F>::run(g0 + r * a.gu_row, u, qg[r], cg[r], tab);
+            Dec<F>::run(u0 + r * a.gu_row, u, qu[r], cu[r], tab);
+        }
+        for (int t = 0; t < 8; ++t) {
+            if (t < ne) {
+                float xs[UNIT], xsum[2];
+                X<F>::load(xt[t], st[t], u, xs, xsum);
+                for (int r = 0; r < NR; ++r) {
+                    ag[r][t] += unit_combine<UNIT>(qg[r], cg[r], xs, xsum);
+                    au[r][t] += unit_combine<UNIT>(qu[r], cu[r], xs, xsum);
+                }
+            }
         }
     }
     for (int r = 0; r < NR; ++r)
-        for (int t = 0; t < NT; ++t) {
-            const float g = lane_sum<LPR>(ag[r][t]), v = lane_sum<LPR>(au[r][t]);
-            if (li == 0) h[(c + t) * int(a.n_ff) + row0 + r] = g / (1.0f + exp(-g)) * v;
+        for (int t = 0; t < 8; ++t) {
+            if (t < ne) {
+                const float gv = lane_sum<LPR>(ag[r][t]), uv = lane_sum<LPR>(au[r][t]);
+                if (li == 0) h[(c + t) * int(a.n_ff) + row0 + r] = gv / (1.0f + exp(-gv)) * uv;
+            }
         }
-}
-
-template <int F, int LPR, int NR, int SG>
-kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[buffer(1)]],
-                   device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
-                   constant MoeArgs& a [[buffer(4)]],
-                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
-    threadgroup uint tab[fmt<F>::TAB];
-    load_tab<F>(tab, tid, SG * 32);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    const int g = int(tg.y);
-    if (g >= plan[P_NG]) return;
-    constexpr int RG = 32 / LPR;
-    const int li = lane % LPR;
-    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
-    device const uchar* blob = W + (ulong)plan[P_GEXP + g] * a.blob_bytes;
-    const int e1 = plan[P_GSTART + g + 1];
-    int c = plan[P_GSTART + g];
-    for (; e1 - c >= 4; c += 4) gu_rows<F, LPR, NR, 4>(blob, x, h, plan, c, row0, li, a, tab);
-    if (e1 - c >= 2) { gu_rows<F, LPR, NR, 2>(blob, x, h, plan, c, row0, li, a, tab); c += 2; }
-    if (e1 - c >= 1) gu_rows<F, LPR, NR, 1>(blob, x, h, plan, c, row0, li, a, tab);
 }
 
 // ---- down ---------------------------------------------------------------------------------------------------------
-template <int F, int LPR, int NR, int NT>
-static inline void dn_rows(device const uchar* blob, device const float* h, device float* ye, device const int* plan,
-                           int c, int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
-    constexpr int UNIT = fmt<F>::UNIT;
-    float ac[NR][NT];
-    for (int r = 0; r < NR; ++r)
-        for (int t = 0; t < NT; ++t) ac[r][t] = 0.0f;
-    device const uchar* d0 = blob + a.down_off + (ulong)row0 * a.d_row;
-    const int U = int(a.n_ff) / UNIT;
-    for (int u = li; u < U; u += LPR) {
-        float xs[NT][UNIT];
-        for (int t = 0; t < NT; ++t) load_x<UNIT>(h + (c + t) * int(a.n_ff) + u * UNIT, xs[t]);
-        for (int r = 0; r < NR; ++r) unit_dot<F, NT>(d0 + r * a.d_row, u, xs, ac[r], tab);
-    }
-    for (int r = 0; r < NR; ++r)
-        for (int t = 0; t < NT; ++t) {
-            const float v = lane_sum<LPR>(ac[r][t]);
-            if (li == 0) ye[(c + t) * int(a.n_embd) + row0 + r] = as_type<float>(plan[P_EW + c + t]) * v;
-        }
-}
-
 template <int F, int LPR, int NR, int SG>
 kernel void moe_down(device const uchar* W [[buffer(0)]], device const float* h [[buffer(1)]],
                      device float* ye [[buffer(2)]], device const int* plan [[buffer(3)]],
-                     constant MoeArgs& a [[buffer(4)]],
+                     constant MoeArgs& a [[buffer(4)]], device const float* hs16 [[buffer(5)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                      ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int UNIT = fmt<F>::UNIT, RG = 32 / LPR;
     threadgroup uint tab[fmt<F>::TAB];
     load_tab<F>(tab, tid, SG * 32);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const int g = int(tg.y);
     if (g >= plan[P_NG]) return;
-    constexpr int RG = 32 / LPR;
     const int li = lane % LPR;
     const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
     device const uchar* blob = W + (ulong)plan[P_GEXP + g] * a.blob_bytes;
-    const int e1 = plan[P_GSTART + g + 1];
-    int c = plan[P_GSTART + g];
-    for (; e1 - c >= 4; c += 4) dn_rows<F, LPR, NR, 4>(blob, h, ye, plan, c, row0, li, a, tab);
-    if (e1 - c >= 2) { dn_rows<F, LPR, NR, 2>(blob, h, ye, plan, c, row0, li, a, tab); c += 2; }
-    if (e1 - c >= 1) dn_rows<F, LPR, NR, 1>(blob, h, ye, plan, c, row0, li, a, tab);
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    float ac[NR][8];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < 8; ++t) ac[r][t] = 0.0f;
+    device const uchar* d0 = blob + a.down_off + (ulong)row0 * a.d_row;
+    const int U = int(a.n_ff) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        float q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec<F>::run(d0 + r * a.d_row, u, q[r], sc[r], tab);
+        for (int t = 0; t < 8; ++t) {
+            if (t < ne) {
+                float xs[UNIT], xsum[2];
+                X<F>::load(h + (c + t) * int(a.n_ff), hs16 + (c + t) * int(a.n_ff / 16), u, xs, xsum);
+                for (int r = 0; r < NR; ++r) ac[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
+            }
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < 8; ++t) {
+            if (t < ne) {
+                const float v = lane_sum<LPR>(ac[r][t]);
+                if (li == 0) ye[(c + t) * int(a.n_embd) + row0 + r] = as_type<float>(plan[P_EW + c + t]) * v;
+            }
+        }
 }
 
 kernel void moe_combine(device const float* ye [[buffer(0)]], device float* y [[buffer(1)]],

@@ -11,6 +11,8 @@
 // ushorts.
 
 #define T_Q4_0 2
+#define T_Q3_K 11
+#define T_BF16 30
 #define T_Q5_0 6
 #define T_Q8_0 8
 #define T_Q4_K 12
@@ -33,8 +35,13 @@ template <> struct fmt<T_IQ2_XXS> { enum { QK = 256, BB = 66,  UNIT = 16, TAB = 
 template <> struct fmt<T_IQ2_XS>  { enum { QK = 256, BB = 74,  UNIT = 16, TAB = 1024 + 32 }; };
 template <> struct fmt<T_IQ2_S>   { enum { QK = 256, BB = 82,  UNIT = 16, TAB = 2048 + 32 }; };
 template <> struct fmt<T_IQ3_S>   { enum { QK = 256, BB = 110, UNIT = 16, TAB = 512 + 32 }; };
-template <> struct fmt<T_IQ4_NL>  { enum { QK = 32,  BB = 18,  UNIT = 32, TAB = 16 }; };
-template <> struct fmt<T_IQ4_XS>  { enum { QK = 256, BB = 136, UNIT = 32, TAB = 16 }; };
+template <> struct fmt<T_IQ4_NL>  { enum { QK = 32,  BB = 18,  UNIT = 32, TAB = 256 }; };
+template <> struct fmt<T_IQ4_XS>  { enum { QK = 256, BB = 136, UNIT = 32, TAB = 256 }; };
+template <> struct fmt<T_Q3_K>    { enum { QK = 256, BB = 110, UNIT = 32, TAB = 1 }; };
+template <> struct fmt<T_Q4_K>    { enum { QK = 256, BB = 144, UNIT = 32, TAB = 1 }; };
+template <> struct fmt<T_Q5_K>    { enum { QK = 256, BB = 176, UNIT = 32, TAB = 1 }; };
+template <> struct fmt<T_Q6_K>    { enum { QK = 256, BB = 210, UNIT = 32, TAB = 1 }; };
+template <> struct fmt<T_BF16>    { enum { QK = 16,  BB = 32,  UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_Q8_0>    { enum { QK = 32,  BB = 34,  UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_Q4_0>    { enum { QK = 32,  BB = 18,  UNIT = 32, TAB = 1 }; };
 template <> struct fmt<T_Q5_0>    { enum { QK = 32,  BB = 22,  UNIT = 32, TAB = 1 }; };
@@ -53,6 +60,11 @@ template <> inline void load_tab<T_Q2_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q8_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q4_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q5_0>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q3_K>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q4_K>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q5_K>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q6_K>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_BF16>(threadgroup uint*, ushort, ushort) {}
 
 static inline void load_signs(threadgroup uint* tab, int at, ushort tid, ushort nth) {
     threadgroup uchar* s = (threadgroup uchar*)(tab + at);
@@ -78,9 +90,10 @@ template <> inline void load_tab<T_IQ2_S>(threadgroup uint* tab, ushort tid, ush
     for (int i = tid; i < 1024; i += nth) { tab[2 * i] = uint(iq2s_grid[i]); tab[2 * i + 1] = uint(iq2s_grid[i] >> 32); }
     load_signs(tab, 2048, tid, nth);
 }
+// IQ4: a byte -> (codebook[low nibble], codebook[high nibble]) as half2, so one lookup gives two weights
 template <> inline void load_tab<T_IQ4_NL>(threadgroup uint* tab, ushort tid, ushort nth) {
-    threadgroup float* kv = (threadgroup float*)tab;
-    for (int i = tid; i < 16; i += nth) kv[i] = float(kvalues_iq4nl[i]);
+    for (int i = tid; i < 256; i += nth)
+        tab[i] = as_type<uint>(half2(half(kvalues_iq4nl[i & 15]), half(kvalues_iq4nl[i >> 4])));
 }
 template <> inline void load_tab<T_IQ4_XS>(threadgroup uint* tab, ushort tid, ushort nth) {
     load_tab<T_IQ4_NL>(tab, tid, nth);
@@ -186,30 +199,30 @@ template <> inline float deq<T_IQ3_S>(device const uchar* b, int ui, thread floa
     return rdh(b) * float(1 + 2 * ((sc >> (4 * (ib & 1))) & 15));
 }
 
-// IQ4_NL: 32 = 1 unit; low nibbles are elements 0..15, high 16..31.
+// IQ4_NL: 32 = 1 unit; low nibbles are elements 0..15, high 16..31 (one half2 lookup per byte).
 template <> inline float deq<T_IQ4_NL>(device const uchar* b, int, thread float* q, threadgroup const uint* tab) {
-    threadgroup const float* kv = (threadgroup const float*)tab;
     device const ushort* p = (device const ushort*)(b + 2);
     for (int j = 0; j < 8; ++j) {
         const ushort v = p[j];
-        q[2 * j] = kv[v & 15];
-        q[2 * j + 16] = kv[(v >> 4) & 15];
-        q[2 * j + 1] = kv[(v >> 8) & 15];
-        q[2 * j + 17] = kv[v >> 12];
+        const half2 w0 = as_type<half2>(tab[v & 255]), w1 = as_type<half2>(tab[v >> 8]);
+        q[2 * j] = float(w0.x);
+        q[2 * j + 16] = float(w0.y);
+        q[2 * j + 1] = float(w1.x);
+        q[2 * j + 17] = float(w1.y);
     }
     return rdh(b);
 }
 
 // IQ4_XS: 256 = 8 units of 32; 6-bit scale from scales_l nibble + 2 bits of scales_h, minus 32.
 template <> inline float deq<T_IQ4_XS>(device const uchar* b, int ui, thread float* q, threadgroup const uint* tab) {
-    threadgroup const float* kv = (threadgroup const float*)tab;
     device const ushort* p = (device const ushort*)(b + 8 + 16 * ui);
     for (int j = 0; j < 8; ++j) {
         const ushort v = p[j];
-        q[2 * j] = kv[v & 15];
-        q[2 * j + 16] = kv[(v >> 4) & 15];
-        q[2 * j + 1] = kv[(v >> 8) & 15];
-        q[2 * j + 17] = kv[v >> 12];
+        const half2 w0 = as_type<half2>(tab[v & 255]), w1 = as_type<half2>(tab[v >> 8]);
+        q[2 * j] = float(w0.x);
+        q[2 * j + 16] = float(w0.y);
+        q[2 * j + 1] = float(w1.x);
+        q[2 * j + 17] = float(w1.y);
     }
     const uint sh = *(device const ushort*)(b + 2);
     const int ls = int((b[4 + (ui >> 1)] >> (4 * (ui & 1))) & 15) | int(((sh >> (2 * ui)) & 3) << 4);
@@ -250,33 +263,6 @@ template <> inline float deq<T_Q5_0>(device const uchar* b, int, thread float* q
         q[j1 + 16] = float(int(v >> 12) | int(((hb >> (j1 + 16)) & 1) << 4)) - 16.0f;
     }
     return rdh(b);
-}
-
-// ---- the dot of one unit with NT token slices ----------------------------------------------------------------------
-// The weights of unit `u` of `row` (u counts units along the row) dotted with x[t][u*UNIT ..], accumulated into acc[t].
-template <int F, int NT>
-static inline void unit_dot(device const uchar* row, int u, thread const float (*xs)[fmt<F>::UNIT], thread float* acc,
-                            threadgroup const uint* tab) {
-    constexpr int UNIT = fmt<F>::UNIT, UPB = fmt<F>::QK / UNIT;
-    float q[UNIT];
-    const float s = deq<F>(row + (u / UPB) * fmt<F>::BB, u % UPB, q, tab);
-    for (int t = 0; t < NT; ++t) {
-        float d = 0.0f;
-        for (int j = 0; j < UNIT; ++j) d = fma(q[j], xs[t][j], d);
-        acc[t] = fma(s, d, acc[t]);
-    }
-}
-
-template <int UNIT>
-static inline void load_x(device const float* x, thread float* xs) {
-    device const float4* p = (device const float4*)x;
-    for (int j = 0; j < UNIT / 4; ++j) {
-        const float4 v = p[j];
-        xs[4 * j] = v.x;
-        xs[4 * j + 1] = v.y;
-        xs[4 * j + 2] = v.z;
-        xs[4 * j + 3] = v.w;
-    }
 }
 
 // sum over groups of LPR consecutive lanes (LPR = 1, 2, 4, 8, 16 or 32); the result is valid in every lane

@@ -70,7 +70,8 @@ public:
     // Compiles a library from MSL source files (paths), prepended by `prelude` (defines) and, if include_ggml,
     // ggml-common.h with GGML_COMMON_DECL_METAL/IMPL_METAL.  Returns a library id (index); aborts with the
     // compiler log on error.
-    int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = true);
+    // Safe math unless STRATA_METAL_MATH=fast (the argument is ignored; kept for callers).
+    int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = false);
     Pipeline pipeline(int lib, const std::string& fn, const Constants& c = {});
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed

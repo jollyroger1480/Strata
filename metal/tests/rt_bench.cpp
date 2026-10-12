@@ -127,6 +127,40 @@ static void bw(mtl::Context& cx, int lib, size_t mib) {
     cx.free(out);
 }
 
+// A read of `kib` from DRAM per dispatch (each dispatch a different, uncached chunk of a 4 GiB buffer), dependent
+// dispatches in one serial encoder: the bound for a kernel that streams that much once.
+static void bwsize(mtl::Context& cx, int lib) {
+    const size_t big = 4ull << 30;
+    mtl::Buffer src = cx.alloc(big), out = cx.alloc(64u << 20);
+    mtl::Pipeline pr = cx.pipeline(lib, "k_read");
+    std::printf("%10s %8s %10s %10s\n", "chunk KiB", "tg x grp", "us/disp", "GB/s");
+    for (size_t kib : {1152ul, 2304ul, 4500ul, 9000ul, 13500ul, 18000ul, 36000ul, 72000ul}) {
+        const size_t bytes = kib * 1024;
+        const int R = (int)std::min<size_t>(400, big / bytes);
+        double bestt = 1e9;
+        uint32_t bg = 0, btg = 0;
+        for (uint32_t tg : {256u, 1024u})
+            for (uint32_t groups : {80u, 160u, 320u, 640u, 1280u}) {
+                std::vector<mtl::Dispatch> ds;
+                const uint32_t n = (uint32_t)(bytes / 16);
+                for (int r = 0; r < R; ++r) {
+                    mtl::Dispatch d;
+                    d.p = &pr;
+                    d.args = {mtl::Arg::B(src, (size_t)r * ((big / R) & ~4095ull)), mtl::Arg::B(out), mtl::Arg::V(n)};
+                    d.grid[0] = groups;
+                    d.tg[0] = tg;
+                    ds.push_back(d);
+                }
+                double med, best;
+                timed(1, 5, [&] { return cx.run(ds) / R; }, med, best);
+                if (med < bestt) { bestt = med; bg = groups; btg = tg; }
+            }
+        std::printf("%10zu %4ux%-4u %10.2f %10.1f\n", kib, btg, bg, bestt * 1e6, bytes / bestt / 1e9);
+    }
+    cx.free(src);
+    cx.free(out);
+}
+
 static void dispatch(mtl::Context& cx, int lib) {
     mtl::Buffer buf = cx.alloc(1 << 20), x = cx.alloc(4 * 2560), y = cx.alloc(4 * 2560);
     mtl::Pipeline pe = cx.pipeline(lib, "k_empty"), pch = cx.pipeline(lib, "k_chain"), ps = cx.pipeline(lib, "k_small");
@@ -199,5 +233,6 @@ int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "all";
     if (mode == "bw" || mode == "all") bw(cx, lib, argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 2048);
     if (mode == "dispatch" || mode == "all") dispatch(cx, lib);
+    if (mode == "bwsize" || mode == "all") bwsize(cx, lib);
     return 0;
 }

@@ -93,14 +93,40 @@ void random_routing(ref::Rng& r, int ntok, int n_expert, std::vector<int>& ids, 
 }
 
 struct Kernels {
-    mtl::Pipeline plan, gu, dn, comb;
+    mtl::Pipeline plan, gu, dn, comb, prep;
     Cfg cgu, cdn;
 };
+int xkind(int t) {
+    switch (t) {
+        case ref::Q2_0: return 1;
+        case ref::Q4_K: case ref::Q5_K: return 2;
+        case ref::Q6_K: case ref::Q3_K: return 3;
+        default: return 0;
+    }
+}
+constexpr int CAPE = 8 * TOPK;                     // entries capacity of h
+// prepared buffers: x [8][N_EMBD] -> XPX, h [CAPE][N_FF] -> XPH (4 planes + S16)
+constexpr size_t PLANE_X = 8 * N_EMBD, PLANE_H = (size_t)CAPE * N_FF;
+
+mtl::Dispatch prep_dispatch(const mtl::Pipeline& p, const mtl::Buffer& x, const mtl::Buffer& xp, uint32_t n, uint32_t nt) {
+    mtl::Dispatch d;
+    d.p = &p;
+    d.args = {mtl::Arg::B(x), mtl::Arg::B(xp), mtl::Arg::V(n), mtl::Arg::V(nt)};
+    d.tg[0] = 256;
+    d.grid[0] = (n / 16 * nt + 255) / 256;
+    return d;
+}
+
+int g_gu_type = 0, g_dn_type = 0;
+const mtl::Buffer* g_xpx = nullptr;
+const mtl::Buffer* g_xph = nullptr;
 
 void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::Buffer& W, size_t w_off,
                   const mtl::Buffer& x, const mtl::Buffer& h, const mtl::Buffer& ye, const mtl::Buffer& y,
                   const mtl::Buffer& ids, const mtl::Buffer& wts, const mtl::Buffer& plan, size_t plan_off,
                   const MoeArgs& a, bool with_plan, bool with_gu, bool with_dn, bool with_comb) {
+    const mtl::Buffer& XPX = *g_xpx;
+    const mtl::Buffer& XPH = *g_xph;
     if (with_plan) {
         mtl::Dispatch d;
         d.p = &K.plan;
@@ -111,16 +137,20 @@ void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::B
     if (with_gu) {
         mtl::Dispatch d;
         d.p = &K.gu;
-        d.args = {mtl::Arg::B(W, w_off), mtl::Arg::B(x), mtl::Arg::B(h), mtl::Arg::B(plan, plan_off), mtl::Arg::V(a)};
+        d.args = {mtl::Arg::B(W, w_off), mtl::Arg::B(XPX, 4 * PLANE_X * xkind(g_gu_type)), mtl::Arg::B(h),
+                  mtl::Arg::B(plan, plan_off), mtl::Arg::V(a), mtl::Arg::B(XPX, 4 * PLANE_X * 4)};
         d.tg[0] = K.cgu.S * 32;
         d.indirect = &plan;
         d.ind_off = plan_off + P_IGU * 4;
         ds.push_back(d);
     }
     if (with_dn) {
+        if (xkind(g_dn_type)) ds.push_back(prep_dispatch(K.prep, h, XPH, N_FF, CAPE));
         mtl::Dispatch d;
         d.p = &K.dn;
-        d.args = {mtl::Arg::B(W, w_off), mtl::Arg::B(h), mtl::Arg::B(ye), mtl::Arg::B(plan, plan_off), mtl::Arg::V(a)};
+        d.args = {mtl::Arg::B(W, w_off),
+                  xkind(g_dn_type) ? mtl::Arg::B(XPH, 4 * PLANE_H * xkind(g_dn_type)) : mtl::Arg::B(h), mtl::Arg::B(ye),
+                  mtl::Arg::B(plan, plan_off), mtl::Arg::V(a), mtl::Arg::B(XPH, 4 * PLANE_H * 4)};
         d.tg[0] = K.cdn.S * 32;
         d.indirect = &plan;
         d.ind_off = plan_off + P_IDN * 4;
@@ -180,7 +210,7 @@ int main(int argc, char** argv) {
     (void)cfg_dn_set;
     if (dn == ref::IQ4_NL && cdn.L == 8 && !cfg_dn_set) cdn = {4, 2, 4};
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "moe.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"});
     const Layout L = layout(gu, dn);
     std::printf("device %s; gate/up %s, down %s, blob %zu bytes; %d token(s)\n", cx.device_name().c_str(),
                 ref::type_name(gu), ref::type_name(dn), L.blob, ntok);
@@ -188,6 +218,7 @@ int main(int argc, char** argv) {
     auto make = [&](Cfg a, Cfg b) {
         Kernels K;
         K.plan = cx.pipeline(lib, "moe_plan");
+        K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
         K.gu = cx.pipeline(lib, kname("moe_gu", gu, a));
         K.dn = cx.pipeline(lib, kname("moe_down", dn, b));
@@ -214,8 +245,17 @@ int main(int argc, char** argv) {
 
     mtl::Buffer x = cx.alloc(4 * 8 * N_EMBD), h = cx.alloc(4 * 8 * TOPK * N_FF), ye = cx.alloc(4 * 8 * TOPK * N_EMBD),
                 y = cx.alloc(4 * 8 * N_EMBD);
+    mtl::Buffer XPX = cx.alloc(4 * (4 * PLANE_X + PLANE_X / 16)), XPH = cx.alloc(4 * (4 * PLANE_H + PLANE_H / 16));
+    g_xpx = &XPX;
+    g_xph = &XPH;
+    g_gu_type = gu;
+    g_dn_type = dn;
     ref::Rng rng(12345);
     for (int i = 0; i < 8 * N_EMBD; ++i) x.as<float>()[i] = rng.sym();
+    {
+        mtl::Pipeline pp = cx.pipeline(lib, "xprep");
+        cx.run({prep_dispatch(pp, x, XPX, N_EMBD, 8)});
+    }
 
     if (!bench) {
         // ---------------- parity ----------------
@@ -340,10 +380,10 @@ int main(int argc, char** argv) {
             encode_layer(g, K, W, woff, x, h, ye, y, bid, bw, plan, (size_t)r * P_INTS * 4, a, false, true, false, false);
             encode_layer(d, K, W, woff, x, h, ye, y, bid, bw, plan, (size_t)r * P_INTS * 4, a, false, false, true, false);
             dg.push_back(g[0]);
-            dd.push_back(d[0]);
+            for (auto& z : d) dd.push_back(z);
             dall.push_back(one[0]);
             dall.push_back(g[0]);
-            dall.push_back(d[0]);
+            for (auto& z : d) dall.push_back(z);
         }
         cx.run(dp);   // plans in place
         std::vector<double> tp, tg, td, ta;
