@@ -506,8 +506,21 @@ template <> struct W8<T_IQ3_XXS> {
         const uint aux = rd32(bl + 2 + 64 + 4 * ib);
         threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 256);
         const float sc = rdh(bl) * (0.5f + float(aux >> 28)) * 0.5f;
-        const uint s0 = ks[(aux >> (7 * l)) & 127], s1 = ks[(aux >> (7 * (l + 2))) & 127];
         device const uchar* qs = bl + 2 + 8 * ib + hh;
+        if (mm_probe == 3) {   // bench probe: no threadgroup-table lookups (wrong values)
+            a = w4_signed(qs[2 * l] * 0x01010101u, aux, sc);
+            b = w4_signed(qs[2 * l + 4] * 0x01010101u, aux >> 7, sc);
+            return;
+        }
+        uint s0, s1;
+        if (mm_probe == 4) {   // the signs computed (ksigns_iq2xs[i] = i | parity(i) << 7) instead of looked up
+            const uint i0 = (aux >> (7 * l)) & 127, i1 = (aux >> (7 * (l + 2))) & 127;
+            s0 = i0 | ((popcount(i0) & 1u) << 7);
+            s1 = i1 | ((popcount(i1) & 1u) << 7);
+        } else {
+            s0 = ks[(aux >> (7 * l)) & 127];
+            s1 = ks[(aux >> (7 * (l + 2))) & 127];
+        }
         a = w4_signed(tab[qs[2 * l]], hh ? s0 >> 4 : s0, sc);
         b = w4_signed(tab[qs[2 * l + 4]], hh ? s1 >> 4 : s1, sc);
     }
