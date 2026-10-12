@@ -302,6 +302,7 @@ GU_SET(T_IQ2_XXS)
 GU_SET(T_IQ2_XS)
 GU_SET(T_IQ2_S)
 GU_SET(T_IQ3_S)
+GU_SET(T_IQ4_XS)   // the IQ3_S pack's gate/up in one layer
 DN_SET(T_Q2_0)
 DN_SET(T_Q2_0R)
 DN_SET(T_IQ4_NL)

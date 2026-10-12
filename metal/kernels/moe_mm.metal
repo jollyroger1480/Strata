@@ -365,6 +365,9 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
 #define MMDN2(F, M, N, K, S) MMDN2_(F, M, N, K, S)
 #define MM_GU2_SET(F) MMGU2(F, 32, 64, 32, 2) MMGU2(F, 32, 32, 32, 2) MMGU2(F, 32, 64, 16, 2) MMGU2(F, 64, 32, 16, 2) MMGU2(F, 16, 32, 32, 2) MMGU2(F, 16, 64, 16, 2) MMGU2(F, 16, 128, 32, 4) MMGU2(F, 32, 64, 16, 4) MMGU2(F, 16, 32, 32, 1) MMGU2(F, 16, 64, 32, 4) MMGU2(F, 16, 64, 64, 2) MMGU2(F, 32, 64, 64, 4) MMGU2(F, 64, 64, 64, 4) MMGU2(F, 16, 32, 64, 2) MMGU2(F, 32, 64, 32, 4) MMGU2(F, 64, 64, 32, 4) MMGU2(F, 16, 64, 32, 2)
 #define MM_DN2_SET(F) MMDN2(F, 32, 64, 32, 2) MMDN2(F, 32, 32, 32, 2) MMDN2(F, 32, 64, 16, 2) MMDN2(F, 64, 32, 16, 2) MMDN2(F, 16, 32, 32, 2) MMDN2(F, 16, 64, 16, 2) MMDN2(F, 16, 128, 32, 4) MMDN2(F, 32, 64, 16, 4) MMDN2(F, 16, 32, 32, 1) MMDN2(F, 16, 64, 32, 4) MMDN2(F, 16, 64, 64, 2) MMDN2(F, 32, 64, 64, 4) MMDN2(F, 64, 64, 64, 4) MMDN2(F, 16, 32, 64, 2) MMDN2(F, 32, 64, 32, 4) MMDN2(F, 64, 64, 32, 4) MMDN2(F, 16, 64, 32, 2)
+// IQ4_XS (UNIT 32): the K chunk must be >= 32
+MMGU2(T_IQ4_XS, 16, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 64, 64, 2) MMGU2(T_IQ4_XS, 32, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 32, 32, 2)
+MMGU2(T_IQ4_XS, 64, 64, 32, 4)
 MM_GU2_SET(T_Q2_0) MM_GU2_SET(T_IQ3_XXS) MM_GU2_SET(T_IQ2_XXS) MM_GU2_SET(T_IQ2_XS) MM_GU2_SET(T_IQ2_S) MM_GU2_SET(T_IQ3_S)
 MM_DN2_SET(T_Q2_0)
 MMDN2(T_IQ4_NL, 16, 64, 32, 2) MMDN2(T_IQ4_NL, 16, 64, 64, 2) MMDN2(T_IQ4_NL, 16, 32, 32, 2) MMDN2(T_IQ4_NL, 32, 32, 32, 2) MMDN2(T_IQ4_NL, 16, 128, 32, 4)
@@ -455,6 +458,22 @@ template <> struct W4<T_IQ3_S> {
         const uint scb = b[106 + (ib >> 1)];
         const float sc = rdh(b) * float(1 + 2 * ((scb >> (4 * (ib & 1))) & 15));
         return w4_signed(tab[i], hh ? s >> 4 : s, sc);
+    }
+};
+template <> struct W4<T_IQ4_XS> {   // 256 a block: d, scales_h, scales_l[4], qs[128]; 32-groups as IQ4_NL's
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint* tab) {
+        device const uchar* b = row + (k >> 8) * 136;
+        const int j = k & 255, ib = j >> 5, o = j & 15, hi = (j >> 4) & 1;
+        const uint sh = *(device const ushort*)(b + 2);
+        const int ls = int((b[4 + (ib >> 1)] >> (4 * (ib & 1))) & 15) | int(((sh >> (2 * ib)) & 3) << 4);
+        const float s = rdh(b) * float(ls - 32);
+        device const uchar* qs = b + 8 + 16 * ib;
+        float4 q;
+        for (int c = 0; c < 4; ++c) {
+            const half2 w = as_type<half2>(tab[qs[o + c]]);
+            q[c] = float(hi ? w.y : w.x);
+        }
+        return half4(q * s);
     }
 };
 template <> struct W4<T_IQ4_NL> {   // 32 a block: d, 16 bytes; low nibbles are elements 0..15, high 16..31
@@ -682,5 +701,5 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
     MMGU3(F, 16, 32, 16, 2) MMGU3(F, 32, 32, 32, 2) MMGU3(F, 16, 64, 32, 1) MMGU3(F, 16, 64, 32, 4)     MMGU3(F, 16, 32, 16, 4) MMGU3(F, 16, 32, 32, 5) MMGU3(F, 16, 32, 16, 5) MMGU3(F, 16, 16, 32, 4) MMGU3(F, 16, 16, 32, 8)     MMGU3(F, 16, 16, 16, 8)
 #define MM3_DN(F) MMDN3(F, 16, 64, 32, 2) MMDN3(F, 16, 32, 32, 4) MMDN3(F, 32, 64, 32, 2) MMDN3(F, 16, 64, 64, 2) \
     MMDN3(F, 16, 32, 16, 2) MMDN3(F, 32, 32, 32, 2) MMDN3(F, 16, 64, 32, 1) MMDN3(F, 16, 64, 32, 4)     MMDN3(F, 16, 64, 16, 2) MMDN3(F, 16, 32, 16, 4) MMDN3(F, 16, 64, 32, 5) MMDN3(F, 16, 64, 16, 4)
-MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
+MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
 MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL)

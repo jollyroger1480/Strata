@@ -49,6 +49,7 @@ struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32
 struct ArgArgs { uint32_t n_vocab, parts; };
 
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
+bool fmt_unit32(int t) { return t == ref::IQ4_XS || t == ref::IQ4_NL; }   // mm_gu2 needs a K chunk >= 32
 int unit_of(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 ? 16 : 32; }
 
 }  // namespace
@@ -433,7 +434,8 @@ int main(int argc, char** argv) {
             push(g, "experts");
             mtl::Dispatch gu;
             gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type), mtl::Constants().b(7, k4))
-                         : P(lib, "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2", mtl::Constants().i(5, 0));
+                         : P(lib, "mm_gu2_" + std::to_string(eg.type) + (fmt_unit32(eg.type) ? "_16_64_32_2" : "_16_64_16_2"),
+                             mtl::Constants().i(5, 0));
             gu.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             gu.tg[0] = gu_v3 ? 32 * gu3[3] : 64;
             gu.indirect = &meta;
