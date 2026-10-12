@@ -4760,6 +4760,13 @@ def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
 
 
 # ------------------------------------------------------------------------------------------------ main
+def mac_setup(argv) -> int:
+    """A Mac (Apple Silicon): the Metal engine, built from source on the Mac by metal/setup_mac.py (its own steps:
+    the Mac check, the pack by unified memory, the engine build, the Metal defaults). Nothing of the CUDA / HIP paths
+    is used or changed."""
+    return subprocess.call([sys.executable, str(ROOT / "metal" / "setup_mac.py"), *argv])
+
+
 def sycl_setup(argv) -> int:
     """--backend sycl: the Intel Arc engine (the SYCL port in sycl/, PR #423), experimental. There is no ready-made
     Intel engine: it is compiled from source on the PC (docs/INTEL_ARC.md), then sycl/setup_intel.py runs this setup
@@ -4787,6 +4794,8 @@ def sycl_setup(argv) -> int:
 
 
 def main() -> int:
+    if sys.platform == "darwin":                       # a Mac: metal/setup_mac.py (the Metal engine)
+        return mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
     ap.add_argument("--model", choices=list(MODELS))
