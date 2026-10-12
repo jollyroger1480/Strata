@@ -177,6 +177,15 @@ private:
     mtl::Buffer mhead_;
     gguf::Tensor mhead_t_;
     std::vector<int32_t> dvocab_;
+    // the draft layer's BF16 matrices in Q8_0 (half the bytes a draft step reads; drafts only: the verify window
+    // decides every token).  STRATA_METAL_MTP_Q8=0 keeps BF16.
+    mtl::Buffer mq8_;
+    std::map<std::string, gguf::Tensor> mq8t_;
+    const mtl::Buffer& MB(const std::string& name) const { return mq8t_.count(name) ? mq8_ : Wm_; }
+    const gguf::Tensor& TQ(const std::string& name) const {
+        auto it = mq8t_.find(name);
+        return it != mq8t_.end() ? it->second : TM(name);
+    }
     Act XEn_, XHn_;
 };
 
@@ -804,6 +813,41 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         for (uint64_t i = 0; i < x.bytes / 4; ++i) dst[i] = src[i] + 1.0f;
     }
     lmtp_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
+    {
+        const char* e = std::getenv("STRATA_METAL_MTP_Q8");
+        if (!(e && std::string(e) == "0")) {
+            size_t tot = 0;
+            std::vector<std::string> names;
+            for (const auto& kv : fm_.tensors) {
+                const gguf::Tensor& x = kv.second;
+                uint64_t ne = 1;
+                for (uint64_t d : x.shape) ne *= d;
+                if (x.type != ref::BF16 || x.shape.size() < 2 || x.shape[0] % 32 != 0) continue;
+                gguf::Tensor q = x;
+                q.type = ref::Q8_0;
+                q.offset = tot;
+                q.bytes = ne / 32 * 34;
+                mq8t_[x.name] = q;
+                names.push_back(x.name);
+                tot += (q.bytes + 255) / 256 * 256;
+            }
+            mq8_ = cx_->alloc(tot + 4096);
+            std::vector<std::thread> th;
+            const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            for (unsigned k = 0; k < nth; ++k)
+                th.emplace_back([&, k] {
+                    std::vector<float> tmp;
+                    for (size_t i = k; i < names.size(); i += nth) {
+                        const gguf::Tensor& x = fm_.tensors.at(names[i]);
+                        const uint64_t ne = x.bytes / 2;
+                        tmp.resize(ne);
+                        ref::dequant(ref::BF16, (const uint8_t*) fm_.map + x.offset, tmp.data(), ne);
+                        ref::quantize_q8_0(tmp.data(), ne, mq8_.as<uint8_t>() + mq8t_[names[i]].offset);
+                    }
+                });
+            for (auto& x : th) x.join();
+        }
+    }
     auto A = [&](size_t bytes) { return cx_->alloc(bytes); };
     const int MAXC = (int) max_cells_, MB = MAXC / 4 + 2;
     mR_ = A(4 * MAXT * HC * N); memb_ = A(4 * MAXT * N); men_ = A(4 * MAXT * N); me2_ = A(4 * MAXT * N);
@@ -846,9 +890,11 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
 void Window::gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, mtl::Buffer& Rb, const mtl::Buffer& bo,
                        const mtl::Buffer& inj_in, const mtl::Buffer& inj_out, bool apply, const Act& out, bool final_,
                        int ntok) {
-    const gguf::Tensor& tdn = TM(pre + ".input_mix_weight_down.weight");
-    const gguf::Tensor& tup = TM(pre + ".input_mix_weight_up.weight");
-    const gguf::Tensor& tin = final_ ? tdn : TM(pre + ".block_inject_weight.weight");
+    const gguf::Tensor& tdn = TQ(pre + ".input_mix_weight_down.weight");
+    const gguf::Tensor& tup = TQ(pre + ".input_mix_weight_up.weight");
+    const gguf::Tensor& tin = final_ ? tdn : TQ(pre + ".block_inject_weight.weight");
+    const bool q8 = tdn.type == ref::Q8_0 && tup.type == ref::Q8_0 && tin.type == ref::Q8_0;
+    const mtl::Buffer& WB = q8 ? mq8_ : Wm_;
     GrArgs a{N, HC, LR, (uint32_t) ntok, apply ? 1u : 0u, eps_};
     mtl::Dispatch d1;
     d1.p = P(lib_, "gr_norm", {}, "gr_norm");
@@ -857,16 +903,18 @@ void Window::gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, m
     d1.grid[0] = HC; d1.grid[1] = ntok; d1.tg[0] = 256;
     push(ds, d1);
     mtl::Dispatch d2;
-    d2.p = P(lib_, "gr_down_8_8", mtl::Constants().i(1, ntok), "gr_down_8_8#" + std::to_string(ntok));
-    d2.args = {mtl::Arg::B(Wm_, tdn.offset), mtl::Arg::B(Wm_, tin.offset), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
+    const char* dn = q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
+    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
+    d2.args = {mtl::Arg::B(WB, tdn.offset), mtl::Arg::B(WB, tin.offset), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_out), mtl::Arg::V(a)};
     d2.grid[0] = LR + HC; d2.tg[0] = 256;
     push(ds, d2);
     mtl::Dispatch d3;
-    d3.p = P(lib_, "gr_up", mtl::Constants().i(1, ntok), "gr_up#" + std::to_string(ntok));
+    const char* up = q8 ? "gr_up_q8" : "gr_up";
+    d3.p = P(lib_, up, mtl::Constants().i(1, ntok), std::string(up) + "#" + std::to_string(ntok));
     GrArgs au = a;
     au.n_tok = MAXT;
-    d3.args = {mtl::Arg::B(Wm_, tup.offset), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
+    d3.args = {mtl::Arg::B(WB, tup.offset), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
     d3.grid[0] = N / 16; d3.tg[0] = 256;
     push(ds, d3);
 }
@@ -900,7 +948,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     };
     auto gm = [&](const std::string& name, const Act& x, const mtl::Buffer& y, size_t y_stride, int rows, size_t y_off = 0) {
         // a GEMV on the MTP model's tensor (the window's gemv() reads the main model's buffer)
-        const gguf::Tensor& tt = TM(name);
+        const gguf::Tensor& tt = TQ(name);
         const int n_in = (int) tt.shape[0], n_out = tt.shape.size() > 1 ? (int) tt.shape[1] : 1, ty = tt.type;
         int Lq = 16, Rr = 1, S = 4, K = 1;
         if (n_in >= 6144) { Lq = 32; Rr = 1; S = 8; K = 2; }
@@ -912,8 +960,8 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
                    (uint32_t) y_stride};
         mtl::Dispatch d;
         d.p = P(lib_, fn, mtl::Constants().i(0, rows), fn + "#" + std::to_string(rows));
-        d.args = {mtl::Arg::B(Wm_, tt.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)), mtl::Arg::B(x.b, x.plane_bytes() * 4),
-                  mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
+        d.args = {mtl::Arg::B(MB(name), tt.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
+                  mtl::Arg::B(x.b, x.plane_bytes() * 4), mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
         const int rpt = (S / K) * (32 / Lq) * Rr;
         d.grid[0] = (n_out + rpt - 1) / rpt; d.tg[0] = S * 32;
         push(ds, d);
