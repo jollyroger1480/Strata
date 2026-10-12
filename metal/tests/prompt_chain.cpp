@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
                                 "gemv.metal", "prompt.metal"});
     const int lgdn = cx.compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-    const int lqsa = cx.compile({"qsa.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lqsa = cx.compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::printf("kernels compiled in %.1f s\n", mtl::now_s() - tc0);
     std::map<std::string, mtl::Pipeline> pcache;
@@ -122,10 +122,29 @@ int main(int argc, char** argv) {
                 ggb = F32(MT * 48 * 2), gkq = F32(MT * 16), go = F32(MT * 6144);
     const char* hc_env = std::getenv("PC_HC");
     const std::string hc_mode = hc_env ? hc_env : "fused";   // fused | plain
+    const char* qsa_env = std::getenv("PC_QSA");
+    const std::string qsa_mode = qsa_env ? qsa_env : "mm";   // mm (matrix units) | v1 (qsa_attn, fp32)
+    // the expert GEMMs: "v2" (threadgroup-staged weights) or "v3:TM,TN,TK,SG" (register operands, TN rows a simdgroup)
+    const char* gu_env = std::getenv("PC_GU");
+    const char* dn_env = std::getenv("PC_DN");
+    // defaults (M5 Max, moe_mm_parity --v3 --bench): gate/up 16,32,32,4 for Q2_0 and 16,16,32,8 for the i-quants
+    // (both 5 threadgroups across n_ff), down 16,64,32,2
+    const std::string gu_mode = gu_env ? gu_env : "v3:auto", dn_mode = dn_env ? dn_env : "v3:16,64,32,2";
+    auto v3_tile = [](const std::string& m, int* t) { std::sscanf(m.c_str() + 3, "%d,%d,%d,%d", &t[0], &t[1], &t[2], &t[3]); };
+    int gu3[4] = {16, 64, 16, 2}, dn3[4] = {16, 64, 16, 2};
+    if (gu_mode.rfind("v3:", 0) == 0 && gu_mode != "v3:auto") v3_tile(gu_mode, gu3);
+    else if (gu_mode == "v3:auto") { gu3[0] = 16; gu3[1] = 32; gu3[2] = 32; gu3[3] = 4; }
+    auto tl3 = [](const int* t) { return std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]) + "_" + std::to_string(t[3]); };
+    auto gu3_for = [&](int type) -> std::string {
+        if (gu_mode == "v3:auto" && type != ref::Q2_0) return "16_16_32_8";
+        return tl3(gu3);
+    };
+    if (dn_mode.rfind("v3:", 0) == 0) v3_tile(dn_mode, dn3);
+    const bool gu_v3 = gu_mode.rfind("v3:", 0) == 0, dn_v3 = dn_mode.rfind("v3:", 0) == 0;
     const char* gdn_env = std::getenv("PC_GDN");
     const std::string gdn_mode = gdn_env ? gdn_env : "scanr_4";
     mtl::Buffer qfull = F32(MT * 12288), kcur = F32(MT * 512), vcur = F32(MT * 512), iqr = F32(MT * 512), ikr = F32(MT * 128),
-                qcur = F32(MT * 24 * 256), qidx = F32(MT * 4 * 128), scores = F32(MT * MB), qids = cx.alloc(4 * MT * QB),
+                qcur = F32(MT * 24 * 256), qcurh = F16(MT * 24 * 256), qidx = F32(MT * 4 * 128), scores = F32(MT * MB), qids = cx.alloc(4 * MT * QB),
                 part = F32(MT * QCHUNKS * 24 * 258), XQ = F32(4 * MT * 6144 + MT * 384), xqh = F16(MT * 6144);
     mtl::Buffer logits = F32(MT * NEXP), ids = cx.alloc(4 * MT * TOPK), wts = F32(MT * TOPK),
                 bcnt = cx.alloc(4 * (size_t)nblk_max * NEXP), boff = cx.alloc(4 * (size_t)nblk_max * NEXP), eoff = cx.alloc(4 * NEXP),
@@ -177,8 +196,8 @@ int main(int argc, char** argv) {
             ref::dequant(te.type, (const uint8_t*)f.map + te.offset + id * rb, E.data() + t * N, N);
         }
     }
-    meta.as<uint32_t>()[2] = NFF / 64;
-    meta.as<uint32_t>()[5] = N / 64;
+    meta.as<uint32_t>()[2] = gu_v3 ? NFF / (gu3[1] * gu3[3]) : NFF / 64;
+    meta.as<uint32_t>()[5] = dn_v3 ? N / (dn3[1] * dn3[3]) : N / 64;
 
     // ---- the chunk's dispatches
     std::vector<mtl::Dispatch> ds;
@@ -338,6 +357,13 @@ int main(int argc, char** argv) {
                     // within the budget the selection is the identity: qsa_topk only writes 0..n_kv-1
                     D(P(lqsa, "qsa_topk"), {mtl::Arg::B(scores), mtl::Arg::B(qids), mtl::Arg::V(a)}, T, 1, 1024, "qsa sel");
                 }
+                if (qsa_mode == "mm") {
+                    const uint32_t nq = (uint32_t)T * 24 * 256;
+                    D(P(lqsa, "qsa_q_f16"), {mtl::Arg::B(qcur), mtl::Arg::B(qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256, "qsa attn");
+                    D(P(lqsa, "qsa_attn_mm"), {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
+                                               mtl::Arg::B(vsc[qi]), mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)},
+                      QCHUNKS, 2, 32, "qsa attn", T);
+                } else
                 D(P(lqsa, "qsa_attn"), {mtl::Arg::B(qcur), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
                                         mtl::Arg::B(vsc[qi]), mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)},
                   QCHUNKS, 2, 256, "qsa attn", T);
@@ -385,16 +411,18 @@ int main(int argc, char** argv) {
             g.ind_off = 8 * 4;
             push(g, "experts");
             mtl::Dispatch gu;
-            gu.p = P(lib, "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2", mtl::Constants().i(5, 0));
+            gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type))
+                         : P(lib, "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2", mtl::Constants().i(5, 0));
             gu.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            gu.tg[0] = 64;
+            gu.tg[0] = gu_v3 ? (gu_mode == "v3:auto" && eg.type != ref::Q2_0 ? 256 : 32 * gu3[3]) : 64;
             gu.indirect = &meta;
             gu.ind_off = 2 * 4;
             push(gu, "experts gu");
             mtl::Dispatch dn;
-            dn.p = P(lib, "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2"));
+            dn.p = dn_v3 ? P(lib, "mm_down3_" + std::to_string(ed.type) + "_" + tl3(dn3))
+                         : P(lib, "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2"));
             dn.args = {mtl::Arg::B(W), mtl::Arg::B(HS), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            dn.tg[0] = 64;
+            dn.tg[0] = dn_v3 ? 32 * dn3[3] : 64;
             dn.indirect = &meta;
             dn.ind_off = 5 * 4;
             push(dn, "experts dn");
