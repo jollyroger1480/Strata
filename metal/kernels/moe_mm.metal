@@ -591,6 +591,18 @@ template <> struct W8<T_IQ3_S> {
         const uint i1 = hh ? (uint(bl[2 + 8 * ib + 2 * l1 + 1]) | ((qh << (7 - 2 * l1)) & 256))
                            : (uint(bl[2 + 8 * ib + 2 * l1]) | ((qh << (8 - 2 * l1)) & 256));
         const uint s0 = bl[74 + 4 * ib + l], s1 = bl[74 + 4 * ib + l1];
+        if (mm_probe == 7) {
+            // bench probe: a repacked layout's cost - one aligned 16-byte load a lane a row a 32-group holding every
+            // field the lane needs (wrong values: the bytes come from an arbitrary aligned spot of the row)
+            const uint4 r = *(device const uint4*)((ulong(row) + ulong(k >> 5) * 16) & ~ulong(15));
+            const uint qhv = r.z & 0xFF, scv = (r.z >> 8) & 0xFF;
+            const float scr = float(as_type<half>(ushort(r.w & 0xFFFF))) * float(1 + 2 * ((scv >> (4 * (ib & 1))) & 15));
+            const uint j0 = ((r.x >> (8 * (l & 1))) & 0xFF) | ((qhv << (8 - 2 * l)) & 256);
+            const uint j1 = ((r.x >> (16 + 8 * (l & 1))) & 0xFF) | ((qhv << (7 - 2 * l)) & 256);
+            a = w4_signed(tab[j0], (r.y >> (8 * hh)) & 0xFF, scr);
+            b = w4_signed(tab[j1], (r.y >> (16 + 8 * hh)) & 0xFF, scr);
+            return;
+        }
         if (mm_probe == 5) {   // bench probe: the loads and the scale, no grid lookup / sign math (wrong values)
             a = half4(half(float(i0 ^ s0) * sc));
             b = half4(half(float(i1 ^ s1) * sc));
