@@ -166,17 +166,36 @@ def source_ok(src: Path) -> bool:
         and (Path(src) / "ggml" / "CMakeLists.txt").is_file()
 
 
+NATIVE_DIR = Path(__file__).resolve().parent / "sdcpp_native"
+NATIVE_BACKENDS = ("cuda", "hip")      # where the native DiT runner (I2) is built in
+
+
+def native_hash() -> str:
+    """A fingerprint of the native runner's sources (a change compiles sd-cli again)."""
+    import hashlib
+    h = hashlib.sha256()
+    for f in sorted(NATIVE_DIR.glob("*")):
+        if f.is_file() and f.suffix in (".cu", ".hpp", ".py"):
+            h.update(f.name.encode() + b"\0" + f.read_bytes().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:16]
+
+
 def build_stamp(backend: str, arch) -> dict:
-    return {"sd_cpp": SD_CPP_COMMIT, "ggml": SD_GGML_COMMIT, "backend": backend, "arch": str(arch or "")}
+    stamp = {"sd_cpp": SD_CPP_COMMIT, "ggml": SD_GGML_COMMIT, "backend": backend, "arch": str(arch or "")}
+    if backend in NATIVE_BACKENDS:
+        stamp["native"] = native_hash()
+    return stamp
 
 
 def image_config(backend: str, quant: str, exe: Path, models_dir: Path, *, uma: bool = False, gpu=None,
-                 lib_dirs=(), policy: str = "auto") -> dict:
+                 lib_dirs=(), policy: str = "auto", native: bool = False) -> dict:
     """The run config's "images" section (serve/images.py reads it)."""
     cfg = {"model_name": "qwen-image-2.1-turbo", "exe": str(exe), "backend": backend, "quant": quant,
            "diffusion_model": str(local_path(models_dir, quant)), "vae": str(local_path(models_dir, "vae")),
            "llm": str(local_path(models_dir, "llm")), "args": default_args(backend), "gpu_policy": policy,
            "uma": bool(uma), "sd_cpp": SD_CPP_COMMIT[:7]}
+    if backend in NATIVE_BACKENDS:
+        cfg["native"] = bool(native)       # Strata's DiT runner (--model-args qwen_image_2_1_native=1)
     if gpu is not None:
         cfg["gpu"] = gpu
     if lib_dirs:

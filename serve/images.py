@@ -20,7 +20,8 @@ The config's "images" section (written by setup --images, tools/image/install.py
   {"exe": "engine-image/sd-cli", "backend": "vulkan", "diffusion_model": "...Q8_0.gguf", "vae": "...",
    "llm": "...Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf", "quant": "Q8_0", "args": ["--diffusion-fa"],
    "gpu_policy": "auto", "reload": "lazy"|"eager", "max_n": 4, "max_side": 2048, "timeout_s": 3600,
-   "lib_dirs": [...], "uma": false, "need_mib": null, "out_dir": null, "keep_files": 64}
+   "lib_dirs": [...], "uma": false, "need_mib": null, "out_dir": null, "keep_files": 64,
+   "native": false}   (native: Strata's own DiT runner, tools/image/sdcpp_native; CUDA / HIP builds)
 """
 from __future__ import annotations
 
@@ -122,6 +123,8 @@ def sd_cli_args(cfg: dict, job: dict, out_pattern: str) -> list[str]:
         cmd += ["-b", str(job["n"])]
     cmd += ["-o", out_pattern]
     cmd += [str(a) for a in (cfg.get("args") or [])]
+    if cfg.get("native") is True:                   # Strata's DiT runner inside sd-cli (CUDA / HIP builds)
+        cmd += ["--model-args", "qwen_image_2_1_native=1"]
     return cmd
 
 
