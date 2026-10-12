@@ -28,6 +28,9 @@ uint16_t f32_to_bf16(float f);   // round to nearest even
 // Dequantizes `n` elements (a whole number of blocks) of type t.
 void dequant(int t, const void* src, float* dst, size_t n);
 
+// ggml's quantize_row_q8_0_ref: per 32 values d = max|x| / 127 (stored fp16), q = roundf(x * (1 / d)).
+void quantize_q8_0(const float* x, size_t n, uint8_t* out);
+
 // Fills `bytes` with random valid blocks of type t for a matrix of rows x cols: random codes, block scales drawn so
 // that the weights have roughly unit-free magnitude `scale` (the d fields are finite FP16).
 void random_blocks(int t, uint8_t* dst, int rows, int cols, uint64_t seed, float scale = 0.02f);

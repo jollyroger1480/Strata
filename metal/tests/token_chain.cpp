@@ -27,6 +27,7 @@ constexpr int P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE, P_IGU = 4, P_IDN = 8;
 struct GemvArgs { uint32_t n_in, n_out, n_tok, row_bytes, x_stride, y_stride; };
 struct GrArgs { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; };
+struct GrArgs3 { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; uint32_t rb_down, rb_up; };
 struct MoeArgs {
     uint64_t gate_off, up_off, down_off, gu_stride, d_stride;
     uint32_t gu_row, d_row, n_embd, n_ff, n_tok, topk, n_expert, gx_gu, gx_dn, pad;
@@ -59,6 +60,7 @@ int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: token_chain <shard-1.gguf> [--ntok N] [--ctx P] [--reps R]\n"); return 2; }
     int ntok = 1, ctx = 1000, reps = 10;
     bool skip_qsa = false, graph = false;
+    std::string hc_mode = "3";   // 3: BF16, 3 dispatches; 2: BF16, 2 dispatches; q8: Q8_0 copies, 2 dispatches
     std::string only;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -67,6 +69,7 @@ int main(int argc, char** argv) {
         else if (a == "--reps") reps = std::atoi(argv[++i]);
         else if (a == "--skip-qsa") skip_qsa = true;
         else if (a == "--graph") graph = true;
+        else if (a == "--hc") hc_mode = argv[++i];
         else if (a == "--only") only = argv[++i];
     }
     gguf::File f;
@@ -90,7 +93,7 @@ int main(int argc, char** argv) {
         return *t;
     };
 
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "glue.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal"});
     const int lgdn = cx.compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lqsa = cx.compile({"qsa.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -196,8 +199,72 @@ int main(int argc, char** argv) {
     const mtl::Pipeline* pam1 = Pn(lsmp, "argmax_part", "argmax_part", {});
     const mtl::Pipeline* pam2 = Pn(lsmp, "argmax_final", "argmax_final", {});
 
+    // the 2-dispatch read: residual and partial-dot ping-pong buffers, rs; the Q8_0 copies of the HC matrices
+    mtl::Buffer Rb[2] = {R, cx.alloc(4 * MAXT * HC * N)}, Db[2] = {cx.alloc(4 * MAXT * (LR + HC) * HC), cx.alloc(4 * MAXT * (LR + HC) * HC)},
+                rsb = cx.alloc(4 * MAXT * HC);
+    int cur_r = 0, cur_d = 0;
+    std::map<std::string, size_t> q8off;
+    mtl::Buffer Q8;
+    if (hc_mode == "q8") {
+        size_t tot = 0;
+        for (const auto& kv : f.tensors) {
+            const gguf::Tensor& t = kv.second;
+            if (t.type != ref::BF16 || t.name.find("hc_") == std::string::npos || t.name.find("_norm") != std::string::npos) continue;
+            uint64_t ne = 1;
+            for (uint64_t d : t.shape) ne *= d;
+            q8off[t.name] = tot;
+            tot += ne / 32 * 34;
+        }
+        Q8 = cx.alloc((tot + 4095) / 4096 * 4096);
+        const double t0 = mtl::now_s();
+        std::vector<float> tmp;
+        for (const auto& kv : q8off) {
+            const gguf::Tensor& t = *f.find(kv.first);
+            uint64_t ne = 1;
+            for (uint64_t d : t.shape) ne *= d;
+            tmp.resize(ne);
+            ref::dequant(ref::BF16, (const uint8_t*)f.map + t.offset, tmp.data(), ne);
+            ref::quantize_q8_0(tmp.data(), ne, Q8.as<uint8_t>() + kv.second);
+        }
+        std::printf("HC Q8_0 copies: %zu tensors, %.1f MB, quantized in %.1f s\n", q8off.size(), tot / 1e6, mtl::now_s() - t0);
+    }
     int cur_inj = 0;
     auto gr_read = [&](const std::string& pre, bool apply, const Act& out, bool final_) {
+        if (hc_mode != "3") {
+            const bool q8 = hc_mode == "q8";
+            const gguf::Tensor& tn = T(pre + "_norm.weight");
+            const gguf::Tensor& tdn = T(pre + "_down.weight");
+            const gguf::Tensor& tup = T(pre + "_up.weight");
+            const gguf::Tensor& tin = final_ ? tdn : T(pre + "_inject.weight");
+            const int tt = std::min(ntok, 3);
+            const std::string dn = std::string("gr_down3_") + (q8 ? "8_" : "30_") + std::to_string(tt) + "_2";
+            const std::string up = std::string("gr_up3_") + (q8 ? "8" : "30");
+            GrArgs3 a{N, HC, LR, MAXT, apply ? 1u : 0u, 1e-6f, (uint32_t)(q8 ? HC * N / 32 * 34 : HC * N * 2),
+                      (uint32_t)(q8 ? LR / 32 * 34 : LR * 2)};
+            const mtl::Buffer& WB = q8 ? Q8 : W;
+            const size_t od = q8 ? q8off.at(tdn.name) : tdn.offset, oi = q8 ? q8off.at(tin.name) : tin.offset,
+                         ou = q8 ? q8off.at(tup.name) : tup.offset;
+            mtl::Dispatch d;
+            d.p = Pn(lib, dn, dn + "#" + std::to_string(ntok), mtl::Constants().i(1, ntok));
+            d.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(Rb[cur_r]), mtl::Arg::B(Rb[1 - cur_r]),
+                      mtl::Arg::B(bo), mtl::Arg::B(Db[cur_d]), mtl::Arg::B(W, tn.offset), mtl::Arg::B(Db[1 - cur_d]),
+                      mtl::Arg::B(rsb), mtl::Arg::V(a)};
+            d.grid[0] = (LR + HC + 15) / 16;
+            d.grid[1] = HC;
+            d.tg[0] = 256;
+            const double wb = q8 ? (tdn.bytes + (final_ ? 0 : tin.bytes)) * 34.0 / 64.0 : (double)tdn.bytes + (final_ ? 0 : tin.bytes);
+            push(d, "hc", wb);
+            cur_r = 1 - cur_r;
+            cur_d = 1 - cur_d;
+            mtl::Dispatch u;
+            u.p = Pn(lib, up, up + "#" + std::to_string(ntok), mtl::Constants().i(1, ntok));
+            u.args = {mtl::Arg::B(WB, ou), mtl::Arg::B(Db[cur_d]), mtl::Arg::B(Rb[cur_r]), mtl::Arg::B(out.b), mtl::Arg::V(a),
+                      mtl::Arg::B(W, tn.offset), mtl::Arg::B(rsb)};
+            u.grid[0] = N / 16;
+            u.tg[0] = 256;
+            push(u, "hc", q8 ? tup.bytes * 34.0 / 64.0 : (double)tup.bytes);
+            return;
+        }
         const gguf::Tensor& tn = T(pre + "_norm.weight");
         const gguf::Tensor& tdn = T(pre + "_down.weight");
         const gguf::Tensor& tup = T(pre + "_up.weight");
@@ -433,6 +500,7 @@ int main(int argc, char** argv) {
     while (mtl::now_s() - tw < 1.0) run();
     std::vector<double> t;
     for (int i = 0; i < reps; ++i) t.push_back(run());
+    std::printf("HC read: %s\n", hc_mode == "3" ? "BF16, 3 dispatches" : hc_mode == "2" ? "BF16, 2 dispatches" : "Q8_0, 2 dispatches");
     std::printf("encoding: %s\n", graph ? "concurrent encoder, barriers at dependencies" : "serial encoder");
     const double m = median(t);
     std::printf("decode step (%d token(s)): GPU %.3f ms  (min %.3f, max %.3f)  -> %.1f GB/s effective; %.1f tok/s if "

@@ -3,6 +3,7 @@
 // 32-blocks from Strata's include/strata/artifact/dequant.hpp (themselves transcribed from the same commit).
 #include "ref_quant.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -376,6 +377,19 @@ void dequant(int t, const void* src, float* dst, size_t n) {
     if (t == BF16) { for (size_t i = 0; i < n; ++i) dst[i] = bf16_to_f32(rd16(s + 2 * i)); return; }
     const int be = block_elems(t), bb = block_bytes(t);
     for (size_t i = 0; i < n / be; ++i) deq_block(t, s + i * bb, dst + i * be);
+}
+
+void quantize_q8_0(const float* x, size_t n, uint8_t* out) {
+    for (size_t b = 0; b < n / 32; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < 32; ++j) amax = std::max(amax, std::fabs(x[b * 32 + j]));
+        const float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+        const uint16_t h = f32_to_f16(d);
+        uint8_t* o = out + b * 34;
+        o[0] = (uint8_t)h;
+        o[1] = (uint8_t)(h >> 8);
+        for (int j = 0; j < 32; ++j) o[2 + j] = (uint8_t)(int8_t)std::roundf(x[b * 32 + j] * id);
+    }
 }
 
 static void put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
