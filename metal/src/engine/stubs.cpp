@@ -178,7 +178,6 @@ namespace strata::kernels::cpu { void s2_expert_down_rows_multi(const uint8_t * 
 namespace strata::kernels::cpu { void s2_expert_gu_rows(const uint8_t * p0, const ActQ & p1, float * p2, int p3, int p4) { strata::metal_engine::missing("strata::kernels::cpu::s2_expert_gu_rows"); } }
 namespace strata::kernels::cpu { void s2_expert_gu_rows_multi(const uint8_t * p0, const ActQ *const * p1, int p2, float *const * p3, int p4, int p5) { strata::metal_engine::missing("strata::kernels::cpu::s2_expert_gu_rows_multi"); } }
 namespace strata::kernels::cpu { void s2_expert_vnni_q(const uint8_t * p0, const ActQ & p1, float * p2, ExpertScratch & p3) { strata::metal_engine::missing("strata::kernels::cpu::s2_expert_vnni_q"); } }
-namespace strata::kernels { const Cvec & cvec() { strata::metal_engine::missing("strata::kernels::cvec"); static std::remove_cv_t<std::remove_reference_t<const Cvec &>> s{}; return s; } }
 namespace strata::kernels { void cvec_apply(float * p0, int64_t p1, int64_t p2, int64_t p3, const float * p4, int64_t p5, const float * p6, int64_t p7, bool p8, void * p9) { strata::metal_engine::missing("strata::kernels::cvec_apply"); } }
 namespace strata::kernels { bool cvec_replicate(std::string & p0) { strata::metal_engine::missing("strata::kernels::cvec_replicate"); return {}; } }
 namespace strata::kernels { void cvec_set_enabled(bool p0) { strata::metal_engine::missing("strata::kernels::cvec_set_enabled"); } }
