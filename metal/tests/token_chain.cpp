@@ -426,10 +426,13 @@ int main(int argc, char** argv) {
             a.n_tok = ntok;
             a.topk = TOPK;
             a.n_expert = NEXP;
-            a.gx_gu = NFF / 4;   // gu tile 32,1,4: 4 rows per threadgroup
+            // tiles (lanes per row, rows per lane, simdgroups): CHAIN_GU / CHAIN_DN / CHAIN_DN4 override
             const bool dq2 = td.type == ref::Q2_0;
-            const int dn_rpt = dq2 ? 4 * (32 / 8) * 2 : 4 * (32 / 4) * 2;   // tiles 8,2,4 and 4,2,4
-            a.gx_dn = N / dn_rpt;
+            int gl = 32, gr = 1, gs = 4, dl = dq2 ? 8 : 4, dr = dq2 ? 1 : 2, ds_ = 4;
+            if (const char* e = std::getenv("CHAIN_GU")) std::sscanf(e, "%d,%d,%d", &gl, &gr, &gs);
+            if (const char* e = std::getenv(dq2 ? "CHAIN_DN" : "CHAIN_DN4")) std::sscanf(e, "%d,%d,%d", &dl, &dr, &ds_);
+            a.gx_gu = NFF / (gs * (32 / gl) * gr);
+            a.gx_dn = N / (ds_ * (32 / dl) * dr);
             mtl::Dispatch r;
             r.p = proute;
             r.args = {mtl::Arg::B(logits), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::B(plan), mtl::Arg::V(a)};
@@ -446,13 +449,15 @@ int main(int argc, char** argv) {
                 nb = true;
                 push(d, "shared", 0);
             }
-            const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_32_1_4";
-            const std::string dnn = dq2 ? "moe_down_142_8_2_4" : "moe_down_" + std::to_string(td.type) + "_4_2_4";
+            const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" +
+                                    std::to_string(gr) + "_" + std::to_string(gs);
+            const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
+                                    std::to_string(dr) + "_" + std::to_string(ds_);
             mtl::Dispatch g;
             g.p = Pn(lib, gun, gun, {});
             g.args = {mtl::Arg::B(W), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h), mtl::Arg::B(plan),
                       mtl::Arg::V(a), mtl::Arg::B(XF.b, XF.plane_bytes() * 4)};
-            g.tg[0] = 128;
+            g.tg[0] = 32 * gs;
             g.indirect = &plan;
             g.ind_off = P_IGU * 4;
             push(g, "experts", 10.0 * ntok * 2 * a.gu_stride);
@@ -461,7 +466,7 @@ int main(int argc, char** argv) {
             mtl::Dispatch dd;
             dd.p = Pn(lib, dnn, dnn, {});
             dd.args = {mtl::Arg::B(W), mtl::Arg::B(h), mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::V(a), mtl::Arg::B(h)};
-            dd.tg[0] = 128;
+            dd.tg[0] = 32 * ds_;
             dd.indirect = &plan;
             dd.ind_off = P_IDN * 4;
             push(dd, "experts", 10.0 * ntok * a.d_stride);

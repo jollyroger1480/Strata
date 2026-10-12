@@ -25,7 +25,8 @@ struct GdnArgs {
                      // `plane` floats between planes) and the other planes and the per-16 sums are written too
 };
 
-kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buffer(1)]],
+template <int IB>
+kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[buffer(1)]],
                      device const float* qkv [[buffer(2)]], device const float* alpha [[buffer(3)]],
                      device const float* beta [[buffer(4)]], device const float* z [[buffer(5)]],
                      device const float* conv_w [[buffer(6)]], device const float* dt [[buffer(7)]],
@@ -36,13 +37,14 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     constexpr int S = 128;
     threadgroup float qs[S], ks[S], vs[S];
-    threadgroup float red[4][S];
-    threadgroup float part[16];
+    constexpr int RPT = S / IB;   // state rows per thread
+    threadgroup float red[IB][S];
+    threadgroup float part[32];
     threadgroup float gb[2];
     threadgroup float ys[S];
     const int h = int(tg.x), hk = h % int(a.h_k), hv = int(a.h_v);
     const int cb = sg & 3, ib = sg >> 2;
-    const int j = 32 * cb + lane, i0 = 32 * ib;
+    const int j = 32 * cb + lane, i0 = RPT * ib;
     const float scale = 1.0f / sqrt(float(S));
 
     // the channel this thread convolves: 0..127 q of head hk, 128..255 k of head hk, 256..383 v of head h
@@ -55,8 +57,8 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
         for (int k = 0; k < 3; ++k) hst[k] = hist[ch * 3 + k];
         for (int k = 0; k < 4; ++k) cw[k] = conv_w[ch * 4 + k];
     }
-    float st[32];
-    for (int r = 0; r < 32; ++r) st[r] = state[((i0 + r) * hv + h) * S + j];
+    float st[RPT];
+    for (int r = 0; r < RPT; ++r) st[r] = state[((i0 + r) * hv + h) * S + j];
 
     for (int t = 0; t < GDN_NTOK; ++t) {
         // conv + SiLU
@@ -98,13 +100,14 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
         const float g = gb[0], be = gb[1];
         // kv_j
         float kv = 0.0f;
-        for (int r = 0; r < 32; ++r) kv = fma(st[r], ks[i0 + r], kv);
+        for (int r = 0; r < RPT; ++r) kv = fma(st[r], ks[i0 + r], kv);
         red[ib][j] = kv;
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        kv = (red[0][j] + red[1][j]) + (red[2][j] + red[3][j]);
+        kv = 0.0f;
+        for (int k = 0; k < IB; ++k) kv += red[k][j];
         const float delta = (vs[j] - g * kv) * be;
         float o = 0.0f;
-        for (int r = 0; r < 32; ++r) {
+        for (int r = 0; r < RPT; ++r) {
             st[r] = fma(g, st[r], ks[i0 + r] * delta);
             o = fma(st[r], qs[i0 + r], o);
         }
@@ -112,7 +115,9 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
         red[ib][j] = o;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // the readout and the output norm: column j's o (every i-block thread of the column holds the same value)
-        o = ((red[0][j] + red[1][j]) + (red[2][j] + red[3][j])) * scale;
+        o = 0.0f;
+        for (int k = 0; k < IB; ++k) o += red[k][j];
+        o = o * scale;
         const float osq = ib == 0 ? simd_sum(o * o) : 0.0f;
         if (ib == 0 && lane == 0) part[cb] = osq;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -142,7 +147,7 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
         }
     }
     if (a.commit) {
-        for (int r = 0; r < 32; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
+        for (int r = 0; r < RPT; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
         // q/k history: the threadgroups h < h_k own their q/k head (h == hk); v history: every head its own
         // to hist_out, NOT in place: a q/k channel is read by the three threadgroups h % h_k at their start, and
         // a threadgroup may start after its owner has finished (seen on the 10-core M4); the caller swaps the two
@@ -150,3 +155,6 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
             for (int k = 0; k < 3; ++k) hist_out[ch * 3 + k] = hst[k];
     }
 }
+
+template [[host_name("gdn_step")]] kernel decltype(gdn_step_t<4>) gdn_step_t<4>;
+template [[host_name("gdn_step8")]] kernel decltype(gdn_step_t<8>) gdn_step_t<8>;

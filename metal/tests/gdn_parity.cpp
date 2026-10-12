@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
                   mtl::Arg::B(al), mtl::Arg::B(be), mtl::Arg::B(z), mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa),
                   mtl::Arg::B(gm), mtl::Arg::B(out), mtl::Arg::V(a), mtl::Arg::B(hist2, 4 * (size_t)C * 3 * layer)};
         d.grid[0] = HV;
-        d.tg[0] = 512;
+        d.tg[0] = std::getenv("GDN_IB8") ? 1024 : 512;
         return d;
     };
     {
@@ -68,7 +68,8 @@ int main(int argc, char** argv) {
     }
     if (bench) {
         for (int nt : {1, 2, 3, 4}) {
-            mtl::Pipeline p = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, nt));
+            const char* kn = std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step";
+            mtl::Pipeline p = cx.pipeline(lib, kn, mtl::Constants().i(2, nt));
             for (int commit : {1, 0}) {
                 std::vector<mtl::Dispatch> ds;
                 for (int k = 0; k < 72; ++k) ds.push_back(disp(p, k % LAYERS, commit, y));
@@ -84,7 +85,7 @@ int main(int argc, char** argv) {
     }
     int fails = 0;
     for (int nt = 1; nt <= 4; ++nt) {
-        mtl::Pipeline p = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, nt));
+        mtl::Pipeline p = cx.pipeline(lib, std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step", mtl::Constants().i(2, nt));
         // determinism: the same verify call three times
         {
             std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
@@ -163,7 +164,7 @@ int main(int argc, char** argv) {
         // fold property: a window of nt + 1 tokens (no commit) gives bitwise the same first nt outputs
         bool prefix = true;
         if (nt < 4) {
-            mtl::Pipeline p2 = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, nt + 1));
+            mtl::Pipeline p2 = cx.pipeline(lib, std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step", mtl::Constants().i(2, nt + 1));
             std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
             std::memcpy(hist.ptr, h0.ptr, 4 * C * 3);
             cx.run({disp(p2, 0, 0, y2)});
