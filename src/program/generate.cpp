@@ -8354,7 +8354,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: STRATA_ADAPT_OVERLAP=1 is off: %s\n", aov_why);
         } else
             std::fprintf(stderr, "strata serve: adaptive overlap: off%s%s\n",
-                         aov_why ? ": " : " (STRATA_ADAPT_OVERLAP=1 turns it on)", aov_why);
+                         aov_why ? ": " : " (STRATA_ADAPT_OVERLAP=1 turns it on)", aov_why ? aov_why : "");
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
         auto res_upload = [&]() {
             if (d_res != nullptr)
