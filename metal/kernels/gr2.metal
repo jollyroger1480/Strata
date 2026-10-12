@@ -301,3 +301,41 @@ kernel void gr_down3b(device const uchar* w_down [[buffer(0)]], device const uch
 }
 #define GD3B(T, R) template [[host_name("gr_down3b_" #T "_" #R)]] kernel decltype(gr_down3b<T, R>) gr_down3b<T, R>;
 GD3B(1, 1) GD3B(2, 1) GD3B(3, 1) GD3B(1, 2) GD3B(2, 2) GD3B(3, 2)
+
+// gr_norm_comb: gr_norm (gr.metal) with the sublayer output bo formed on the fly as the MoE combine - bo[t][d] =
+// sum_k ye[entry(t, k)][d] (k in order) + sigmoid(sg[t]) * ysh[t][d], moe_combine_sh's arithmetic - so the combine's
+// dispatch goes away; R', xn bitwise gr_norm's after moe_combine_sh.  One threadgroup per (stream c, token t).
+kernel void gr_norm_comb(device float* R [[buffer(0)]], device const float* ye [[buffer(1)]],
+                         device const float* inj [[buffer(2)]], device const float* w_norm [[buffer(3)]],
+                         device float* xn [[buffer(4)]], constant GrArgs& a [[buffer(5)]],
+                         device const int* plan [[buffer(6)]], device const float* ysh [[buffer(7)]],
+                         device const float* sgv [[buffer(8)]], constant uint& topk [[buffer(9)]],
+                         uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+                         ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float part[8];
+    const uint c = tg.x, t = tg.y, n = a.n_embd;
+    device float* r = R + (t * a.hc + c) * n;
+    const float g = a.apply ? 2.0f / (1.0f + exp(-inj[t * a.hc + c] / float(a.hc))) : 0.0f;
+    const float gs = 1.0f / (1.0f + exp(-sgv[t]));
+    float ss = 0.0f;
+    for (uint d = tid; d < n; d += 256) {
+        float v = r[d];
+        if (a.apply) {
+            float s = 0.0f;
+            for (uint j = 0; j < topk; ++j) s += ye[plan[P_TOKENT + t * topk + j] * int(n) + d];
+            const float bo = fma(gs, ysh[t * n + d], s);
+            v = fma(bo, g, v);
+            r[d] = v;
+        }
+        ss = fma(v, v, ss);
+    }
+    ss = simd_sum(ss);
+    if (lane == 0) part[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (int i = 0; i < 8; ++i) tot += part[i];
+    const float rs = rsqrt(tot / float(n) + a.eps);
+    device float* o = xn + (t * a.hc + c) * n;
+    device const float* w = w_norm + c * n;
+    for (uint d = tid; d < n; d += 256) o[d] = r[d] * w[d] * rs;
+}

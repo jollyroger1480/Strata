@@ -227,8 +227,15 @@ template <> struct Dec<T_Q3_K> {
     static inline void run(device const uchar* row, int u, thread float* q, thread float4& sc, threadgroup const uint*) {
         device const uchar* b = row + (u >> 3) * 110;
         const int n = (u >> 2) & 1, j = u & 3;
-        device const ushort* qq = (device const ushort*)(b + 32 + 32 * n);
-        device const ushort* hm = (device const ushort*)b;
+        // qs and hmask as packed (2-byte aligned) vectors: blocks are 110 bytes, so odd blocks are only 2-aligned
+        device const packed_ushort4* qv = (device const packed_ushort4*)(b + 32 + 32 * n);
+        device const packed_ushort4* hv = (device const packed_ushort4*)b;
+        ushort qq[16], hm[16];
+        for (int v = 0; v < 4; ++v) {
+            const ushort4 a4 = ushort4(qv[v]), h4 = ushort4(hv[v]);
+            qq[4 * v] = a4.x; qq[4 * v + 1] = a4.y; qq[4 * v + 2] = a4.z; qq[4 * v + 3] = a4.w;
+            hm[4 * v] = h4.x; hm[4 * v + 1] = h4.y; hm[4 * v + 2] = h4.z; hm[4 * v + 3] = h4.w;
+        }
         device const uchar* s = b + 96;
         const int i1 = 8 * n + 2 * j, i2 = i1 + 1;
         const int l1 = (i1 < 8 ? s[i1] & 0xF : s[i1 - 8] >> 4) | (((s[8 + (i1 & 3)] >> (2 * (i1 >> 2))) & 3) << 4);

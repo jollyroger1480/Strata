@@ -139,3 +139,53 @@ kernel void gemv_pair(device const uchar* Wg [[buffer(0)]], device const float* 
 GP_ROW(T_IQ3_S) GP_ROW(T_IQ4_XS) GP_ROW(T_Q2_0) GP_ROW(T_Q3_K) GP_ROW(T_Q4_K) GP_ROW(T_Q5_K) GP_ROW(T_Q6_K)
 // Q2_0 with raw activations (the shared expert's down reading the pair's raw h)
 GV_SET(T_Q2_0R)
+
+// gemv_cat: two matrices of the same format and n_in over the same x in one dispatch - rows [0, n_split) are W's
+// (into y), rows [n_split, n_out) are W2's (into y2, from its row 0).  Each row's arithmetic is gemv's (KS = 1), so the
+// outputs are bitwise the two separate GEMVs'.  (GDN's ssm_alpha + ssm_beta: 48 + 48 rows.)
+// Buffers: W, xp, s16, y, args (n_out = both), W2, y2, n_split.
+template <int F, int LPR, int NR, int SG>
+kernel void gemv_cat(device const uchar* W [[buffer(0)]], device const float* xp [[buffer(1)]],
+                     device const float* s16 [[buffer(2)]], device float* y [[buffer(3)]], constant GemvArgs& a [[buffer(4)]],
+                     device const uchar* W2 [[buffer(5)]], device float* y2 [[buffer(6)]], constant uint& n_split [[buffer(7)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int UNIT = fmt<F>::UNIT, RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int li = lane % LPR;
+    const int row0 = int(tg.x) * SG * RG * NR + (sg * RG + lane / LPR) * NR;
+    const int U = int(a.n_in) / UNIT, sp = int(n_split);
+    float acc[NR][8];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) acc[r][t] = 0.0f;
+    device const uchar* rp[NR];
+    for (int r = 0; r < NR; ++r) {
+        const int row = min(row0 + r, int(a.n_out) - 1);
+        rp[r] = row < sp ? W + (ulong)row * a.row_bytes : W2 + (ulong)(row - sp) * a.row_bytes;
+    }
+    const int s16n = int(a.n_in) / 16;
+    for (int u = li; u < U; u += LPR) {
+        float q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec<F>::run(rp[r], u, q[r], sc[r], tab);
+        for (int t = 0; t < NTOK; ++t) {
+            float xs[UNIT], xsum[2];
+            X<F>::load(xp + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+            for (int r = 0; r < NR; ++r) acc[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) {
+            const float v = lane_sum<LPR>(acc[r][t]);
+            const int row = row0 + r;
+            if (li == 0 && row < int(a.n_out)) {
+                if (row < sp) y[t * int(a.y_stride) + row] = v;
+                else y2[t * int(a.y_stride) + row - sp] = v;
+            }
+        }
+}
+#define GVC_(F, L, R, S) template [[host_name("gemvc_" #F "_" #L "_" #R "_" #S)]] kernel decltype(gemv_cat<F, L, R, S>) gemv_cat<F, L, R, S>;
+#define GVC(F, L, R, S) GVC_(F, L, R, S)
+GVC(T_BF16, 32, 1, 4) GVC(T_BF16, 32, 1, 8) GVC(T_BF16, 16, 1, 4) GVC(T_BF16, 32, 2, 4)
