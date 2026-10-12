@@ -62,6 +62,11 @@ int main(int argc, char** argv) {
         }
     }
     const int MAXT = 8;
+    // GR_DOWN=SG_KS selects gr_down's variant (default 8_8: 8 simdgroups split one row)
+    const std::string grd = std::getenv("GR_DOWN") ? std::getenv("GR_DOWN") : "8_8";
+    int grd_sg = 8, grd_ks = 8;
+    std::sscanf(grd.c_str(), "%d_%d", &grd_sg, &grd_ks);
+    const int grd_rs = grd_sg / grd_ks;
     mtl::Buffer R = cx.alloc(4 * MAXT * NIN), R0 = cx.alloc(4 * MAXT * NIN), bo = cx.alloc(4 * MAXT * N),
                 inj = cx.alloc(4 * MAXT * HC), xn = cx.alloc(4 * MAXT * NIN), lo = cx.alloc(4 * MAXT * LR),
                 injo = cx.alloc(4 * MAXT * HC), xp = cx.alloc(4 * (4 * MAXT * N + MAXT * N / 16)),
@@ -73,7 +78,7 @@ int main(int argc, char** argv) {
     int fails = 0;
     for (int nt : ntoks) {
         mtl::Pipeline pn = cx.pipeline(lib, "gr_norm"),
-                      pd = cx.pipeline(lib, q8 ? "gr_down_q8_8_8" : "gr_down_8_8", mtl::Constants().i(1, nt)),
+                      pd = cx.pipeline(lib, std::string(q8 ? "gr_down_q8_" : "gr_down_") + grd, mtl::Constants().i(1, nt)),
                       pu = cx.pipeline(lib, q8 ? "gr_up_q8" : "gr_up", mtl::Constants().i(1, nt));
         for (int apply = 0; apply < 2; ++apply) {
             GrArgs a{N, HC, LR, (uint32_t)nt, (uint32_t)apply, 1e-6f};
@@ -95,8 +100,8 @@ int main(int argc, char** argv) {
                     e.p = &pd;
                     e.args = {mtl::Arg::B(W, o), mtl::Arg::B(W, o + wd_bytes), mtl::Arg::B(xn), mtl::Arg::B(lo),
                               mtl::Arg::B(injo), mtl::Arg::V(a)};
-                    e.grid[0] = LR + HC;   // RS = 1 row per threadgroup (8 simdgroups split it)
-                    e.tg[0] = 256;
+                    e.grid[0] = (LR + HC + grd_rs - 1) / grd_rs;   // RS = SG / KS rows per threadgroup
+                    e.tg[0] = 32 * grd_sg;
                     ds.push_back(e);
                 }
                 if (which & 4) {
