@@ -344,7 +344,7 @@ def main(argv=None) -> int:
     S.ok(f"{model}, context {ctx}")
     fam = S.FAMILIES[a.family]
     tag = fam["tag"] + model
-    need = S.MODELS[model]["download_gb"] + 6
+    need = (0 if a.gguf_dir else S.MODELS[model]["download_gb"]) + 6   # --gguf-dir: the files are there already
     if free < need:
         S.warn(f"about {need:.0f} GB are needed on the disk ({free:.0f} GB free): kept as you chose; it may run out")
 
