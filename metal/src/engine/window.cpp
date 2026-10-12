@@ -112,9 +112,14 @@ private:
     void layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0);
     void ple_cpu(int T);
     // the MTP layer: the input branches + attention HC read + K/V append for `n` rows (srcR rows, host tokens) at
-    // cells cell0..; with `full` (n == 1) the rest of the layer too and the draft head into mlm_/tokout_
+    // cells cell0..; with `full` (n == 1) the rest of the layer too and the draft head into mlm_/tokout_.  The
+    // embedding rows go to memb_ rows erow..; tokens == nullptr: memb_ row erow already holds the embedding (put
+    // there by mtp_embed on the GPU).  `slot`: the dense attention's cell list (one per draft step of a round).
     void mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR, size_t src_off, int n, const int32_t* tokens,
-                    int64_t cell0, bool full);
+                    int64_t cell0, bool full, int erow = 0, int slot = 0);
+    // a draft round's step j on the GPU: the pick and its probability (dout_/dprob_ [j]), and with `embed` the picked
+    // token's embedding into memb_ row 0 (the next step's input)
+    void mtp_pick(std::vector<mtl::Dispatch>& ds, int j, bool embed);
     void gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, mtl::Buffer& Rb, const mtl::Buffer& bo,
                    const mtl::Buffer& inj_in, const mtl::Buffer& inj_out, bool apply, const Act& out, bool final_, int ntok);
     const gguf::Tensor& TM(const std::string& name) const {
@@ -187,6 +192,11 @@ private:
         return it != mq8t_.end() ? it->second : TM(name);
     }
     Act XEn_, XHn_;
+    // the draft round in one command buffer (msl/mtp_chain.metal): STRATA_METAL_MTP_CHAIN=0 runs a command buffer
+    // per step with the host's pick and embedding (as before)
+    int lchain_ = -1;
+    bool chain_ = false;
+    mtl::Buffer dout_, dprob_, posv_, dmap_;
 };
 
 bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1,
@@ -881,6 +891,45 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         }
     }
     mtp_on_ = true;
+    {
+        const int ty = T("token_embd.weight").type;
+        const int ok_types[] = {30, 8, 2, 6, 20, 23, 42, 21, 11, 12, 13, 14, 18};
+        const char* e = std::getenv("STRATA_METAL_MTP_CHAIN");
+        chain_ = !(e && std::string(e) == "0") && std::find(std::begin(ok_types), std::end(ok_types), ty) != std::end(ok_types);
+        if (chain_) {
+            lchain_ = cx_->compile({"quant.metal", "units.metal", std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
+            dout_ = A(4 * MAXT); dprob_ = A(4 * MAXT); posv_ = A(4 * N);
+            for (int i = 0; i < N; ++i) posv_.as<float>()[i] = (float) i;
+            dmap_ = A(4 * std::max<size_t>(1, dvocab_.size()));
+            if (!dvocab_.empty()) std::memcpy(dmap_.as<int32_t>(), dvocab_.data(), 4 * dvocab_.size());
+            // parity: a few tokens' embeddings, GPU vs the host's dequant (the per-step path's)
+            const gguf::Tensor& te = T("token_embd.weight");
+            const size_t rb = ref::row_bytes(te.type, N);
+            const int32_t probe[MAXT] = {0, 1, 271, 760, 6511, 11751, 100000, (int32_t) n_vocab_ - 1};
+            double worst = 0.0;
+            std::vector<float> ref_row(N);
+            for (int k = 0; k < MAXT; ++k) {
+                dout_.as<int32_t>()[0] = probe[k];
+                std::vector<mtl::Dispatch> ds;
+                nb_ = false;
+                mtl::Dispatch d;
+                d.p = P(lchain_, "mtp_embed_" + std::to_string(ty), {}, "mtp_embed_" + std::to_string(ty));
+                struct EmbArgs { uint32_t n, row_bytes, j; } ea{(uint32_t) N, (uint32_t) rb, 0};
+                d.args = {mtl::Arg::B(W_, te.offset), mtl::Arg::B(dout_), mtl::Arg::B(posv_), mtl::Arg::B(memb_), mtl::Arg::V(ea)};
+                d.tg[0] = 256;
+                push(ds, d);
+                cx_->run_graph(ds);
+                ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) probe[k] * rb, ref_row.data(), N);
+                for (int i = 0; i < N; ++i) worst = std::max(worst, (double) std::fabs(ref_row[i] - memb_.as<float>()[i]));
+            }
+            std::fprintf(stderr, "strata metal: MTP draft round in one command buffer (embedding type %d on the GPU: max "
+                                 "|GPU - host| %.3g over %d rows)\n", ty, worst, MAXT);
+            if (worst > 1e-6) {
+                std::fprintf(stderr, "strata metal: the GPU embedding differs from the host's: a command buffer per step\n");
+                chain_ = false;
+            }
+        }
+    }
     std::fprintf(stderr, "strata metal: MTP draft layer from %s (%.2f GB, %zu norms folded), draft head over %s tokens\n",
                  gguf_path.c_str(), fm_.file_bytes / 1e9, mnorm_off_.size(),
                  dvocab_.empty() ? "all" : std::to_string(dvocab_.size()).c_str());
@@ -920,15 +969,17 @@ void Window::gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, m
 }
 
 void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR, size_t src_off, int n, const int32_t* tokens,
-                        int64_t cell0, bool full) {
+                        int64_t cell0, bool full, int erow, int slot) {
     struct RmsArgs { uint32_t n; float eps; };
     struct XpArgs { uint32_t n, n_tok, plane_tok, stride; };
     struct CombArgs { uint32_t n, hc, n_tok, h_stride; };
     // ---- the embedding rows (host tokens: dequantized on the CPU into the shared buffer)
     const gguf::Tensor& te = T("token_embd.weight");
     const size_t rb = ref::row_bytes(te.type, N);
-    for (int i = 0; i < n; ++i)
-        ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[i] * rb, memb_.as<float>() + (size_t) i * N, N);
+    if (tokens)
+        for (int i = 0; i < n; ++i)
+            ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[i] * rb,
+                         memb_.as<float>() + (size_t) (erow + i) * N, N);
     const std::string L = "mtp.layers.0.";
     auto rms = [&](const mtl::Buffer& x, size_t xo, const std::string& w, mtl::Buffer& y, int width, int rows) {
         mtl::Dispatch d;
@@ -967,7 +1018,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         push(ds, d);
     };
     // ---- e = fc_embedding(rms(embed(tok)) * (1 + w)),  h = fc_hidden per stream (rms_10240(R) * (1 + w)),  R = h + e
-    rms(memb_, 0, "mtp.pre_fc_norm_embedding.weight", men_, N, n);
+    rms(memb_, (size_t) erow * N * 4, "mtp.pre_fc_norm_embedding.weight", men_, N, n);
     xp(men_, 0, XEn_, N, n, N);
     gm("mtp.fc_embedding.weight", XEn_, me2_, N, n);
     rms(srcR, src_off, "mtp.pre_fc_norm_hidden.weight", mhn_, HC * N, n);
@@ -1011,13 +1062,13 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     if (!full) return;
     // ---- dense attention over the window of cells up to this one (the draft layer's rule), the output gate, o_proj
     {
-        int* ids = mqids_.as<int>();
+        int* ids = mqids_.as<int>() + (size_t) slot * 2051;
         const int64_t first = std::max<int64_t>(0, cell0 - 2050);
         for (int64_t c = first; c <= cell0; ++c) ids[c - first] = (int) c;
         mtl::Dispatch at;
         at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
         at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(mkq_[0]), mtl::Arg::B(mvq_[0]), mtl::Arg::B(mksc_[0]), mtl::Arg::B(mvsc_[0]),
-                   mtl::Arg::B(mqids_), mtl::Arg::B(part_), mtl::Arg::V(qa)};
+                   mtl::Arg::B(mqids_, (size_t) slot * 2051 * 4), mtl::Arg::B(part_), mtl::Arg::V(qa)};
         at.grid[0] = 33; at.grid[1] = 2; at.grid[2] = 1; at.tg[0] = 256;
         push(ds, at);
         mtl::Dispatch m;
@@ -1127,20 +1178,64 @@ bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, s
     return true;
 }
 
+void Window::mtp_pick(std::vector<mtl::Dispatch>& ds, int j, bool embed) {
+    struct PickArgs { uint32_t nv, j, use_map; };
+    const int64_t nv = dvocab_.empty() ? n_vocab_ : (int64_t) dvocab_.size();
+    mtl::Dispatch d;
+    d.p = P(lchain_, "mtp_pick", {}, "mtp_pick");
+    PickArgs pa{(uint32_t) nv, (uint32_t) j, dvocab_.empty() ? 0u : 1u};
+    d.args = {mtl::Arg::B(mlm_), mtl::Arg::B(tokout_), mtl::Arg::B(dmap_), mtl::Arg::B(dout_), mtl::Arg::B(dprob_),
+              mtl::Arg::V(pa)};
+    d.tg[0] = 1024;
+    push(ds, d);
+    if (!embed) return;
+    const gguf::Tensor& te = T("token_embd.weight");
+    struct EmbArgs { uint32_t n, row_bytes, j; } ea{(uint32_t) N, (uint32_t) ref::row_bytes(te.type, N), (uint32_t) j};
+    mtl::Dispatch e;
+    const std::string fn = "mtp_embed_" + std::to_string(te.type);
+    e.p = P(lchain_, fn, {}, fn);
+    e.args = {mtl::Arg::B(W_, te.offset), mtl::Arg::B(dout_), mtl::Arg::B(posv_), mtl::Arg::B(memb_), mtl::Arg::V(ea)};
+    e.tg[0] = 256;
+    push(ds, e);
+}
+
 // One round (mtp.hpp's draft()): the window's rows 0..a-1 caught up (K/V), then the full layer on row a (draft 0) and
-// on its own output for the next drafts; each step's pick read by the host (its embedding is the next step's input).
+// on its own output for the next drafts.  By default the whole round is one command buffer (the pick, its
+// probability and the next step's embedding on the GPU); STRATA_METAL_MTP_CHAIN=0: a command buffer per step, the
+// host picking and dequantizing.  The embedding rows: the catch-up's at memb_ rows 0..a-1, draft 0's at row a.
 bool Window::mtp_draft(int Tn, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
                        float min_p, int* n_drafts, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
     (void) Tn;
     int n = 0;
     int32_t tok = tokens[a];
+    if (chain_ && max_steps > 0) {
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        if (a > 0) mtp_encode(ds, R_, 0, a, tokens, p, false);
+        mtp_encode(ds, R_, (size_t) a * HC * N * 4, 1, &tok, p + a, true, a, 0);
+        mtp_pick(ds, 0, max_steps > 1);
+        for (int j = 1; j < max_steps; ++j) {
+            mtp_encode(ds, mR_, 0, 1, nullptr, p + a + j, true, 0, j);
+            mtp_pick(ds, j, j + 1 < max_steps);
+        }
+        cx_->run_graph(ds);
+        for (int j = 0; j < max_steps; ++j) {
+            const float pj = dprob_.as<float>()[j];
+            drafts[j] = dout_.as<int32_t>()[j];
+            if (probs) probs[j] = pj;
+            ++n;
+            if (min_p > 0.0f && pj < min_p) break;
+        }
+        if (n_drafts) *n_drafts = n;
+        return true;
+    }
     for (int j = 0; j < max_steps; ++j) {
         std::vector<mtl::Dispatch> ds;
         nb_ = false;
         if (j == 0) {
             if (a > 0) mtp_encode(ds, R_, 0, a, tokens, p, false);
-            mtp_encode(ds, R_, (size_t) a * HC * N * 4, 1, &tok, p + a, true);
+            mtp_encode(ds, R_, (size_t) a * HC * N * 4, 1, &tok, p + a, true, a, 0);
         } else {
             mtp_encode(ds, mR_, 0, 1, &tok, p + a + j, true);
         }
