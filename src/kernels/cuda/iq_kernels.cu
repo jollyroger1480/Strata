@@ -1111,6 +1111,53 @@ __device__ __forceinline__ void row_dot_40_sub8(const uint8_t* row, const block_
     }
 }
 
+// 8-lane sub-warp row dot for K = nb * ipb == 20 (TD == 40, NVFP4 with n_ff == 640): 4 rows per warp (32 rows per
+// 256-thread block).  Bitwise row_dot_multi's tree: warp_sum adds lane i + 16 (terms k and k + 16; lanes 20-31 hold
+// +0) then i + 8, then 4, 2, 1 - so lane t here takes k = t (+ k = t + 16 for t < 4, else + 0) and k = t + 8 (+ 0).
+template<int TY, int NC, bool EXACT_N = false>
+__device__ __forceinline__ void row_dot_20_sub8(const uint8_t* row, const block_q8_1* x, const int (&off)[NC], int n,
+                                                int t, float (&s)[NC]) {
+    using F = Fmt<TY>;
+    using S = Split<TY>;
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s[c] = 0.0f;
+    {
+        const int k = t, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W w = S::load(row, kbx, iqs);
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            if (EXACT_N || c < n) s[c] += S::apply(w, x + off[c] + kbx * (F::qk / 32), iqs);
+    }
+    float s16[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s16[c] = 0.0f;
+    if (t < 4) {
+        const int k = t + 16, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W w = S::load(row, kbx, iqs);
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            if (EXACT_N || c < n) s16[c] += S::apply(w, x + off[c] + kbx * (F::qk / 32), iqs);
+    }
+    float s8[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s8[c] = 0.0f;
+    {
+        const int k = t + 8, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        const typename S::W w = S::load(row, kbx, iqs);
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            if (EXACT_N || c < n) s8[c] += S::apply(w, x + off[c] + kbx * (F::qk / 32), iqs);
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        if (EXACT_N || c < n) {
+            s[c] = __fadd_rn(__fadd_rn(s[c], s16[c]), __fadd_rn(s8[c], 0.0f));
+#pragma unroll
+            for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+        }
+    }
+}
+
 // 16-lane sub-warp row dot for K = nb * ipb == 20 (TD == 42, Q2_0, and TD == 40, NVFP4, with n_ff == 640):
 // 2 rows per warp (16 rows per 256-thread block), bitwise identical addition tree to row_dot_multi.
 template<int TY, int NC, bool EXACT_N = false>
@@ -1438,6 +1485,14 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
     }
 }
 
+// the 8-lane down rows: IQ4_NL's K = 40, NVFP4's K = 20
+template<int TD, int NC, bool EXACT_N = false>
+__device__ __forceinline__ void row_dot_sub8(const uint8_t* row, const block_q8_1* x, const int (&off)[NC], int n, int t,
+                                             float (&s)[NC]) {
+    if constexpr (TD == 40) row_dot_20_sub8<TD, NC, EXACT_N>(row, x, off, n, t, s);
+    else row_dot_40_sub8<TD, NC, EXACT_N>(row, x, off, n, t, s);
+}
+
 // native_down_kernel with the entries taken GRP_NC at a time
 template<int TD, bool SUB_DOWN = true>
 __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned long long* __restrict__ grp_ptr,
@@ -1450,7 +1505,7 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
     if (blockIdx.y >= ng) return;
     __shared__ uint32_t s_hq_buf[GRP_NC * 20 * 9];
     const int nb = (int) (L.n_ff / Fmt<TD>::qk), hb = (int) (L.n_ff / 32);
-    if constexpr (SUB_DOWN && TD == 20) {
+    if constexpr (SUB_DOWN && (TD == 20 || TD == 40)) {   // IQ4_NL (K 40) and NVFP4 (K 20): 8-lane rows
         if (hb == 20) {
             const int r = blockIdx.x * 32 + (threadIdx.x >> 3);
             const int t = threadIdx.x & 7;
@@ -1472,22 +1527,22 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                         if (n == 1) {
                             const int off1[1] = { 0 };
                             float s1[1];
-                            row_dot_40_sub8<TD, 1, true>(wr, s_hq, off1, 1, t, s1);
+                            row_dot_sub8<TD, 1, true>(wr, s_hq, off1, 1, t, s1);
                             if (t == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = s1[0] * sd;
                         } else if (n == 2) {
                             const int off2[2] = { 0, 20 };
                             float s2[2];
-                            row_dot_40_sub8<TD, 2, true>(wr, s_hq, off2, 2, t, s2);
+                            row_dot_sub8<TD, 2, true>(wr, s_hq, off2, 2, t, s2);
                             if (t < 2) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s2[t] * sd;
                         } else if (n == 3) {
                             const int off3[3] = { 0, 20, 40 };
                             float s3[3];
-                            row_dot_40_sub8<TD, 3, true>(wr, s_hq, off3, 3, t, s3);
+                            row_dot_sub8<TD, 3, true>(wr, s_hq, off3, 3, t, s3);
                             if (t < 3) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s3[t] * sd;
                         } else {
                             const int off4[4] = { 0, 20, 40, 60 };
                             float s4[4];
-                            row_dot_40_sub8<TD, 4, true>(wr, s_hq, off4, 4, t, s4);
+                            row_dot_sub8<TD, 4, true>(wr, s_hq, off4, 4, t, s4);
                             if (t < 4) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s4[t] * sd;
                         }
                     }
@@ -1495,7 +1550,7 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
             }
             return;
         }
-    } else if constexpr (SUB_DOWN && (TD == 42 || TD == 40)) {   // Q2_0 and NVFP4: K = 20 calls a row at n_ff 640
+    } else if constexpr (SUB_DOWN && TD == 42) {
         if (hb == 20) {
             const int r = blockIdx.x * 16 + (threadIdx.x >> 4);
             const int t = threadIdx.x & 15;
@@ -3704,7 +3759,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/swiglu");
     }
     if (g_exp_phase == 1) return;
-    const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 || L.d_type == 40 ? 16 : 8)) : 8;
+    const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
     if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
