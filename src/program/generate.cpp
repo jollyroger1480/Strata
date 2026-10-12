@@ -8362,9 +8362,21 @@ int main(int argc, char** argv) {
             const double max_cached = mcs != nullptr && mcs[0] != 0 ? std::atof(mcs) / 100.0 : max_cached_default;
             const bool nearly_all_cached = !host_res.empty() && !all_experts_resident &&
                                            (double) cached_experts >= max_cached * (double) host_res.size();
-            const bool tail_default_ok = tse == nullptr && !all_experts_resident && !nearly_all_cached && o.batch == 0 &&
-                                         decode_defaults_arch_ok() &&
-                                         o.peer_device < 0;
+            // NVFP4 experts (any layer): no default (sergqwer/strata-nvfp4 c83625c3).  On the fork's qwen-nvfp4-gptq pack the
+            // skip moved the answers by teacher-forced KL 0.035 against it off - as much as the GPTQ quantization's own error
+            // against an all-Q8_0 reference (0.038) - for +11.5% decode (RTX 5090).  STRATA_ROUTE_TAIL_SKIP=7 opts in.
+            bool nvfp4_experts = false;
+            if (native_pack)
+                for (const auto& f : strata::kernels::cpu::expert_layout().fmt)
+                    nvfp4_experts = nvfp4_experts || f.gu_type == strata::kernels::cpu::kNvfp4Type ||
+                                    f.d_type == strata::kernels::cpu::kNvfp4Type;
+            const bool tail_default_path = tse == nullptr && !all_experts_resident && !nearly_all_cached && o.batch == 0 &&
+                                           decode_defaults_arch_ok() &&
+                                           o.peer_device < 0;
+            const bool tail_default_ok = tail_default_path && !nvfp4_experts;
+            if (tail_default_path && nvfp4_experts)
+                std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP is off by default with NVFP4 experts (it moved an NVFP4 "
+                                     "pack's answers by about as much as its quantization does); STRATA_ROUTE_TAIL_SKIP=7 turns it on\n");
             if (tse == nullptr && nearly_all_cached && o.batch == 0 && o.peer_device < 0 && decode_defaults_arch_ok())
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP is off by default: %.1f%% of the experts are in the GPU cache, so "
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
