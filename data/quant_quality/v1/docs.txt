@@ -1,56 +1,49 @@
-## What is in the file
+- **GPU (VRAM):** attention and DeltaNet mixers, the gated-residual weights, routers, shared experts, output head, the MTP
+  draft layer, the KV cache (from 64K: only its most-read part, the rest streams from RAM), and an **expert cache** that fills the rest of VRAM with the most-used experts (it adapts to
+  the conversation while you chat).
+- **RAM:** all 24,576 experts, pinned. The CPU computes the experts that are not on the GPU **in place**, at the same time
+  as the GPU works on the cached ones (AVX-512 / AVX2 kernels, ggml's for the i-quants).
+- **SSD:** the 28.8 GB n-gram table, a few rows per token, read unbuffered past the OS cache (`--ple-io direct`, the
+  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605). A start-up probe warns when direct reads measure slow (under 15K rows/s) but never switches by itself (since 0.1.43.1; `STRATA_PLE_AUTO_MMAP=1` brings back the 0.1.42 switch to `--ple-io mmap`): the bar is calibrated for NVMe, a SATA SSD tops out at 10-14K rows/s with direct's 16 reads in flight, and on one (Linux, 77.8K-token prompt) mmap read 2.1K rows/s against direct's 14.4K (#2040), while on a Windows box with a slow mapped file mmap stalled prompts (#1984). The engine reads the table
+  in the format the GGUF has it: IQ4_NL (the default table), Q4_0, Q5_0, Q5_1, Q8_0, FP8 (E4M3 with a scale) or BF16.
+  Measured on 4,000 random rows against the checkpoint's own BF16 table, the mean per-row error is Q8_0 0.53%, FP8 2.64%,
+  Q5_1 3.78%, Q5_0 4.25%, IQ4_NL 7.60%, Q4_1 7.80%, Q4_0 8.55% (a Q8_0 table is 54 GB, an IQ4_NL one 28.8 GB). On the Q2_0 model, 700 teacher-forced tokens, the mean KL against the BF16 table is 0.0117 (Q5_0), 0.0121 (Q5_1), 0.0125
+  (Q8_0), 0.0128 (FP8), 0.0140 (Q4_0) and 0.0146 (IQ4_NL), with the perplexity within 1% of BF16's either way: any change to the
+  table moves the 2-bit model by about 0.012, so the formats are hard to tell apart. Setup does not offer another table;
+  it only changes which GGUF the engine is given.
+- **Speculation:** the model's own MTP layer drafts up to 3 tokens; one pass over all 48 layers checks them. 2.4-3.2
+  tokens per pass on average. When the reply repeats the context (code edits, quoted text), **prompt lookup** (engine
+  0.1.7) drafts up to 5 tokens from the earlier copy, but only where its measured acceptance and cost say it pays:
+  code edits 6-11% faster, other text unchanged. The drafts are checked like the MTP's, so the output is the same.
+- **Prompts** are processed in chunks of up to 8,192 tokens (`--prefill auto`; 32,768 opt-in) with the experts
+  streamed to the GPU over PCIe. Since engine 0.1.39b (#583) the streamed ring is sized in bytes for the pack (a
+  native pack with bigger blobs gets fewer ring slots and keeps more cache slots) and `--prefill auto` picks the
+  largest chunk that keeps that ring full. It only gives up ring slots where 0.1.39's rule held the chunk at 4,096
+  tokens or less; from 6,144 on it keeps 0.1.39's ring and only looks for a bigger chunk beside it (shrinking the
+  ring there measured slower: the Coder -12%), and a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one
+  chunk: a smaller ring only slowed it). RTX 5070, 32K prompts against `STRATA_RING_BYTES=0`, 2-3 interleaved
+  rounds: IQ3_XXS +18.5% at a 1,500-slot cache and +9% in another memory state, the Coder +3%, IQ3_S unchanged; 4K
+  prompts unchanged (-0.7% to +1.1%, bit-identical). Q2_0 (a fixed `--prefill 2048`) is not affected. It changes
+  the bits of a long prompt against 0.1.39 (the experts go through a different
+  mix of cached and streamed groups). Measured quality, teacher-forced over the next 2,001 tokens of a long document
+  against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
+  93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
+  restores 0.1.39's ring, loan and chunk choice.
 
-Six shards, 169,165,382,688 bytes (169.2 GB) together ([sizes and SHA-256 from the HF tree API](https://huggingface.co/api/models/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q6_K_XL);
-shards 1, 2 and 6 were also checked bit for bit against their Hugging Face LFS hashes after download). Shard 1 holds
-only metadata; shard 2 only the output head (`output.weight`, `output_hc_*`, all Q8_0 but `output_hc_norm`, F32);
-shard 3 is exactly the PLE table, nothing else.
+The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
-| File | Bytes | SHA-256 |
-| --- | --- | --- |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf` | 10,946,624 | `8bdc6bad55b6699f46f60708829932ff4018d7ac9bd309c388534fa31753bdb7` |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf` | 682,434,912 | `494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e` |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf` | 54,400,261,312 | `34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20` |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf` | 49,814,108,512 | `0ea4b599880a5a52fcd9c188ba1443f646c69c96571904ddbd6a79246a01a997` |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf` | 49,419,317,344 | `9948e81ae8368144b135a7403d8c0f2cf9a6c2f9f692313865855b2832e696c9` |
-| `Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf` | 14,838,313,984 | `e4ae255234f42b18012f6d6eec5bf615b57479b7e0a0233c47436a321ffeec3f` |
+---
 
-Formats, read from the shard headers with `tools/gguf_reader.py` (all six shards verified: shard 4 = blocks 0-20,
-520 tensors, shard 5 = blocks 20-41, 530 tensors, and per layer the types above):
+## Credits and licenses
 
-- **Routed experts:** `ffn_gate_exps` and `ffn_up_exps` are Q6_K (seen in every layer of shard 6: blocks 41-47);
-  `ffn_down_exps` is Q8_0 (per layer 891.3 MB at 640×2560×512, against Q6_K's 688.1 MB at 2560×640×512 for gate or
-  up). Gate and up are Q6_K in 47 of 48 layers and Q8_0 in layer 2; down is Q8_0 in every layer (the pack's
-  `native_experts.txt`: 47 rows of ggml types 14/8, and layer 2 is 8/8). Q6_K gate/up is native: the
-  engine multiplies them directly on the GPU in every path check below, and the CPU has the ggml block layout (210
-  bytes per 256 elements); the per-role layout in `native_experts.txt` v4 handles shards whose boundaries cut
-  through a layer like UD-Q4_K_XL's layer 11 case does.
-- **Everything else:** attention and shared-expert projections, SSM, hyper-connections, the PLE key/value, the token
-  embedding and the output head are Q8_0, or F32/BF16 where the engine reads floats — the same pattern
-  [UD-Q4_K_XL](UNSLOTH_Q4.md) handles with `tools/iq_pack.py --compat-bf16`.
-- **The PLE table** (`per_layer_token_embd.weight`, [160, 320001536]): **Q8_0**, its own shard 3. A row is
-  5 blocks of 32 elements at 34 bytes = 170 bytes, and the whole table is 54.4 GB, against the 28.8 GB IQ4_NL of
-  UD-Q4_K_XL. Engine 0.1.38 reads Q8_0 rows natively: `PleTable` accepts the type, the row reader is already
-  parameterized by bytes-per-row (its selftest runs 90, 110 and 170 byte rows), and no GPU kernel changes —
-  `gather` outputs floats. (UD-Q4_K_XL's table is IQ4_NL; the FP8 table of [tools/ple_fp8_pack.py](../tools/ple_fp8_pack.py)
-  needs the original checkpoint, which this file is not a substitute for. Converting this Q8_0 table to FP8 would
-  trade table precision away for 6% smaller rows; Q8_0 read directly has none that conversion's error.)
+Strata itself: [MIT](../LICENSE). The model files are not part of it; their licenses apply to them (below).
 
-Q6_K gate/up costs 210 bytes per 256 elements, against Q4_K's 144, so the routed experts' share of the file grows
-about 45% per element read; expected decode speed accordingly lower than UD-Q4_K_XL's on the same hardware. The
-table row gather grows 170/90 = 1.89x over IQ4_NL.
-
-## The pack (by hand)
-
-Same workflow as [UD-Q4_K_XL](UNSLOTH_Q4.md#the-pack-by-hand), from the repository root:
-
-```sh
-.venv/bin/python tools/iq_pack.py \
-  --gguf /path/to/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf \
-  --out packs/ud-q6_k_xl --compat-bf16
-```
-
-**`--compat-bf16` is required** for the same reason as there (the 195 small Q8_0 projections the engine reads as
-BF16). Do not add `--experts-bin`; the experts stay in the GGUF files. Built here end to end on this file
-(`packs/ud-q6_k_xl`, the packer's own tests cover the shard and conversion logic via
-`.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`): 1079 tensors indexed, 303 served natively, 460
-tensors converted (26
+- Model: [Qwen/Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team; quantizations:
+  [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF).
+  The Coder: [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF)
+  (Apache-2.0 per its card); its support in Strata came from @pjgmobile's PR #54.
+  Swift 1.5: [ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+  by UkisAI. Their licenses apply to the weights.
+- [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and
+  dequantizers transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the
+  `mtmd` library behind the image encoder (`tools/vision/`), and `gguf-py` use
