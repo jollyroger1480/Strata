@@ -269,13 +269,28 @@ kernel void mm_gather(device const float* x [[buffer(0)]], device const int* srt
     for (uint k = tid; k < n; k += 256) o[k] = t >= 0 ? half(x[ulong(t) * n + k]) : half(0.0f);
 }
 
+// The SSD-streaming arena (as in moe.metal): with function constant 20, expert e's slot is smap[e] in the chunks W,
+// W1..W3 (buffers 5..8 of mm_gu2 / mm_down2 / mm_gu3 / mm_down3); gate_off / up_off / down_off are offsets in the slot.
+#ifndef STRATA_ARENA_METAL
+#define STRATA_ARENA_METAL
+constant bool kArenaFc [[function_constant(20)]];
+constant bool kArena = is_function_constant_defined(kArenaFc) && kArenaFc;
+static inline device const uchar* arena_slot(uint v, device const uchar* W, device const uchar* W1, device const uchar* W2,
+                                             device const uchar* W3) {
+    const uint c = v >> 28;
+    device const uchar* b = c == 0 ? W : (c == 1 ? W1 : (c == 2 ? W2 : W3));
+    return b + (ulong)(v & 0x0FFFFFFFu) * 16384ul;
+}
+#endif
+
 // a probe for the bench (function constant 5): 1 = the weights not decoded (a cheap fill), 2 = no matrix multiply
 constant int MM_PROBE [[function_constant(5)]];
 constant int mm_probe = is_function_constant_defined(MM_PROBE) ? MM_PROBE : 0;
 
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
-                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
+                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
                    uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int NTH = SG * 32;
     threadgroup half wg[TN * TK];
@@ -285,8 +300,9 @@ kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[
     load_tab<F>(tab, tid, NTH);
     const int2 tl = tiles[tg.y];
     const int e = tl.x, row0 = tl.y, f0 = int(tg.x) * TN;
-    device const uchar* g0 = W + a.gate_off + ulong(e) * a.gu_stride + ulong(f0) * a.gu_row;
-    device const uchar* u0 = W + a.up_off + ulong(e) * a.gu_stride + ulong(f0) * a.gu_row;
+    device const uchar* E = kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + ulong(f0) * a.gu_row;
+    device const uchar* u0 = E + a.up_off + ulong(f0) * a.gu_row;
     constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroups<SG>> op;
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
@@ -330,7 +346,8 @@ kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
                      device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]],
-                     constant MmArgs& a [[buffer(4)]],
+                     constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
+                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int NTH = SG * 32;
     threadgroup half wd[TN * TK];
@@ -338,7 +355,7 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
     load_tab<F>(tab, tid, NTH);
     const int2 tl = tiles[tg.y];
     const int e = tl.x, row0 = tl.y, d0 = int(tg.x) * TN;
-    device const uchar* w0 = W + a.down_off + ulong(e) * a.d_stride + ulong(d0) * a.d_row;
+    device const uchar* w0 = (kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.d_stride) + a.down_off + ulong(d0) * a.d_row;
     constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroups<SG>> op;
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tH((device half*)HS, dextents<int32_t, 2>(a.n_ff, 1 << 30));
@@ -554,7 +571,8 @@ template <> struct W8<T_IQ3_S> {
 
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
-                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
+                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
                    uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                    ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
     threadgroup float ot[SG][TM * TN];
@@ -563,8 +581,9 @@ kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const int2 tl = tiles[tg.y];
     const int e = tl.x, row0 = tl.y, n0 = (int(tg.x) * SG + sg) * TN;
-    device const uchar* g0 = W + a.gate_off + ulong(e) * a.gu_stride + ulong(n0) * a.gu_row;
-    device const uchar* u0 = W + a.up_off + ulong(e) * a.gu_stride + ulong(n0) * a.gu_row;
+    device const uchar* E = kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + ulong(n0) * a.gu_row;
+    device const uchar* u0 = E + a.up_off + ulong(n0) * a.gu_row;
     constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroup> op;
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
@@ -630,7 +649,8 @@ kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[
 
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
-                     device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                     device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
+                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                      ushort tid [[thread_index_in_threadgroup]]) {
     threadgroup uint tab[fmt<F>::TAB];
@@ -638,7 +658,7 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const int2 tl = tiles[tg.y];
     const int e = tl.x, row0 = tl.y, n0 = (int(tg.x) * SG + sg) * TN;
-    device const uchar* w0 = W + a.down_off + ulong(e) * a.d_stride + ulong(n0) * a.d_row;
+    device const uchar* w0 = (kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.d_stride) + a.down_off + ulong(n0) * a.d_row;
     constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroup> op;
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tH((device half*)HS, dextents<int32_t, 2>(a.n_ff, 1 << 30));

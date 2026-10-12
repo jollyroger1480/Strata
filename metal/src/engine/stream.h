@@ -61,7 +61,7 @@ public:
 
 private:
     struct Lay { uint64_t g, gs, u, us, d, ds; int cls; };
-    struct Slot { int16_t layer = -1; int16_t e = -1; int prev = -1, next = -1; bool pre = false; int left = 0; std::atomic<int> state{0}; };  // 0 idle, 1 queued, 2 reading
+    struct Slot { int16_t layer = -1; int16_t e = -1; int prev = -1, next = -1; bool pre = false; int left = 0; uint64_t pin = 0; std::atomic<int> state{0}; };  // 0 idle, 1 queued, 2 reading
     struct Cls { uint64_t pages = 0; int n = 0; int base = 0; int head = -1, tail = -1; };  // slot range [base, base+n)
     struct Job { int slot; int layer, e, part; };   // part: slice * split_ + piece
     void lru_unlink(int s);
@@ -97,6 +97,9 @@ private:
     int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
     bool prefetch_ = true, fake_ = false;
     // stats
+    uint64_t stamp_ = 1;   // the handshake count: slots pinned with the current one are in use on the GPU
+    uint64_t p_lookups_ = 0, p_hits_ = 0, p_pre_ = 0, p_misses_ = 0, p_streamed_ = 0, p_chunks_ = 0;
+    double p_wait_ms_ = 0, p_host_ms_ = 0;
     uint64_t lookups_ = 0, hits_ = 0, pre_hits_ = 0, late_ = 0, misses_ = 0, pre_issued_ = 0, pre_cancel_ = 0, windows_ = 0;
     std::atomic<uint64_t> bytes_read_{0}, reads_{0};
     double wait_ms_ = 0, host_ms_ = 0, fill_s_ = 0;

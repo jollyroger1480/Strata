@@ -15,6 +15,7 @@
 #include "mtl_rt.h"
 #include "ref_quant.h"
 #include "stream.h"
+#include "../../tests/coop_probe.h"
 
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
@@ -35,6 +36,8 @@
 #include <mach/mach.h>
 #include <thread>
 #include <vector>
+
+namespace strata::gpu { uint64_t purge_device_allocations(size_t min_bytes); }   // metal/src/gpu/runtime.cpp
 
 namespace strata::metal_engine {
 
@@ -196,7 +199,18 @@ private:
     int seg_T_ = 0;
     bool stream_arena(std::string& err);
     double run_ds(Cached& c);
+    // prompts on the matrix units (prompt_chunk below)
+    struct PromptGemm;
+    PromptGemm* pg_ = nullptr;
+    const int32_t* cut_ids_ = nullptr;    // the routed ids the handshake reads (a prompt chunk's; else ids_)
+    const mtl::Buffer* mtp_src_ = nullptr;   // the rows the draft layer's prompt K/V read (a prompt chunk's; else R_)
+    double pg_ms_ = 0;
+    int64_t pg_tok_ = 0;
 public:
+    bool prompt_gemm_on(int64_t n) const;
+    bool prompt_gemm_init(std::string& err);
+    bool prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err);
+    int prompt_chunk_rows() const;
     void stream_report(FILE* f) const {
         if (!st_) return;
         st_->report(f);
@@ -208,8 +222,8 @@ public:
     int win_n_[MAXT + 1] = {};
     double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
     void at_cut(int s) {
-        st_->at_layer(s, seg_T_, TOPK, ids_.as<int32_t>(), st_pred_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
-                      predL2_.ptr ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
+        st_->at_layer(s, seg_T_, TOPK, cut_ids_ ? cut_ids_ : ids_.as<int32_t>(), st_pred_ && !cut_ids_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
+                      predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
     }
 private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
@@ -756,6 +770,7 @@ void Window::ple_cpu(int Tn) {
 }
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
+    mtp_src_ = nullptr;
     if (Tn < 1 || Tn > MAXT || (head && Tn > max_t_)) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
     const double t0 = now_ms();
@@ -899,6 +914,15 @@ bool Window::stream_arena(std::string& err) {
     size_t len = sizeof phys;
     sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
     const double gb = 1e9;
+    {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
+        if (!(e && std::string(e) == "0") && !prompt_gemm_init(err)) return false;
+    }
+    if (!(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS") && std::string(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS")) == "1")) {
+        const uint64_t g = strata::gpu::purge_device_allocations(32u << 20);
+        std::fprintf(stderr, "strata metal stream: %.2f GB of the host code's device weight copies given back (unused by the "
+                             "Metal window)\n", g / 1e9);
+    }
     const double used = (double) cx_->allocated();
     const char* ek = std::getenv("STRATA_METAL_KEEP_FREE_GB");
     const double keep = (ek ? std::atof(ek) : 8.0) * gb;
@@ -1437,7 +1461,7 @@ bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, s
         const int k = (int) std::min<int64_t>(MAXT, n - c);
         std::vector<mtl::Dispatch> ds;
         nb_ = false;
-        mtp_encode(ds, R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false);
+        mtp_encode(ds, mtp_src_ ? *mtp_src_ : R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false);
         cx_->run_graph(ds);
     }
     return true;
@@ -1530,6 +1554,443 @@ bool Window::copy_logits(int t, float* host) const {
     return true;
 }
 
+
+// ================================================================================== prompts through the matrix units
+// A prompt chunk of T rows (mac-kern's tests/prompt_chain.cpp, on the engine's state): every dense matrix dequantized
+// to fp16 once a chunk and multiplied on the matrix units (MPP), the GDN scan, QSA over the chunk, the routed experts
+// as grouped GEMMs (v2 on the M4, v3 on the M5).  The GDN state, the conv history, the K/V and indexer cells and the
+// PLE history are the decode window's own, so decoding goes on from them.  With SSD streaming the experts of a layer
+// are put in place at the layer's handshake (the arena's misses) and the next layer's are streamed in behind it.
+// STRATA_METAL_PROMPT_GEMM=0: prompts through the decode window (8 rows at a time).  Its numerics differ from the
+// window's (fp16 operands): STRATA_METAL_PROMPT_GEMM_MIN (default 64) keeps shorter prompts on the window path.
+namespace {
+struct PgDq { uint32_t n_in, n_out, row_bytes, perm; };
+struct PgGemm { int M, N, K, pad; };
+struct PgEpi { uint32_t n_tok, n_embd, hc, hc_lr; };
+struct PgGdnP { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
+struct PgPlan { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
+struct PgMm { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 ? 16 : 32; }
+}  // namespace
+
+struct Window::PromptGemm {
+    int MT = 0, QS = 256, TM = 16, maxrows = 0, nblk_max = 0;
+    int lib = -1, lgdn = -1, lqsa = -1;
+    bool k4 = false, gu_v3 = false, dn_v3 = false, flash = false;
+    mtl::Buffer R, bo, inj[2], xnh, V, loh, mixed, mixh, qkv, z, al, be, ygh, gqn, gkn, gvc, ggb, gkq, go, yg, qfull, kcur, vcur,
+        iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta, stok, sw, pos,
+        XS, HS, YE, yr, gsh, ush, hh, ys, sgv, emb, embh, pkey, pval, keyn, qn, gated, normW;
+    mtl::Buffer WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr, Wsg, Wshg, Wshu, Wshd, Wpk, Wpv;
+};
+
+int Window::prompt_chunk_rows() const { return pg_ ? pg_->MT : 0; }
+
+bool Window::prompt_gemm_on(int64_t n) const {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
+        return e ? std::string(e) != "0" : true;
+    }();
+    static const int64_t mn = [] {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM_MIN");
+        return e ? (int64_t) std::atoll(e) : (int64_t) 64;
+    }();
+    return on && n >= mn && pg_ != nullptr;
+}
+
+bool Window::prompt_gemm_init(std::string& err) {
+    if (pg_) return true;
+    const char* ec = std::getenv("STRATA_METAL_PROMPT_CHUNK");
+    const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? 1024 : 2048)) / 64 * 64;
+    auto pg = std::make_unique<PromptGemm>();
+    PromptGemm& p = *pg;
+    p.MT = C;
+    p.QS = std::min(C, 256);
+    p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
+                          "prompt.metal"});
+    p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    p.k4 = coop_k4(*cx_);
+    const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
+    p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;
+    const char* eq = std::getenv("STRATA_METAL_PROMPT_QSA");       // v1 | flash (default: flash with the M5's layout)
+    p.flash = eq ? std::string(eq) == "flash" : p.k4;
+    const size_t MT = (size_t) C;
+    p.maxrows = C * TOPK + NEXP * p.TM;
+    p.nblk_max = (C * TOPK + 1023) / 1024;
+    const int MB = (int) max_cells_ / 4 + 2;
+    auto F32 = [&](size_t n) { return cx_->alloc(4 * n); };
+    auto F16 = [&](size_t n) { return cx_->alloc(2 * n); };
+    const size_t mr = (size_t) p.maxrows;
+    p.R = F32(MT * HC * N); p.bo = F32(MT * N); p.inj[0] = F32(MT * HC); p.inj[1] = F32(MT * HC); p.xnh = F16(MT * HC * N);
+    p.V = F32(MT * (LR + HC)); p.loh = F16(MT * LR); p.mixed = F32(MT * N); p.mixh = F16(MT * N);
+    p.qkv = F32(MT * 10240); p.z = F32(MT * 6144); p.al = F32(MT * 48); p.be = F32(MT * 48); p.yg = F32(MT * 6144);
+    p.ygh = F16(MT * 6144); p.gqn = F32(MT * 16 * 128); p.gkn = F32(MT * 16 * 128); p.gvc = F32(MT * 6144);
+    p.ggb = F32(MT * 96); p.gkq = F32(MT * 16); p.go = F32(MT * 6144);
+    p.qfull = F32(MT * 12288); p.kcur = F32(MT * 512); p.vcur = F32(MT * 512); p.iqr = F32(MT * 512); p.ikr = F32(MT * 128);
+    p.qcur = F32(MT * 24 * 256); p.qcurh = F16(MT * 24 * 256); p.qidx = F32(MT * 4 * 128); p.scores = F32(MT * (size_t) MB);
+    p.qids = cx_->alloc(4 * MT * 2051);
+    p.part = p.flash ? F32(16) : F32((size_t) p.QS * 33 * 24 * 258);
+    p.XQ = F32(4 * MT * 6144 + 3 * (size_t) p.QS * 6144 + MT * 384); p.xqh = F16(MT * 6144);
+    p.logits = F32(MT * NEXP); p.ids = cx_->alloc(4 * MT * TOPK); p.wts = F32(MT * TOPK);
+    p.bcnt = cx_->alloc(4 * (size_t) p.nblk_max * NEXP); p.boff = cx_->alloc(4 * (size_t) p.nblk_max * NEXP);
+    p.eoff = cx_->alloc(4 * NEXP); p.tiles = cx_->alloc(8 * (mr / p.TM + 1)); p.meta = cx_->alloc(64);
+    p.stok = cx_->alloc(4 * mr); p.sw = F32(mr); p.pos = cx_->alloc(4 * MT * TOPK); p.XS = F16(mr * N); p.HS = F16(mr * NFF);
+    p.YE = F32(mr * N); p.yr = F32(MT * N); p.gsh = F32(MT * NFF); p.ush = F32(MT * NFF); p.hh = F16(MT * NFF);
+    p.ys = F32(MT * N); p.sgv = F32(MT);
+    p.WD = F16((size_t) (LR + HC) * HC * N); p.WU = F16((size_t) HC * N * LR); p.Wqkv = F16((size_t) 10240 * N);
+    p.Wz = F16((size_t) 6144 * N); p.Wal = F16((size_t) 48 * N); p.Wbe = F16((size_t) 48 * N); p.Wout = F16((size_t) N * 6144);
+    p.Wq = F16((size_t) 12288 * N); p.Wk = F16((size_t) 512 * N); p.Wv = F16((size_t) 512 * N); p.Wiq = F16((size_t) 512 * N);
+    p.Wik = F16((size_t) 128 * N); p.Wr = F16((size_t) NEXP * N); p.Wsg = F16((size_t) N); p.Wshg = F16((size_t) NFF * N);
+    p.Wshu = F16((size_t) NFF * N); p.Wshd = F16((size_t) N * NFF);
+    if (ple_on_) {
+        p.emb = F32(MT * N); p.embh = F16(MT * N); p.pkey = F32(MT * 10240); p.pval = F32(MT * N); p.keyn = F32(MT * 10240);
+        p.qn = F32(MT * 10240); p.gated = F32(MT * 10240); p.normW = F32(MT * 10240);
+        p.Wpk = F16((size_t) 10240 * N); p.Wpv = F16((size_t) N * N);
+    }
+    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
+    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
+    pg_ = pg.release();
+    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s)\n", C,
+                 p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other");
+    (void) err;
+    return true;
+}
+
+bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
+    PromptGemm& p = *pg_;
+    auto TN = [this](const std::string& n) -> const gguf::Tensor& { return this->T(n); };
+    if (Tn < 1 || Tn > p.MT) { err = "metal prompt: chunk size out of range"; return false; }
+    if (pos0 + Tn + 1 >= max_cells_) { err = "metal prompt: the chunk runs past the context"; return false; }
+    if (stream_ && !st_->ready() && !stream_arena(err)) return false;
+    if (pend_fold_ > 0) {   // the last decode window's commit, still pending
+        std::vector<mtl::Dispatch> fd;
+        nb_ = false;
+        fold(fd, pend_fold_, 1 - hp_);
+        cx_->run_graph(fd);
+        pend_fold_ = 0;
+    }
+    const int T = Tn;
+    // ---- the embeddings into every stream, the PLE rows
+    {
+        const gguf::Tensor& te = TN("token_embd.weight");
+        const size_t rb = ref::row_bytes(te.type, N);
+        for (int t = 0; t < T; ++t) {
+            float* r = p.R.as<float>() + (size_t) t * HC * N;
+            ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+            for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
+        }
+    }
+    strata::core::SessionState& ss = *ss_;
+    if (ple_on_) {
+        std::vector<uint32_t> rows((size_t) T * strata::kernels::PLE_N_HEADS);
+        int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+        for (int t = 0; t < T; ++t) {
+            strata::kernels::ngram_rows(&tokens[t], prev, 1, ss.ple.consts, rows.data() + (size_t) t * strata::kernels::PLE_N_HEADS);
+            prev[0] = prev[1];
+            prev[1] = tokens[t];
+        }
+        if (!ss.ple.table->gather_batch(rows.data(), (size_t) T, p.emb.as<float>(), err)) return false;
+    }
+    std::vector<mtl::Dispatch> ds;
+    std::vector<int> cuts;
+    nb_ = false;
+    auto D = [&](const mtl::Pipeline* pp, std::vector<mtl::Arg> a, uint32_t gx, uint32_t gy, uint32_t tg, uint32_t gz = 1) {
+        mtl::Dispatch d;
+        d.p = pp;
+        d.args = std::move(a);
+        d.grid[0] = gx; d.grid[1] = gy; d.grid[2] = gz;
+        d.tg[0] = tg;
+        push(ds, d);
+    };
+    auto PP = [&](int lib, const std::string& fn, const mtl::Constants& c = {}, const std::string& key = "") {
+        return P(lib, fn, c, "pg:" + (key.empty() ? fn : key));
+    };
+    auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
+        const int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        const std::string fn = "gemm_f16_" + std::to_string(tm) + "_" + std::to_string(tn) + "_4";
+        PgGemm g{M, Nn, K, 0};
+        D(PP(p.lib, fn), {mtl::Arg::B(A), mtl::Arg::B(B), mtl::Arg::B(Y), mtl::Arg::V(g)}, (Nn + tn - 1) / tn, (M + tm - 1) / tm, 128);
+    };
+    auto dqb = [&](const mtl::Buffer& src, size_t off, int type, int n_in, int n_out, const mtl::Buffer& out, size_t out_off = 0,
+                   uint32_t perm = 0) {
+        PgDq a{(uint32_t) n_in, (uint32_t) n_out, (uint32_t) ref::row_bytes(type, n_in), perm};
+        D(PP(p.lib, "dq_f16_" + std::to_string(type)), {mtl::Arg::B(src, off), mtl::Arg::B(out, out_off), mtl::Arg::V(a)},
+          (n_in / pg_unit(type) + 63) / 64, n_out, 64);
+    };
+    auto dq = [&](const gguf::Tensor& t, const mtl::Buffer& out, size_t out_off = 0, uint32_t perm = 0) {
+        const int n_in = (int) t.shape[0], n_out = t.shape.size() > 1 ? (int) t.shape[1] : 1;
+        if (hc_q8_ && q8off_.count(t.name)) dqb(Q8_, q8off_.at(t.name), ref::Q8_0, n_in, n_out, out, out_off, perm);
+        else dqb(W_, t.offset, t.type, n_in, n_out, out, out_off, perm);
+    };
+    auto act16 = [&](const mtl::Buffer& x, const mtl::Buffer& xh, size_t n) {
+        const uint32_t nn = (uint32_t) n;
+        D(PP(p.lib, "act_f16"), {mtl::Arg::B(x), mtl::Arg::B(xh), mtl::Arg::V(nn)}, (nn + 255) / 256, 1, 256);
+    };
+    int ci = 0;
+    auto hc_read = [&](const std::string& pre, bool apply) {
+        const gguf::Tensor &tn = TN(pre + "_norm.weight"), &tdn = TN(pre + "_down.weight"), &tin = TN(pre + "_inject.weight"),
+                           &tup = TN(pre + "_up.weight");
+        dq(tdn, p.WD);
+        dq(tin, p.WD, (size_t) 2 * LR * HC * N);
+        dq(tup, p.WU, 0, HC);
+        GrArgs a{N, HC, LR, (uint32_t) T, apply ? 1u : 0u, eps_};
+        PgEpi ea{(uint32_t) T, N, HC, LR};
+        D(PP(p.lib, "gr_norm_h"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                   mtl::Arg::B(p.xnh), mtl::Arg::V(a)}, HC, T, 256);
+        gemm(p.xnh, p.WD, p.V, T, LR + HC, HC * N);
+        D(PP(p.lib, "gr_epi_down"), {mtl::Arg::B(p.V), mtl::Arg::B(p.loh), mtl::Arg::B(p.inj[1 - ci]), mtl::Arg::V(ea)},
+          (T * (LR + HC) + 255) / 256, 1, 256);
+        PgGemm g{T, HC * N, LR, 0};
+        D(PP(p.lib, "gemm_hc_up_64_64_4"), {mtl::Arg::B(p.loh), mtl::Arg::B(p.WU), mtl::Arg::B(p.xnh), mtl::Arg::B(p.mixed),
+                                            mtl::Arg::B(p.mixh), mtl::Arg::V(g), mtl::Arg::V(ea)}, HC * N / 64, (T + 63) / 64, 128);
+        ci = 1 - ci;
+    };
+    // the PLE projections (the window's gemv pair as GEMMs)
+    if (ple_on_) {
+        act16(p.emb, p.embh, (size_t) T * N);
+        dq(TN("blk.1.ple_key.weight"), p.Wpk);
+        dq(TN("blk.1.ple_value.weight"), p.Wpv);
+        gemm(p.embh, p.Wpk, p.pkey, T, 10240, N);
+        gemm(p.embh, p.Wpv, p.pval, T, N, N);
+    }
+    const int MB = (int) max_cells_ / 4 + 2;
+    (void) MB;
+    for (int l = 0; l < 48; ++l) {
+        const std::string b = "blk." + std::to_string(l) + ".";
+        hc_read(b + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        if (l % 4 != 3) {
+            const int gi = l - l / 4;
+            dq(TN(b + "attn_qkv.weight"), p.Wqkv);
+            dq(TN(b + "attn_gate.weight"), p.Wz);
+            dq(TN(b + "ssm_alpha.weight"), p.Wal);
+            dq(TN(b + "ssm_beta.weight"), p.Wbe);
+            dq(TN(b + "ssm_out.weight"), p.Wout);
+            gemm(p.mixh, p.Wqkv, p.qkv, T, 10240, N);
+            gemm(p.mixh, p.Wz, p.z, T, 6144, N);
+            gemm(p.mixh, p.Wal, p.al, T, 48, N);
+            gemm(p.mixh, p.Wbe, p.be, T, 48, N);
+            PgGdnP ga{(uint32_t) T, 16, 48, 10240, eps_, 0};
+            D(PP(p.lgdn, "gdn_pre"),
+              {mtl::Arg::B(p.qkv), mtl::Arg::B(ghist_[hp_][(size_t) gi]), mtl::Arg::B(W_, TN(b + "ssm_conv1d.weight").offset),
+               mtl::Arg::B(p.al), mtl::Arg::B(p.be), mtl::Arg::B(W_, TN(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, TN(b + "ssm_a").offset),
+               mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb), mtl::Arg::B(p.gkq),
+               mtl::Arg::B(ghist_[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
+            D(PP(p.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0), "gdn_scanr_4"),
+              {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
+               mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, 48 * 4, 1, 32 * 4);
+            D(PP(p.lgdn, "gdn_post"), {mtl::Arg::B(p.go), mtl::Arg::B(p.z), mtl::Arg::B(W_, TN(b + "ssm_norm.weight").offset),
+                                       mtl::Arg::B(p.ygh), mtl::Arg::B(p.yg), mtl::Arg::V(ga)}, 48, T, 128);
+            gemm(p.ygh, p.Wout, p.bo, T, N, 6144);
+        } else {
+            const int qi = l / 4;
+            dq(TN(b + "attn_q.weight"), p.Wq);
+            dq(TN(b + "attn_k.weight"), p.Wk);
+            dq(TN(b + "attn_v.weight"), p.Wv);
+            dq(TN(b + "indexer.q_proj.weight"), p.Wiq);
+            dq(TN(b + "indexer.k_proj.weight"), p.Wik);
+            dq(TN(b + "attn_output.weight"), p.Wout);
+            gemm(p.mixh, p.Wq, p.qfull, T, 12288, N);
+            gemm(p.mixh, p.Wk, p.kcur, T, 512, N);
+            gemm(p.mixh, p.Wv, p.vcur, T, 512, N);
+            gemm(p.mixh, p.Wiq, p.iqr, T, 512, N);
+            gemm(p.mixh, p.Wik, p.ikr, T, 128, N);
+            QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) T, eps_};
+            D(PP(p.lqsa, "qsa_prep"),
+              {mtl::Arg::B(p.qfull), mtl::Arg::B(p.kcur), mtl::Arg::B(p.vcur), mtl::Arg::B(p.iqr), mtl::Arg::B(p.ikr),
+               mtl::Arg::B(W_, TN(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "attn_k_norm.weight").offset),
+               mtl::Arg::B(W_, TN(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "indexer.k_norm.weight").offset),
+               mtl::Arg::B(cs_), mtl::Arg::B(p.qcur), mtl::Arg::B(p.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
+               mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
+               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a)}, 33, T, 256);
+            if (pos0 + T > 2051)
+                D(PP(p.lqsa, "qsa_score_mm"), {mtl::Arg::B(p.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
+                                               mtl::Arg::B(p.scores), mtl::Arg::V(a)},
+                  (uint32_t) (((pos0 + T) / 4 + 1 + 63) / 64), (T + 15) / 16, 128);
+            D(PP(p.lqsa, "qsa_topk"), {mtl::Arg::B(p.scores), mtl::Arg::B(p.qids), mtl::Arg::V(a)}, T, 1, 1024);
+            if (p.flash) {
+                const uint32_t nq = (uint32_t) T * 24 * 256;
+                D(PP(p.lqsa, "qsa_q_f16"), {mtl::Arg::B(p.qcur), mtl::Arg::B(p.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
+                D(PP(p.lqsa, "qsa_flash", mtl::Constants().b(7, p.k4), "qsa_flash"),
+                  {mtl::Arg::B(p.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
+                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
+                  2, T, 128);
+            } else {
+                // v1 attention + merge in slices of QS rows (the partials of a slice only)
+                for (int t0 = 0; t0 < T; t0 += p.QS) {
+                    const int ns = std::min(p.QS, T - t0);
+                    QsaArgs as{(uint32_t) (pos0 + t0), 0, (uint32_t) max_cells_, (uint32_t) ns, eps_};
+                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
+                                               mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
+                                               mtl::Arg::B(p.qids, (size_t) t0 * 2051 * 4), mtl::Arg::B(p.part), mtl::Arg::V(as)},
+                      33, 2, 256, (uint32_t) ns);
+                    D(PP(p.lqsa, "qsa_merge"), {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
+                                                mtl::Arg::B(p.XQ, (size_t) t0 * 6144 * 4), mtl::Arg::V(as)}, 24, ns, 256);
+                }
+                act16(p.XQ, p.xqh, (size_t) T * 6144);
+            }
+            gemm(p.xqh, p.Wout, p.bo, T, N, 6144);
+        }
+        if (l == 0 && ple_on_) {
+            // layer 0's attention write applied to R happens in the FFN read below; the PLE block comes after the FFN
+        }
+        // ---- the MoE
+        hc_read(b + "hc_ffn", true);
+        const gguf::Tensor &tr = TN(b + "ffn_gate_inp.weight"), &tsg = TN(b + "ffn_gate_inp_shexp.weight"),
+                           &tg_ = TN(b + "ffn_gate_shexp.weight"), &tu_ = TN(b + "ffn_up_shexp.weight"),
+                           &td_ = TN(b + "ffn_down_shexp.weight"), &eg = TN(b + "ffn_gate_exps.weight"),
+                           &ed = TN(b + "ffn_down_exps.weight");
+        dq(tr, p.Wr);
+        dq(tsg, p.Wsg);
+        dq(tg_, p.Wshg);
+        dq(tu_, p.Wshu);
+        dq(td_, p.Wshd);
+        gemm(p.mixh, p.Wr, p.logits, T, NEXP, N);
+        const uint32_t nt = (uint32_t) T;
+        D(PP(p.lib, "route_topk"), {mtl::Arg::B(p.logits), mtl::Arg::B(p.ids), mtl::Arg::B(p.wts), mtl::Arg::V(nt)}, (T + 7) / 8, 1, 256);
+        const int nent = T * TOPK, nblk = (nent + 1023) / 1024;
+        PgPlan pa{(uint32_t) nent, TOPK, NEXP, (uint32_t) p.TM, (uint32_t) nblk};
+        const uint32_t nclr = (uint32_t) p.maxrows;
+        D(PP(p.lib, "mm_clear"), {mtl::Arg::B(p.stok), mtl::Arg::V(nclr)}, (p.maxrows + 255) / 256, 1, 256);
+        D(PP(p.lib, "mm_hist"), {mtl::Arg::B(p.ids), mtl::Arg::B(p.bcnt), mtl::Arg::V(pa)}, nblk, 1, 1024);
+        D(PP(p.lib, "mm_scan"), {mtl::Arg::B(p.bcnt), mtl::Arg::B(p.boff), mtl::Arg::B(p.eoff), mtl::Arg::B(p.tiles),
+                                 mtl::Arg::B(p.meta), mtl::Arg::V(pa)}, 1, 1, NEXP);
+        D(PP(p.lib, "mm_place"), {mtl::Arg::B(p.ids), mtl::Arg::B(p.wts), mtl::Arg::B(p.boff), mtl::Arg::B(p.eoff),
+                                  mtl::Arg::B(p.stok), mtl::Arg::B(p.sw), mtl::Arg::B(p.pos), mtl::Arg::V(pa)}, nblk, 1, 1024);
+        PgMm ma{eg.offset, TN(b + "ffn_up_exps.weight").offset, ed.offset, 0, 0, (uint32_t) ref::row_bytes(eg.type, N),
+                (uint32_t) ref::row_bytes(ed.type, NFF), N, NFF};
+        ma.gu_stride = (uint64_t) ma.gu_row * NFF;
+        ma.d_stride = (uint64_t) ma.d_row * N;
+        if (stream_) { ma.gate_off = 0; ma.up_off = st_->up_in_slot(l); ma.down_off = st_->down_in_slot(l); }
+        const uint32_t ne_ = N;
+        {
+            mtl::Dispatch g;
+            g.p = PP(p.lib, "mm_gather");
+            g.args = {mtl::Arg::B(p.mixed), mtl::Arg::B(p.stok), mtl::Arg::B(p.XS), mtl::Arg::V(ne_)};
+            g.tg[0] = 256;
+            g.indirect = &p.meta;
+            g.ind_off = 8 * 4;
+            push(ds, g);
+        }
+        const mtl::Buffer& EW = stream_ ? st_->chunk(0) : W_;
+        auto arena_args = [&](mtl::Dispatch& d) {
+            if (!stream_) return;
+            d.args.push_back(mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4));
+            for (int c = 1; c < 4; ++c) d.args.push_back(mtl::Arg::B(st_->chunk(c)));
+        };
+        const std::string ak = stream_ ? "#arena" : "";
+        mtl::Dispatch gu;
+        if (p.gu_v3) {
+            const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_16_32_32_4";
+            mtl::Constants c = mtl::Constants().b(7, p.k4);
+            if (stream_) c.b(20, true);
+            gu.p = PP(p.lib, fn, c, fn + ak);
+            gu.tg[0] = 32 * 4;
+        } else {
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2";
+            mtl::Constants c = mtl::Constants().i(5, 0);
+            if (stream_) c.b(20, true);
+            gu.p = PP(p.lib, fn, c, fn + ak);
+            gu.tg[0] = 64;
+        }
+        gu.args = {mtl::Arg::B(EW), mtl::Arg::B(p.XS), mtl::Arg::B(p.HS), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        arena_args(gu);
+        gu.indirect = &p.meta;
+        gu.ind_off = 2 * 4;
+        if (stream_) cuts.push_back((int) ds.size());   // the host's turn: this layer's experts put in place
+        push(ds, gu);
+        mtl::Dispatch dn;
+        if (p.dn_v3) {
+            const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_16_64_32_2";
+            mtl::Constants c = mtl::Constants().b(7, p.k4);
+            if (stream_) c.b(20, true);
+            dn.p = PP(p.lib, fn, c, fn + ak);
+            dn.tg[0] = 32 * 2;
+        } else {
+            const std::string fn = "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2");
+            mtl::Constants c;
+            if (stream_) c.b(20, true);
+            dn.p = PP(p.lib, fn, c, fn + ak);
+            dn.tg[0] = 64;
+        }
+        dn.args = {mtl::Arg::B(EW), mtl::Arg::B(p.HS), mtl::Arg::B(p.YE), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        arena_args(dn);
+        dn.indirect = &p.meta;
+        dn.ind_off = 5 * 4;
+        push(ds, dn);
+        const uint32_t ca[4] = {(uint32_t) T, N, TOPK, 0};
+        D(PP(p.lib, "mm_combine"), {mtl::Arg::B(p.YE), mtl::Arg::B(p.pos), mtl::Arg::B(p.sw), mtl::Arg::B(p.yr), mtl::Arg::V(ca)},
+          (T * N + 255) / 256, 1, 256);
+        gemm(p.mixh, p.Wshg, p.gsh, T, NFF, N);
+        gemm(p.mixh, p.Wshu, p.ush, T, NFF, N);
+        const uint32_t nh = (uint32_t) T * NFF;
+        D(PP(p.lib, "swiglu_h"), {mtl::Arg::B(p.gsh), mtl::Arg::B(p.ush), mtl::Arg::B(p.hh), mtl::Arg::V(nh)}, (nh + 255) / 256, 1, 256);
+        gemm(p.hh, p.Wshd, p.ys, T, N, NFF);
+        gemm(p.mixh, p.Wsg, p.sgv, T, 1, N);
+        const uint32_t oa[2] = {(uint32_t) T, N};
+        D(PP(p.lib, "moe_out"), {mtl::Arg::B(p.yr), mtl::Arg::B(p.ys), mtl::Arg::B(p.sgv), mtl::Arg::B(p.bo), mtl::Arg::V(oa)},
+          (T * N + 255) / 256, 1, 256);
+        if (l == 0 && ple_on_) {
+            // layer 0's FFN write applied to R, then the PLE block (as the window, for T rows)
+            const gguf::Tensor& tn = TN("blk.1.hc_attn_norm.weight");
+            GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
+            D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                                  mtl::Arg::B(p.YE), mtl::Arg::V(a)}, HC, T, 256);
+            struct PleArgs { uint32_t n_embd, hc; float eps; } pl{N, HC, strata::kernels::NG_RMS_EPS};
+            auto off = [&](const char* n) { return TN(n).offset; };
+            D(P(lple_, "ple_gnorm", {}, "ple_gnorm"), {mtl::Arg::B(p.pkey), mtl::Arg::B(W_, off("blk.1.ple_norm_key.weight")),
+                                                      mtl::Arg::B(p.keyn), mtl::Arg::V(pl)}, HC, T, 256);
+            nb_ = true;
+            D(P(lple_, "ple_gnorm", {}, "ple_gnorm"), {mtl::Arg::B(p.R), mtl::Arg::B(W_, off("blk.1.ple_norm_query.weight")),
+                                                      mtl::Arg::B(p.qn), mtl::Arg::V(pl)}, HC, T, 256);
+            D(P(lple_, "ple_gate_norm", {}, "ple_gate_norm"),
+              {mtl::Arg::B(p.keyn), mtl::Arg::B(p.qn), mtl::Arg::B(p.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
+               mtl::Arg::B(p.gated), mtl::Arg::B(p.normW), mtl::Arg::V(pl)}, HC, T, 256);
+            D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
+              {mtl::Arg::B(pleHist_), mtl::Arg::B(p.normW), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")), mtl::Arg::B(p.gated),
+               mtl::Arg::B(p.R), mtl::Arg::V(pl)}, HC * N / 256, T, 256);
+        }
+    }
+    // the last layer's write applied to R (the draft layer's K/V read the final residual rows)
+    {
+        const gguf::Tensor& tn = TN("output_hc_norm.weight");
+        GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
+        D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                              mtl::Arg::B(p.YE), mtl::Arg::V(a)}, HC, T, 256);
+    }
+    const double t0 = now_ms();
+    if (stream_) {
+        seg_T_ = T;
+        cut_ids_ = p.ids.as<int32_t>();
+        cx_->run_graph_seg(ds, cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+        cut_ids_ = nullptr;
+    } else {
+        cx_->run_graph(ds);
+    }
+    pg_ms_ += now_ms() - t0;
+    pg_tok_ += T;
+    static const bool trace = std::getenv("STRATA_METAL_TRACE") != nullptr;
+    if (trace) std::fprintf(stderr, "strata metal: prompt chunk pos %lld, %d rows: %.0f ms\n", (long long) pos0, T, now_ms() - t0);
+    // the window's state after the chunk: the conv history turned, the PLE history and token window advanced
+    hp_ = 1 - hp_;
+    if (ple_on_) {
+        using namespace strata::kernels;
+        float* hist = pleHist_.as<float>();
+        const float* nw = p.normW.as<float>();
+        for (int c = 0; c < NG_HC_DIM; ++c) {
+            float col[NG_HIST];
+            for (int r = 0; r < NG_HIST; ++r) {
+                const int src = T - NG_HIST + r;   // row r of the new history: chunk row src, or the old history
+                col[r] = src >= 0 ? nw[(size_t) src * NG_HC_DIM + c] : hist[(size_t) c * NG_HIST + (size_t) (r + T)];
+            }
+            std::memcpy(hist + (size_t) c * NG_HIST, col, sizeof col);
+        }
+    }
+    if (T >= 2) { ss.ple_prev[0] = tokens[T - 2]; ss.ple_prev[1] = tokens[T - 1]; }
+    else { ss.ple_prev[0] = ss.ple_prev[1]; ss.ple_prev[1] = tokens[0]; }
+    mtp_src_ = &p.R;   // the draft layer's prompt K/V read this chunk's final rows
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------- the hook's entry points
 namespace {
 std::string g_shard1;
@@ -1617,6 +2078,23 @@ bool mtp_load_pending(Window* w, std::string& err) {
 bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
                 const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
+    {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
+        const char* em = std::getenv("STRATA_METAL_PROMPT_GEMM_MIN");
+        const int64_t mn = em ? std::atoll(em) : 64;
+        if (!(e && std::string(e) == "0") && n >= mn) {
+            if (!g_window->prompt_gemm_init(err)) return false;
+            const int C = g_window->prompt_chunk_rows();
+            std::vector<int32_t> tk32((size_t) C);
+            for (int64_t c = 0; c < n; c += C) {
+                const int k = (int) std::min<int64_t>(C, n - c);
+                for (int i = 0; i < k; ++i) tk32[(size_t) i] = (int32_t) tokens[c + i];
+                if (!g_window->prompt_chunk(tk32.data(), k, pos0 + c, err)) return false;
+                if (on_chunk && !on_chunk(nullptr, k, pos0 + c, err)) return false;
+            }
+            return true;
+        }
+    }
     int32_t tk[MAXT], out[MAXT];
     for (int64_t c = 0; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);

@@ -173,7 +173,7 @@ void ExpertStream::lru_front(int s) {
 int ExpertStream::victim(int ci) {
     Cls& k = cls_[(size_t) ci];
     for (int s = k.tail; s >= 0; s = slots_[(size_t) s].prev)
-        if (slots_[(size_t) s].state.load() == 0) {
+        if (slots_[(size_t) s].state.load() == 0 && slots_[(size_t) s].pin != stamp_) {
             Slot& x = slots_[(size_t) s];
             if (x.layer >= 0) {
                 const int key = x.layer * NE + x.e;
@@ -418,6 +418,7 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
             const int s = victim(lay_[(size_t) ln].cls);
             if (s < 0) break;
             submit(s, ln, pw[j].second, false);
+            slots_[(size_t) s].pin = stamp_;
             lru_front(s);
             ++pre_issued_;
             any = true;
@@ -428,15 +429,17 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
 
 void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2) {
     const double t0 = now_ms();
-    if (l == 0) ++windows_;
-    int want[8 * 16];
+    const bool prompt = T > 8;   // a prompt chunk (the GEMM path): nearly every expert of the layer is used
+    if (l == 0) { if (prompt) ++p_chunks_; else ++windows_; }
+    ++stamp_;                    // the slots this layer uses are pinned until the next handshake
+    bool used[NE] = {};
+    int want[NE];
     int nw = 0;
     for (int i = 0; i < T * topk; ++i) {
         const int e = ids[i];
-        if (e < 0 || e >= NE) continue;
-        bool dup = false;
-        for (int j = 0; j < nw; ++j) dup |= want[j] == e;
-        if (!dup) want[nw++] = e;
+        if (e < 0 || e >= NE || used[e]) continue;
+        used[e] = true;
+        want[nw++] = e;
     }
     if (fake_) {
         for (int j = 0; j < nw; ++j)
@@ -452,35 +455,36 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             std::vector<int> drop;
             for (const Job& j : pre_q_) {
                 if (j.layer > l || slots_[(size_t) j.slot].state.load() != 1) continue;
-                bool w = false;
-                for (int q = 0; q < nw; ++q) w |= j.layer == l && want[q] == j.e;
-                if (!w && std::find(drop.begin(), drop.end(), j.slot) == drop.end()) drop.push_back(j.slot);
+                if (!(j.layer == l && used[j.e]) && std::find(drop.begin(), drop.end(), j.slot) == drop.end()) drop.push_back(j.slot);
             }
             for (int s : drop) cancel_slot(s);
         }
         for (int j = 0; j < nw; ++j) {
             const int e = want[j], key = l * NE + e;
-            ++lookups_;
+            uint64_t& lk = prompt ? p_lookups_ : lookups_;
+            ++lk;
             int s = where_[(size_t) key];
             if (s >= 0) {
                 Slot& x = slots_[(size_t) s];
+                x.pin = stamp_;
                 const int st = x.state.load();
-                if (st == 0) { if (x.pre) ++pre_hits_; else ++hits_; }
+                if (st == 0) { if (x.pre) ++(prompt ? p_pre_ : pre_hits_); else ++(prompt ? p_hits_ : hits_); }
                 else {
-                    ++pre_hits_;
-                    ++late_;
+                    ++(prompt ? p_pre_ : pre_hits_);
+                    if (!prompt) ++late_;
                     promote_slot(s);   // a queued read-ahead becomes urgent
                     wait.push_back(s);
                 }
+                if (!(prompt && x.pre)) lru_front(s);   // a prompt's streamed experts stay at the LRU tail
                 x.pre = false;
-                lru_front(s);
                 continue;
             }
-            ++misses_;
+            ++(prompt ? p_misses_ : misses_);
             s = victim(lay_[(size_t) l].cls);
             if (s < 0) { std::fprintf(stderr, "strata metal stream: no free slot (layer %d)\n", l); std::exit(6); }
             submit(s, l, e, true);
-            lru_front(s);
+            slots_[(size_t) s].pin = stamp_;
+            if (!prompt) lru_front(s);
             wait.push_back(s);
         }
     }
@@ -492,7 +496,28 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             for (int s : wait) if (slots_[(size_t) s].state.load() != 0) return false;
             return true;
         });
-        wait_ms_ += now_ms() - tw;
+        (prompt ? p_wait_ms_ : wait_ms_) += now_ms() - tw;
+    }
+    if (prompt) {
+        // a chunk uses nearly all of the next layer's experts: every one not in the arena is streamed in behind this
+        // layer's compute, into the LRU tail (the decode-hot experts stay)
+        if (l + 1 < NL) {
+            bool any = false;
+            std::lock_guard<std::mutex> g(mu_);
+            const int ln = l + 1;
+            for (int e = 0; e < NE; ++e) {
+                if (where_[(size_t) (ln * NE + e)] >= 0) continue;
+                const int s = victim(lay_[(size_t) ln].cls);
+                if (s < 0) break;
+                submit(s, ln, e, false);
+                slots_[(size_t) s].pin = stamp_;
+                ++p_streamed_;
+                any = true;
+            }
+            if (any) cv_.notify_all();
+        }
+        (prompt ? p_host_ms_ : host_ms_) += now_ms() - t0;
+        return;
     }
     // read-ahead: layer l + 1 (each token's top pre_k_ of the predicted router logits), then layer l + 2 (top pre_k2_)
     if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
@@ -502,6 +527,8 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
 
 void ExpertStream::reset_stats() {
     lookups_ = hits_ = pre_hits_ = late_ = misses_ = pre_issued_ = pre_cancel_ = windows_ = 0;
+    p_lookups_ = p_hits_ = p_pre_ = p_misses_ = p_streamed_ = p_chunks_ = 0;
+    p_wait_ms_ = p_host_ms_ = 0;
     bytes_read_ = 0;
     reads_ = 0;
     wait_ms_ = host_ms_ = 0;
@@ -509,6 +536,13 @@ void ExpertStream::reset_stats() {
 
 void ExpertStream::report(FILE* f) const {
     if (!ready()) return;
+    if (p_chunks_)
+        std::fprintf(f, "expert stream prompts    %llu chunks: %llu distinct lookups (%.1f per layer), in the arena %.4f, streamed "
+                        "ahead %.4f, missed %.4f; %llu streamed in; host %.1f ms per chunk, of it waiting %.1f ms\n",
+                     (unsigned long long) p_chunks_, (unsigned long long) p_lookups_, p_lookups_ / 48.0 / p_chunks_,
+                     p_hits_ / std::max(1.0, (double) p_lookups_), p_pre_ / std::max(1.0, (double) p_lookups_),
+                     p_misses_ / std::max(1.0, (double) p_lookups_), (unsigned long long) p_streamed_, p_host_ms_ / p_chunks_,
+                     p_wait_ms_ / p_chunks_);
     const double w = std::max<uint64_t>(1, windows_);
     std::fprintf(f,
                  "expert stream            %llu windows: %llu distinct lookups (%.1f per window), hits %.4f, read-ahead hits "
