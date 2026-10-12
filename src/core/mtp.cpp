@@ -649,7 +649,34 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
             dvocab_host_.resize((size_t) n_dvocab_);
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());
-            strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+            const int head_dev = head->device();
+            if (head_dev >= 0 && head_dev != device_) {
+                // the main head is on another card (the drafter on the first stage of a layer split, 0.1.44): the rows are
+                // gathered where the head is and the subset copied over once
+                void* tmp = nullptr;
+                int32_t* dv = nullptr;
+                bool ok_x = true;
+                {
+                    const OnDevice on_head(head_dev);
+                    ok_x = cudaMalloc((void**) &tmp, (size_t) (n_dvocab_ * row_bytes)) == cudaSuccess &&
+                           cudaMalloc((void**) &dv, raw.size()) == cudaSuccess &&
+                           cudaMemcpy(dv, raw.data(), raw.size(), cudaMemcpyHostToDevice) == cudaSuccess;
+                    if (ok_x) {
+                        strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dv, n_dvocab_,
+                                                     (uint8_t*) tmp, nullptr);
+                        ok_x = cudaDeviceSynchronize() == cudaSuccess;
+                    }
+                }
+                ok_x = ok_x && cudaMemcpy(dhead_, tmp, (size_t) (n_dvocab_ * row_bytes), cudaMemcpyDeviceToDevice) == cudaSuccess;
+                {
+                    const OnDevice on_head(head_dev);
+                    if (tmp) cudaFree(tmp);
+                    if (dv) cudaFree(dv);
+                }
+                if (!ok_x) { err = "mtp: the draft head's rows could not be copied from the head's card"; return false; }
+            } else {
+                strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+            }
             cudaDeviceSynchronize();
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
@@ -1387,6 +1414,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 
 bool MtpDrafter::stage_source_R(int T, std::string& err) {
     if (src_R_ == nullptr || src_R_ == window_R_) return true;
+    const Clock::time_point t_src = Clock::now();
+    struct SrcTime { MtpDrafter& d; Clock::time_point t; ~SrcTime() { d.ms_src += ms_since(t); ++d.n_src; } } src_time{*this, t_src};
     if (cudaMemcpyAsync((void*) window_R_, src_R_, (size_t) T * (size_t) (g_->hc * g_->n_embd) * sizeof(float),
                         cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
         err = "mtp: staging the window's residual rows failed";

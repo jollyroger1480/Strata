@@ -145,6 +145,8 @@ public:
     const float* chain_prob() const { return chain_prob_; }
 
     double ms_draft = 0, ms_prefill = 0;
+    double ms_src = 0;      ///< the host time spent staging the source rows (a cross-card copy when the drafter is on another card)
+    int64_t n_src = 0;
     int64_t rounds = 0;
 
     /// E-9: the prompt path computes this layer's prompt K/V in batches (Prefill::draft_kv): its tensors, its K/V

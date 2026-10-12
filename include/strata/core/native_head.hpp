@@ -26,6 +26,8 @@ public:
     /// Plan v0.3 P6: the GGUF blocks, for the verify window's multi-column head.
     const void* weights() const { return weights_; }
     int type() const { return type_; }
+    /// The device whose memory holds the weights (the one current when `load` ran; -1 before).
+    int device() const { return device_; }
     /// Bytes of one vocabulary row.
     size_t row_bytes() const { return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0; }
 
@@ -35,6 +37,7 @@ private:
     uint64_t bytes_ = 0;
     int n_in_ = 0, n_out_ = 0;
     int type_ = -1;
+    int device_ = -1;
 };
 
 /// Plan v0.3 P6: `token_embd.weight` in its GGUF form (the IQ model files), in mapped pinned host memory: a row

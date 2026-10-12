@@ -531,6 +531,7 @@ struct Options {
     int64_t prefill_auto_cap = 0;
     /// a bare `--prefill auto` (no ":N", no STRATA_PREFILL_AUTO_MAX): the gfx12 Linux rule below may raise its ceiling
     bool prefill_auto_bare = false;
+    bool prefill_gfx12_16k = false;   ///< the gfx12 default raised the auto chunk ceiling to 16384 (a layer split takes 8192 back, 0.1.44)
     bool no_split_rows = false;        ///< plan v0.3 P4 A/B: one whole expert per pool thread
     /// Plan v0.3 P5: the prompt path borrows the top expert-cache slots for its buffers and refills them after
     /// the prompt (default); `--no-prefill-borrow` reserves the buffers' VRAM for the whole session instead.
@@ -786,7 +787,7 @@ void usage() {
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
-                 "  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 3+ stages on AMD gfx12;\n"
+                 "  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 2+ stages on AMD gfx12;\n"
                  "                       STRATA_PIPELINE_AUTO=0 or N=0 turns it off): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
@@ -1588,6 +1589,16 @@ static bool pcie_auto_split_ok() {
 #endif
 }
 
+/// 0.1.44: the pipelined decode puts the drafter on the first stage's card by default where it was measured (gfx12; the HIP builds
+/// only).  STRATA_MTP_STAGE0=0 / 1 decides either way.
+[[maybe_unused]] static bool mtp_first_default_on() {
+#if defined(STRATA_USE_HIP)
+    return decode_defaults_arch_ok();
+#else
+    return false;
+#endif
+}
+
 // The effective host->device bandwidth of the PCIe link: copies from pinned host memory, as the expert arena's
 // reads are.  The native default share (0.55) was measured on x16 links (~26-28 GB/s); a x8 card in a x8 slot
 // carries about half of that.  Returns < 0 when the probe cannot run (then the caller keeps the default).
@@ -2179,6 +2190,7 @@ int main(int argc, char** argv) {
             cudaGetDeviceProperties(&cp, 0) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(cp.gcnArchName)) {
             o.prefill_auto_max = 16384;
             o.prefill_chunk = 16384;
+            o.prefill_gfx12_16k = true;
             std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)\n");
         }
         (void) cudaGetLastError();
@@ -3370,11 +3382,22 @@ int main(int argc, char** argv) {
     // 0.1.43: not asked for (-1) = on (2) for gfx12 layer splits of three or more stages, where it was measured (4x R9700);
     // with two stages it loses (the drafter's chain shares the last card with its window).  STRATA_PIPELINE_AUTO=0 keeps
     // it off, --pipeline-windows N asks for it as before.  Anything it does not support leaves it off, said nothing.
+    // 0.1.44: the drafter can sit on the first stage's card (see mtp_first below) when its draft head is the subset file: the main head
+    // stays on the last card and only the subset's rows are copied over once
+    const bool mtp_first_ok = [&] {
+        if (o.mtp.empty() || o.spec < 2) return false;
+        if (const char* fh = std::getenv("STRATA_MTP_FULL_HEAD"); fh != nullptr && fh[0] == '1') return false;
+        std::error_code ec;
+        return o.mtp_draft_vocab.empty() ? std::filesystem::exists(std::filesystem::path(o.mtp) / "draft_vocab.bin", ec)
+                                         : std::filesystem::exists(o.mtp_draft_vocab, ec);
+    }();
     const bool pw_auto = o.pipeline_windows < 0;
     if (pw_auto) {
         static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
         static const char* am = std::getenv("STRATA_PIPELINE_AUTO_MIN_STAGES");
-        const size_t min_st = am != nullptr ? (size_t) std::max(2, std::atoi(am)) : 3;
+        // two stages pay off only with the drafter on the first card (0.1.44, mtp_first): its chain no longer shares the last card with the window
+        const size_t min_st = am != nullptr ? (size_t) std::max(2, std::atoi(am))
+                                            : (mtp_first_ok && mtp_first_default_on() ? 2 : 3);
         bool on = o.serve && multi_gpu && !split_same && split_devs.size() + 1 >= min_st && !(ae != nullptr && std::atoi(ae) == 0);
 #if defined(STRATA_USE_HIP)
         on = on && decode_defaults_arch_ok();
@@ -3506,6 +3529,16 @@ int main(int argc, char** argv) {
         }
     }
     GpuStage* const last_st = stages.empty() ? nullptr : stages.back().get();
+    // 0.1.44: the drafter on the FIRST stage's card, for a two-stage pipelined decode.  Its chain then runs while that card is idle
+    // (stage 0 has finished the window the chain follows), not beside the last stage's window on the last card, where the two
+    // streams share the card and each takes ~2x as long (stage-1 window 11 -> 25 ms, chain 7 -> 21 ms, 2x R9700).  The chain's
+    // source rows are copied over once per chain (stage_source_R), the draft head's rows once at load.
+    const bool mtp_first = [&] {
+        if (!mtp_first_ok || o.pipeline_windows < 2 || stages.empty() || o.batch != 0) return false;
+        const char* e = std::getenv("STRATA_MTP_STAGE0");
+        if (e != nullptr) return std::atoi(e) != 0;   // 0 keeps the drafter on the last card, 1 asks for the first
+        return mtp_first_default_on();
+    }();
 
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!o.expert_profile.empty()) {
@@ -3677,7 +3710,7 @@ int main(int argc, char** argv) {
         std::vector<double> layer_ms((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, i + 1 == ns, true);
+            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, mtp_first ? i == 0 : i + 1 == ns, true);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
@@ -4466,12 +4499,12 @@ int main(int argc, char** argv) {
         // the draft layer is the canonical model's MTP head (512 experts) even when the target is pruned,
         // so it always sees the canonical geometry; `static` because MtpDrafter keeps a reference
         // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device
-        const strata::core::OnDevice on_mtp(last_st ? last_st->dev : -1);
+        const strata::core::OnDevice on_mtp(last_st && !mtp_first ? last_st->dev : -1);
         // --pipeline-windows 2: 8 rows (the chain runs on past the window in flight: its drafts, its bonus token and
         // the next window's drafts), and the round/step graphs carry the forcing kernel
         const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyMaxT : o.spec;
         if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
-        if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
+        if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
         mtp.set_ple_session(&ss);
         if (batch_mtp) {
             // Slot b's drafter lives where the solo drafter does (the guard above: the last stage's GPU), carved from the
@@ -4868,7 +4901,8 @@ int main(int argc, char** argv) {
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
-                               ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
+                               ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab)
+                               : (mtp_first && last_st->head.loaded()) ? (int64_t) mtp.bind_bytes(last_st->head.row_bytes(), n_vocab) : 0;
         // (with a layer split the slot drafters bind on the last stage, whose cache is sized from what is free there)
         if (stages.empty())
             for (const auto& d : slot_mtp)
@@ -6335,6 +6369,17 @@ int main(int argc, char** argv) {
     // IQ2_XS (RTX 5090, 64K context) read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K
     // -> 18K experts streamed; an NVFP4 pack at 262K: 3,535 -> 5,201).
     int64_t auto_ceiling = std::max<int64_t>(8192, std::min<int64_t>(o.prefill_auto_max, o.max_context));
+    // 0.1.44: a layer split reads a prompt as a pipeline of chunks (the later card reads chunk c while the first reads c+1), so a
+    // 32K prompt in two 16384 chunks fills and drains the pipe for most of its time.  8192 chunks, same tokens: 2x R9700
+    // pp32k +14%, 4x +19%, pp64k +4% / +16%.  STRATA_SPLIT_CHUNK16K=1 keeps the gfx12 16384 ceiling on a split.
+    if (multi_gpu && o.prefill_gfx12_16k) {
+        static const char* keep16 = std::getenv("STRATA_SPLIT_CHUNK16K");
+        if (!(keep16 != nullptr && std::atoi(keep16) != 0)) {
+            auto_ceiling = std::min<int64_t>(auto_ceiling, 8192);
+            o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, 8192);   // the 0.1.39 chunk list reads this one
+            o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, 8192);
+        }
+    }
     if (o.prefill_auto_cap > 0) auto_ceiling = std::min<int64_t>(auto_ceiling, o.prefill_auto_cap);   // #1630
     // The auto scan used to walk a fixed list of sizes - 32768, 16384, 8192, 6144, ... - and take the first that
     // fit.  That list is coarse exactly where a rig needs it: this one affords ~8,700 tokens and was handed 8192,
@@ -7557,8 +7602,16 @@ int main(int argc, char** argv) {
                                  gs.dev, st + 1, err.c_str());
                     return 1;
                 }
-                if (last && cudaMalloc((void**) &pl_mtp_R, (size_t) strata::kernels::kVerifyMaxT * (size_t) (g.hc * g.n_embd) *
+                if (last && !mtp_first && cudaMalloc((void**) &pl_mtp_R, (size_t) strata::kernels::kVerifyMaxT * (size_t) (g.hc * g.n_embd) *
                                                                sizeof(float)) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: --pipeline-windows: the drafter's row buffer does not fit\n");
+                    return 1;
+                }
+            }
+            if (mtp_first) {   // the drafter's row buffer on its own card (the first)
+                const strata::core::OnDevice on_m(mtp.device());
+                if (cudaMalloc((void**) &pl_mtp_R, (size_t) strata::kernels::kVerifyMaxT * (size_t) (g.hc * g.n_embd) *
+                                                       sizeof(float)) != cudaSuccess) {
                     std::fprintf(stderr, "strata serve: --pipeline-windows: the drafter's row buffer does not fit\n");
                     return 1;
                 }
@@ -7575,7 +7628,7 @@ int main(int argc, char** argv) {
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
-            (use_mtp && !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
+            (use_mtp && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
                                   pipe ? pl_mtp_R : ver.final_R_all(), err))) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
@@ -7870,8 +7923,8 @@ int main(int argc, char** argv) {
             const size_t n_st = stages.size();
             // the draft layer's K/V lives on the last stage's GPU (the drafter is loaded there): with a split it is
             // saved with that stage's image, under its device; stage 0's image holds none
-            const strata::core::QsaState* draft0 = n_st > 0 || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
-            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
+            const strata::core::QsaState* draft0 = (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
+            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && !mtp_first && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
             strata::core::ConversationCheckpointSplit cs;
             if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);   // #752: two-phase; a bad_alloc leaves `checks` whole
             struct MergeBack {
@@ -8136,7 +8189,7 @@ int main(int argc, char** argv) {
             // E-9: batched through the prompt path when it can (a layer split: only with STRATA_SPLIT_MTP_BATCH=1)
             bool batched = false;
             const strata::program::draft_kv::Plan dkv = strata::program::draft_kv::plan(
-                use_mtp, multi_gpu, split_mtp_batch, strata::core::native_embed() != nullptr);
+                use_mtp, multi_gpu, split_mtp_batch && !mtp_first, strata::core::native_embed() != nullptr);
             if (dkv.try_batched || dkv.why != nullptr) {
                 strata::prefill::Prefill& dsp = multi_gpu ? stages.back()->sp : sp;   // the drafter's stage
                 const char* why = dkv.why;
@@ -8284,6 +8337,37 @@ int main(int argc, char** argv) {
             pcie_auto.link_gbps = o.pcie_probe_gbps;
             pcie_auto.blob_bytes = g.n_layers > 0 ? sum / (double) g.n_layers : 0.0;
         }
+        // PcieAuto after a decode window (the serial loop, and 0.1.44 the pipelined one at every verdict): the share, refined from
+        // the CPU pool's speed.  A layer split: every later stage takes the share its own probed link gives against the same pool
+        // rate, on both parities' routing (the pipelined loop's second verifier).
+        auto pcie_auto_step = [&](double& req_pcie_frac) {
+            if (!pcie_auto.on) return;
+            double tc_us = 0.0, rate = 0.0;
+            const double nf = req_pcie_frac == o.pcie_frac
+                                  ? pcie_auto.window(drive.d.ms_run, drive.d.multi_misses, o.pcie_frac, &tc_us, &rate)
+                                  : (pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses), -1.0);
+            if (nf < 0.0) return;
+            std::fprintf(stderr, "strata serve: PCIe share: the CPU pool takes %.0f us per missed expert (%.1f GB/s of expert bytes), "
+                                 "the link %.1f GB/s -> pcie_frac %.2f (was %.2f; --pcie-frac N fixes it, "
+                                 "STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)\n",
+                         tc_us, rate, pcie_auto.link_gbps, nf, o.pcie_frac);
+            o.pcie_frac = nf;
+            req_pcie_frac = nf;
+            const auto num_of = [](double f) { return std::max(0, std::min(256, (int) (f * 256.0 + 0.5))); };
+            drive.d.pcie_num = num_of(nf);
+            split_drive.pcie_num[0] = drive.d.pcie_num;
+            split_drive_b.pcie_num[0] = drive.d.pcie_num;
+            for (int st = 1; st < n_stages; ++st) {
+                GpuStage& gs = *stages[(size_t) st - 1];
+                if (!(gs.link_gbps > 0.0)) continue;
+                gs.pcie_frac = std::min(0.60, std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
+                                   PcieAuto::kPoolFactor * rate) * 20.0) / 20.0));
+                split_drive.pcie_num[st] = num_of(gs.pcie_frac);
+                split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
+                std::fprintf(stderr, "strata serve: PCIe share: stage %d (link %.1f GB/s) -> pcie_frac %.2f\n", st + 1,
+                             gs.link_gbps, gs.pcie_frac);
+            }
+        };
         // #477 --expert-profile-save: what the adaptive tier learned, kept across restarts (opt-in; off: `heat` stays
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
@@ -10353,7 +10437,7 @@ int main(int argc, char** argv) {
             if (incoming) for (size_t i = 0; i < stages.size(); ++i) {
                 const strata::core::OnDevice on(stages[i]->dev);
                 if (!strata::core::conversation_snapshot_validate(incoming->stage_images[i], stages[i]->ss, g,
-                        use_mtp && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
+                        use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
                     std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage snapshot (%s)\n",
                                  err.c_str());
                     incoming.reset();
@@ -10362,7 +10446,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
-                    use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err)) {
+                    use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
@@ -10427,7 +10511,7 @@ int main(int argc, char** argv) {
             if (incoming) {
                 const auto t0 = Clock::now();
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
-                        use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err) !=
+                        use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
@@ -10437,7 +10521,7 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < stages.size(); ++i) {   // the later stages' parts
                     const strata::core::OnDevice on(stages[i]->dev);
                     if (strata::core::conversation_snapshot_restore(incoming->stage_images[i], stages[i]->ss, g,
-                            use_mtp && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
+                            use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
                         strata::core::ConversationRestore::restored) {
                         std::printf("ERR restoring parked conversation (stage CUDA%d): %s\n", stages[i]->dev,
                                     err.c_str());
@@ -10447,8 +10531,8 @@ int main(int argc, char** argv) {
                 }
                 if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
-                    const auto& draft_kv = stages.empty() ? incoming->kv.back() : incoming->stage_images.back().kv.back();
-                    const strata::core::OnDevice on_d(stages.empty() ? 0 : stages.back()->dev);
+                    const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();
+                    const strata::core::OnDevice on_d(stages.empty() || mtp_first ? 0 : stages.back()->dev);
                     if (!strata::core::conversation_kv_verify(draft_kv, mtp.kv_state(), g,
                             int64_t(incoming->live.ids.size()), false, draft_hash, err)) {
                         std::printf("ERR verifying restored draft KV: %s\n", err.c_str());
@@ -11767,6 +11851,7 @@ int main(int argc, char** argv) {
                     }
                     x = outp[(size_t) a];
                     p = A.p + a + 1;
+                    pcie_auto_step(req_pcie_frac);   // 0.1.44: the measured share in the pipelined loop too (STRATA_PCIE_AUTO_SPLIT=1 on a split)
                     if (!last && !ajob && !pl_adapt()) return die("an adaptive refill failed");
                     if (on && !last) {
                         ++pl_on;
@@ -11858,6 +11943,9 @@ int main(int argc, char** argv) {
                                  cls_n[0], avg(cls_ms[0], cls_n[0]), avg(cls_tok[0], cls_n[0]), cls_n[1],
                                  avg(cls_ms[1], cls_n[1]), avg(cls_tok[1], cls_n[1]), (long long) pl_disagree,
                                  (long long) pl_late);
+                    std::fprintf(stderr, "strata pipeline: drafter on CUDA%d: %.3f ms of host time per chain launch (%.3f ms of it "
+                                         "staging the source rows, %lld times so far)\n", mtp.device(),
+                                 avg(mtp.ms_draft, (double) mtp.rounds), avg(mtp.ms_src, (double) mtp.n_src), (long long) mtp.n_src);
                     std::string cal;
                     char b[48];
                     for (int i = 0; i < 10; ++i)
@@ -12038,32 +12126,7 @@ int main(int argc, char** argv) {
                     dt_run += msd(tw0, tw1); dt_commit += msd(tw1, tw2); dt_draft += msd(tw2, tw3);
                     ++dec_windows; dec_T += T;
                 }
-                if (pcie_auto.on) {   // the default share, refined from the CPU pool's speed (PcieAuto); a request's own share is left alone
-                    double tc_us = 0.0, rate = 0.0;
-                    const double nf = req_pcie_frac == o.pcie_frac
-                                          ? pcie_auto.window(drive.d.ms_run, drive.d.multi_misses, o.pcie_frac, &tc_us, &rate)
-                                          : (pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses), -1.0);
-                    if (nf >= 0.0) {
-                        std::fprintf(stderr, "strata serve: PCIe share: the CPU pool takes %.0f us per missed expert (%.1f GB/s of expert bytes), "
-                                             "the link %.1f GB/s -> pcie_frac %.2f (was %.2f; --pcie-frac N fixes it, "
-                                             "STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)\n",
-                                     tc_us, rate, pcie_auto.link_gbps, nf, o.pcie_frac);
-                        o.pcie_frac = nf;
-                        req_pcie_frac = nf;
-                        drive.d.pcie_num = std::max(0, std::min(256, (int) (nf * 256.0 + 0.5)));
-                        // a layer split: every later stage takes the share its own probed link gives against the same pool rate
-                        split_drive.pcie_num[0] = drive.d.pcie_num;
-                        for (int st = 1; st < n_stages; ++st) {
-                            GpuStage& gs = *stages[(size_t) st - 1];
-                            if (!(gs.link_gbps > 0.0)) continue;
-                            gs.pcie_frac = std::min(0.60, std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
-                                               PcieAuto::kPoolFactor * rate) * 20.0) / 20.0));
-                            split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
-                            std::fprintf(stderr, "strata serve: PCIe share: stage %d (link %.1f GB/s) -> pcie_frac %.2f\n", st + 1,
-                                         gs.link_gbps, gs.pcie_frac);
-                        }
-                    }
-                }
+                pcie_auto_step(req_pcie_frac);   // the default share, refined from the CPU pool's speed (PcieAuto); a request's own share is left alone
                 if (adapt_thr.joinable()) adapt_thr.join();
                 if (!adapt_ok) {
                     std::printf("ERR an adaptive refill failed\n");
