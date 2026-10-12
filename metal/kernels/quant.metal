@@ -26,10 +26,12 @@
 #define T_IQ2_S 22
 #define T_IQ4_XS 23
 #define T_Q2_0 42
+#define T_Q2_0R 142   // Q2_0 read with raw activations (codes - 1 in the decoder; no prepared x needed)
 
 template <int F> struct fmt;
 // QK block elements, BB block bytes, UNIT weights per unit, TAB words of threadgroup table
 template <> struct fmt<T_Q2_0>    { enum { QK = 64,  BB = 18,  UNIT = 16, TAB = 1 }; };
+template <> struct fmt<T_Q2_0R>   { enum { QK = 64,  BB = 18,  UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_IQ3_XXS> { enum { QK = 256, BB = 98,  UNIT = 16, TAB = 256 + 32 }; };
 template <> struct fmt<T_IQ2_XXS> { enum { QK = 256, BB = 66,  UNIT = 16, TAB = 512 + 32 }; };
 template <> struct fmt<T_IQ2_XS>  { enum { QK = 256, BB = 74,  UNIT = 16, TAB = 1024 + 32 }; };
@@ -57,6 +59,7 @@ static inline float rdh(device const uchar* p) { return float(*(device const hal
 template <int F> static inline void load_tab(threadgroup uint* tab, ushort tid, ushort nth);
 
 template <> inline void load_tab<T_Q2_0>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_Q2_0R>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q8_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q4_0>(threadgroup uint*, ushort, ushort) {}
 template <> inline void load_tab<T_Q5_0>(threadgroup uint*, ushort, ushort) {}

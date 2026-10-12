@@ -87,6 +87,8 @@ public:
     // Indirect command buffer: the dispatches recorded once, executed `reps` times in one command buffer.
     // Buffers are bound per command (setKernelBuffer); inline bytes are not allowed (use buffers).
     double run_icb(const std::vector<Dispatch>& ds, int reps, bool barrier_between);
+    // Runs `ds` repeatedly for about `seconds` of wall time: lifts the GPU out of its idle clocks before a timing.
+    void warm(const std::vector<Dispatch>& ds, double seconds = 0.3);
 
     std::string ggml_common_path;                // where ggml-common.h is read from
     std::string kernel_dir;                      // where relative kernel paths resolve

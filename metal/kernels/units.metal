@@ -133,6 +133,21 @@ template <> struct Dec<T_Q2_0> {
     }
 };
 
+// Q2_0 with raw x: q = c - 1 (shift, and, convert, subtract), one scale
+template <> struct Dec<T_Q2_0R> {
+    static inline void run(device const uchar* row, int u, thread float* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 2) * 18;
+        device const ushort* p = (device const ushort*)(b + 2 + 4 * (u & 3));
+        const ushort a = p[0], c = p[1];
+        for (int j = 0; j < 8; ++j) {
+            q[j] = float((a >> (2 * j)) & 3) - 1.0f;
+            q[8 + j] = float((c >> (2 * j)) & 3) - 1.0f;
+        }
+        const float d = rdh(b);
+        sc = float4(d, d, 0.0f, 0.0f);
+    }
+};
+
 static inline void scale_min_k4(int j, device const uchar* q, thread float& d, thread float& m) {
     if (j < 4) {
         d = float(q[j] & 63);

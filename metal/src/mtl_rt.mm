@@ -229,6 +229,11 @@ double Context::run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_
     return now_s() - t0;
 }
 
+void Context::warm(const std::vector<Dispatch>& ds, double seconds) {
+    const double t0 = now_s();
+    while (now_s() - t0 < seconds) run(ds);
+}
+
 double Context::run_icb(const std::vector<Dispatch>& ds, int reps, bool barrier_between) {
     @autoreleasepool {
         size_t maxb = 1;

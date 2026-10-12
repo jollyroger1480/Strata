@@ -118,6 +118,7 @@ mtl::Dispatch prep_dispatch(const mtl::Pipeline& p, const mtl::Buffer& x, const 
 }
 
 int g_gu_type = 0, g_dn_type = 0;
+bool g_dn_prep = false;   // Q2_0 down: prepared h (an xprep dispatch) instead of the raw-x decoder
 const mtl::Buffer* g_xpx = nullptr;
 const mtl::Buffer* g_xph = nullptr;
 
@@ -145,11 +146,12 @@ void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::B
         ds.push_back(d);
     }
     if (with_dn) {
-        if (xkind(g_dn_type)) ds.push_back(prep_dispatch(K.prep, h, XPH, N_FF, CAPE));
+        const int dk = g_dn_prep ? xkind(g_dn_type) : 0;
+        if (dk) ds.push_back(prep_dispatch(K.prep, h, XPH, N_FF, CAPE));
         mtl::Dispatch d;
         d.p = &K.dn;
         d.args = {mtl::Arg::B(W, w_off),
-                  xkind(g_dn_type) ? mtl::Arg::B(XPH, 4 * PLANE_H * xkind(g_dn_type)) : mtl::Arg::B(h), mtl::Arg::B(ye),
+                  dk ? mtl::Arg::B(XPH, 4 * PLANE_H * dk) : mtl::Arg::B(h), mtl::Arg::B(ye),
                   mtl::Arg::B(plan, plan_off), mtl::Arg::V(a), mtl::Arg::B(XPH, 4 * PLANE_H * 4)};
         d.tg[0] = K.cdn.S * 32;
         d.indirect = &plan;
@@ -204,6 +206,7 @@ int main(int argc, char** argv) {
         else if (a == "--layers") layers = std::atoi(nx());
         else if (a == "--reps") reps = std::atoi(nx());
         else if (a == "--share") share = std::atof(nx());
+        else if (a == "--dn-prep") g_dn_prep = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     (void)cfg_gu_set;
@@ -221,7 +224,7 @@ int main(int argc, char** argv) {
         K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
         K.gu = cx.pipeline(lib, kname("moe_gu", gu, a));
-        K.dn = cx.pipeline(lib, kname("moe_down", dn, b));
+        K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;
         return K;
@@ -386,6 +389,7 @@ int main(int argc, char** argv) {
             for (auto& z : d) dall.push_back(z);
         }
         cx.run(dp);   // plans in place
+        cx.warm(dall, 0.1);
         std::vector<double> tp, tg, td, ta;
         for (int it = 0; it < 7; ++it) {
             tp.push_back(cx.run(dp) / reps);

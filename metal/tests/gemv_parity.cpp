@@ -239,7 +239,7 @@ int main(int argc, char** argv) {
                     d.tg[0] = c.S * 32;
                     ds.push_back(d);
                 }
-                cx.run(ds);
+                cx.warm(ds, 0.05);
                 std::vector<double> t;
                 for (int i = 0; i < 5; ++i) t.push_back(cx.run(ds) / R);
                 const double m = median(t);
