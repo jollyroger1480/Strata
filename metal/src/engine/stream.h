@@ -57,6 +57,10 @@ public:
     // pred2: layer l + 2's, from the same input (STRATA_METAL_PREFETCH2 = its top-k, 0 = off)
     void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr);
     int ahead2() const { return pre_k2_; }
+    // a prompt's scratch buffers inside the arena: region() places them (once), hold_region() empties and holds its
+    // slots while a prompt runs and gives them back after
+    uint8_t* region(uint64_t bytes);
+    void hold_region(bool hold);
     void report(FILE* f) const;
     void reset_stats();
 
@@ -84,6 +88,9 @@ private:
     std::vector<Slot> slots_;
     std::vector<int32_t> where_;      // (l * 512 + e) -> slot, -1
     std::vector<mtl::Buffer> chunks_;
+    std::vector<int> region_slots_;
+    uint8_t* region_ = nullptr;
+    uint64_t region_bytes_ = 0;
     std::vector<uint32_t> code_;      // slot -> its smap value (chunk << 28 | page)
     std::vector<uint8_t*> host_;      // slot -> its CPU address
     mtl::Buffer smap_;

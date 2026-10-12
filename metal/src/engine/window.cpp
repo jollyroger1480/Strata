@@ -211,6 +211,7 @@ public:
     bool prompt_gemm_init(std::string& err);
     bool prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err);
     int prompt_chunk_rows() const;
+    void prompt_region(bool hold) { if (stream_ && st_ && st_->ready()) st_->hold_region(hold); }
     void stream_report(FILE* f) const {
         if (!st_) return;
         st_->report(f);
@@ -908,16 +909,12 @@ void stream_atexit() {
 }  // namespace
 
 // The arena, once the rest is allocated (the MTP layer loads after init): what the GPU working set and the RAM leave
-// with STRATA_METAL_KEEP_FREE_GB (default 9) kept for macOS; STRATA_METAL_ARENA_GB sets it.
+// with STRATA_METAL_KEEP_FREE_GB (default 7) kept for macOS; STRATA_METAL_ARENA_GB sets it.
 bool Window::stream_arena(std::string& err) {
     uint64_t phys = 0;
     size_t len = sizeof phys;
     sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
     const double gb = 1e9;
-    {
-        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
-        if (!(e && std::string(e) == "0") && !prompt_gemm_init(err)) return false;
-    }
     if (!(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS") && std::string(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS")) == "1")) {
         const uint64_t g = strata::gpu::purge_device_allocations(32u << 20);
         std::fprintf(stderr, "strata metal stream: %.2f GB of the host code's device weight copies given back (unused by the "
@@ -925,7 +922,7 @@ bool Window::stream_arena(std::string& err) {
     }
     const double used = (double) cx_->allocated();
     const char* ek = std::getenv("STRATA_METAL_KEEP_FREE_GB");
-    const double keep = (ek ? std::atof(ek) : 8.0) * gb;
+    const double keep = (ek ? std::atof(ek) : 7.0) * gb;
     // what macOS could give now: free + inactive + speculative + purgeable pages (the file cache is given back)
     double avail = (double) phys - used;
     {
@@ -948,7 +945,10 @@ bool Window::stream_arena(std::string& err) {
     std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena; RAM %.1f GB (%.1f GB available, %.1f GB kept "
                          "for macOS), GPU working set %.1f GB\n", used / gb, phys / gb, avail / gb, keep / gb,
                  cx_->recommended_working_set() / gb);
-    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, pg_ ? 576 : 64, err)) return false;
+    const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
+    const bool pg_on = !(epg && std::string(epg) == "0");
+    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err)) return false;
+    if (pg_on && !prompt_gemm_init(err)) return false;
     g_stream_window = this;
     std::atexit(stream_atexit);
     return true;
@@ -1599,6 +1599,7 @@ bool Window::prompt_gemm_on(int64_t n) const {
 
 bool Window::prompt_gemm_init(std::string& err) {
     if (pg_) return true;
+    if (stream_ && !st_->ready()) return stream_arena(err);   // it makes the prompt buffers after the arena
     const char* ec = std::getenv("STRATA_METAL_PROMPT_CHUNK");
     const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? 1024 : 2048)) / 64 * 64;
     auto pg = std::make_unique<PromptGemm>();
@@ -1618,46 +1619,69 @@ bool Window::prompt_gemm_init(std::string& err) {
     p.maxrows = C * TOPK + NEXP * p.TM;
     p.nblk_max = (C * TOPK + 1023) / 1024;
     const int MB = (int) max_cells_ / 4 + 2;
-    auto F32 = [&](size_t n) { return cx_->alloc(4 * n); };
-    auto F16 = [&](size_t n) { return cx_->alloc(2 * n); };
-    const size_t mr = (size_t) p.maxrows;
-    p.R = F32(MT * HC * N); p.bo = F32(MT * N); p.inj[0] = F32(MT * HC); p.inj[1] = F32(MT * HC); p.xnh = F16(MT * HC * N);
-    p.V = F32(MT * (LR + HC)); p.loh = F16(MT * LR); p.mixed = F32(MT * N); p.mixh = F16(MT * N);
-    p.qkv = F32(MT * 10240); p.z = F32(MT * 6144); p.al = F32(MT * 48); p.be = F32(MT * 48); p.yg = F32(MT * 6144);
-    p.ygh = F16(MT * 6144); p.gqn = F32(MT * 16 * 128); p.gkn = F32(MT * 16 * 128); p.gvc = F32(MT * 6144);
-    p.ggb = F32(MT * 96); p.gkq = F32(MT * 16); p.go = F32(MT * 6144);
-    p.qfull = F32(MT * 12288); p.kcur = F32(MT * 512); p.vcur = F32(MT * 512); p.iqr = F32(MT * 512); p.ikr = F32(MT * 128);
-    p.qcur = F32(MT * 24 * 256); p.qcurh = F16(MT * 24 * 256); p.qidx = F32(MT * 4 * 128); p.scores = F32(MT * (size_t) MB);
-    p.qids = cx_->alloc(4 * MT * 2051);
-    p.part = p.flash ? F32(16) : F32((size_t) p.QS * 33 * 24 * 258);
-    p.XQ = F32(4 * MT * 6144 + 3 * (size_t) p.QS * 6144 + MT * 384); p.xqh = F16(MT * 6144);
-    p.logits = F32(MT * NEXP); p.ids = cx_->alloc(4 * MT * TOPK); p.wts = F32(MT * TOPK);
-    p.bcnt = cx_->alloc(4 * (size_t) p.nblk_max * NEXP); p.boff = cx_->alloc(4 * (size_t) p.nblk_max * NEXP);
-    p.eoff = cx_->alloc(4 * NEXP); p.tiles = cx_->alloc(8 * (mr / p.TM + 1)); p.meta = cx_->alloc(64);
-    p.stok = cx_->alloc(4 * mr); p.sw = F32(mr); p.pos = cx_->alloc(4 * MT * TOPK); p.XS = F16(mr * N); p.HS = F16(mr * NFF);
-    p.YE = F32(mr * N); p.yr = F32(MT * N); p.gsh = F32(MT * NFF); p.ush = F32(MT * NFF); p.hh = F16(MT * NFF);
-    p.ys = F32(MT * N); p.sgv = F32(MT);
-    p.WD = F16((size_t) (LR + HC) * HC * N); p.WU = F16((size_t) HC * N * LR); p.Wqkv = F16((size_t) 10240 * N);
-    p.Wz = F16((size_t) 6144 * N); p.Wal = F16((size_t) 48 * N); p.Wbe = F16((size_t) 48 * N); p.Wout = F16((size_t) N * 6144);
-    p.Wq = F16((size_t) 12288 * N); p.Wk = F16((size_t) 512 * N); p.Wv = F16((size_t) 512 * N); p.Wiq = F16((size_t) 512 * N);
-    p.Wik = F16((size_t) 128 * N); p.Wr = F16((size_t) NEXP * N); p.Wsg = F16((size_t) N); p.Wshg = F16((size_t) NFF * N);
-    p.Wshu = F16((size_t) NFF * N); p.Wshd = F16((size_t) N * NFF);
-    if (ple_on_) {
-        p.emb = F32(MT * N); p.embh = F16(MT * N); p.pkey = F32(MT * 10240); p.pval = F32(MT * N); p.keyn = F32(MT * 10240);
-        p.qn = F32(MT * 10240); p.gated = F32(MT * 10240); p.normW = F32(MT * 10240);
-        p.Wpk = F16((size_t) 10240 * N); p.Wpv = F16((size_t) N * N);
+    // the buffers: measured first, then placed - on a streaming Mac inside the expert arena (a region of its slots
+    // reserved only while a prompt runs: the prompt's scratch costs no decode memory), else allocated
+    uint64_t need = 0;
+    uint8_t* region = nullptr;
+    bool measure = true;
+    auto AB = [&](size_t bytes) -> mtl::Buffer {
+        const size_t b = (bytes + 16383) / 16384 * 16384;
+        if (measure) { need += b; return mtl::Buffer{}; }
+        if (region == nullptr) return cx_->alloc(bytes);
+        mtl::Buffer r = cx_->wrap(region, b);
+        region += b;
+        return r;
+    };
+    auto F32 = [&](size_t n) { return AB(4 * n); };
+    auto F16 = [&](size_t n) { return AB(2 * n); };
+    auto make = [&] {
+        const size_t mr = (size_t) p.maxrows;
+        p.R = F32(MT * HC * N); p.bo = F32(MT * N); p.inj[0] = F32(MT * HC); p.inj[1] = F32(MT * HC); p.xnh = F16(MT * HC * N);
+        p.V = F32(MT * (LR + HC)); p.loh = F16(MT * LR); p.mixed = F32(MT * N); p.mixh = F16(MT * N);
+        p.qkv = F32(MT * 10240); p.z = F32(MT * 6144); p.al = F32(MT * 48); p.be = F32(MT * 48); p.yg = F32(MT * 6144);
+        p.ygh = F16(MT * 6144); p.gqn = F32(MT * 16 * 128); p.gkn = F32(MT * 16 * 128); p.gvc = F32(MT * 6144);
+        p.ggb = F32(MT * 96); p.gkq = F32(MT * 16); p.go = F32(MT * 6144);
+        p.qfull = F32(MT * 12288); p.kcur = F32(MT * 512); p.vcur = F32(MT * 512); p.iqr = F32(MT * 512); p.ikr = F32(MT * 128);
+        p.qcur = F32(MT * 24 * 256); p.qcurh = F16(MT * 24 * 256); p.qidx = F32(MT * 4 * 128); p.scores = F32(MT * (size_t) MB);
+        p.qids = AB(4 * MT * 2051);
+        p.part = p.flash ? F32(16) : F32((size_t) p.QS * 33 * 24 * 258);
+        p.XQ = F32(4 * MT * 6144 + 3 * (size_t) p.QS * 6144 + MT * 384); p.xqh = F16(MT * 6144);
+        p.logits = F32(MT * NEXP); p.ids = AB(4 * MT * TOPK); p.wts = F32(MT * TOPK);
+        p.bcnt = AB(4 * (size_t) p.nblk_max * NEXP); p.boff = AB(4 * (size_t) p.nblk_max * NEXP);
+        p.eoff = AB(4 * NEXP); p.tiles = AB(8 * (mr / p.TM + 1)); p.meta = AB(64);
+        p.stok = AB(4 * mr); p.sw = F32(mr); p.pos = AB(4 * MT * TOPK); p.XS = F16(mr * N); p.HS = F16(mr * NFF);
+        p.YE = F32(mr * N); p.yr = F32(MT * N); p.gsh = F32(MT * NFF); p.ush = F32(MT * NFF); p.hh = F16(MT * NFF);
+        p.ys = F32(MT * N); p.sgv = F32(MT);
+        p.WD = F16((size_t) (LR + HC) * HC * N); p.WU = F16((size_t) HC * N * LR); p.Wqkv = F16((size_t) 10240 * N);
+        p.Wz = F16((size_t) 6144 * N); p.Wal = F16((size_t) 48 * N); p.Wbe = F16((size_t) 48 * N); p.Wout = F16((size_t) N * 6144);
+        p.Wq = F16((size_t) 12288 * N); p.Wk = F16((size_t) 512 * N); p.Wv = F16((size_t) 512 * N); p.Wiq = F16((size_t) 512 * N);
+        p.Wik = F16((size_t) 128 * N); p.Wr = F16((size_t) NEXP * N); p.Wsg = F16((size_t) N); p.Wshg = F16((size_t) NFF * N);
+        p.Wshu = F16((size_t) NFF * N); p.Wshd = F16((size_t) N * NFF);
+        if (ple_on_) {
+            p.emb = F32(MT * N); p.embh = F16(MT * N); p.pkey = F32(MT * 10240); p.pval = F32(MT * N); p.keyn = F32(MT * 10240);
+            p.qn = F32(MT * 10240); p.gated = F32(MT * 10240); p.normW = F32(MT * 10240);
+            p.Wpk = F16((size_t) 10240 * N); p.Wpv = F16((size_t) N * N);
+        }
+    };
+    make();
+    measure = false;
+    if (stream_) {
+        region = st_->region(need);
+        if (region == nullptr) { err = "metal prompt: no arena region for the prompt buffers"; return false; }
     }
-    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
-    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
+    make();
     pg_ = pg.release();
-    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s)\n", C,
-                 p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other");
+    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s; "
+                         "%.2f GB of buffers%s)\n", C, p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other",
+                 need / 1e9, stream_ ? ", in the expert arena while a prompt runs" : "");
     (void) err;
     return true;
 }
 
 bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
     PromptGemm& p = *pg_;
+    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
+    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
     auto TN = [this](const std::string& n) -> const gguf::Tensor& { return this->T(n); };
     if (Tn < 1 || Tn > p.MT) { err = "metal prompt: chunk size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal prompt: the chunk runs past the context"; return false; }
@@ -2086,13 +2110,15 @@ bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
             if (!g_window->prompt_gemm_init(err)) return false;
             const int C = g_window->prompt_chunk_rows();
             std::vector<int32_t> tk32((size_t) C);
-            for (int64_t c = 0; c < n; c += C) {
+            g_window->prompt_region(true);
+            bool ok = true;
+            for (int64_t c = 0; c < n && ok; c += C) {
                 const int k = (int) std::min<int64_t>(C, n - c);
                 for (int i = 0; i < k; ++i) tk32[(size_t) i] = (int32_t) tokens[c + i];
-                if (!g_window->prompt_chunk(tk32.data(), k, pos0 + c, err)) return false;
-                if (on_chunk && !on_chunk(nullptr, k, pos0 + c, err)) return false;
+                ok = g_window->prompt_chunk(tk32.data(), k, pos0 + c, err) && (!on_chunk || on_chunk(nullptr, k, pos0 + c, err));
             }
-            return true;
+            g_window->prompt_region(false);
+            return ok;
         }
     }
     int32_t tk[MAXT], out[MAXT];

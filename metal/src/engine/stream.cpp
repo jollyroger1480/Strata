@@ -4,6 +4,7 @@
 #include "ref_quant.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -352,7 +353,12 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         }
     if (!csize.empty()) csize.back() = cur;
     if (csize.size() > 4) { err = "metal stream: the arena needs more than 4 buffers (lower STRATA_METAL_ARENA_GB)"; return false; }
-    for (uint64_t b : csize) { chunks_.push_back(cx.alloc(b)); arena_bytes_ += b; }
+    for (uint64_t b : csize) {   // anonymous memory wrapped no-copy: a prompt's buffers can alias a region of it
+        void* m = mmap(nullptr, (size_t) b, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (m == MAP_FAILED) { err = "metal stream: cannot map the arena"; return false; }
+        chunks_.push_back(cx.wrap(m, (size_t) b));
+        arena_bytes_ += b;
+    }
     for (int s = 0; s < base; ++s) {
         code_[(size_t) s] = ((uint32_t) at[(size_t) s].first << 28) | (uint32_t) at[(size_t) s].second;
         host_[(size_t) s] = chunks_[(size_t) at[(size_t) s].first].as<uint8_t>() + at[(size_t) s].second * PAGE;
@@ -545,6 +551,59 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
     if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
     if (pre_k2_ > 0 && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_);
     host_ms_ += now_ms() - t0;
+}
+
+// A region of `bytes` at the end of one arena buffer, for a prompt's scratch buffers: its slots are emptied and held
+// (state 3) while a prompt runs (hold_region), and are ordinary slots again for decoding.
+uint8_t* ExpertStream::region(uint64_t bytes) {
+    for (int c = (int) chunks_.size() - 1; c >= 0; --c) {
+        if (chunks_[(size_t) c].bytes < bytes + (64ull << 20)) continue;
+        uint8_t* end = chunks_[(size_t) c].as<uint8_t>() + chunks_[(size_t) c].bytes;
+        uint8_t* lo = end - (bytes + PAGE - 1) / PAGE * PAGE;
+        region_slots_.clear();
+        uint8_t* first = end;
+        for (int s = 0; s < (int) slots_.size(); ++s) {
+            const uint8_t* h = host_[(size_t) s];
+            const uint64_t sz = cls_[(size_t) cls_of(s)].pages * PAGE;
+            if (h + sz > lo && h < end) { region_slots_.push_back(s); first = std::min(first, (uint8_t*) h); }
+        }
+        region_ = lo;
+        region_bytes_ = (uint64_t) (end - lo);
+        std::fprintf(stderr, "strata metal stream: %.2f GB of the arena (%zu slots) hold a prompt's buffers while it runs\n",
+                     bytes / 1e9, region_slots_.size());
+        return lo;
+    }
+    return nullptr;
+}
+
+void ExpertStream::hold_region(bool hold) {
+    std::unique_lock<std::mutex> g(mu_);
+    if (hold) {
+        // nothing may be reading into those slots: the queued read-aheads are dropped, the running ones waited for
+        std::vector<int> drop;
+        for (const Job& j : pre_q_)
+            if (slots_[(size_t) j.slot].state.load() == 1 && std::find(drop.begin(), drop.end(), j.slot) == drop.end())
+                drop.push_back(j.slot);
+        for (int s : drop) cancel_slot(s);
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        for (int s : region_slots_) {
+            Slot& x = slots_[(size_t) s];
+            if (x.layer >= 0) {
+                const int key = x.layer * NE + x.e;
+                where_[(size_t) key] = -1;
+                smap_.as<uint32_t>()[key] = 0xFFFFFFFFu;
+            }
+            x.layer = x.e = -1;
+            x.pre = false;
+            x.state = 3;
+        }
+        if (region_) std::memset(region_, 0, (size_t) region_bytes_);
+    } else {
+        for (int s : region_slots_) {
+            slots_[(size_t) s].state = 0;
+            lru_back(s);
+        }
+    }
 }
 
 void ExpertStream::reset_stats() {
