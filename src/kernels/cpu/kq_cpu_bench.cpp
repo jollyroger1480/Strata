@@ -105,6 +105,8 @@ int main(int argc, char** argv) {
             std::printf("%s: %s\n", pair.c_str(), err.empty() ? "unknown types" : err.c_str());
             continue;
         }
+        ggml_quantize_init((ggml_type) gt);   // the i-quants' quantizers need their grids first
+        ggml_quantize_init((ggml_type) dt);
         const size_t E = std::max<size_t>(64, ((size_t) mb << 20) / f.bytes);
         std::unique_ptr<uint8_t[]> mem(new uint8_t[E * f.bytes + 4096]);
         uint8_t* blobs = (uint8_t*) (((uintptr_t) mem.get() + 4095) & ~(uintptr_t) 4095);

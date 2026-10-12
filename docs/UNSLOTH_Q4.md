@@ -177,11 +177,12 @@ also fails, the warning preserves both the GPU allocation or mapping error and t
   flight when the experts are read from the GGUF in place (`STRATA_STAGER_THREADS` / `STRATA_STAGER_RING` override
   it; 4 and 16 before, still the default for every other model). Between the chunks, the 28.8 GB PLE table's rows
   take ~5 s per chunk.
-- An engine compiled with `-DSTRATA_MMQ_KQUANTS=ON` multiplies the Q4_K / Q5_K / Q5_1 experts of a prompt with
-  llama.cpp's MMQ kernels (as the other models' formats always are) instead of dequantizing them to FP16: 4x less GPU
-  time for those products, but on this PC the prompt waits for the SSD either way (29 s per 4K chunk with or
-  without). Off in the released engine: it loads every kernel at start, and these took 1-3 expert slots of VRAM from
-  every model.
+- With `STRATA_MMQ_KQ=1` the engine multiplies the Q4_K / Q5_K / Q5_1 experts of a prompt with llama.cpp's MMQ
+  kernels (as the other models' formats always are) instead of dequantizing them to FP16: 4x less GPU time for those
+  products, but on this PC the prompt waits for the SSD either way (29 s per 4K chunk with or without). Opt-in: it
+  rounds differently from the FP16 path. On CUDA these kernels are a library next to the engine (`libstrata_kq.so` /
+  `strata_kq.dll`), opened only then, so they take no VRAM from other models ([QUANTS.md](QUANTS.md)); before, they were
+  the build option `-DSTRATA_MMQ_KQUANTS=ON` and took 1-3 expert slots from every model.
 - The speed varies from run to run (6.7-8.6 tok/s at 40 GiB for the same prompt), with what the OS file cache holds.
 - For comparison, IQ3_S (all its experts in RAM) writes ~53 tok/s on the same PC ([the speed tables](DETAILS.md#speed-measured)).
 - Where the time goes (`--stats` on the command line): at 40 GiB about 550-750 ms of each verify round (3.5 tokens) is
