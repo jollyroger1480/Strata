@@ -286,6 +286,38 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
                    "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
 
 
+# the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
+VISION_SHA256 = {"mmproj-Qwen3.8-Flash-Next-BF16.gguf":
+                 (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")}
+VISION_EXE = ROOT / "build-vision" / "bin" / "strata-vision"
+
+
+def build_vision(llama: Path) -> Path:
+    """strata-vision (tools/vision: llama.cpp's mtmd at the pinned commit), with ggml's Metal backend: the encoder
+    runs on the GPU."""
+    stamp = ROOT / "build-vision" / "BUILD.json"
+    src = source_digest()
+    try:
+        if VISION_EXE.exists() and json.loads(stamp.read_text(encoding="utf-8")).get("source") == src:
+            S.ok(f"image encoder: {VISION_EXE}")
+            return VISION_EXE
+    except (OSError, ValueError):
+        pass
+    S.say("  Building the image encoder (1-3 minutes) ...")
+    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    log = ROOT / "build-vision.log"
+    with open(log, "w", encoding="utf-8") as f:
+        for cmd in ([tool("cmake"), "-S", str(ROOT / "tools" / "vision"), "-B", str(ROOT / "build-vision"), "-G", "Ninja",
+                     "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DLLAMA_DIR={llama}",
+                     "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
+                    [tool("ninja"), "-C", str(ROOT / "build-vision"), "strata-vision"]):
+            if subprocess.call(cmd, stdout=f, stderr=subprocess.STDOUT, env=env) != 0:
+                S.fail(f"the image encoder did not build (see {log})")
+    stamp.write_text(json.dumps({"source": src}), encoding="utf-8")
+    S.ok(f"image encoder built: {VISION_EXE}")
+    return VISION_EXE
+
+
 def ple_shard(files: list) -> Path:
     """The shard that holds the n-gram table (per_layer_token_embd)."""
     sys.path.insert(0, str(ROOT / "metal" / "tools"))
@@ -356,6 +388,8 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--build", action="store_true", help="build the engine again even when it is current")
+    ap.add_argument("--vision", choices=["yes", "no"],
+                    help="let the model read images (the image encoder on the GPU, built here; default: asked, no)")
     a, rest = ap.parse_known_args(argv)
     if rest:
         S.warn("not used on a Mac: " + " ".join(rest))
@@ -399,6 +433,8 @@ def main(argv=None) -> int:
                                 str(names.index(rec) + 1), a.yes)) - 1]
     for n in model_note(model, info["ram_gb"]):
         S.warn(n)
+    vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
+                                          ["y", "n"], "n", a.yes) == "y" else "no")
     ctx = a.context or recommend_context(info["ram_gb"])
     if ctx > TESTED_CONTEXT:
         S.say(f"  context {ctx}: measured on the Mac up to {TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
@@ -441,6 +477,16 @@ def main(argv=None) -> int:
         if shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
+
+    mmproj = vexe = None
+    if vision == "yes":
+        mmproj = models_root / fam["mmproj"]
+        if not (mmproj.exists() and S.done(mmproj)):
+            S.download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+        sha = VISION_SHA256.get(fam["mmproj"])
+        if sha:
+            S.verify_sha256(mmproj, *sha)
+        vexe = build_vision(llama)
 
     # ---- 6. the pack and the MTP draft layer
     S.step(6, "preparing the model for Strata")
@@ -487,6 +533,10 @@ def main(argv=None) -> int:
     port = a.port or 8080
     cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream), pack, f"{fam['name']}-{model.lower()}", tag, port)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    if vision == "yes":
+        cfg["args"] += ["--vision"]
+        cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": True,
+                         "max_tokens": 1024}
     if a.host:
         cfg["host"] = a.host
     if a.api_key:

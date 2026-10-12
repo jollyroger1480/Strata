@@ -109,9 +109,11 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     // ---- the rows: the embedding into every stream; the PLE table rows
     const gguf::Tensor& te = T("token_embd.weight");
     const size_t rb = ref::row_bytes(te.type, N);
+    mrope_sync(pos0, nT);
     for (int t = 0; t < nT; ++t) {
         float* r = b.R.as<float>() + (size_t) t * HC * N;
-        ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+        if (const float* img = img_row(pos0 + t)) std::memcpy(r, img, (size_t) N * 4);
+        else ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
         for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
     }
     if (ple_on_) {
@@ -224,13 +226,13 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             gemm(b.mixh, b.Wiq, b.iqr, nT, 512, N);
             gemm(b.mixh, b.Wik, b.ikr, nT, 128, N);
             QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) nT, eps_};
-            D(P_(b.lqsa, "qsa_prep"),
+            D(P_(b.lqsa, "qsa_prep", qsa_c(), qsa_k()),
               {mtl::Arg::B(b.qfull), mtl::Arg::B(b.kcur), mtl::Arg::B(b.vcur), mtl::Arg::B(b.iqr), mtl::Arg::B(b.ikr),
                mtl::Arg::B(W_, T(bl + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(bl + "attn_k_norm.weight").offset),
                mtl::Arg::B(W_, T(bl + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(bl + "indexer.k_norm.weight").offset),
                mtl::Arg::B(cs_), mtl::Arg::B(b.qcur), mtl::Arg::B(b.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
                mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
-               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a)},
+               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)},
               33, nT, 256);
             if (pos0 + nT > PC_QB) {   // some row's context is past the budget: the indexer selects
                 if (b.k4)

@@ -99,6 +99,14 @@ class Config(unittest.TestCase):
         self.assertTrue(cfg["exe"] and isinstance(cfg["args"], list))
 
 
+class Vision(unittest.TestCase):
+    def test_the_projector_is_pinned_and_the_encoder_builds_with_metal(self):
+        self.assertIn("mmproj-Qwen3.8-Flash-Next-BF16.gguf", M.VISION_SHA256)
+        src = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
+        self.assertIn('"-DSTRATA_VISION_CUDA=OFF"', src)
+        self.assertIn('cfg["args"] += ["--vision"]', src)
+
+
 class HandOver(unittest.TestCase):
     def test_darwin_hands_the_run_to_setup_mac(self):
         with mock.patch.object(setup.sys, "platform", "darwin"), \

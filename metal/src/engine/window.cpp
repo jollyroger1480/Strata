@@ -91,6 +91,13 @@ struct PromptBufs {
         Wsg, Wshg, Wshu, Wshd, pemb, pembh, pkey, pval, keyn, qn, gated, normW, Wpk, Wpv;
 };
 
+// The vision path (--vision, GENI requests), from the shared host code: the image rows of the prompt being read
+// (host rows by absolute position, null = embed the token; set by prompt_run for its duration) and the M-RoPE table
+// (int32 [cells][3] (t, h, w); mrope_table_set: the host view of the device table the server fills per request).
+const float* const* g_embd_rows = nullptr;
+const int32_t* g_mrope_host = nullptr;
+const int32_t* g_mrope_dev = nullptr;
+
 class Window {
 public:
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1, int max_t,
@@ -330,6 +337,18 @@ private:
     const mtl::Buffer* membp_ = nullptr;   // mtp_encode's embedding rows (nullptr: memb_)
     const mtl::Buffer* mpsrc_ = nullptr;   // the drafter's prompt rows (nullptr: R_)
     bool coop_k4();
+    // the vision path: the embedding row of an absolute position (an image row, or null), the M-RoPE table rows a
+    // window reads copied into mrope_ (qsa_prep's buffer 20, function constant 24)
+    const float* img_row(int64_t pos) const { return g_embd_rows ? g_embd_rows[pos] : nullptr; }
+    mtl::Buffer mrope_;
+    bool mrope_on() const { return g_mrope_host != nullptr; }
+    void mrope_sync(int64_t c0, int64_t n) {
+        if (!mrope_on()) return;
+        const int64_t a = std::max<int64_t>(0, c0 & ~(int64_t) 3), b = std::min<int64_t>(max_cells_, c0 + n);
+        if (b > a) std::memcpy(mrope_.as<int32_t>() + a * 3, g_mrope_host + a * 3, (size_t) (b - a) * 12);
+    }
+    mtl::Constants qsa_c() const { return mrope_on() ? mtl::Constants().b(24, true) : mtl::Constants(); }
+    std::string qsa_k() const { return mrope_on() ? "qsa_prep#mrope" : "qsa_prep"; }
     int m5_layout_ = -1;   // the M5's matmul2d layout (coop_k4), asked once: the M4's tiles differ
     bool m5_layout() { if (m5_layout_ < 0) m5_layout_ = coop_k4() ? 1 : 0; return m5_layout_ == 1; }
     bool pc_setup(int C);
@@ -391,6 +410,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     qkvL_ = A(4 * (size_t) 36 * MAXT * 10240); alL_ = A(4 * (size_t) 36 * MAXT * 48); beL_ = A(4 * (size_t) 36 * MAXT * 48);
     zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
     keyn_ = A(4 * MAXT * 10240); qn_ = A(4 * MAXT * 10240); gated_ = A(4 * MAXT * 10240); normW_ = A(4 * MAXT * 10240);
+    mrope_ = A(12 * (size_t) (MAXC + 16));
     pleHist_ = A(4 * 9 * 10240);
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
@@ -621,14 +641,14 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "indexer.k_proj.weight"), XA_, ikr_, 128, ntok);
         QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) ntok, eps_};
         mtl::Dispatch d;
-        d.p = P(lqsa_, "qsa_prep", {}, "qsa_prep");
+        d.p = P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
         d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(iqr_), mtl::Arg::B(ikr_),
                   mtl::Arg::B(W_, T(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(b + "attn_k_norm.weight").offset),
                   mtl::Arg::B(W_, T(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(b + "indexer.k_norm.weight").offset),
                   mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(kq_[(size_t) qi]),
                   mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
                   mtl::Arg::B(tail_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]),
-                  mtl::Arg::V(a)};
+                  mtl::Arg::V(a), mtl::Arg::B(mrope_)};
         d.grid[0] = 33;
         d.grid[1] = ntok;
         d.tg[0] = 256;
@@ -874,7 +894,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     const size_t rb = ref::row_bytes(te.type, N);
     for (int t = 0; t < Tn; ++t) {
         float* r = R_.as<float>() + (size_t) t * HC * N;
-        ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+        if (const float* img = img_row(pos0 + t)) std::memcpy(r, img, (size_t) N * 4);
+        else ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
         for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
     }
     // ---- the PLE rows (the table read is the shared host code's), projected on the GPU
@@ -897,7 +918,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
         qdirty_ = false;
     }
-    const int key = ((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0);
+    const int key = (((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0)) * 2 +
+                    (mrope_on() ? 1 : 0);
+    mrope_sync(pos0, Tn);
     const int fold_n = pend_fold_;
     pend_fold_ = 0;
     win_head_ = head;
@@ -908,7 +931,11 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         for (const auto& [i, kind] : c.qsa) {
             mtl::Dispatch& d = c.ds[(size_t) i];
             QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) (kind == 1 ? MAXT : Tn), eps_};
-            std::memcpy(d.args.back().bytes.data(), &a, sizeof a);
+            // the QsaArgs: the dispatch's last inline argument (qsa_prep has the M-RoPE table bound after it)
+            mtl::Arg* qa = nullptr;
+            for (auto& g : d.args)
+                if (!g.bytes.empty()) qa = &g;
+            std::memcpy(qa->bytes.data(), &a, sizeof a);
             if (kind == 2) d.grid[0] = (uint32_t) (((pos0 + Tn) / 4 + 1 + 7) / 8);
         }
         seg_T_ = Tn;
@@ -1574,14 +1601,14 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     QsaArgs qa{(uint32_t) cell0, 0, (uint32_t) max_cells_, (uint32_t) n, eps_};
     {
         mtl::Dispatch d;
-        d.p = P(lqsa_, "qsa_prep", {}, "qsa_prep");
+        d.p = P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
         d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(midx_), mtl::Arg::B(midx_, 512 * 4),
                   mtl::Arg::B(mnorm_, NM(L + "self_attn.q_norm.weight")), mtl::Arg::B(mnorm_, NM(L + "self_attn.k_norm.weight")),
                   mtl::Arg::B(mnorm_, NM(L + "self_attn.indexer.q_layernorm.weight")),
                   mtl::Arg::B(mnorm_, NM(L + "self_attn.indexer.k_layernorm.weight")),
                   mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(mkq_[0]), mtl::Arg::B(mvq_[0]),
                   mtl::Arg::B(mksc_[0]), mtl::Arg::B(mvsc_[0]), mtl::Arg::B(mtail_[0]), mtl::Arg::B(mdead_[0]),
-                  mtl::Arg::B(mpooled_[0]), mtl::Arg::V(qa)};
+                  mtl::Arg::B(mpooled_[0]), mtl::Arg::V(qa), mtl::Arg::B(mrope_)};
         d.grid[0] = 33; d.grid[1] = n; d.tg[0] = 256;
         push(ds, d);
     }
@@ -1699,6 +1726,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
 // the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
 bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    mrope_sync(cell0, n);
     // every group of MAXT rows in one command buffer: the embedding rows of all of them in mpemb_ (row c + i)
     if ((int64_t) mpemb_rows_ < n) {
         if (mpemb_rows_ > 0) cx_->free(mpemb_);
@@ -1747,6 +1775,7 @@ bool Window::mtp_draft(int Tn, const int32_t* tokens, int64_t p, int a, int max_
                        float min_p, int* n_drafts, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
     (void) Tn;
+    mrope_sync(p, a + max_steps + 1);
     int n = 0;
     int32_t tok = tokens[a];
     if (chain_ && max_steps > 0) {
@@ -1956,9 +1985,11 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     {
         const gguf::Tensor& te = TN("token_embd.weight");
         const size_t rb = ref::row_bytes(te.type, N);
+        mrope_sync(pos0, T);
         for (int t = 0; t < T; ++t) {
             float* r = p.R.as<float>() + (size_t) t * HC * N;
-            ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+            if (const float* img = img_row(pos0 + t)) std::memcpy(r, img, (size_t) N * 4);
+            else ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
             for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
         }
     }
@@ -2077,13 +2108,13 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gemm(p.mixh, p.Wiq, p.iqr, T, 512, N);
             gemm(p.mixh, p.Wik, p.ikr, T, 128, N);
             QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) T, eps_};
-            D(PP(p.lqsa, "qsa_prep"),
+            D(PP(p.lqsa, "qsa_prep", qsa_c(), qsa_k()),
               {mtl::Arg::B(p.qfull), mtl::Arg::B(p.kcur), mtl::Arg::B(p.vcur), mtl::Arg::B(p.iqr), mtl::Arg::B(p.ikr),
                mtl::Arg::B(W_, TN(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "attn_k_norm.weight").offset),
                mtl::Arg::B(W_, TN(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "indexer.k_norm.weight").offset),
                mtl::Arg::B(cs_), mtl::Arg::B(p.qcur), mtl::Arg::B(p.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
                mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
-               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a)}, 33, T, 256);
+               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)}, 33, T, 256);
             if (pos0 + T > 2051)
                 D(PP(p.lqsa, "qsa_score_mm"), {mtl::Arg::B(p.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
                                                mtl::Arg::B(p.scores), mtl::Arg::V(a)},
@@ -2368,8 +2399,18 @@ bool mtp_load_pending(Window* w, std::string& err) {
 }
 // Prefill::run's Metal side: the prompt read through the window, MAXT rows at a time (no head), each window
 // committed; on_chunk (the MTP's K/V) after each, with the window's final residual rows in place.
-bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
+bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
+                     const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err);
+bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0, const float* const* embd_rows,
                 const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
+    struct Rows {
+        explicit Rows(const float* const* r) { g_embd_rows = r; }
+        ~Rows() { g_embd_rows = nullptr; }
+    } rows(embd_rows);
+    return prompt_run_rows(tokens, n, pos0, on_chunk, err);
+}
+bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
+                     const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
@@ -2416,5 +2457,17 @@ bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, in
 }
 
 #include "prompt_chain.inc"
+
+}  // namespace strata::metal_engine
+namespace strata::gpu { void* host_view(const void* device_pointer); }
+namespace strata::kernels {
+void mrope_table_set(const int32_t* device_table) {
+    strata::metal_engine::g_mrope_dev = device_table;
+    strata::metal_engine::g_mrope_host =
+        device_table ? (const int32_t*) strata::gpu::host_view(device_table) : nullptr;
+}
+const int32_t* mrope_table() { return strata::metal_engine::g_mrope_dev; }
+}  // namespace strata::kernels
+namespace strata::metal_engine {
 
 }  // namespace strata::metal_engine

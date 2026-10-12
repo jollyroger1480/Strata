@@ -101,7 +101,7 @@ void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, 
 // hands over, draft_kv declines (the MTP hook reads the window's rows itself).
 namespace strata::metal_engine {
 bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int64_t max_cells, std::string& err);
-bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
+bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0, const float* const* embd_rows,
                 const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err);
 }  // namespace strata::metal_engine
 #endif
@@ -4266,7 +4266,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 #if defined(STRATA_GPU_METAL)
     {
         const auto t0 = std::chrono::steady_clock::now();
-        const bool ok = strata::metal_engine::prompt_run(tokens, n, pos0, on_chunk, err);
+        const bool ok = strata::metal_engine::prompt_run(tokens, n, pos0, embd_rows, on_chunk, err);
         stats_.tokens += n;
         stats_.chunks += 1;
         stats_.ms_total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

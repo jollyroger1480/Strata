@@ -41,6 +41,8 @@ const Cvec& cvec() {
 
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
 // lldb needs a debugging permission a user's session may not have)
+#include <csignal>
+#include <signal.h>
 #include <execinfo.h>
 #include <exception>
 #include <unistd.h>
@@ -54,4 +56,25 @@ namespace {
     std::abort();
 }
 const bool g_terminate_set = (std::set_terminate(metal_terminate), true);
+// a crash (SIGSEGV / SIGBUS) prints its call stack too: macOS keeps no report for a command-line process by default
+void metal_crash(int sig, siginfo_t* si, void*) {
+    void* fr[64];
+    const int n = backtrace(fr, 64);
+    char msg[160];
+    const int m = std::snprintf(msg, sizeof msg, "strata metal: crashed (signal %d at address %p) - the call stack:\n", sig,
+                                si ? si->si_addr : nullptr);
+    (void) !write(2, msg, (size_t) m);
+    backtrace_symbols_fd(fr, n, 2);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+bool set_crash() {
+    struct sigaction sa {};
+    sa.sa_sigaction = metal_crash;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    return true;
+}
+const bool g_crash_set = set_crash();
 }  // namespace
