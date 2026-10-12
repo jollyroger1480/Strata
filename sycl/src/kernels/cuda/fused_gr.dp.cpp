@@ -551,10 +551,15 @@ __dpct_inline__ void gr_down_multi_direct_kernel(GrMulti m) {
 // once (<= 4 KB of SLM) and streams the rows through it, 4 lanes per row (one 64-byte line per step), reducing over
 // those 4 lanes once per row. gr_down_reduce then sums the 80 slice partials in a fixed order.
 constexpr int GRS_COLS = 128, GRS_SLICES = D / GRS_COLS, GRS_ROWS = LR + HC;   // 80 slices, 324 rows
+constexpr int GRS_RB = (GRS_ROWS + WARPS * 8 - 1) / (WARPS * 8);                // 6 blocks of 64 rows
+// MORE (gr_more_groups): one work-group per (slice, row block) - 480 groups instead of 80; every row's sum is the same
+template <bool MORE = false>
 __dpct_inline__ void gr_down_sliced_kernel(GrMulti m, float* tile) {
     auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int t = (int) item.get_local_id(2), lane = t & 31, warp = t >> 5;
-    const int T = m.T, sl = (int) item.get_group(2), c0 = sl * GRS_COLS;
+    const int g = (int) item.get_group(2);
+    const int T = m.T, sl = MORE ? g / GRS_RB : g, c0 = sl * GRS_COLS;
+    const int r_first = MORE ? (g % GRS_RB) * WARPS * 8 : 0, r_end = MORE ? r_first + WARPS * 8 : GRS_ROWS;
     for (int i = t; i < T * GRS_COLS; i += THREADS) {
         const int k = i / GRS_COLS, c = i - k * GRS_COLS;
         tile[i] = m.xn[(size_t) k * D + c0 + c];
@@ -562,7 +567,7 @@ __dpct_inline__ void gr_down_sliced_kernel(GrMulti m, float* tile) {
     item.barrier(sycl::access::fence_space::local_space);
     const int rsub = lane >> 2, q = lane & 3;
     const bool inj = m.a[0].w_inject != nullptr;
-    for (int r0 = 0; r0 < GRS_ROWS; r0 += WARPS * 8) {
+    for (int r0 = r_first; r0 < r_end; r0 += WARPS * 8) {
         const int r = r0 + warp * 8 + rsub;
         const bool ok = r < LR || (r < GRS_ROWS && inj);
         const uint16_t* wrow = r < LR ? m.a[0].w_down + (size_t) r * D : m.a[0].w_inject + (size_t) (ok ? r - LR : 0) * D;
@@ -590,6 +595,8 @@ __dpct_inline__ void gr_down_sliced_kernel(GrMulti m, float* tile) {
         }
     }
 }
+static_assert(GRS_SLICES % 8 == 0, "the 8-at-a-time reduce reads whole groups of 8 slices");
+template <bool MORE = false>
 __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item.get_global_id(2);
@@ -597,7 +604,21 @@ __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     const int k = i / GRS_ROWS, r = i - k * GRS_ROWS;
     if (r >= LR && m.a[0].w_inject == nullptr) return;
     float x = 0.0f;
-    for (int sl = 0; sl < GRS_SLICES; ++sl) x += m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r];
+    if constexpr (MORE) {
+        // 8 loads in flight per step (the one-at-a-time loop was load-latency bound on the A770), then added one by
+        // one: x += slice 0, 1, 2, ... 79, the same sequence of float adds as the loop below (-fp-model=precise)
+        const float* src = m.part2 + (size_t) k * GRS_ROWS + r;
+        constexpr size_t SL_STRIDE = (size_t) kFusedGrMaxT * GRS_ROWS;
+        for (int sl = 0; sl < GRS_SLICES; sl += 8) {
+            float pv[8];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) pv[j] = src[(size_t) (sl + j) * SL_STRIDE];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) x += pv[j];
+        }
+    } else {
+        for (int sl = 0; sl < GRS_SLICES; ++sl) x += m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r];
+    }
     if (r < LR) m.part[(size_t) k * LR + r] = x;   // split 0
     else GR_PICK(m, k, inject_out)[r - LR] = x;
 }
@@ -608,6 +629,20 @@ __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
 bool gr_large_grf(sycl::queue* q) {
     static const bool v = [q] {
         const char* e = std::getenv("STRATA_GR_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
+}
+// More, smaller work-groups for the multi-token read on Arc A-series: the sliced down kernel as (slice, row block)
+// = 480 groups instead of 80, its reduce with 8 loads in flight, and the up kernel with 8 columns per group (320
+// groups instead of 160), where only group 0 writes the per-token lo values (every group computes the same ones). Every
+// output is the same float sum in the same order (gr_bench checksums unchanged). A770, gr_bench 1-6 tokens:
+// 117-180 -> 87-149 us; decode 28.04-28.54 -> 29.99-30.00 tok/s. Default on Alchemist only, where it was measured;
+// elsewhere the 80 / 160-group kernels as before. STRATA_GR_MORE_GROUPS=1 forces it on, =0 off.
+bool gr_more_groups(sycl::queue* q) {
+    static const bool v = [q] {
+        const char* e = std::getenv("STRATA_GR_MORE_GROUPS");
         if (e != nullptr) return std::atoi(e) != 0;
         return strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Alchemist;
     }();
@@ -634,6 +669,8 @@ bool gr_down_direct() {   // default; STRATA_GR_DOWN_DIRECT=0: the tiled kernel 
 
 constexpr int UPM_COLS = 16;                      // columns per block (x 4 streams = 64 rows, 8 per warp)
 constexpr int UPM_BLOCKS = N / UPM_COLS;          // 160
+constexpr int UPM_COLS_MORE = 8;                  // gr_more_groups: 8 columns (32 rows, 4 per warp)
+constexpr int UPM_BLOCKS_MORE = N / UPM_COLS_MORE;   // 320
 
 // `gr_up_kernel` for T tokens: each row of w_up read once; the T dots reduced by xor so every lane holds every
 // sum, and lane k runs token k's epilogue - the T epilogues in parallel instead of one after another.
@@ -643,7 +680,8 @@ gr_up_multi_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
-template <int COLS = UPM_COLS, bool ILP = false>   // columns per block: 16 (the original), 8 or 4 - each row's dot, butterfly and the per-column
+// COLS: columns per block (UPM_COLS, or UPM_COLS_MORE with LO_ONCE under gr_more_groups)
+template <int COLS = UPM_COLS, bool ILP = false, bool LO_ONCE = false>   // columns per block: 16 (the original), 8 or 4 - each row's dot, butterfly and the per-column
 __dpct_inline__ void gr_up_multi_kernel(GrMulti m) {   // stream sum unchanged, so the same bits; more blocks, fewer serial rows per warp
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -664,7 +702,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         x /= (float) HC;
         const float v = x / (1.0f + sycl::native::exp(-x));
         lo[k][r] = v;
-        GR_PICK(m, k, lo)[r] = v;
+        if (!LO_ONCE || item_ct1.get_group(2) == 0) GR_PICK(m, k, lo)[r] = v;   // the same values in every block
     }
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
@@ -760,6 +798,39 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         for (int c = 0; c < HC; ++c) s += g[k][c][col];
         GR_PICK(m, k, mixed)[d0 + col] = s / (float) HC;
     }
+}
+
+// gr_more_groups launches (BIG: large GRF, as gr_large_grf)
+template <bool BIG>
+void launch_gr_down_more(dpct::queue_ptr st, const GrMulti& m) {
+    st->submit([&](sycl::handler& cgh) {
+        sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
+        const sycl::nd_range<3> nr(sycl::range(1, 1, GRS_SLICES * GRS_RB) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+        auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            gr_down_sliced_kernel<true>(m, tl.get_multi_ptr<sycl::access::decorated::no>().get());
+        };
+        if constexpr (BIG)
+            cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_more, dpct_kernel_scalar<1>>>(
+                nr, sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>}, body);
+        else
+            cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_more, dpct_kernel_scalar<0>>>(nr, body);
+    });
+    const unsigned nred = unsigned((m.T * GRS_ROWS + 127) / 128);
+    st->parallel_for<dpct_kernel_name<class gr_down_reduce_more, dpct_kernel_scalar<BIG ? 1 : 0>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel<true>(m); });
+}
+template <bool BIG>
+void launch_gr_up_more(dpct::queue_ptr st, const GrMulti& m) {
+    const sycl::nd_range<3> nr(sycl::range(1, 1, UPM_BLOCKS_MORE) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+    auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<UPM_COLS_MORE, false, true>(m); };
+    if constexpr (BIG)
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<1>>>(
+            nr, sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
+                                                            sycl::ext::intel::experimental::grf_size<256>}, body);
+    else
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<0>>>(
+            nr, sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync}, body);
 }
 
 
@@ -1882,7 +1953,12 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         attr[dev] = true;
     }
     const int chunk_tok = (dev >= 0 && dev < 64 && chunk[dev]) ? chunk[dev] : kFusedGrMaxT;
-    if (gr_down_sliced()) {
+    if (gr_down_sliced() && gr_more_groups(st)) {
+        m.part2 = slice_partials(st);
+        m.nsplit = 1;
+        if (gr_large_grf(st)) launch_gr_down_more<true>(st, m);
+        else launch_gr_down_more<false>(st, m);
+    } else if (gr_down_sliced()) {
         m.part2 = slice_partials(st);
         m.nsplit = 1;
         const bool big = gr_large_grf(st);
@@ -1960,7 +2036,12 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
-    launch_gr_up_multi(st, m, gr_large_grf(st));   // STRATA_GR_UP_COLS (16 default, 8, 4): the same bits; Arc A-series: large GRF
+    if (gr_more_groups(st)) {
+        if (gr_large_grf(st)) launch_gr_up_more<true>(st, m);
+        else launch_gr_up_more<false>(st, m);
+    } else {
+        launch_gr_up_multi(st, m, gr_large_grf(st));   // STRATA_GR_UP_COLS (16 default, 8, 4): the same bits; Arc A-series: large GRF
+    }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You
