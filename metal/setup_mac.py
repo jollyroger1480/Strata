@@ -48,12 +48,9 @@ MAC_MODELS = {
     # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
-    "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": False, "family": "unsloth", "shards": 4,
-                   "missing": "the Metal expert kernels for Q4_K / Q5_1 (in progress)"},
-    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": False, "family": "unsloth", "shards": 6,
-                   "missing": "the Metal expert kernels for Q5_K / Q6_K (in progress)"},
-    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": False, "family": "unsloth", "shards": 6,
-                   "missing": "the Metal expert kernels for Q6_K (in progress)"},
+    "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
+    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": False, "family": "unsloth", "shards": 6},
+    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": False, "family": "unsloth", "shards": 6},
 }
 # the Unsloth files at setup.py's pinned revision: name -> (bytes, SHA-256), the Hub's LFS pointers (UD-Q4_K_XL's
 # are setup.py's UNSLOTH_SHARDS)
@@ -508,7 +505,8 @@ def main(argv=None) -> int:
     else:
         shards = files
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
-        S.run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack)], env=env)
+        S.run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
+               *fam.get("pack_args", [])], env=env)   # Unsloth: --compat-bf16 (the host's copies; the GPU reads the file)
     S.ok(f"model prepared: {pack}")
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
