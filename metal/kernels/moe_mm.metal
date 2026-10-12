@@ -463,6 +463,88 @@ template <> struct W4<T_IQ4_NL> {   // 32 a block: d, 16 bytes; low nibbles are 
     }
 };
 
+// W8<F>: the runs k .. k + 3 and k + 16 .. k + 19 of a row (k % 32 < 16): one 32-group, so the per-group fields (scale,
+// sign word) are read once.  The generic one is two W4.
+template <int F> struct W8 {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        a = W4<F>::run(row, k, tab);
+        b = W4<F>::run(row, k + 16, tab);
+    }
+};
+template <> struct W8<T_IQ3_XXS> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 98;
+        const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
+        const uint aux = rd32(bl + 2 + 64 + 4 * ib);
+        threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 256);
+        const float sc = rdh(bl) * (0.5f + float(aux >> 28)) * 0.5f;
+        const uint s0 = ks[(aux >> (7 * l)) & 127], s1 = ks[(aux >> (7 * (l + 2))) & 127];
+        device const uchar* qs = bl + 2 + 8 * ib + hh;
+        a = w4_signed(tab[qs[2 * l]], hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(tab[qs[2 * l + 4]], hh ? s1 >> 4 : s1, sc);
+    }
+};
+template <> struct W8<T_IQ2_XXS> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 66;
+        const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
+        const uint a0 = rd32(bl + 2 + 8 * ib), a1 = rd32(bl + 2 + 8 * ib + 4);
+        threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 512);
+        const float sc = rdh(bl) * (0.5f + float(a1 >> 28)) * 0.25f;
+        const uint i0 = (a0 >> (8 * l)) & 255, i1 = (a0 >> (8 * (l + 2))) & 255;
+        const uint s0 = ks[(a1 >> (7 * l)) & 127], s1 = ks[(a1 >> (7 * (l + 2))) & 127];
+        a = w4_signed(tab[2 * i0 + hh], hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(tab[2 * i1 + hh], hh ? s1 >> 4 : s1, sc);
+    }
+};
+template <> struct W8<T_IQ2_XS> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 74;
+        const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
+        device const ushort* q = (device const ushort*)(bl + 2) + 4 * ib;
+        const uint v0 = q[l], v1 = q[l + 2];
+        threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 1024);
+        const uint scb = bl[66 + ib];
+        const float d = rdh(bl);
+        const float sc0 = d * (0.5f + float((scb >> (4 * (l >> 1))) & 15)) * 0.25f;
+        const float sc1 = d * (0.5f + float((scb >> (4 * ((l + 2) >> 1))) & 15)) * 0.25f;
+        const uint s0 = ks[v0 >> 9], s1 = ks[v1 >> 9];
+        a = w4_signed(tab[2 * (v0 & 511) + hh], hh ? s0 >> 4 : s0, sc0);
+        b = w4_signed(tab[2 * (v1 & 511) + hh], hh ? s1 >> 4 : s1, sc1);
+    }
+};
+template <> struct W8<T_IQ2_S> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 82;
+        const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
+        const uint qh = bl[66 + ib], scb = bl[74 + ib];
+        const float d = rdh(bl);
+        const uint i0 = uint(bl[2 + 4 * ib + l]) | ((qh << (8 - 2 * l)) & 0x300);
+        const uint i1 = uint(bl[2 + 4 * ib + l + 2]) | ((qh << (8 - 2 * (l + 2))) & 0x300);
+        const uint s0 = bl[2 + 32 + 4 * ib + l], s1 = bl[2 + 32 + 4 * ib + l + 2];
+        const float sc0 = d * (0.5f + float((scb >> (4 * (l >> 1))) & 15)) * 0.25f;
+        const float sc1 = d * (0.5f + float((scb >> (4 * ((l + 2) >> 1))) & 15)) * 0.25f;
+        a = w4_signed(tab[2 * i0 + hh], hh ? s0 >> 4 : s0, sc0);
+        b = w4_signed(tab[2 * i1 + hh], hh ? s1 >> 4 : s1, sc1);
+    }
+};
+template <> struct W8<T_IQ3_S> {
+    static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 8) * 110;
+        const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
+        const uint qh = bl[66 + ib], scb = bl[106 + (ib >> 1)];
+        const float sc = rdh(bl) * float(1 + 2 * ((scb >> (4 * (ib & 1))) & 15));
+        const int l1 = l + 2;
+        const uint i0 = hh ? (uint(bl[2 + 8 * ib + 2 * l + 1]) | ((qh << (7 - 2 * l)) & 256))
+                           : (uint(bl[2 + 8 * ib + 2 * l]) | ((qh << (8 - 2 * l)) & 256));
+        const uint i1 = hh ? (uint(bl[2 + 8 * ib + 2 * l1 + 1]) | ((qh << (7 - 2 * l1)) & 256))
+                           : (uint(bl[2 + 8 * ib + 2 * l1]) | ((qh << (8 - 2 * l1)) & 256));
+        const uint s0 = bl[74 + 4 * ib + l], s1 = bl[74 + 4 * ib + l1];
+        a = w4_signed(tab[i0], hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(tab[i1], hh ? s1 >> 4 : s1, sc);
+    }
+};
+
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
                    device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
@@ -487,13 +569,31 @@ kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[
     for (uint16_t i = 0; i < accg.get_capacity(); ++i)
         if (accg.is_valid_element(i)) { accg[i] = 0.0f; accu[i] = 0.0f; }
     for (int k0 = 0; k0 < int(a.n_embd); k0 += TK) {
+        const uint16_t cap = rg.get_capacity(), half_cap = cap / 2;
 #pragma clang loop unroll(full)
-        for (uint16_t i = 0; i < rg.get_capacity(); i += 4) {
+        for (uint16_t i = 0; i < half_cap; i += 4) {
             const auto ix = rg.get_multidimensional_index(i);
+            const auto iy = rg.get_multidimensional_index(i + half_cap);
             const int k = k0 + ix[0], n = ix[1];
-            const half4 wg = W4<F>::run(g0 + ulong(n) * a.gu_row, k, tab), wu = W4<F>::run(u0 + ulong(n) * a.gu_row, k, tab);
+            device const uchar* rgw = g0 + ulong(n) * a.gu_row;
+            device const uchar* ruw = u0 + ulong(n) * a.gu_row;
+            half4 wg, wu, wg2, wu2;
+            if (TK == 32 && iy[0] == ix[0] + 16 && iy[1] == ix[1] && (ix[0] & 31) < 16) {
+                // the lane's two runs of this row sit in one 32-group (the layout: element i + cap / 2 is k + 16)
+                W8<F>::run(rgw, k, tab, wg, wg2);
+                W8<F>::run(ruw, k, tab, wu, wu2);
+            } else {
+                const int k2 = k0 + iy[0];
+                device const uchar* rgw2 = g0 + ulong(iy[1]) * a.gu_row;
+                device const uchar* ruw2 = u0 + ulong(iy[1]) * a.gu_row;
+                wg = W4<F>::run(rgw, k, tab); wu = W4<F>::run(ruw, k, tab);
+                wg2 = W4<F>::run(rgw2, k2, tab); wu2 = W4<F>::run(ruw2, k2, tab);
+            }
             rg[i] = wg.x; rg[i + 1] = wg.y; rg[i + 2] = wg.z; rg[i + 3] = wg.w;
             ru[i] = wu.x; ru[i + 1] = wu.y; ru[i + 2] = wu.z; ru[i + 3] = wu.w;
+            const uint16_t j = i + half_cap;
+            rg[j] = wg2.x; rg[j + 1] = wg2.y; rg[j + 2] = wg2.z; rg[j + 3] = wg2.w;
+            ru[j] = wu2.x; ru[j + 1] = wu2.y; ru[j + 2] = wu2.z; ru[j + 3] = wu2.w;
         }
         tA = tX.template slice<TK, TM>(k0, row0);
         op.run(tA, rg, accg);

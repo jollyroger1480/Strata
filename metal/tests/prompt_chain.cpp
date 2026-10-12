@@ -127,8 +127,7 @@ int main(int argc, char** argv) {
     // the expert GEMMs: "v2" (threadgroup-staged weights) or "v3:TM,TN,TK,SG" (register operands, TN rows a simdgroup)
     const char* gu_env = std::getenv("PC_GU");
     const char* dn_env = std::getenv("PC_DN");
-    // defaults (M5 Max, moe_mm_parity --v3 --bench): gate/up 16,32,32,4 for Q2_0 and 16,16,32,8 for the i-quants
-    // (both 5 threadgroups across n_ff), down 16,64,32,2
+    // defaults (M5 Max, moe_mm_parity --v3 --bench): gate/up 16,32,32,4 (every format), down 16,64,32,2
     const std::string gu_mode = gu_env ? gu_env : "v3:auto", dn_mode = dn_env ? dn_env : "v3:16,64,32,2";
     auto v3_tile = [](const std::string& m, int* t) { std::sscanf(m.c_str() + 3, "%d,%d,%d,%d", &t[0], &t[1], &t[2], &t[3]); };
     int gu3[4] = {16, 64, 16, 2}, dn3[4] = {16, 64, 16, 2};
@@ -136,7 +135,7 @@ int main(int argc, char** argv) {
     else if (gu_mode == "v3:auto") { gu3[0] = 16; gu3[1] = 32; gu3[2] = 32; gu3[3] = 4; }
     auto tl3 = [](const int* t) { return std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]) + "_" + std::to_string(t[3]); };
     auto gu3_for = [&](int type) -> std::string {
-        if (gu_mode == "v3:auto" && type != ref::Q2_0) return "16_16_32_8";
+        (void)type;   // one tile for every format since the paired-run decoders (W8)
         return tl3(gu3);
     };
     if (dn_mode.rfind("v3:", 0) == 0) v3_tile(dn_mode, dn3);
@@ -349,9 +348,14 @@ int main(int argc, char** argv) {
                    mtl::Arg::B(pooled[qi]), mtl::Arg::V(a)},
                   33, T, 256, "qsa prep");
                 if (pos0 + T > QB) {   // some token's context is past the budget: select
+                    if (qsa_mode == "mm")
+                        D(P(lqsa, "qsa_score_mm"), {mtl::Arg::B(qidx), mtl::Arg::B(pooled[qi]), mtl::Arg::B(dead[qi]),
+                                                    mtl::Arg::B(scores), mtl::Arg::V(a)},
+                          ((pos0 + T) / 4 + 1 + 63) / 64, (T + 15) / 16, 128, "qsa score");
+                    else
                     D(P(lqsa, "qsa_score"), {mtl::Arg::B(qidx), mtl::Arg::B(pooled[qi]), mtl::Arg::B(dead[qi]), mtl::Arg::B(scores),
                                              mtl::Arg::V(a)},
-                      ((pos0 + T) / 4 + 1 + 7) / 8, T, 256, "qsa sel");
+                      ((pos0 + T) / 4 + 1 + 7) / 8, T, 256, "qsa score");
                     D(P(lqsa, "qsa_topk"), {mtl::Arg::B(scores), mtl::Arg::B(qids), mtl::Arg::V(a)}, T, 1, 1024, "qsa sel");
                 } else {
                     // within the budget the selection is the identity: qsa_topk only writes 0..n_kv-1
@@ -414,7 +418,7 @@ int main(int argc, char** argv) {
             gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type))
                          : P(lib, "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2", mtl::Constants().i(5, 0));
             gu.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            gu.tg[0] = gu_v3 ? (gu_mode == "v3:auto" && eg.type != ref::Q2_0 ? 256 : 32 * gu3[3]) : 64;
+            gu.tg[0] = gu_v3 ? 32 * gu3[3] : 64;
             gu.indirect = &meta;
             gu.ind_off = 2 * 4;
             push(gu, "experts gu");
@@ -495,6 +499,10 @@ int main(int argc, char** argv) {
     }
     if (breakdown) {
         // each class alone on the first chunk (pos0 0) and on a chunk at pos0 = PMAX - C (QSA past the budget)
+        if (PMAX > C) {   // the classes of a chunk past the budget (score) too
+            run_chunk(std::max(0, PMAX - C), C, false);
+            all_cls.insert(cls.begin(), cls.end());
+        }
         for (int p0 : {0, std::max(0, PMAX - C)}) {
             const std::string keep_only = only;
             std::map<std::string, double> by;

@@ -35,7 +35,8 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < (size_t)T * QH * QD; ++i) qcur.as<float>()[i] = r.sym() * 3.0f;
     for (size_t i = 0; i < (size_t)T * QH * 2 * QD; ++i) qfull.as<float>()[i] = r.sym();
     mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm"),
-                  pq = cx.pipeline(lib, "qsa_q_f16");
+                  pq = cx.pipeline(lib, "qsa_q_f16"), pf = cx.pipeline(lib, "qsa_flash");
+    mtl::Buffer xf = cx.alloc(2 * (size_t)T * QH * QD);
     int fails = 0;
     for (uint32_t pos0 : {0u, 30000u}) {
         // ids: within the budget the identity; past it 2051 distinct ascending cells < n_kv
@@ -60,6 +61,8 @@ int main(int argc, char** argv) {
             D(pq, {mtl::Arg::B(qcur), mtl::Arg::B(qh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 1, 256),
             D(pmm, {mtl::Arg::B(qh), mtl::Arg::B(kq), mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc), mtl::Arg::B(ids), mtl::Arg::B(part), mtl::Arg::V(a)}, NCH, QKV, T, 32),
             D(pm, {mtl::Arg::B(part), mtl::Arg::B(qfull), mtl::Arg::B(xb), mtl::Arg::V(a)}, QH, T, 1, 256)};
+        const mtl::Dispatch fl = D(pf, {mtl::Arg::B(qh), mtl::Arg::B(kq), mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc),
+                                        mtl::Arg::B(ids), mtl::Arg::B(qfull), mtl::Arg::B(xf), mtl::Arg::V(a)}, QKV, T, 1, 128);
         if (bench) {
             auto timeit = [&](const std::vector<mtl::Dispatch>& ds) {
                 cx.warm(ds, 0.3);
@@ -67,8 +70,8 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 5; ++i) t.push_back(cx.run(ds));
                 return median(t);
             };
-            std::printf("pos0 %5u, T %d: qsa_attn %.2f ms, qsa_attn_mm %.2f ms, merge %.2f ms\n", pos0, T, timeit({ref_ds[0]}) * 1e3,
-                        timeit({mm_ds[1]}) * 1e3, timeit({ref_ds[1]}) * 1e3);
+            std::printf("pos0 %5u, T %d: qsa_attn %.2f ms, qsa_attn_mm %.2f ms, merge %.2f ms; qsa_flash (no merge) %.2f ms\n", pos0,
+                        T, timeit({ref_ds[0]}) * 1e3, timeit({mm_ds[1]}) * 1e3, timeit({ref_ds[1]}) * 1e3, timeit({fl}) * 1e3);
             continue;
         }
         cx.run(ref_ds);
@@ -83,6 +86,54 @@ int main(int argc, char** argv) {
         const bool ok = rel < 3e-3;
         fails += !ok;
         std::printf("pos0 %5u, T %d: qsa_attn_mm vs qsa_attn (after merge) rel L2 %.2e  %s\n", pos0, T, rel, ok ? "PASS" : "FAIL");
+        cx.run({fl});
+        double sf = 0;
+        for (size_t i = 0; i < (size_t)T * QH * QD; ++i) {
+            const double e = ref::f16_to_f32(xf.as<uint16_t>()[i]) - xa.as<float>()[i];
+            sf += e * e;
+        }
+        const double relf = std::sqrt(sf / sr);
+        const bool okf = relf < 3e-3;
+        fails += !okf;
+        std::printf("pos0 %5u, T %d: qsa_flash (fp16 out) vs qsa_attn + merge rel L2 %.2e  %s\n", pos0, T, relf, okf ? "PASS" : "FAIL");
+    }
+    // qsa_score_mm vs qsa_score at pos0 30000: the scores of every block <= n_bid
+    {
+        const uint32_t pos0 = 30000, MB = MAXC / 4 + 2, nb = (pos0 + T) / 4 + 1;
+        mtl::Buffer qidx = cx.alloc(4 * (size_t)T * 4 * 128), pooled = cx.alloc(4 * (size_t)MB * 128), dead = cx.alloc(4 * 128),
+                    sa = cx.alloc(4 * (size_t)T * MB), sb = cx.alloc(4 * (size_t)T * MB);
+        for (size_t i = 0; i < (size_t)T * 4 * 128; ++i) qidx.as<float>()[i] = r.sym();
+        for (size_t i = 0; i < (size_t)MB * 128; ++i) pooled.as<float>()[i] = r.sym();
+        for (int i = 0; i < 128; ++i) dead.as<float>()[i] = r.sym();
+        QsaArgs a{pos0, 0, (uint32_t)MAXC, (uint32_t)T, 1e-6f};
+        mtl::Pipeline ps = cx.pipeline(lib, "qsa_score"), psm = cx.pipeline(lib, "qsa_score_mm");
+        mtl::Dispatch d1; d1.p = &ps; d1.args = {mtl::Arg::B(qidx), mtl::Arg::B(pooled), mtl::Arg::B(dead), mtl::Arg::B(sa), mtl::Arg::V(a)};
+        d1.grid[0] = (nb + 7) / 8; d1.grid[1] = T; d1.tg[0] = 256;
+        mtl::Dispatch d2; d2.p = &psm; d2.args = {mtl::Arg::B(qidx), mtl::Arg::B(pooled), mtl::Arg::B(dead), mtl::Arg::B(sb), mtl::Arg::V(a)};
+        d2.grid[0] = (nb + 63) / 64; d2.grid[1] = (T + 15) / 16; d2.tg[0] = 128;
+        if (bench) {
+            auto timeit = [&](const mtl::Dispatch& d) {
+                cx.warm({d}, 0.3);
+                std::vector<double> t;
+                for (int i = 0; i < 5; ++i) t.push_back(cx.run({d}));
+                return median(t);
+            };
+            std::printf("score pos0 %u, T %d: qsa_score %.2f ms, qsa_score_mm %.2f ms\n", pos0, T, timeit(d1) * 1e3, timeit(d2) * 1e3);
+        } else {
+            cx.run({d1});
+            cx.run({d2});
+            double worst = 0;
+            for (int t = 0; t < T; ++t) {
+                const uint32_t nbid = (pos0 + t + 1) / 4;
+                for (uint32_t b = 0; b <= nbid; ++b) {
+                    const double x = sa.as<float>()[(size_t)t * MB + b], y = sb.as<float>()[(size_t)t * MB + b];
+                    worst = std::max(worst, std::fabs(x - y) / (std::fabs(x) + 1.0));   // scores are O(10)
+                }
+            }
+            const bool ok = worst < 1e-5;
+            fails += !ok;
+            std::printf("score pos0 %u, T %d: qsa_score_mm vs qsa_score worst rel %.2e  %s\n", pos0, T, worst, ok ? "PASS" : "FAIL");
+        }
     }
     if (!bench) std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
     return fails ? 1 : 0;
