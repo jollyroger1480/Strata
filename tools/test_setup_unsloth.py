@@ -336,13 +336,13 @@ class Main(Base):
         self.assertIsNone(cfg)
 
     def test_one_gpu_and_images_with_a_warning(self):
-        """#967: images are allowed with UD-Q4_K_XL, said to be untested."""
+        """#967: images are allowed with UD-Q4_K_XL (tested end to end since MODEL-UPDATE)."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "yes", "--low-ram", "on"], n_gpus=2)
         self.assertEqual(code, 0, out)
         self.assertIn("(NVIDIA GeForce RTX 5070, 12 GB) only (--gpus 0,1 shares it across", out)
         self.assertNotIn("images are not available", out)
         self.assertIn("images: on", out)
-        self.assertIn("images with UD-Q4_K_XL are untested", out)
+        self.assertNotIn("are untested", out)                      # MODEL-UPDATE: run end to end (CUDA, HIP)
         self.assertIn("--low-ram on does not apply", out)
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--vision", cfg["args"])

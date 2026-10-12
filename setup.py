@@ -227,9 +227,9 @@ MODELS = {
     # the quality yardstick and the decode/prompt numbers in docs/QUANTS.md), so it is no longer NVIDIA-only (#429).
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic): K-quant experts, between UD-IQ4_XS and UD-Q5_K_XL in quality",
                    "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth",), "budget": True,
-                   # #967: images are allowed (the same base model and image encoder as UD-IQ4_XS), with a warning:
-                   # reported working by hand (#967, #971), not tested by us on this file
-                   "vision": True, "vision_untested": True},
+                   # #967 / MODEL-UPDATE: images run end to end with this file (CUDA: RTX A4000, GPU encoder; HIP:
+                   # R9700, CPU encoder; the test picture's text and shapes as the IQ3_XXS pack answers them)
+                   "vision": True},
     # MODEL-UPDATE: Unsloth's larger files (docs/QUANTS.md).  The same GGUF-in-place mode: every expert in RAM where it
     # fits with UNSLOTH_RESIDENT_BESIDE_GB more (unsloth_budget), else a RAM budget of them and the rest read from the
     # SSD while it answers - so "ram_gb" is the all-in-RAM need, and below it setup asks first (default no).  Their
@@ -1731,6 +1731,22 @@ def unsloth_budget(model, ram, gpu=None, asked=None) -> bool:
     (GiB, ram_gb()).  Else every expert is kept in RAM, as for ISTA's files."""
     return asked is not None or bool((gpu or {}).get("uma")) or \
         ram < MODELS[model]["arena_gb"] / 1.073741824 + UNSLOTH_RESIDENT_BESIDE_GB
+
+
+UNSLOTH_IMAGES_MIN_VRAM_GB = 15.5     # a 16 GB card: the GPU encoder's ~1.4 GB is under a tenth of it
+
+
+def unsloth_images_default(model, family, ram, gpu=None) -> bool:
+    """MODEL-UPDATE: is "images on" setup's default answer for this choice: Unsloth's files (the same base model and
+    image encoder as ISTA's, run end to end on CUDA and on HIP), on an NVIDIA card of 16 GB or more (the GPU encoder
+    keeps ~1.4 GB free) or, on AMD, wherever every expert stays in RAM (the CPU encoder takes no VRAM).  Smaller cards
+    keep "no" as the default (asked, as for the other families)."""
+    if family != "unsloth" or not MODELS.get(model, {}).get("budget") or MODELS[model].get("vision") is False:
+        return False
+    g = gpu or {}
+    if str(g.get("arch", "")).startswith("gfx"):
+        return not unsloth_budget(model, ram, g) and not WIN
+    return g.get("vram_gb", 0.0) >= UNSLOTH_IMAGES_MIN_VRAM_GB
 
 
 UMA_EXPERTS = 24576            # the Flash-Next model's experts (48 layers x 512): the most an expert cache can hold
@@ -5468,14 +5484,19 @@ def main() -> int:
         if a.vision not in (None, "no", "none"):
             warn(f"images are not available with {model} yet: off")
     elif hip:
-        vision = hip_vision(a.vision)
+        # MODEL-UPDATE: Unsloth's files on AMD (Linux) read images with the CPU encoder by default where their experts
+        # all stay in RAM (it takes no VRAM; measured on an R9700 with UD-Q4_K_XL and UD-Q5_K_XL, docs/QUANTS.md)
+        vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
+                            else "cpu")
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
         say()
         say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
         say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
-        vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
+        # MODEL-UPDATE: on by default for Unsloth's files on a card with room for the encoder (16 GB and more)
+        default = "y" if unsloth_images_default(model, family, ram, gpu) else "n"
+        vision = "gpu" if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if vision != "none" and MODELS[model].get("vision_untested"):
         warn(f"images with {model} are untested: users report them working, but we have not run this file with "
