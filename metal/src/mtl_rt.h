@@ -55,6 +55,7 @@ struct Dispatch {
     uint32_t tg_mem = 0;              // dynamic threadgroup memory at index 0 (bytes)
     const Buffer* indirect = nullptr; // grid from a GPU buffer (3 x uint32 threadgroup counts) at ind_off
     size_t ind_off = 0;
+    bool barrier = true;              // run_graph: a buffer memory barrier before this dispatch
 };
 
 class Context {
@@ -81,6 +82,9 @@ public:
     // Encodes `ds` into ONE compute encoder (serial or concurrent dispatch type) and ONE command buffer, `reps`
     // times over; commits and waits.  Returns the GPU time (GPUEndTime - GPUStartTime) in seconds.
     double run(const std::vector<Dispatch>& ds, int reps = 1, bool concurrent = false, bool barrier_between = false);
+    // A dependency graph in ONE concurrent encoder: a memory barrier only before dispatches with `barrier` set, so
+    // the dispatches between two barriers may overlap.  Returns the GPU time in seconds.
+    double run_graph(const std::vector<Dispatch>& ds);
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
 

@@ -8,7 +8,7 @@
 //   moe_down    per group, a block of output rows: ye[entry] = weight * (down . h[entry]).
 //   moe_combine y[token] = sum over k of ye[entry(token, k)], in k order.
 //
-// The plan is one int buffer (see P_* below).  The arena is one layer's experts, blob e at e * blob_bytes:
+// The plan is one int buffer (see P_* below).  Expert addressing: MoeArgs (a pack blob or the GGUF tensors):
 // [gate rows | up rows | down rows] in GGUF blocks (tools/iq_pack.py's experts.bin layout).
 
 #define P_NG 0
@@ -22,10 +22,14 @@
 #define P_TOKENT (P_EW + P_MAXE)
 #define P_INTS (P_TOKENT + P_MAXE)
 
+// Expert e's matrices: gate at W + gate_off + e * gu_stride, up at W + up_off + e * gu_stride, down at
+// W + down_off + e * d_stride (a pack's blobs: gate_off 0, strides = the blob; a GGUF: the three tensors).
 struct MoeArgs {
-    ulong blob_bytes;
+    ulong gate_off;
     ulong up_off;
     ulong down_off;
+    ulong gu_stride;
+    ulong d_stride;
     uint gu_row;     // bytes per gate/up row
     uint d_row;      // bytes per down row
     uint n_embd;
@@ -194,11 +198,11 @@ kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[
     if (g >= plan[P_NG]) return;
     const int li = lane % LPR;
     const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
-    device const uchar* blob = W + (ulong)plan[P_GEXP + g] * a.blob_bytes;
+    const ulong ex = (ulong)plan[P_GEXP + g];
     const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
     device const int* etok = plan + P_ETOK + c;
-    device const uchar* g0 = blob + (ulong)row0 * a.gu_row;
-    device const uchar* u0 = blob + a.up_off + (ulong)row0 * a.gu_row;
+    device const uchar* g0 = W + a.gate_off + ex * a.gu_stride + (ulong)row0 * a.gu_row;
+    device const uchar* u0 = W + a.up_off + ex * a.gu_stride + (ulong)row0 * a.gu_row;
     switch (ne) {
         case 1: gu_body<F, LPR, NR, 1>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
         case 2: gu_body<F, LPR, NR, 2>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
@@ -256,9 +260,9 @@ kernel void moe_down(device const uchar* W [[buffer(0)]], device const float* h 
     if (g >= plan[P_NG]) return;
     const int li = lane % LPR;
     const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
-    device const uchar* blob = W + (ulong)plan[P_GEXP + g] * a.blob_bytes;
+    const ulong ex = (ulong)plan[P_GEXP + g];
     const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
-    device const uchar* d0 = blob + a.down_off + (ulong)row0 * a.d_row;
+    device const uchar* d0 = W + a.down_off + ex * a.d_stride + (ulong)row0 * a.d_row;
     switch (ne) {
         case 1: dn_body<F, LPR, NR, 1>(d0, h, hs16, ye, plan, c, row0, li, a, tab); break;
         case 2: dn_body<F, LPR, NR, 2>(d0, h, hs16, ye, plan, c, row0, li, a, tab); break;

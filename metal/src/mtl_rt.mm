@@ -211,6 +211,25 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
     }
 }
 
+double Context::run_graph(const std::vector<Dispatch>& ds) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        for (size_t i = 0; i < ds.size(); ++i) {
+            if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            encode(enc, ds[i]);
+        }
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
 double Context::run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds) {
     double gpu = 0;
     const double t0 = now_s();

@@ -15,7 +15,7 @@ namespace {
 constexpr int P_NG = 0, P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_GSTART + P_MAXE + 4,
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE;
 struct MoeArgs {
-    uint64_t blob_bytes, up_off, down_off;
+    uint64_t gate_off, up_off, down_off, gu_stride, d_stride;
     uint32_t gu_row, d_row, n_embd, n_ff, n_tok, topk, n_expert, gx_gu, gx_dn, pad;
 };
 }  // namespace

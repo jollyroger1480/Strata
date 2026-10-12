@@ -31,7 +31,7 @@ constexpr int P_NG = 0, P_IGU = 4, P_IDN = 8, P_MAXE = 128, P_GEXP = 16, P_GSTAR
               P_INTS = P_TOKENT + P_MAXE;
 
 struct MoeArgs {
-    uint64_t blob_bytes, up_off, down_off;
+    uint64_t gate_off, up_off, down_off, gu_stride, d_stride;
     uint32_t gu_row, d_row, n_embd, n_ff, n_tok, topk, n_expert, gx_gu, gx_dn, pad;
 };
 
@@ -231,9 +231,11 @@ int main(int argc, char** argv) {
     };
     auto args_for = [&](const Kernels& K, int nt, int n_expert) {
         MoeArgs a{};
-        a.blob_bytes = L.blob;
+        a.gate_off = 0;
         a.up_off = L.up_off;
         a.down_off = L.down_off;
+        a.gu_stride = L.blob;
+        a.d_stride = L.blob;
         a.gu_row = (uint32_t)L.gu_row;
         a.d_row = (uint32_t)L.d_row;
         a.n_embd = N_EMBD;
