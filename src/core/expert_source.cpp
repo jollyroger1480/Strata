@@ -45,6 +45,9 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>   // host_statistics64: the available memory
+#endif
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -411,6 +414,16 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     }
     m.available = bytes;
     return true;
+#elif defined(__APPLE__)
+    // macOS: free + inactive + purgeable pages (what the OS can hand out without swapping), as vm_stat reports them
+    (void) meminfo; (void) self_cgroup; (void) cgroup_root;
+    vm_statistics64_data_t vs{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_size_t page_bytes = 0;
+    if (host_page_size(mach_host_self(), &page_bytes) != KERN_SUCCESS ||
+        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &count) != KERN_SUCCESS) return false;
+    m.available = ((uint64_t) vs.free_count + vs.inactive_count + vs.purgeable_count) * (uint64_t) page_bytes;
+    return m.available > 0;
 #else
     (void) meminfo; (void) self_cgroup; (void) cgroup_root;
     const long pages = sysconf(_SC_AVPHYS_PAGES);
@@ -3107,10 +3120,12 @@ bool FileExpertSource::pin_cache_complement(
                 fail("FileExpertSource: madvise could not release mapped expert layer " + std::to_string(layer));
                 return;
             }
+#if !defined(__APPLE__)   // macOS has no posix_fadvise; the madvise above already released the mapping
             if (posix_fadvise(fd_, (off_t) layer_offset, (off_t) layer_bytes, POSIX_FADV_DONTNEED) != 0) {
                 fail("FileExpertSource: posix_fadvise could not release expert layer " + std::to_string(layer));
                 return;
             }
+#endif
             }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
