@@ -31,6 +31,8 @@ struct Context::Impl {
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
     std::vector<id<MTLLibrary>> libs;
+    id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
+    uint64_t ev_v = 0;
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
@@ -99,6 +101,9 @@ Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
     NSString* name = [NSString stringWithUTF8String:fn.c_str()];
     if (c.vals.empty()) {
         f = [impl_->libs[lib] newFunctionWithName:name];
+        // a function with (optional) function constants needs a specialization even when none is set
+        if (f && f.functionConstantsDictionary.count > 0)
+            f = [impl_->libs[lib] newFunctionWithName:name constantValues:[MTLFunctionConstantValues new] error:&err];
     } else {
         MTLFunctionConstantValues* cv = [MTLFunctionConstantValues new];
         for (const auto& v : c.vals) {
@@ -143,6 +148,7 @@ Buffer Context::alloc(size_t bytes) {
         std::exit(4);
     }
     std::memset([b contents], 0, bytes);
+    allocated_ += bytes;
     Buffer r;
     r.handle = (__bridge_retained void*)b;
     r.ptr = [b contents];
@@ -156,6 +162,7 @@ Buffer Context::wrap(void* p, size_t bytes) {
         std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
         std::exit(4);
     }
+    allocated_ += bytes;
     Buffer r;
     r.handle = (__bridge_retained void*)b;
     r.ptr = p;
@@ -221,6 +228,47 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
         }
         [enc endEncoding];
         [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
+                              void* user) {
+    @autoreleasepool {
+        if (impl_->ev == nil) impl_->ev = [impl_->dev newSharedEvent];
+        id<MTLSharedEvent> ev = impl_->ev;
+        const uint64_t base = impl_->ev_v;
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        size_t i = 0;
+        for (size_t s = 0; s <= cuts.size(); ++s) {
+            const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
+            id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+            const size_t first = i;
+            for (; i < end; ++i) {
+                if (i > first && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, ds[i]);
+            }
+            [enc endEncoding];
+            if (s < cuts.size()) {
+                [cb encodeSignalEvent:ev value:base + 2 * s + 1];
+                [cb encodeWaitForEvent:ev value:base + 2 * s + 2];
+            }
+        }
+        [cb commit];
+        for (size_t s = 0; s < cuts.size(); ++s) {
+            const uint64_t want = base + 2 * s + 1;
+            while (ev.signaledValue < want) {
+                if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+            }
+            at_cut(user, (int) s);
+            ev.signaledValue = base + 2 * s + 2;
+        }
+        impl_->ev_v = base + 2 * cuts.size() + 2;
         [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);

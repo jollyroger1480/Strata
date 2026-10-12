@@ -42,6 +42,18 @@ struct MoeArgs {
     uint pad;
 };
 
+// The SSD-streaming arena (metal/src/engine/stream.cpp): with function constant 20 set, expert e of the layer lies in
+// an arena slot, smap[e] = (chunk << 28) | its 16 KiB page in that chunk; the chunks are W (buffer 0) and buffers 7..9
+// (gate_off / up_off / down_off are then offsets inside the slot).
+constant bool kArenaFc [[function_constant(20)]];
+constant bool kArena = is_function_constant_defined(kArenaFc) && kArenaFc;
+static inline device const uchar* arena_slot(uint v, device const uchar* W, device const uchar* W1, device const uchar* W2,
+                                             device const uchar* W3) {
+    const uint c = v >> 28;
+    device const uchar* b = c == 0 ? W : (c == 1 ? W1 : (c == 2 ? W2 : W3));
+    return b + (ulong)(v & 0x0FFFFFFFu) * 16384ul;
+}
+
 static inline void plan_body(device const int* ids, device const float* w, device int* plan, constant MoeArgs& a,
                              ushort tid, ushort nth, ushort sg, ushort lane, threadgroup int* s_grp,
                              threadgroup int* s_ent) {
@@ -188,6 +200,8 @@ template <int F, int LPR, int NR, int SG>
 kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[buffer(1)]],
                    device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
                    constant MoeArgs& a [[buffer(4)]], device const float* xs16 [[buffer(5)]],
+                   device const uint* smap [[buffer(6)]], device const uchar* W1 [[buffer(7)]],
+                   device const uchar* W2 [[buffer(8)]], device const uchar* W3 [[buffer(9)]],
                    uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                    ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int RG = 32 / LPR;
@@ -201,8 +215,9 @@ kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[
     const ulong ex = (ulong)plan[P_GEXP + g];
     const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
     device const int* etok = plan + P_ETOK + c;
-    device const uchar* g0 = W + a.gate_off + ex * a.gu_stride + (ulong)row0 * a.gu_row;
-    device const uchar* u0 = W + a.up_off + ex * a.gu_stride + (ulong)row0 * a.gu_row;
+    device const uchar* E = kArena ? arena_slot(smap[ex], W, W1, W2, W3) : W + ex * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + (ulong)row0 * a.gu_row;
+    device const uchar* u0 = E + a.up_off + (ulong)row0 * a.gu_row;
     switch (ne) {
         case 1: gu_body<F, LPR, NR, 1>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
         case 2: gu_body<F, LPR, NR, 2>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
@@ -250,6 +265,8 @@ template <int F, int LPR, int NR, int SG>
 kernel void moe_down(device const uchar* W [[buffer(0)]], device const float* h [[buffer(1)]],
                      device float* ye [[buffer(2)]], device const int* plan [[buffer(3)]],
                      constant MoeArgs& a [[buffer(4)]], device const float* hs16 [[buffer(5)]],
+                     device const uint* smap [[buffer(6)]], device const uchar* W1 [[buffer(7)]],
+                     device const uchar* W2 [[buffer(8)]], device const uchar* W3 [[buffer(9)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
                      ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int RG = 32 / LPR;
@@ -262,7 +279,7 @@ kernel void moe_down(device const uchar* W [[buffer(0)]], device const float* h 
     const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
     const ulong ex = (ulong)plan[P_GEXP + g];
     const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
-    device const uchar* d0 = W + a.down_off + ex * a.d_stride + (ulong)row0 * a.d_row;
+    device const uchar* d0 = (kArena ? arena_slot(smap[ex], W, W1, W2, W3) : W + ex * a.d_stride) + a.down_off + (ulong)row0 * a.d_row;
     switch (ne) {
         case 1: dn_body<F, LPR, NR, 1>(d0, h, hs16, ye, plan, c, row0, li, a, tab); break;
         case 2: dn_body<F, LPR, NR, 2>(d0, h, hs16, ye, plan, c, row0, li, a, tab); break;

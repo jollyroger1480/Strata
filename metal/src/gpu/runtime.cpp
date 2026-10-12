@@ -20,6 +20,7 @@
 
 #include <sys/sysctl.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -251,12 +252,21 @@ Error run_op(StreamImpl* s, const Op& o) {
     return kSuccess;
 }
 
+// STRATA_METAL_ALLOC_LOG=1: every allocation of 16 MB or more, with the running total (memory budgets on small Macs)
+void alloc_log(const char* what, size_t n) {
+    static const bool on = std::getenv("STRATA_METAL_ALLOC_LOG") != nullptr;
+    static std::atomic<uint64_t> tot{0};
+    const uint64_t t = tot += n;
+    if (on && n >= (16u << 20)) std::fprintf(stderr, "strata metal runtime: %s %.1f MB (total %.2f GB)\n", what, n / 1e6, t / 1e9);
+}
+
 Error new_alloc(void** p, size_t bytes, bool host) {
     Runtime& r = rt();
     const size_t n = bytes ? bytes : 1;
     MTL::Buffer* b = r.dev->newBuffer(n, MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeUntracked);
     if (!b) return fail(kErrorMemoryAllocation);
     Alloc a{b, b->gpuAddress(), (uint8_t*) b->contents(), n, host};
+    alloc_log(host ? "host alloc" : "device alloc", n);
     {
         std::lock_guard<std::mutex> lk(r.mu);
         r.by_gpu[a.gpu] = a;
@@ -366,6 +376,7 @@ Error host_register(void* p, size_t bytes, unsigned) {
     MTL::Buffer* b = r.dev->newBuffer(p, n, MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeUntracked, nullptr);
     if (!b) return fail(kErrorMemoryAllocation);
     Alloc a{b, b->gpuAddress(), (uint8_t*) b->contents(), n, true};
+    alloc_log("host register", n);
     std::lock_guard<std::mutex> lk(r.mu);
     r.by_gpu[a.gpu] = a;
     r.by_cpu[(uintptr_t) a.cpu] = a.gpu;
