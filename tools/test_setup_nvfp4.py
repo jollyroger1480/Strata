@@ -147,13 +147,15 @@ class MockedInstall(unittest.TestCase):
         self.assertIn("NVIDIA-NVFP4-Strata/pack", self.flag(cfg["args"], "--pack"))
         self.assertIn("NVIDIA Open Model License", out)
 
-    def test_96gb_keeps_every_expert_in_ram_64gb_takes_the_low_ram_mode(self):
+    def test_96gb_keeps_every_expert_in_ram_64gb_takes_the_ram_budget(self):
         code, out, cfg, _ = self.run_install("96GB-1x16GB")    # 68 GB of experts + 10 GB beside them fit 95.8
         self.assertEqual(code, 0, out[-2000:])
         self.assertFalse({"--mmap-experts", "--resident-experts"} & set(cfg["args"]))
-        code, out, cfg, _ = self.run_install("64GB-1x32GB")    # the experts outside a 32 GB card's cache fit the RAM
+        code, out, cfg, _ = self.run_install("64GB-1x32GB")    # 64 GB: the RAM-budget mode (RAM less 24 GB)
         self.assertEqual(code, 0, out[-2000:])
-        self.assertIn("--resident-experts", cfg["args"])
+        a = cfg["args"]
+        self.assertFalse({"--mmap-experts", "--resident-experts"} & set(a))
+        self.assertEqual(a[a.index("--resident-budget-gib") + 1], "40")
 
     def test_amd_is_refused_with_a_recommendation(self):
         import test_setup_golden as G

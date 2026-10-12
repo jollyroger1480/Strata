@@ -5515,7 +5515,7 @@ def main() -> int:
     # with a warning when they do not fit the RAM it finds free).  mmap: they are read through the OS file cache.
     # The GPU's share: its VRAM less the dense weights and buffers, this context's KV cache and the image encoder's room.
     resident = False
-    if low_ram:
+    if low_ram and not fam.get("ready"):               # NVFP4's packs: the RAM-budget mode instead (step 7)
         arena = MODELS[model]["arena_gb"]
         vram = low_ram_vram(gpu) - (VISION[vision]["reserve_mib"] / 1024 if vision != "none" else 0)
         share = low_ram_gpu_share(model, vram, ctx, kv)
@@ -5794,7 +5794,16 @@ def main() -> int:
         resident = False                               # an engine from before --resident-experts would refuse it
         ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "
            "the OS file cache (run setup again after the next engine update)")
-    if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
+    if low_ram and ready:
+        # NVFP4 (68 GB of experts) on a PC whose RAM does not hold them: the RAM-budget mode, as Unsloth's files - the
+        # most-used experts outside VRAM pinned within RAM less 24 GB, the rest read from experts.bin.  Mapped
+        # (--mmap-experts) on a 64 GB Windows PC, the experts it read stayed in the engine's working set: free RAM
+        # fell to 0.6 GB on the RTX 5070 PC (2026-10-13), where the budget mode kept 22 GB free
+        rb = resident_budget_gib(model, ram)
+        args += ["--resident-budget-gib", str(rb)]
+        ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
+           "experts.bin on the SSD as needed")
+    elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
