@@ -613,7 +613,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
   add_executable(strata-q36ref src/qwen35/q36ref.cu)
   target_include_directories(strata-q36ref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
-  target_link_libraries(strata-q36ref PRIVATE strata_warnings ${_strata_gpu_runtime_target})
+  target_link_libraries(strata-q36ref PRIVATE strata_kernels strata_warnings ${_strata_gpu_runtime_target})
 
   if(STRATA_ENABLE_HIP)
     enable_testing()
