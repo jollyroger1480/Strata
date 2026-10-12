@@ -350,12 +350,24 @@ __global__ void k_group(const int32_t* ids, int n_ent, int K_, int n_expert, con
         }
     }
 }
-/// The prompt's attention probabilities in place: row (h, t) of S (ld floats, P cells) -> softmax(S * scale) over the
-/// cells [0, pos0 + t], 0 past them (causal).  grid (T, H), block 256.
-__global__ void k_attn_softmax(float* S, int ld, int T, int P, int pos0, float scale) {
+/// The prompt attention's FP16 operands: cells [0, P) of each KV head's K / V (cache rows ctx apart) into compact
+/// [kvh][P][HD] halves.  grid1(HKV * P * HD).
+__global__ void k_kv_f16(const float* kc, const float* vc, __half* k16, __half* v16, int ctx, int P, int HD, int HKV) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (int64_t) HKV * P * HD) return;
+    const int64_t per = (int64_t) P * HD;
+    const int64_t kvh = i / per, rest = i % per;
+    const size_t src = (size_t) kvh * ctx * HD + rest;
+    k16[i] = __float2half(kc[src]);
+    v16[i] = __float2half(vc[src]);
+}
+/// The prompt's causal softmax: row (h, t) of S (ld floats, P cells) -> softmax(S * scale) over the cells
+/// [0, pos0 + t], 0 past them, as FP16 probabilities (S16, the same row offsets, ld halves).  grid (T, H), block 256.
+__global__ void k_attn_softmax16(const float* S, __half* S16, int ld, int T, int P, int pos0, float scale) {
     __shared__ float sh[kThreads];
     const int t = blockIdx.x, h = blockIdx.y;
-    float* row = S + ((size_t) h * T + t) * ld;
+    const float* row = S + ((size_t) h * T + t) * ld;
+    __half* out = S16 + ((size_t) h * T + t) * ld;
     const int n = min(P, pos0 + t + 1);
     float mx = -INFINITY;
     for (int p = threadIdx.x; p < n; p += blockDim.x) mx = fmaxf(mx, row[p] * scale);
@@ -364,7 +376,7 @@ __global__ void k_attn_softmax(float* S, int ld, int T, int P, int pos0, float s
     for (int p = threadIdx.x; p < n; p += blockDim.x) sum += expf(row[p] * scale - mx);
     sum = block_sum(sum, sh);
     const float inv = 1.0f / sum;
-    for (int p = threadIdx.x; p < P; p += blockDim.x) row[p] = p < n ? expf(row[p] * scale - mx) * inv : 0.f;
+    for (int p = threadIdx.x; p < P; p += blockDim.x) out[p] = __float2half(p < n ? expf(row[p] * scale - mx) * inv : 0.f);
 }
 /// att *= sigmoid(gate) (the attention output gate), n values.
 __global__ void k_gate_mul(float* att, const float* gate, int64_t n) {
@@ -541,6 +553,73 @@ __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, i
     if (!write) return;   // a verify window: the state is commit()'s to write
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = s[r];
+}
+
+/// The prompt's gated delta rule with more parallelism: a state column's update needs only that column (kv, delta and
+/// the output o all reduce over the rows), so a V head splits into kGdnColGroups blocks of 128 / kGdnColGroups columns,
+/// each with 16 row groups of 8 rows (512 threads, 8 state values per thread in registers).  Writes the raw outputs
+/// o (T, HV * 128); k_gdn_norm applies the SiLU-gated RMS norm.  grid (HV, kGdnColGroups), block (32, 16).
+constexpr int kGdnColGroups = 4;
+__global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float* h, int C, const float* gate,
+                                                      const float* beta, float* o_raw, int h_k, int h_v, int T) {
+    constexpr int S = 128, NC = S / kGdnColGroups, RG = 16, RPG = S / RG;
+    __shared__ float sk[S], sq[S];
+    __shared__ float red_kv[RG][NC];
+    __shared__ float red_o[RG][NC];
+    const int head = blockIdx.x, cl = threadIdx.x, rg = threadIdx.y, tid = rg * NC + cl;
+    const int col = blockIdx.y * NC + cl;
+    const int qh = head % h_k;
+    float sv[RPG];
+    float* base = state + ((size_t) (rg * RPG) * h_v + head) * S + col;
+    const size_t row_stride = (size_t) h_v * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) sv[r] = base[r * row_stride];
+    for (int t = 0; t < T; ++t) {
+        const float* ht = h + (size_t) t * C;
+        if (tid < S) { sk[tid] = ht[h_k * S + qh * S + tid]; sq[tid] = ht[qh * S + tid]; }
+        __syncthreads();
+        const float g = __expf(gate[(size_t) t * h_v + head]);
+        float kv = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[rg * RPG + r], kv);
+        red_kv[rg][cl] = kv;
+        __syncthreads();
+        float kv_col = 0.0f;
+#pragma unroll
+        for (int i = 0; i < RG; ++i) kv_col += red_kv[i][cl];
+        const float delta = (ht[2 * h_k * S + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+        float o = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            sv[r] = fmaf(g, sv[r], sk[rg * RPG + r] * delta);
+            o = fmaf(sv[r], sq[rg * RPG + r], o);
+        }
+        red_o[rg][cl] = o;
+        __syncthreads();
+        if (rg == 0) {
+            float oc = 0.0f;
+#pragma unroll
+            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+            o_raw[(size_t) t * h_v * S + head * S + col] = oc * rsqrtf((float) S);
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * row_stride] = sv[r];
+}
+/// y = rms(o) * gamma * SiLU(z) per (token, V head): grid (HV, T), block 128.
+__global__ void __launch_bounds__(128) k_gdn_norm(const float* o_raw, const float* z, const float* gamma, float eps,
+                                                  float* y, int h_v) {
+    __shared__ float part[4];
+    const size_t i = ((size_t) blockIdx.y * h_v + blockIdx.x) * 128 + threadIdx.x;
+    const float oc = o_raw[i];
+    float sq = oc * oc;
+    for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor_sync(0xffffffffu, sq, o);
+    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = sq;
+    __syncthreads();
+    const float ss = part[0] + part[1] + part[2] + part[3];
+    const float scale = rsqrtf(ss / 128.0f + eps);
+    const float zz = z[i];
+    y[i] = oc * scale * gamma[threadIdx.x] * (zz / (1.0f + __expf(-zz)));
 }
 
 // ------------------------------------------------------------------------------------------------ the model
@@ -829,6 +908,8 @@ struct Engine {
     strata::prefill::Gemm gemm;
     cublasHandle_t blas = nullptr;
     float* att_s = nullptr;            // the prompt attention's scores / probabilities, kAttScoreFloats floats
+    __half* att_p16 = nullptr;         // the probabilities in FP16 (kAttScoreFloats halves)
+    __half *k16 = nullptr, *v16 = nullptr, *q16 = nullptr;   // the prompt attention's FP16 operands
     static constexpr size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB
     // the prompt's MMQ experts
     bool use_mmq = false;
@@ -867,6 +948,10 @@ struct Engine {
             std::exit(1);
         }
         att_s = dalloc(kAttScoreFloats);
+        att_p16 = dalloc_t<__half>(kAttScoreFloats);
+        k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
+        v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
+        q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
         use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
             return MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) && MMQ::fits(L.L.gu_type, 2 * g.n_ff) &&
@@ -1050,8 +1135,14 @@ struct Engine {
             // differently from k_conv_seq's, a 1-ulp difference in h that the Q8_1 activation rounding can turn into a
             // flipped near-tie later; with them the KL is the same, 1.05x / 0.81x the floor, but MTP would not be exact.)
             k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
-            k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV, T,
-                                                   !verify);
+            if (T > kGemmT && !verify) {   // a prompt chunk: the column-split delta rule, then the norm
+                k_gdn_seq_cols<<<dim3(HV, kGdnColGroups), dim3(128 / kGdnColGroups, 16), 0, st>>>(S[li], hc_b, C, al_b,
+                                                                                                  be_b, gdn_y, HK, HV, T);
+                k_gdn_norm<<<dim3(HV, T), 128, 0, st>>>(gdn_y, z, L.ssm_norm, m->eps, gdn_y, HV);
+            } else {   // decode, verify windows and commits: one kernel, so a window's rows are a decode step's rows
+                k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
+                                                       T, !verify);
+            }
             mm(L.ssm_out, gdn_y, y, T);
         } else {
             prep(h, N, T, xq);
@@ -1061,34 +1152,39 @@ struct Engine {
             k_attn_prep<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kc[li], vc[li], H,
                                                               HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps);
             if (T > kGemmT) {
-                // a prompt chunk: scores = Q K^T and out = P V as FP32 GEMMs per KV head (its query heads one strided
-                // batch over the shared K / V), the causal softmax in between; the queries in slices whose scores fit
+                // a prompt chunk: scores = Q K^T and out = P V as FP16 GEMMs (FP32 accumulation, FP32 scores) per KV
+                // head (its query heads one strided batch over the shared K / V), the causal softmax in between writing
+                // FP16 probabilities; the queries in slices whose scores fit
                 const int P = (int) p0 + T;
-                const int ldp = (P + 3) / 4 * 4;
+                const int ldp = (P + 7) / 8 * 8;
                 const int tq = (int) std::max<int64_t>(1, std::min<int64_t>(T, (int64_t) (kAttScoreFloats / ((size_t) H * ldp))));
                 const int G = H / HKV;
                 const float one = 1.0f, zero = 0.0f;
+                k_kv_f16<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kc[li], vc[li], k16, v16, ctx, P, HD, HKV);
+                k_to_f16<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(q, q16, (int64_t) T * H * HD);
                 for (int t0 = 0; t0 < T; t0 += tq) {
                     const int nt = std::min(tq, T - t0);
                     for (int kvh = 0; kvh < HKV; ++kvh) {
-                        const float* Kh = kc[li] + (size_t) kvh * ctx * HD;
-                        const float* Qh = q + ((size_t) t0 * H + kvh * G) * HD;
+                        const __half* Kh = k16 + (size_t) kvh * P * HD;
+                        const __half* Qh = q16 + ((size_t) t0 * H + kvh * G) * HD;
                         float* Sh = att_s + (size_t) kvh * G * nt * ldp;
-                        if (cublasSgemmStridedBatched(blas, CUBLAS_OP_T, CUBLAS_OP_N, P, nt, HD, &one, Kh, HD, 0, Qh,
-                                                      H * HD, HD, &zero, Sh, ldp, (long long) nt * ldp, G) !=
+                        if (cublasGemmStridedBatchedEx(blas, CUBLAS_OP_T, CUBLAS_OP_N, P, nt, HD, &one, Kh, CUDA_R_16F, HD,
+                                                       0, Qh, CUDA_R_16F, H * HD, HD, &zero, Sh, CUDA_R_32F, ldp,
+                                                       (long long) nt * ldp, G, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) !=
                             CUBLAS_STATUS_SUCCESS) {
                             std::fprintf(stderr, "strata-q36: attention scores GEMM failed\n");
                             std::exit(1);
                         }
                     }
-                    k_attn_softmax<<<dim3(nt, H), kThreads, 0, st>>>(att_s, ldp, nt, P, (int) p0 + t0,
-                                                                     1.0f / sqrtf((float) HD));
+                    k_attn_softmax16<<<dim3(nt, H), kThreads, 0, st>>>(att_s, att_p16, ldp, nt, P, (int) p0 + t0,
+                                                                       1.0f / sqrtf((float) HD));
                     for (int kvh = 0; kvh < HKV; ++kvh) {
-                        const float* Vh = vc[li] + (size_t) kvh * ctx * HD;
-                        const float* Sh = att_s + (size_t) kvh * G * nt * ldp;
+                        const __half* Vh = v16 + (size_t) kvh * P * HD;
+                        const __half* Sh = att_p16 + (size_t) kvh * G * nt * ldp;
                         float* Oh = att + ((size_t) t0 * H + kvh * G) * HD;
-                        if (cublasSgemmStridedBatched(blas, CUBLAS_OP_N, CUBLAS_OP_N, HD, nt, P, &one, Vh, HD, 0, Sh,
-                                                      ldp, (long long) nt * ldp, &zero, Oh, H * HD, HD, G) !=
+                        if (cublasGemmStridedBatchedEx(blas, CUBLAS_OP_N, CUBLAS_OP_N, HD, nt, P, &one, Vh, CUDA_R_16F, HD,
+                                                       0, Sh, CUDA_R_16F, ldp, (long long) nt * ldp, &zero, Oh, CUDA_R_32F,
+                                                       H * HD, HD, G, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) !=
                             CUBLAS_STATUS_SUCCESS) {
                             std::fprintf(stderr, "strata-q36: attention values GEMM failed\n");
                             std::exit(1);

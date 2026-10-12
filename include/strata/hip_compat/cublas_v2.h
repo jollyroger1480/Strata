@@ -54,6 +54,7 @@ inline rocblas_status cublasGemmEx(rocblas_handle h, rocblas_operation trans_a,
 #define cublasGemmEx hipblasGemmEx
 #define cublasSgemm hipblasSgemm                              // the Qwen3.6 engine's FP32 prompt products
 #define cublasSgemmStridedBatched hipblasSgemmStridedBatched
+#define cublasGemmStridedBatchedEx hipblasGemmStridedBatchedEx    // (the Qwen3.6 prompt attention, FP16)
 #define cublasHandle_t hipblasHandle_t
 #define cublasSetMathMode hipblasSetMathMode
 #define cublasSetStream hipblasSetStream
