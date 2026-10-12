@@ -1113,7 +1113,11 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
     mtail_.push_back(A(4 * 4 * 128)); mdead_.push_back(A(4 * 128)); mpooled_.push_back(A(4 * (size_t) MB * 128));
     {
         std::string vp;
+        // the subset setup put beside the draft layer (--draft-vocab: <mtp>/rt/draft_vocab.bin, as CUDA reads it),
+        // else the repository's default
+        const std::string beside = gguf_path.substr(0, gguf_path.find_last_of('/') + 1) + "rt/draft_vocab.bin";
         if (const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB")) vp = e;
+        else if (FILE* t = std::fopen(beside.c_str(), "rb")) { std::fclose(t); vp = beside; }
         else vp = std::string(STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
         FILE* f = vp == "full" ? nullptr : std::fopen(vp.c_str(), "rb");
         if (f) {
