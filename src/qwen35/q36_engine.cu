@@ -1045,18 +1045,13 @@ struct Engine {
                 k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(al_b, L.dt, L.ssm_a, be_b, HV, T);
             }
             // one token, a window or a chunk: the same kernels (every token in one launch each), so a decode step and a
-            // verify window compute bitwise the same rows (the MTP's greedy text is the plain greedy text, 10 of 10).
-            // STRATA_Q36_FUSED_GDN=1 keeps the fused single-token kernels for comparison: after a prompt chunk of more
-            // than 8 tokens they diverge from llama.cpp's greedy text (p01, token 4) -- not explained yet, same speed
-            if (std::getenv("STRATA_Q36_FUSED_GDN") != nullptr && T == 1 && !verify) {
-                K::fused_gdn_conv_l2(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, st);
-                K::fused_gdn_step_norm_silu(S[li], hc_b, hc_b + HK * D, hc_b + 2 * HK * D, al_b, be_b, z, L.ssm_norm,
-                                            m->eps, gdn_y, HK, HV, st);
-            } else {
-                k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
-                k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
-                                                       T, !verify);
-            }
+            // verify window compute bitwise the same rows and the MTP's greedy text is the plain greedy text.  (Strata's
+            // fused single-token kernels are not used here: fused_gdn_conv_l2's 4-tap sum contracts into FMAs
+            // differently from k_conv_seq's, a 1-ulp difference in h that the Q8_1 activation rounding can turn into a
+            // flipped near-tie later; with them the KL is the same, 1.05x / 0.81x the floor, but MTP would not be exact.)
+            k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
+            k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV, T,
+                                                   !verify);
             mm(L.ssm_out, gdn_y, y, T);
         } else {
             prep(h, N, T, xq);
