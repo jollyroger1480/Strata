@@ -121,11 +121,12 @@ int main(int argc, char** argv) {
             cs.as<float>()[(p * 32 + i) * 2 + 1] = (float)std::sin(th);
         }
     // per-layer recurrent state and QSA caches
-    std::vector<mtl::Buffer> gst, ghist, kq, vq, ksc, vsc, tail, dead, pooled;
+    std::vector<mtl::Buffer> gst, ghist, ghist2, kq, vq, ksc, vsc, tail, dead, pooled;
     for (int l = 0; l < 48; ++l) {
         if (l % 4 != 3) {
             gst.push_back(cx.alloc(4 * 128 * 48 * 128));
             ghist.push_back(cx.alloc(4 * 10240 * 3));
+            ghist2.push_back(cx.alloc(4 * 10240 * 3));
         } else {
             kq.push_back(cx.alloc((size_t)MAXC * 2 * 256));
             vq.push_back(cx.alloc((size_t)MAXC * 2 * 256));
@@ -256,7 +257,7 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(gst[gi]), mtl::Arg::B(ghist[gi]), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                       mtl::Arg::B(z), mtl::Arg::B(W, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T(b + "ssm_dt.bias").offset),
                       mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(yg),
-                      mtl::Arg::V(a)};
+                      mtl::Arg::V(a), mtl::Arg::B(ghist2[gi])};
             d.grid[0] = 48;
             d.tg[0] = 512;
             push(d, "gdn step", 2.0 * 4 * 128 * 48 * 128);

@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
                 h0 = cx.alloc(4 * C * 3), qkv = cx.alloc(4 * C * MAXT), al = cx.alloc(4 * HV * MAXT),
                 be = cx.alloc(4 * HV * MAXT), z = cx.alloc(4 * HV * S * MAXT), cw = cx.alloc(4 * C * 4),
                 dt = cx.alloc(4 * HV), sa = cx.alloc(4 * HV), gm = cx.alloc(4 * S), y = cx.alloc(4 * HV * S * MAXT),
-                y2 = cx.alloc(4 * HV * S * MAXT);
+                y2 = cx.alloc(4 * HV * S * MAXT), hist2 = cx.alloc(4 * C * 3 * LAYERS);
     ref::Rng r(17);
     for (size_t i = 0; i < st_elems; ++i) st0.as<float>()[i] = r.sym() * 0.1f;
     for (int i = 0; i < C * 3; ++i) h0.as<float>()[i] = r.sym();
@@ -57,11 +57,15 @@ int main(int argc, char** argv) {
         d.p = &p;
         d.args = {mtl::Arg::B(state, 4 * st_elems * layer), mtl::Arg::B(hist, 4 * (size_t)C * 3 * layer), mtl::Arg::B(qkv),
                   mtl::Arg::B(al), mtl::Arg::B(be), mtl::Arg::B(z), mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa),
-                  mtl::Arg::B(gm), mtl::Arg::B(out), mtl::Arg::V(a)};
+                  mtl::Arg::B(gm), mtl::Arg::B(out), mtl::Arg::V(a), mtl::Arg::B(hist2, 4 * (size_t)C * 3 * layer)};
         d.grid[0] = HV;
         d.tg[0] = 512;
         return d;
     };
+    {
+        mtl::Pipeline p1 = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, 1));
+        std::printf("gdn_step pipeline: max %d threads per threadgroup (the kernel needs 512)\n", p1.max_threads);
+    }
     if (bench) {
         for (int nt : {1, 2, 3, 4}) {
             mtl::Pipeline p = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, nt));
@@ -81,6 +85,19 @@ int main(int argc, char** argv) {
     int fails = 0;
     for (int nt = 1; nt <= 4; ++nt) {
         mtl::Pipeline p = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, nt));
+        // determinism: the same verify call three times
+        {
+            std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
+            std::memcpy(hist.ptr, h0.ptr, 4 * C * 3);
+            cx.run({disp(p, 0, 0, y2)});
+            std::vector<float> first((float*)y2.ptr, (float*)y2.ptr + HV * S * nt);
+            int diff = 0;
+            for (int k = 0; k < 2; ++k) {
+                cx.run({disp(p, 0, 0, y2)});
+                diff += std::memcmp(first.data(), y2.ptr, 4 * HV * S * nt) != 0;
+            }
+            if (diff) std::printf("  ntok %d: NOT deterministic (%d of 2 repeats differ)\n", nt, diff);
+        }
         // verify: state untouched
         std::memcpy(state.ptr, st0.ptr, 4 * st_elems);
         std::memcpy(hist.ptr, h0.ptr, 4 * C * 3);
@@ -142,7 +159,7 @@ int main(int argc, char** argv) {
             }
         }
         for (size_t i = 0; i < st_elems; ++i) es.add(state.as<float>()[i], Sd[i]);
-        for (int i = 0; i < C * 3; ++i) eh.add(hist.as<float>()[i], Hd[i]);
+        for (int i = 0; i < C * 3; ++i) eh.add(hist2.as<float>()[i], Hd[i]);
         // fold property: a window of nt + 1 tokens (no commit) gives bitwise the same first nt outputs
         bool prefix = true;
         if (nt < 4) {

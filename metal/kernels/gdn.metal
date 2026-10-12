@@ -10,7 +10,8 @@
 // One threadgroup per value head, 512 threads = 16 simdgroups: simdgroup s holds columns j = 32 (s % 4) + lane and
 // rows i = 32 (s / 4) .. + 32 of the head's 128 x 128 state in registers.  GDN_NTOK tokens run in order; with
 // `commit` the state and the conv history are written back after the last one (a verify window runs without commit,
-// the fold of m accepted tokens is the same kernel with GDN_NTOK = m and commit).
+// the fold of m accepted tokens is the same kernel with GDN_NTOK = m and commit).  The conv history is read from
+// `hist` and the committed one written to `hist_out` (ping-pong: the q/k channels are shared by three threadgroups).
 
 constant int GDN_NTOK [[function_constant(2)]];
 
@@ -28,6 +29,7 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
                      device const float* conv_w [[buffer(6)]], device const float* dt [[buffer(7)]],
                      device const float* ssm_a [[buffer(8)]], device const float* gamma [[buffer(9)]],
                      device float* y [[buffer(10)]], constant GdnArgs& a [[buffer(11)]],
+                     device float* hist_out [[buffer(12)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     constexpr int S = 128;
@@ -122,7 +124,9 @@ kernel void gdn_step(device float* state [[buffer(0)]], device float* hist [[buf
     if (a.commit) {
         for (int r = 0; r < 32; ++r) state[((i0 + r) * hv + h) * S + j] = st[r];
         // q/k history: the threadgroups h < h_k own their q/k head (h == hk); v history: every head its own
+        // to hist_out, NOT in place: a q/k channel is read by the three threadgroups h % h_k at their start, and
+        // a threadgroup may start after its owner has finished (seen on the 10-core M4); the caller swaps the two
         if (ch >= 0 && (tid >= 256 || h < int(a.h_k)))
-            for (int k = 0; k < 3; ++k) hist[ch * 3 + k] = hst[k];
+            for (int k = 0; k < 3; ++k) hist_out[ch * 3 + k] = hst[k];
     }
 }

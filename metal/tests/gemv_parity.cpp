@@ -4,6 +4,7 @@
 //   gemv_parity                         parity: every format, n_in 2560/640/10240, 1..8 tokens
 //   gemv_parity --bench [--pack Q2_0|IQ3_XXS] [--ntok N] [--all]   speed on the pack's shapes (best tile per shape)
 //   gemv_parity --one TYPE NIN NOUT [--ntok N]                      sweep one shape
+#include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
 
@@ -74,6 +75,7 @@ struct Shape { const char* name; int type, n_in, n_out, per_token; };   // per_t
 int main(int argc, char** argv) {
     bool bench = false, all = false;
     int ntok = 1;
+    std::string gguf_path;
     std::string pack = "Q2_0";
     std::vector<Shape> one;
     for (int i = 1; i < argc; ++i) {
@@ -82,6 +84,7 @@ int main(int argc, char** argv) {
         else if (a == "--all") all = true;
         else if (a == "--ntok") ntok = std::atoi(argv[++i]);
         else if (a == "--pack") pack = argv[++i];
+        else if (a == "--gguf") gguf_path = argv[++i];
         else if (a == "--one") {
             const int t = type_of(argv[i + 1]);
             one.push_back({"one", t, std::atoi(argv[i + 2]), std::atoi(argv[i + 3]), 1});
@@ -96,6 +99,68 @@ int main(int argc, char** argv) {
     const int MAXT = 8;
     mtl::Pipeline pprep = cx.pipeline(lib, "xprep");
 
+    if (!gguf_path.empty()) {
+        // real tensors: the first type-distinct ones of the file (experts: expert 0's matrix), 1 and 3 tokens
+        gguf::File f;
+        std::string err;
+        if (!f.open(gguf_path, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 2; }
+        mtl::Buffer Wf = cx.wrap(f.map, f.map_bytes);
+        std::map<int, const gguf::Tensor*> pick;
+        for (const auto& kv : f.tensors) {
+            const gguf::Tensor& t = kv.second;
+            if (t.shape.size() < 2 || t.name.find("token_embd") != std::string::npos ||
+                t.name.find("per_layer") != std::string::npos)
+                continue;
+            const int ty = t.type;
+            const bool gemv_type = ty == ref::BF16 || ty == ref::Q8_0 || ty == ref::Q4_0 || ty == ref::Q5_0 ||
+                                   ty == ref::IQ4_NL || ty == ref::IQ4_XS || ty == ref::Q2_0 || ty == ref::IQ3_S ||
+                                   ty == ref::Q3_K || ty == ref::Q4_K || ty == ref::Q5_K || ty == ref::Q6_K;
+            if (gemv_type && !pick.count(ty)) pick[ty] = &t;
+        }
+        int fails = 0;
+        for (const auto& kv : pick) {
+            const gguf::Tensor& t = *kv.second;
+            const int ty = t.type, n_in = (int)t.shape[0], n_out = std::min<int>((int)t.shape[1], 4096);
+            const size_t rb = ref::row_bytes(ty, n_in);
+            mtl::Buffer x = cx.alloc(4 * n_in * MAXT), y = cx.alloc(4 * (size_t)n_out * MAXT),
+                        xp = cx.alloc(4 * (4 * n_in * MAXT + n_in / 16 * MAXT));
+            ref::Rng r(3);
+            for (int i = 0; i < n_in * MAXT; ++i) x.as<float>()[i] = r.sym();
+            cx.run({xprep_dispatch(pprep, x, xp, n_in, MAXT)});
+            const size_t plane = (size_t)4 * n_in * MAXT;
+            std::vector<float> wf((size_t)n_in * n_out);
+            ref::dequant(ty, (const uint8_t*)f.map + t.offset, wf.data(), wf.size());
+            Cfg c = n_in >= 6144 ? Cfg{32, 1, 8, 2} : n_in <= 640 ? Cfg{8, 1, 4, 1} : Cfg{16, 1, 4, 1};
+            if (!cfg_ok(c, ty, n_in)) c = Cfg{32, 1, 4, 1};
+            for (int nt : {1, 3}) {
+                mtl::Pipeline p = cx.pipeline(lib, kname(ty, c), mtl::Constants().i(0, nt));
+                GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)n_in, (uint32_t)n_out};
+                mtl::Dispatch d;
+                d.p = &p;
+                d.args = {mtl::Arg::B(Wf, t.offset), mtl::Arg::B(xp, plane * xkind(ty)), mtl::Arg::B(xp, plane * 4),
+                          mtl::Arg::B(y), mtl::Arg::V(a)};
+                d.grid[0] = (n_out + rows_per_tg(c) - 1) / rows_per_tg(c);
+                d.tg[0] = c.S * 32;
+                cx.run({d});
+                double se = 0, sr = 0;
+                for (int tt = 0; tt < nt; ++tt)
+                    for (int o = 0; o < n_out; ++o) {
+                        double ref = 0;
+                        for (int k = 0; k < n_in; ++k) ref += (double)wf[(size_t)o * n_in + k] * x.as<float>()[tt * n_in + k];
+                        const double e = y.as<float>()[tt * n_out + o] - ref;
+                        se += e * e;
+                        sr += ref * ref;
+                    }
+                const double rel = std::sqrt(se / sr);
+                const bool ok = rel < 1e-5 && std::isfinite(rel);
+                fails += !ok;
+                std::printf("real %-7s %-34s %5d x %5d ntok %d: rel L2 %.2e  %s\n", ref::type_name(ty), t.name.c_str(),
+                            n_out, n_in, nt, rel, ok ? "PASS" : "FAIL");
+            }
+        }
+        std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
+        return fails ? 1 : 0;
+    }
     if (!bench) {
         int fails = 0;
         for (int t : {ref::BF16, ref::Q8_0, ref::Q4_0, ref::Q5_0, ref::IQ4_NL, ref::IQ4_XS, ref::Q2_0, ref::IQ3_S,
