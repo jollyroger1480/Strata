@@ -68,6 +68,36 @@ class AptRepo(unittest.TestCase):
             setup.install_build_tools({"arch": "86", "archs": [86]}, True)
         self.assertEqual(installed, ["cuda-toolkit-13-0"])
 
+    def test_debian_without_any_13_x_stops_with_guidance(self):
+        out = io.StringIO()
+        with mock.patch.object(setup, "WIN", False), \
+                mock.patch.object(setup, "find_nvcc", return_value=(None, (0, 0))), \
+                mock.patch.object(setup.shutil, "which", lambda n: "/usr/bin/" + n), \
+                mock.patch("builtins.open", mock.mock_open(read_data='ID=debian\nVERSION_ID="12"\n')), \
+                mock.patch.object(setup, "download"), \
+                mock.patch.object(setup, "run", return_value=types.SimpleNamespace(returncode=100)), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                setup.install_build_tools({"arch": "86", "archs": [86]}, True)
+        self.assertIn("no cuda-toolkit-13-x package", out.getvalue())
+
+    def test_ubuntu_install_failure_still_stops_setup(self):
+        def fake_run(cmd, check=True, **kw):
+            failed = cmd[-1] == "cuda-toolkit-13-0"
+            if failed and check:
+                raise SystemExit(1)                  # setup.run's own fail() on a checked command
+            return types.SimpleNamespace(returncode=100 if failed else 0)
+
+        with mock.patch.object(setup, "WIN", False), \
+                mock.patch.object(setup, "find_nvcc", return_value=(None, (0, 0))), \
+                mock.patch.object(setup.shutil, "which", lambda n: "/usr/bin/" + n), \
+                mock.patch("builtins.open", mock.mock_open(read_data='ID=ubuntu\nVERSION_ID="22.04"\n')), \
+                mock.patch.object(setup, "download"), \
+                mock.patch.object(setup, "run", side_effect=fake_run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                setup.install_build_tools({"arch": "86", "archs": [86]}, True)
+
     def test_unknown_distro_stops_with_guidance(self):
         out = io.StringIO()
         with mock.patch.object(setup, "WIN", False), \

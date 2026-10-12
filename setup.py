@@ -3287,10 +3287,16 @@ def install_build_tools(gpu, yes):
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has (Ubuntu still gets 13.0).
-            for minor in range(5):
-                if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
-                    break
+            if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
+                run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            else:
+                # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
+                for minor in range(10):
+                    if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
+                        break
+                else:
+                    fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
+                         "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
