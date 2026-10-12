@@ -440,6 +440,67 @@ void bench(dpct::queue_ptr s, std::mt19937 &rng) {
     dpct::destroy_event(e1);
 }
 
+// ------------------------------------------------------------------------------------------------ --kqbench [NL]
+// Unsloth's formats against the IQ packs' at the model's shapes (2560 x 640): microseconds per grouped call and the
+// expert bytes it reads per microsecond.  NL layers (default 16), each with its own experts, so the weights stream from
+// DRAM; a call reads each of its groups' whole blobs (gate + up + down) once.  Shapes: one token (10 groups of 1), a
+// window of 2 tokens (16 groups, 20 entries) and of 4 (28 groups, 40 entries; native_grouped_parity's --bench).
+// STRATA_GU_LANES / STRATA_DOWN_LANES pick the lane split as in the engine.
+void kq_bench(dpct::queue_ptr s, std::mt19937& rng, int nl) {
+    const int pairs[][2] = {{21, 20}, {23, 20}, {18, 42}, {12, 7}, {12, 8}, {13, 8},
+#ifdef STRATA_Q6K_EXPERTS
+                            {14, 8},
+#endif
+                            {8, 8}};
+    std::vector<int> w1(10, 1), w2(12, 1), w4(16, 1);
+    w2.insert(w2.end(), 4, 2);                                  // 16 groups, 20 entries
+    w4.insert(w4.end(), 12, 2);                                 // 28 groups, 40 entries
+    const struct { const char* what; int T; const std::vector<int>* sizes; } shapes[] = {
+        {"1 token, 10x1", 1, &w1}, {"2 tokens, 16 groups / 20", 2, &w2}, {"4 tokens, 28 groups / 40", 4, &w4}};
+    dpct::event_ptr e0 = new sycl::event(), e1 = new sycl::event();
+    std::printf("\n--kqbench: %d layers per graph, each its own experts; us per call (median of 40), expert MB per call, GB/s\n", nl);
+    for (const auto& pr : pairs) {
+        for (const auto& sh : shapes) {
+            Setup S(pr[0], pr[1], 2560, 640, sh.T, 10, 28, rng, s);
+            const int ng = S.plan_sizes(*sh.sizes, 0, rng);
+            uint8_t* arena = dalloc<uint8_t>(S.slot * (size_t) (nl * ng));
+            std::vector<unsigned long long*> lp;
+            for (int l = 0; l < nl; ++l) {
+                std::vector<unsigned long long> p;
+                for (int j = 0; j < ng; ++j) {
+                    uint8_t* d = arena + S.slot * (size_t) (l * ng + j);
+                    dpct::get_in_order_queue().memcpy(d, S.blobs + S.slot * (size_t) (j % S.n_blobs), S.L.bytes).wait();
+                    p.push_back((unsigned long long) d);
+                }
+                unsigned long long* dp = dalloc<unsigned long long>(p.size());
+                dpct::get_in_order_queue().memcpy(dp, p.data(), p.size() * 8).wait();
+                lp.push_back(dp);
+            }
+            dpct::experimental::command_graph_ptr g;
+            dpct::experimental::begin_recording(s);
+            for (int l = 0; l < nl; ++l)
+                k::native_expert_grouped(S.L, lp[l], S.start, S.n, S.dst, S.tok, S.cap, S.cap, S.xq, S.scr, S.out, s, 0);
+            dpct::experimental::end_recording(s, &g);
+            auto* ge = new sycl::ext::oneapi::experimental::command_graph<
+                sycl::ext::oneapi::experimental::graph_state::executable>(g->finalize());
+            delete g;
+            std::vector<float> t;
+            for (int i = 0; i < 60; ++i) {
+                const float us = launch_us(s, ge, e0, e1) * 48.0f / (float) nl;
+                if (i >= 20) t.push_back(us);
+            }
+            delete ge;
+            const double mb = (double) ng * (double) S.L.bytes / 1e6, us = median(t);
+            std::printf("  %-7s/%-6s %-26s %8.2f us  %6.2f MB  %6.1f GB/s\n", name_of(pr[0]), name_of(pr[1]), sh.what, us,
+                        mb, mb * 1e3 / us);
+            for (auto* p : lp) sycl::free(p, dpct::get_in_order_queue());
+            sycl::free(arena, dpct::get_in_order_queue());
+        }
+    }
+    dpct::destroy_event(e0);
+    dpct::destroy_event(e1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -448,6 +509,11 @@ int main(int argc, char** argv) {
     ck(DPCT_CHECK_ERROR(s = dpct::get_current_device().create_queue(true)),
        "stream");
     std::mt19937 rng(316);
+    if (argc > 1 && std::string(argv[1]) == "--kqbench") {   // timings only (the checks: run without arguments)
+        kq_bench(s, rng, argc > 2 ? std::atoi(argv[2]) : 16);
+        dpct::get_current_device().destroy_queue(s);
+        return 0;
+    }
     for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 12, 13,
 #ifdef STRATA_Q6K_EXPERTS
                    14,
