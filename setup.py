@@ -2642,7 +2642,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     has_archs = set(archs) <= set(meta.get("archs", []))
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
-        (meta.get("isa_floor") or "") == floor
+        (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
     vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
@@ -2671,6 +2671,10 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
                  f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
+    if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
+        fail(f"the engine build finished without a new engine ({EXE} is version "
+             f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "
+             "the installed engine is left as it was", "delete the folder build-hip and run this again")
     shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
@@ -3108,7 +3112,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                      "starting the installed one")
         return
     if meta.get("backend") == "hip":                   # AMD: compiled here, again when its source changed
-        if meta.get("src") != source_hash(ENGINE_SOURCES):
+        if meta.get("src") != source_hash(ENGINE_SOURCES) or stale_binary(eng / EXE):
             try:
                 usable = [x for x in amd_gpus() if amd_problem(x) is None]
                 g = next((x for x in usable if x["arch"] in meta.get("archs", [])), usable[0] if usable else None)
@@ -3125,7 +3129,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
-        if meta.get("src") == source_hash(ENGINE_SOURCES) and \
+        if meta.get("src") == source_hash(ENGINE_SOURCES) and not stale_binary(eng / EXE) and \
                 (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
             return
     elif ver >= MIN_ENGINE:
@@ -3400,7 +3404,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     new_arch = local and not set(archs) <= built
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
-        (meta.get("isa_floor") or "") == floor
+        (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
@@ -3421,6 +3425,10 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
+        if stale_binary(bdir / EXE):                      # #2054: the stamp below is written only for a binary of this source
+            fail(f"the engine build finished without a new engine ({EXE} is version {binary_engine_version(bdir / EXE)}, "
+                 f"this source is {source_version()}): the installed engine and its stamp are left as they were",
+                 "the build folder " + str(bdir) + " may be configured for something else: delete it and run this again")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
@@ -4065,6 +4073,24 @@ def source_version() -> str:
     """The engine version the source tree builds (CMakeLists.txt's project version)."""
     m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
     return m.group(1) if m else "0"
+
+
+def binary_engine_version(exe) -> str | None:
+    """The version compiled into an engine binary (the `engine=X.Y.Z` line it prints at start; 0.1.13 and newer carry
+    it), read from the file without running it.  None: unreadable, or a binary without it."""
+    try:
+        m = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", Path(exe).read_bytes())
+    except OSError:
+        return None
+    return m.group(1).decode() if m else None
+
+
+def stale_binary(exe) -> bool:
+    """#2054: the engine binary is of another version than this source tree builds.  A BUILD.json that carries the
+    source's hash and version cannot be trusted alone: a build that stopped (a host compiler the toolkit rejects) can
+    leave the old binary beside a stamp of the new source, and nothing would ever compile it again."""
+    v = binary_engine_version(exe)
+    return v is not None and v != source_version()
 
 
 def engine_version(exe: Path) -> tuple:
