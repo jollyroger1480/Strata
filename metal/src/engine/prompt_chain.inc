@@ -354,7 +354,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
               {mtl::Arg::B(b.keyn), mtl::Arg::B(b.qn), mtl::Arg::B(b.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
                mtl::Arg::B(b.gated), mtl::Arg::B(b.normW), mtl::Arg::V(pa2)}, HC, nT, 256);
             D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
-              {mtl::Arg::B(pleHist_), mtl::Arg::B(b.normW), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")), mtl::Arg::B(b.gated),
+              {mtl::Arg::B(pleHist_), mtl::Arg::B(b.normW), kw_arg(), mtl::Arg::B(b.gated),
                mtl::Arg::B(b.R), mtl::Arg::V(pa2)}, HC * N / 256, nT, 256);
         }
     }

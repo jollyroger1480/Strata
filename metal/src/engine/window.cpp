@@ -341,6 +341,15 @@ private:
     // window reads copied into mrope_ (qsa_prep's buffer 20, function constant 24)
     const float* img_row(int64_t pos) const { return g_embd_rows ? g_embd_rows[pos] : nullptr; }
     mtl::Buffer mrope_;
+    // the PLE conv kernel as F16 (ple_conv_add reads half): the file's own F16 tensor, or an F32 one (Unsloth's)
+    // narrowed with round-to-nearest-even as the host loader does
+    mtl::Buffer plekw_;
+    bool plekw_own_ = false;
+    mtl::Arg kw_arg() { return plekw_own_ ? mtl::Arg::B(plekw_) : mtl::Arg::B(W_, T("blk.1.ple_conv1d.weight").offset); }
+    const uint16_t* kw_host() {
+        return plekw_own_ ? plekw_.as<uint16_t>()
+                          : (const uint16_t*) ((const uint8_t*) W_.ptr + T("blk.1.ple_conv1d.weight").offset);
+    }
     bool mrope_on() const { return g_mrope_host != nullptr; }
     void mrope_sync(int64_t c0, int64_t n) {
         if (!mrope_on()) return;
@@ -458,7 +467,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             names.push_back(x.name);
             tot += ne / 32 * 34;
         }
-        Q8_ = cx_->alloc((tot + 4095) / 4096 * 4096);
+        Q8_ = cx_->alloc((tot + 4095) / 4096 * 4096 + 4096);   // + a page: a file with Q8_0 HC already has no copies
         std::vector<std::thread> th;
         const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         for (unsigned k = 0; k < nth; ++k)
@@ -495,6 +504,15 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (st_pred_ && st_->ahead2() > 0) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
     }
     ple_on_ = ss.ple.ready() && f_.find("blk.1.ple_key.weight") != nullptr;
+    if (ple_on_ && T("blk.1.ple_conv1d.weight").type == ref::F32) {
+        const gguf::Tensor& k = T("blk.1.ple_conv1d.weight");
+        const size_t ne = k.bytes / 4;
+        plekw_ = cx_->alloc((ne * 2 + 4095) / 4096 * 4096);
+        const float* src = (const float*) ((const uint8_t*) W_.ptr + k.offset);
+        uint16_t* dst = plekw_.as<uint16_t>();
+        for (size_t i = 0; i < ne; ++i) dst[i] = ref::f32_to_f16(src[i]);
+        plekw_own_ = true;
+    }
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
     last_norm_.assign((size_t) MAXT * strata::kernels::NG_HC_DIM, 0.0f);
     std::fprintf(stderr, "strata metal: decode window on %s: %s %s (%.1f GB), %d cells, PLE %s, ready in %.0f ms\n",
@@ -845,7 +863,7 @@ void Window::ple_cpu(int Tn) {
     const float* nkey = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_key.weight").offset);
     const float* nqry = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_query.weight").offset);
     const float* nconv = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_conv.weight").offset);
-    const uint16_t* kw = (const uint16_t*) ((const uint8_t*) W_.ptr + T("blk.1.ple_conv1d.weight").offset);
+    const uint16_t* kw = kw_host();
     std::vector<float> key(hc_dim), query(hc_dim), gated(hc_dim), norm(hc_dim), hist = ple_hist_;
     for (int t = 0; t < Tn; ++t) {
         float* hidden = R_.as<float>() + (size_t) t * HC * N;
@@ -996,7 +1014,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         g3.grid[0] = HC; g3.grid[1] = Tn; g3.tg[0] = 256;
         push(ds, g3);
         g4.p = P(lple_, "ple_conv_add", {}, "ple_conv_add");
-        g4.args = {mtl::Arg::B(pleHist_), mtl::Arg::B(normW_), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")),
+        g4.args = {mtl::Arg::B(pleHist_), mtl::Arg::B(normW_), kw_arg(),
                    mtl::Arg::B(gated_), mtl::Arg::B(R_), mtl::Arg::V(pa)};
         g4.grid[0] = HC * N / 256; g4.grid[1] = Tn; g4.tg[0] = 256;
         push(ds, g4);
@@ -2259,7 +2277,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
               {mtl::Arg::B(p.keyn), mtl::Arg::B(p.qn), mtl::Arg::B(p.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
                mtl::Arg::B(p.gated), mtl::Arg::B(p.normW), mtl::Arg::V(pl)}, HC, T, 256);
             D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
-              {mtl::Arg::B(pleHist_), mtl::Arg::B(p.normW), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")), mtl::Arg::B(p.gated),
+              {mtl::Arg::B(pleHist_), mtl::Arg::B(p.normW), kw_arg(), mtl::Arg::B(p.gated),
                mtl::Arg::B(p.R), mtl::Arg::V(pl)}, HC * N / 256, T, 256);
         }
     }
