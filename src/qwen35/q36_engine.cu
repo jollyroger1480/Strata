@@ -109,6 +109,17 @@ __global__ void k_rms(const float* x, const float* w, float* y, int n, float eps
     for (int i = threadIdx.x; i < n; i += blockDim.x) yr[i] = xr[i] * r * w[i];
 }
 /// x[r] += y[r]; h[r] = rms(x[r]) * w (one block per row of n): the residual add and the next norm in one launch.
+/// out[r * ld_out + i] = rms(x[r * ldx + ..]) * w (one block per row of n): a norm into a slice of a wider row.
+__global__ void k_rms_ld(const float* x, int ldx, const float* w, float* out, int ld_out, int n, float eps) {
+    __shared__ float sh[kThreads];
+    const float* xr = x + (size_t) blockIdx.x * ldx;
+    float* yr = out + (size_t) blockIdx.x * ld_out;
+    float s = 0.f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) s += xr[i] * xr[i];
+    s = block_sum(s, sh);
+    const float r = rsqrtf(s / (float) n + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) yr[i] = xr[i] * r * w[i];
+}
 __global__ void k_add_rms(float* x, const float* y, const float* w, float* h, int n, float eps) {
     __shared__ float sh[kThreads];
     float* xr = x + (size_t) blockIdx.x * n;
@@ -395,6 +406,11 @@ __global__ void k_route_scatter(const int32_t* ids, int n_ent, int K_, int32_t* 
 __global__ void k_argmax(const float* x, int n, int32_t* out, float* pv, int32_t* pi, bool stage2) {
     __shared__ float bv[kThreads];
     __shared__ int bi[kThreads];
+    // row blockIdx.y: its logits (stage 1, n = the vocabulary) and its kArgBlocks partials
+    x += (size_t) blockIdx.y * (stage2 ? 0 : n);
+    pv += (size_t) blockIdx.y * 128;
+    pi += (size_t) blockIdx.y * 128;
+    out += blockIdx.y;
     float v = -INFINITY;
     int id = 0x7fffffff;
     if (stage2) {
@@ -423,7 +439,7 @@ __global__ void k_argmax(const float* x, int n, int32_t* out, float* pv, int32_t
         else { pv[blockIdx.x] = bv[0]; pi[blockIdx.x] = bi[0]; }
     }
 }
-constexpr int kArgBlocks = 128;
+constexpr int kArgBlocks = 128;   // (the row stride of k_argmax's partials)
 
 unsigned grid1(int64_t n, int b = kThreads) { return (unsigned) ((n + b - 1) / b); }
 
@@ -437,7 +453,7 @@ __global__ void k_to_f16(const float* x, __half* y, int64_t n) {
 /// 3-entry history carried in registers across the tokens and written back at the end; SiLU, then the L2 norm of the
 /// q/k heads (block < qk_heads) per token - fused_gdn_conv_l2's arithmetic, token after token.  History [channel][3].
 __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv, const float* w, float* h, int C,
-                                                  int qk_heads, float eps, int T) {
+                                                  int qk_heads, float eps, int T, bool write) {
     __shared__ float part[4];
     const int c = blockIdx.x * 128 + threadIdx.x;
     float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
@@ -461,6 +477,7 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
         }
         h[(size_t) t * C + c] = y;
     }
+    if (!write) return;   // a verify window: the history is commit()'s to move
     hist[c * 3] = v0;
     hist[c * 3 + 1] = v1;
     hist[c * 3 + 2] = v2;
@@ -471,7 +488,7 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
 /// registers across the tokens.  h (T, C) = q | k | v, gate / beta (T, HV), z / y (T, ZV).
 __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, int C, const float* gate,
                                                  const float* beta, const float* z, const float* gamma, float eps,
-                                                 float* y, int h_k, int h_v, int T) {
+                                                 float* y, int h_k, int h_v, int T, bool write) {
     constexpr int S = 128, RG = 4, RPG = 32;
     __shared__ float sk[S], sq[S];
     __shared__ float red_kv[RG][S];
@@ -513,7 +530,7 @@ __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, i
         for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part += __shfl_xor_sync(0xffffffffu, sq_part, o2);
         if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
         __syncthreads();
-        if (rg == 0) {
+        if (rg == 0 && y != nullptr) {   // (the commit runs without outputs)
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float scale = rsqrtf(ss / (float) S + eps);
             const float zz = z[(size_t) t * ZV + head * S + col];
@@ -521,6 +538,7 @@ __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, i
         }
         __syncthreads();   // sk / sq / the reductions are rewritten by the next token
     }
+    if (!write) return;   // a verify window: the state is commit()'s to write
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = s[r];
 }
@@ -553,6 +571,12 @@ struct Layer {
 
 struct Model {
     strata::core::ModelGeometry g;
+    // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
+    // attention + MoE layer, shared_head_norm, the main head
+    bool has_mtp = false;
+    Layer mtp;
+    Mat eh_proj;
+    const float *mtp_enorm = nullptr, *mtp_hnorm = nullptr, *mtp_shnorm = nullptr;
     int64_t top_k = 8;
     float eps = 1e-6f, rope_base = 1e7f;
     int n_rot = 64;
@@ -601,7 +625,7 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     return d;
 }
 
-bool load(const std::string& path, Model& m, std::string& err) {
+bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     const auto t0 = Clock::now();
     const strata::GgufModel gm = strata::GgufModel::open(path);
     if (!strata::core::geometry_from_gguf(gm.meta(), m.g, m.top_k, err)) return false;
@@ -667,9 +691,11 @@ bool load(const std::string& path, Model& m, std::string& err) {
     };
     auto L = [](int64_t l, const char* s) { return "blk." + std::to_string(l) + "." + s; };
     m.layers.resize((size_t) g.n_layers);
-    for (int64_t l = 0; l < g.n_layers; ++l) {
-        Layer& y = m.layers[(size_t) l];
-        y.attn = strata::core::is_qsa_layer(g, l);
+    m.has_mtp = want_mtp && g.n_mtp_layers > 0;
+    for (int64_t l = 0; l < g.n_layers + (m.has_mtp ? 1 : 0); ++l) {
+        const bool is_mtp = l == g.n_layers;
+        Layer& y = is_mtp ? m.mtp : m.layers[(size_t) l];
+        y.attn = is_mtp || strata::core::is_qsa_layer(g, l);
         y.attn_norm = f32(L(l, "attn_norm.weight"));
         y.post_norm = f32(L(l, "post_attention_norm.weight"));
         if (!y.attn) {
@@ -734,6 +760,13 @@ bool load(const std::string& path, Model& m, std::string& err) {
         }
         bytes += y.stride * (size_t) g.n_expert;
     }
+    if (m.has_mtp) {
+        const int64_t l = g.n_layers;
+        m.eh_proj = mat(L(l, "nextn.eh_proj.weight"));
+        m.mtp_enorm = f32(L(l, "nextn.enorm.weight"));
+        m.mtp_hnorm = f32(L(l, "nextn.hnorm.weight"));
+        m.mtp_shnorm = f32(L(l, "nextn.shared_head_norm.weight"));
+    }
     m.out_norm = f32("output_norm.weight");
     m.head = mat("output.weight");
     {
@@ -775,16 +808,24 @@ struct Engine {
     // activations [tmax][...]
     float *x, *h, *y, *qkv, *hc, *z, *alpha, *beta, *gdn_y, *qg, *kx, *vx, *q, *gate, *att, *logits_r, *eparts, *moe_out,
         *sg, *su, *shh, *sy, *sgate, *ewts, *logits;
+    float* hmain = nullptr;   // [tmax][N] the main model's final normed hidden of each row (the MTP seeds)
+    float* hlast = nullptr;   // [N] that of the last processed position (zeros before the first)
     void *q8, *xq, *escr;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
-    int32_t* hpin = nullptr;   // pinned staging: [0] the decode token, [1] its position, [2] the greedy pick
+    int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
     unsigned long long* grp_ptr;
     float *pacc, *pm, *pl, *amv;
     int32_t* ami;
     int n_chunk = 0, att_rows = 0;   // attention partials: att_rows query rows x n_chunk chunks
-    std::vector<float*> conv, S, kc, vc;
-    // the decode graph (T = 1)
-    cudaGraphExec_t g1 = nullptr;
+    std::vector<float*> conv, S, kc, vc;   // per layer; the MTP block's K / V at index n_layers
+    // verify windows (T <= kVerify): the GDN inputs of every row per layer, kept for the commit
+    static constexpr int kVerify = 8;
+    std::vector<float*> v_qkv, v_hc, v_alpha, v_beta;
+    // the MTP block (when loaded)
+    float *mtp_cat = nullptr, *hmtp = nullptr, *logits_m = nullptr;
+    int32_t *tok_m = nullptr, *pos0_m = nullptr, *pick_m = nullptr;
+    // graphs: [0] the decode step, [T] a verify window of T rows, mtp1 the MTP draft step
+    cudaGraphExec_t g1 = nullptr, gv[kVerify + 1] = {}, gm1 = nullptr;
     strata::prefill::Gemm gemm;
     cublasHandle_t blas = nullptr;
     float* att_s = nullptr;            // the prompt attention's scores / probabilities, kAttScoreFloats floats
@@ -797,16 +838,18 @@ struct Engine {
     float *mq_gu = nullptr, *mq_h = nullptr;
     __half* x16 = nullptr;
     bool use_graph = true;
+    int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
 
     void init(const Model& model, int ctx_, int tmax_) {
         m = &model;
         ctx = ctx_;
-        tmax = tmax_;
+        tmax = std::max(tmax_, kVerify);
         const auto& g = m->g;
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
+        const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
-        x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N);
-        qkv = dalloc(T * g.ssm_conv_channels); hc = dalloc(T * g.ssm_conv_channels); z = dalloc(T * g.ssm_value_dim);
+        x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N); hlast = dalloc(N);
+        qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
         qg = dalloc(T * 2 * g.n_head * g.head_dim); kx = dalloc(T * g.n_head_kv * g.head_dim);
         vx = dalloc(T * g.n_head_kv * g.head_dim); q = dalloc(T * g.n_head * g.head_dim);
@@ -814,8 +857,8 @@ struct Engine {
         logits_r = dalloc(T * (g.n_expert + 1));
         eparts = dalloc(T * Kp * N); moe_out = dalloc(T * N);
         sg = dalloc(T * g.n_ff_shexp); su = dalloc(T * g.n_ff_shexp); shh = dalloc(T * g.n_ff_shexp); sy = dalloc(T * N);
-        sgate = dalloc(T); ewts = dalloc(T * Kp); logits = dalloc((size_t) g.n_vocab);
-        const int max_in = (int) std::max<int64_t>({g.n_embd, g.ssm_value_dim, g.n_head * g.head_dim, g.n_ff_shexp});
+        sgate = dalloc(T); ewts = dalloc(T * Kp); logits = dalloc((size_t) kVerify * g.n_vocab);
+        const int max_in = (int) std::max<int64_t>({2 * g.n_embd, g.ssm_value_dim, g.n_head * g.head_dim, g.n_ff_shexp});
         CK(cudaMalloc(&q8, K::native_q8_1_bytes(max_in, 1) * T));
         CK(cudaMalloc(&xq, K::native_q8_1_bytes((int) N, 1) * T));
         x16 = dalloc_t<__half>(T * (size_t) max_in);
@@ -825,9 +868,12 @@ struct Engine {
         }
         att_s = dalloc(kAttScoreFloats);
         use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
-        for (const Layer& L : m->layers)
-            use_mmq = use_mmq && MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) &&
-                      MMQ::fits(L.L.gu_type, 2 * g.n_ff) && MMQ::fits(L.L.d_type, g.n_embd);
+        auto mmq_ok = [&](const Layer& L) {
+            return MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) && MMQ::fits(L.L.gu_type, 2 * g.n_ff) &&
+                   MMQ::fits(L.L.d_type, g.n_embd);
+        };
+        for (const Layer& L : m->layers) use_mmq = use_mmq && mmq_ok(L);
+        if (m->has_mtp) use_mmq = use_mmq && mmq_ok(m->mtp);
         if (use_mmq) {
             const int64_t ne = (int64_t) T * Kp;
             mctx = std::make_unique<MMQ::Context>();
@@ -848,9 +894,15 @@ struct Engine {
         {
             std::string gerr;
             int64_t big = 0;
-            for (const Layer& L : m->layers)
+            auto take = [&](const Layer& L) {
                 for (const Mat* w : {&L.qkv, &L.zg, &L.ssm_out, &L.wq, &L.wk, &L.wv, &L.wo, &L.sh_gate, &L.sh_up, &L.sh_down})
                     big = std::max<int64_t>(big, (int64_t) w->n_in * w->n_out);
+            };
+            for (const Layer& L : m->layers) take(L);
+            if (m->has_mtp) {
+                take(m->mtp);
+                big = std::max<int64_t>(big, (int64_t) m->eh_proj.n_in * m->eh_proj.n_out);
+            }
             if (!gemm.init(st, big, gerr)) {
                 std::fprintf(stderr, "strata-q36: prompt GEMM: %s\n", gerr.c_str());
                 std::exit(1);
@@ -865,10 +917,10 @@ struct Engine {
         ent_tok = dalloc_t<int32_t>(T * Kp);
         tok = dalloc_t<int32_t>(T);
         pos0 = dalloc_t<int32_t>(1);
-        pick = dalloc_t<int32_t>(1);
-        amv = dalloc(kArgBlocks);
-        ami = dalloc_t<int32_t>(kArgBlocks);
-        CK(cudaHostAlloc((void**) &hpin, 16 * sizeof(int32_t), cudaHostAllocDefault));
+        pick = dalloc_t<int32_t>(kVerify);
+        amv = dalloc((size_t) kArgBlocks * kVerify);
+        ami = dalloc_t<int32_t>((size_t) kArgBlocks * kVerify);
+        CK(cudaHostAlloc((void**) &hpin, 64 * sizeof(int32_t), cudaHostAllocDefault));
         n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
         att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, 64));   // 64 query tokens per attention batch
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
@@ -880,27 +932,45 @@ struct Engine {
                 S.push_back(nullptr);
                 kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
                 vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                for (auto* v : {&v_qkv, &v_hc, &v_alpha, &v_beta}) v->push_back(nullptr);
             } else {
-                conv.push_back(dalloc((size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1)));
+                conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
                 S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
                 kc.push_back(nullptr);
                 vc.push_back(nullptr);
+                v_qkv.push_back(dalloc((size_t) kVerify * C));
+                v_hc.push_back(dalloc((size_t) kVerify * C));
+                v_alpha.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
+                v_beta.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
             }
+        }
+        if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
+            conv.push_back(nullptr);
+            S.push_back(nullptr);
+            kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+            vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+            mtp_cat = dalloc(T * 2 * N);
+            hmtp = dalloc(T * N);
+            logits_m = dalloc((size_t) g.n_vocab);
+            tok_m = dalloc_t<int32_t>(T);
+            pos0_m = dalloc_t<int32_t>(1);
+            pick_m = dalloc_t<int32_t>(1);
         }
         CK(cudaDeviceSynchronize());   // every legacy-stream cudaMemset of the buffers above is done
         size_t fr = 0, tot = 0;
         CK(cudaMemGetInfo(&fr, &tot));
-        std::fprintf(stderr, "strata-q36: context %d cells, prompt chunk %d, %.2f GiB of VRAM free\n", ctx, tmax,
-                     (double) fr / (1 << 30));
+        std::fprintf(stderr, "strata-q36: context %d cells, prompt chunk %d%s, %.2f GiB of VRAM free\n", ctx, tmax,
+                     m->has_mtp ? ", MTP block loaded" : "", (double) fr / (1 << 30));
     }
 
     /// The recurrent state and the cache to a fresh sequence.
     void reset() {
         const auto& g = m->g;
-        for (size_t l = 0; l < m->layers.size(); ++l) {
+        for (size_t l = 0; l < conv.size(); ++l) {
             if (conv[l]) CK(cudaMemsetAsync(conv[l], 0, (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4, st));
             if (S[l]) CK(cudaMemsetAsync(S[l], 0, (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4, st));
         }
+        CK(cudaMemsetAsync(hlast, 0, (size_t) g.n_embd * 4, st));
         CK(cudaStreamSynchronize(st));
         pos = 0;
     }
@@ -948,188 +1018,240 @@ struct Engine {
         }
     }
 
-    /// T tokens (device `tok`, positions *pos0 .. *pos0 + T - 1) through the model; the logits of the last row when
-    /// `want_logits`.  Every launch is on `st` and reads the positions from the device (graph-capturable for T = 1).
-    void forward(int T, bool want_logits, bool graph_mode) {
+    /// One layer for T rows: x (the residual) += mixer(h); then MoE; x += moe; `hout` = rms(x) * wn (the next norm).
+    /// `li` indexes the layer's state; positions *dpos .. + T - 1 (device), p0 the same on the host (eager grids);
+    /// `verify`: a verify window - the GDN state is read, not written (commit() writes it for the kept rows).
+    void layer(const Layer& L, size_t li, int T, int64_t p0, const int32_t* dpos, bool graph_mode, bool verify,
+               const float* wn, float* hout) {
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k, FF = (int) g.n_ff, FS = (int) g.n_ff_shexp;
         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
-        const int C = (int) g.ssm_conv_channels, ZV = (int) g.ssm_value_dim;
+        const int C = (int) g.ssm_conv_channels;
         const int H = (int) g.n_head, HKV = (int) g.n_head_kv, HD = (int) g.head_dim;
-        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
-        k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
-        for (size_t l = 0; l < m->layers.size(); ++l) {
-            const Layer& L = m->layers[l];
-            if (!L.attn) {
-                prep(h, N, T, xq);
-                apply(L.qkv, xq, qkv, T);
-                apply(L.zg, xq, z, T);
-                if (T <= kGemmT) {
-                    k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, alpha, beta,
-                                                                          N, HV);
-                } else {
-                    f32mm(L.alpha, h, alpha, N, HV, T);
-                    f32mm(L.beta, h, beta, N, HV, T);
-                    k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(alpha, L.dt, L.ssm_a, beta, HV, T);
-                }
-                if (T == 1) {   // decode: Strata's fused kernels
-                    K::fused_gdn_conv_l2(conv[l], qkv, L.conv, hc, C, 2 * HK, m->eps, st);
-                    K::fused_gdn_step_norm_silu(S[l], hc, hc + HK * D, hc + 2 * HK * D, alpha, beta, z, L.ssm_norm,
-                                                m->eps, gdn_y, HK, HV, st);
-                } else {        // a prompt chunk: the same arithmetic, every token in one launch each
-                    k_conv_seq<<<C / 128, 128, 0, st>>>(conv[l], qkv, L.conv, hc, C, 2 * HK, m->eps, T);
-                    k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[l], hc, C, alpha, beta, z, L.ssm_norm, m->eps, gdn_y, HK,
-                                                           HV, T);
-                }
-                mm(L.ssm_out, gdn_y, y, T);
+        if (!L.attn) {
+            float* qkv_b = verify ? v_qkv[li] : qkv;
+            float* hc_b = verify ? v_hc[li] : hc;
+            float* al_b = verify ? v_alpha[li] : alpha;
+            float* be_b = verify ? v_beta[li] : beta;
+            prep(h, N, T, xq);
+            apply(L.qkv, xq, qkv_b, T);
+            apply(L.zg, xq, z, T);
+            if (T <= kGemmT) {
+                k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
+                                                                      HV);
             } else {
-                prep(h, N, T, xq);
-                apply(L.wq, xq, qg, T);
-                apply(L.wk, xq, kx, T);
-                apply(L.wv, xq, vx, T);
-                k_attn_prep<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kc[l], vc[l],
-                                                                  H, HKV, HD, m->n_rot, pos0, ctx, m->rope_base, m->eps);
-                // the query rows in batches that fit the partials; the chunk grid covers every cell a row of this
-                // batch can see (graph mode: the whole context, past-the-end chunks return at once)
-                if (T > kGemmT) {
-                    // a prompt chunk: scores = Q K^T and out = P V as FP32 GEMMs per KV head (its query heads one
-                    // strided batch over the shared K / V), the causal softmax in between; the queries in slices
-                    // whose scores fit att_s
-                    const int P = (int) pos + T;
-                    const int ldp = (P + 3) / 4 * 4;
-                    const int tq = (int) std::max<int64_t>(1, std::min<int64_t>(T, (int64_t) (kAttScoreFloats / ((size_t) H * ldp))));
-                    const int G = H / HKV;
-                    const float one = 1.0f, zero = 0.0f;
-                    for (int t0 = 0; t0 < T; t0 += tq) {
-                        const int nt = std::min(tq, T - t0);
-                        for (int kvh = 0; kvh < HKV; ++kvh) {
-                            const float* Kh = kc[l] + (size_t) kvh * ctx * HD;
-                            const float* Qh = q + ((size_t) t0 * H + kvh * G) * HD;
-                            float* Sh = att_s + (size_t) kvh * G * nt * ldp;
-                            if (cublasSgemmStridedBatched(blas, CUBLAS_OP_T, CUBLAS_OP_N, P, nt, HD, &one, Kh, HD, 0, Qh,
-                                                          H * HD, HD, &zero, Sh, ldp, (long long) nt * ldp, G) !=
-                                CUBLAS_STATUS_SUCCESS) {
-                                std::fprintf(stderr, "strata-q36: attention scores GEMM failed\n");
-                                std::exit(1);
-                            }
-                        }
-                        k_attn_softmax<<<dim3(nt, H), kThreads, 0, st>>>(att_s, ldp, nt, P, (int) pos + t0,
-                                                                         1.0f / sqrtf((float) HD));
-                        for (int kvh = 0; kvh < HKV; ++kvh) {
-                            const float* Vh = vc[l] + (size_t) kvh * ctx * HD;
-                            const float* Sh = att_s + (size_t) kvh * G * nt * ldp;
-                            float* Oh = att + ((size_t) t0 * H + kvh * G) * HD;
-                            if (cublasSgemmStridedBatched(blas, CUBLAS_OP_N, CUBLAS_OP_N, HD, nt, P, &one, Vh, HD, 0, Sh,
-                                                          ldp, (long long) nt * ldp, &zero, Oh, H * HD, HD, G) !=
-                                CUBLAS_STATUS_SUCCESS) {
-                                std::fprintf(stderr, "strata-q36: attention values GEMM failed\n");
-                                std::exit(1);
-                            }
+                f32mm(L.alpha, h, al_b, N, HV, T);
+                f32mm(L.beta, h, be_b, N, HV, T);
+                k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(al_b, L.dt, L.ssm_a, be_b, HV, T);
+            }
+            // one token, a window or a chunk: the same kernels (every token in one launch each), so a decode step and a
+            // verify window compute bitwise the same rows (the MTP's greedy text is the plain greedy text, 10 of 10).
+            // STRATA_Q36_FUSED_GDN=1 keeps the fused single-token kernels for comparison: after a prompt chunk of more
+            // than 8 tokens they diverge from llama.cpp's greedy text (p01, token 4) -- not explained yet, same speed
+            if (std::getenv("STRATA_Q36_FUSED_GDN") != nullptr && T == 1 && !verify) {
+                K::fused_gdn_conv_l2(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, st);
+                K::fused_gdn_step_norm_silu(S[li], hc_b, hc_b + HK * D, hc_b + 2 * HK * D, al_b, be_b, z, L.ssm_norm,
+                                            m->eps, gdn_y, HK, HV, st);
+            } else {
+                k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
+                k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
+                                                       T, !verify);
+            }
+            mm(L.ssm_out, gdn_y, y, T);
+        } else {
+            prep(h, N, T, xq);
+            apply(L.wq, xq, qg, T);
+            apply(L.wk, xq, kx, T);
+            apply(L.wv, xq, vx, T);
+            k_attn_prep<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kc[li], vc[li], H,
+                                                              HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps);
+            if (T > kGemmT) {
+                // a prompt chunk: scores = Q K^T and out = P V as FP32 GEMMs per KV head (its query heads one strided
+                // batch over the shared K / V), the causal softmax in between; the queries in slices whose scores fit
+                const int P = (int) p0 + T;
+                const int ldp = (P + 3) / 4 * 4;
+                const int tq = (int) std::max<int64_t>(1, std::min<int64_t>(T, (int64_t) (kAttScoreFloats / ((size_t) H * ldp))));
+                const int G = H / HKV;
+                const float one = 1.0f, zero = 0.0f;
+                for (int t0 = 0; t0 < T; t0 += tq) {
+                    const int nt = std::min(tq, T - t0);
+                    for (int kvh = 0; kvh < HKV; ++kvh) {
+                        const float* Kh = kc[li] + (size_t) kvh * ctx * HD;
+                        const float* Qh = q + ((size_t) t0 * H + kvh * G) * HD;
+                        float* Sh = att_s + (size_t) kvh * G * nt * ldp;
+                        if (cublasSgemmStridedBatched(blas, CUBLAS_OP_T, CUBLAS_OP_N, P, nt, HD, &one, Kh, HD, 0, Qh,
+                                                      H * HD, HD, &zero, Sh, ldp, (long long) nt * ldp, G) !=
+                            CUBLAS_STATUS_SUCCESS) {
+                            std::fprintf(stderr, "strata-q36: attention scores GEMM failed\n");
+                            std::exit(1);
                         }
                     }
-                    k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
-                } else {
+                    k_attn_softmax<<<dim3(nt, H), kThreads, 0, st>>>(att_s, ldp, nt, P, (int) p0 + t0,
+                                                                     1.0f / sqrtf((float) HD));
+                    for (int kvh = 0; kvh < HKV; ++kvh) {
+                        const float* Vh = vc[li] + (size_t) kvh * ctx * HD;
+                        const float* Sh = att_s + (size_t) kvh * G * nt * ldp;
+                        float* Oh = att + ((size_t) t0 * H + kvh * G) * HD;
+                        if (cublasSgemmStridedBatched(blas, CUBLAS_OP_N, CUBLAS_OP_N, HD, nt, P, &one, Vh, HD, 0, Sh,
+                                                      ldp, (long long) nt * ldp, &zero, Oh, H * HD, HD, G) !=
+                            CUBLAS_STATUS_SUCCESS) {
+                            std::fprintf(stderr, "strata-q36: attention values GEMM failed\n");
+                            std::exit(1);
+                        }
+                    }
+                }
+                k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
+            } else {
+                // split-K over 256-cell chunks; the chunk grid covers every cell a row can see (graph mode: the whole
+                // context, past-the-end chunks return at once)
                 const int rows_per = att_rows / H;
                 for (int t0 = 0; t0 < T; t0 += rows_per) {
                     const int nt = std::min(rows_per, T - t0);
                     const int nc = graph_mode ? n_chunk
-                                              : (int) std::min<int64_t>(n_chunk, (pos + t0 + nt + kChunkCells - 1) / kChunkCells);
-                    k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[l], vc[l], pos0, t0, H, HKV, ctx,
+                                              : (int) std::min<int64_t>(n_chunk, (p0 + t0 + nt + kChunkCells - 1) / kChunkCells);
+                    k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV, ctx,
                                                                          1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl);
-                    k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, pos0, t0, H, n_chunk, att);
+                    k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att);
                 }
-                }
-                mm(L.wo, att, y, T);
             }
-            k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
-            // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
-            const bool one = T == 1;
-            if (one) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, 1);
-            else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
-            K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
-            const int64_t n_ent = (int64_t) T * Kp;
-            const int32_t* prow = nullptr;
-            if (T > kGemmT && use_mmq) {
-                // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
-                // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into the
-                // per-slot rows the combine reads
-                const int ne = (int) g.n_expert;
-                CK(cudaMemsetAsync(rcnt, 0, (size_t) ne * 4, st));
-                k_route_count<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, rcnt);
-                k_route_scan<<<1, 32, 0, st>>>(rcnt, ne, rbounds, rcur, rmax);
-                k_route_scatter<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, Kp, rcur, ent_dst, ent_tok, rinv);
-                CK(cudaMemcpyAsync(hpin + 3, rmax, 4, cudaMemcpyDeviceToHost, st));
-                CK(cudaStreamSynchronize(st));
-                const int64_t maxr = hpin[3];
-                MMQ::quantize(h, ent_tok, mq_x, L.L.gu_type, N, N, n_ent, st);
-                {
-                MMQ::Product gu;
-                gu.w = L.blobs; gu.type = L.L.gu_type; gu.w_rows = 2 * FF; gu.w_cols = N; gu.expert_bytes = L.stride;
-                gu.n = ne; gu.xq = mq_x; gu.bounds = rbounds; gu.ids = ident; gu.total_rows = n_ent; gu.max_rows = maxr;
-                gu.dst = mq_gu; gu.ld_dst = 2 * FF;
-                mctx->run(gu, st);
-                MMQ::swiglu(mq_gu, mq_h, n_ent, FF, false, st);
-                MMQ::quantize(mq_h, nullptr, mq_hq, L.L.d_type, FF, FF, n_ent, st);
-                MMQ::Product dn;
-                dn.w = L.blobs + L.L.down_off; dn.type = L.L.d_type; dn.w_rows = N; dn.w_cols = FF;
-                dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = ident;
-                dn.total_rows = n_ent; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
-                mctx->run(dn, st);
-                }
-                prow = rinv;   // the down rows stay in sorted order; the combine reads them through entry -> row
-            } else {
-                k_group<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, L.blobs, L.stride, grp_ptr,
-                                                grp_start, n_groups, ent_dst, ent_tok);
-                quant(h, N, T, xq);   // the experts' and the shared expert's input
-                K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                         std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
-            }
-            // the shared expert, scaled by sigmoid(w . h)
-            if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
-            apply(L.sh_gate, xq, sg, T);
-            apply(L.sh_up, xq, su, T);
-            if (T <= kGemmT) {   // SwiGLU and its q8_1 image in one launch
-                K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
-                mmq(L.sh_down, q8, sy, T);
-            } else {
-                k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
-                mm(L.sh_down, shh, sy, T);
-            }
-            if (!one) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
-            // the combine, the shared expert's gate, the residual add and the next layer's norm in one launch
-            const float* wn = l + 1 < m->layers.size() ? m->layers[l + 1].attn_norm : nullptr;
-            k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, sy, one ? logits_r + g.n_expert : sgate, 1, wn, h, N,
-                                              m->eps);
-            (void) FF;
-            (void) moe_out;
+            mm(L.wo, att, y, T);
         }
-        if (want_logits) {
-            const float* xl = x + (size_t) (T - 1) * N;
-            k_rms<<<1, kThreads, 0, st>>>(xl, m->out_norm, h, N, m->eps);
-            mm(m->head, h, logits, 1);
-            k_argmax<<<kArgBlocks, kThreads, 0, st>>>(logits, (int) g.n_vocab, pick, amv, ami, false);
-            k_argmax<<<1, kThreads, 0, st>>>(logits, kArgBlocks, pick, amv, ami, true);
+        k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
+        // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
+        const bool one = T == 1;
+        if (one) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, 1);
+        else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
+        K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
+        const int64_t n_ent = (int64_t) T * Kp;
+        const int32_t* prow = nullptr;
+        if (T > kGemmT && use_mmq) {
+            // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
+            // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into rows the
+            // combine reads through entry -> sorted row
+            const int ne = (int) g.n_expert;
+            CK(cudaMemsetAsync(rcnt, 0, (size_t) ne * 4, st));
+            k_route_count<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, rcnt);
+            k_route_scan<<<1, 32, 0, st>>>(rcnt, ne, rbounds, rcur, rmax);
+            k_route_scatter<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, Kp, rcur, ent_dst, ent_tok, rinv);
+            CK(cudaMemcpyAsync(hpin + 10, rmax, 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            const int64_t maxr = hpin[10];
+            MMQ::quantize(h, ent_tok, mq_x, L.L.gu_type, N, N, n_ent, st);
+            MMQ::Product gu;
+            gu.w = L.blobs; gu.type = L.L.gu_type; gu.w_rows = 2 * FF; gu.w_cols = N; gu.expert_bytes = L.stride;
+            gu.n = ne; gu.xq = mq_x; gu.bounds = rbounds; gu.ids = ident; gu.total_rows = n_ent; gu.max_rows = maxr;
+            gu.dst = mq_gu; gu.ld_dst = 2 * FF;
+            mctx->run(gu, st);
+            MMQ::swiglu(mq_gu, mq_h, n_ent, FF, false, st);
+            MMQ::quantize(mq_h, nullptr, mq_hq, L.L.d_type, FF, FF, n_ent, st);
+            MMQ::Product dn;
+            dn.w = L.blobs + L.L.down_off; dn.type = L.L.d_type; dn.w_rows = N; dn.w_cols = FF;
+            dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = ident;
+            dn.total_rows = n_ent; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
+            mctx->run(dn, st);
+            prow = rinv;
+        } else {
+            k_group<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, L.blobs, L.stride, grp_ptr, grp_start,
+                                            n_groups, ent_dst, ent_tok);
+            quant(h, N, T, xq);   // the experts' and the shared expert's input
+            K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
+                                     std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+        }
+        // the shared expert, scaled by sigmoid(w . h)
+        if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
+        apply(L.sh_gate, xq, sg, T);
+        apply(L.sh_up, xq, su, T);
+        if (T <= kGemmT) {   // SwiGLU and its q8_1 image in one launch
+            K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+            mmq(L.sh_down, q8, sy, T);
+        } else {
+            k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
+            mm(L.sh_down, shh, sy, T);
+        }
+        if (!one) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
+        // the combine, the shared expert's gate, the residual add and the next norm in one launch
+        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, sy, one ? logits_r + g.n_expert : sgate, 1, wn, hout,
+                                          N, m->eps);
+    }
+
+    /// The main model over T rows (device `tok`, positions p0 .. p0 + T - 1, also at *pos0): hmain gets every row's
+    /// final normed hidden; `heads` rows from the end get logits (rows [T - heads, T): logits row r - (T - heads)) and
+    /// their greedy picks (`pick`).  `verify`: a verify window (the GDN state left for commit()).
+    void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd;
+        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
+        k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
+        for (size_t l = 0; l < m->layers.size(); ++l) {
+            const bool last = l + 1 == m->layers.size();
+            layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
+                  last ? hmain : h);
+        }
+        if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
+    }
+    /// logits [n][V] = W_out hn rows, and each row's greedy pick.
+    void head_rows(const float* hn, int n, float* lg, int32_t* pk) {
+        const auto& g = m->g;
+        mm(m->head, hn, lg, n);
+        k_argmax<<<dim3(kArgBlocks, n), kThreads, 0, st>>>(lg, (int) g.n_vocab, pk, amv, ami, false);
+        k_argmax<<<dim3(1, n), kThreads, 0, st>>>(lg, kArgBlocks, pk, amv, ami, true);
+    }
+
+    /// The MTP block over T rows: row t reads token tok_m[t] at position p0 + t (also at *pos0_m) and the seed hidden
+    /// seeds[t] (the main model's normed hidden of the position before, or the block's own for a chained draft);
+    /// hmtp gets each row's normed output.  `draft`: logits of the last row and its pick (`pick_m`).
+    void forward_mtp(int T, int64_t p0, const float* seeds, bool draft, bool graph_mode) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd;
+        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+        k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
+        k_rms_ld<<<T, kThreads, 0, st>>>(seeds, N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);      // [... | h]
+        mm(m->eh_proj, mtp_cat, x, T);
+        k_rms<<<T, kThreads, 0, st>>>(x, m->mtp.attn_norm, h, N, m->eps);
+        layer(m->mtp, m->layers.size(), T, p0, pos0_m, graph_mode, false, m->mtp_shnorm, hmtp);
+        if (draft) head_rows(hmtp + (size_t) (T - 1) * N, 1, logits_m, pick_m);
+    }
+
+    /// After a verify window of T rows: the GDN state takes the first n_keep rows (conv history and recurrence run
+    /// again over the rows' kept inputs).
+    void commit(int n_keep) {
+        const auto& g = m->g;
+        const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, C = (int) g.ssm_conv_channels;
+        for (size_t l = 0; l < m->layers.size(); ++l) {
+            const Layer& L = m->layers[l];
+            if (L.attn) continue;
+            k_conv_seq<<<C / 128, 128, 0, st>>>(conv[l], v_qkv[l], L.conv, hc, C, 2 * HK, m->eps, n_keep, true);
+            k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[l], v_hc[l], C, v_alpha[l], v_beta[l], z, L.ssm_norm, m->eps,
+                                                   nullptr, HK, HV, n_keep, true);
         }
     }
 
+    template <class F> void graph_run(cudaGraphExec_t& gx, F body) {
+        if (!use_graph) { body(); return; }
+        if (!gx) {
+            cudaGraph_t graph = nullptr;
+            CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal));
+            body();
+            CK(cudaStreamEndCapture(st, &graph));
+            CK(cudaGraphInstantiate(&gx, graph, 0));
+            CK(cudaGraphDestroy(graph));
+        }
+        CK(cudaGraphLaunch(gx, st));
+    }
+
     /// The tokens at the current position: a prompt in chunks (eager), one token from the decode graph.  The last
-    /// token's logits stay in `logits` (and its greedy pick in `pick`).  `on_chunk(done)` after each chunk.
+    /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
+    /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
     template <class F> void process(const int32_t* toks, int64_t n, F on_chunk) {
-        if (n == 1 && use_graph) {
+        const int N = (int) m->g.n_embd;
+        if (n == 1) {
             CK(cudaStreamSynchronize(st));   // the pinned staging is free again
             hpin[0] = toks[0];
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, hpin, 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
-            if (!g1) {
-                cudaGraph_t graph = nullptr;
-                CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal));
-                forward(1, true, true);
-                CK(cudaStreamEndCapture(st, &graph));
-                CK(cudaGraphInstantiate(&g1, graph, 0));
-                CK(cudaGraphDestroy(graph));
-            }
-            CK(cudaGraphLaunch(g1, st));
+            graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
+            CK(cudaMemcpyAsync(hlast, hmain, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += 1;
             on_chunk(1);
             return;
@@ -1140,11 +1262,79 @@ struct Engine {
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
-            forward(T, i + T == n, false);
+            forward(T, pos, i + T == n ? 1 : 0, false, false);
+            if (m->has_mtp) {
+                // seeds: h_{q-1} for each row q: hlast, then this chunk's rows 0 .. T - 2 (in `y`, free here)
+                CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+                if (T > 1)
+                    CK(cudaMemcpyAsync(mtp_seed() + N, hmain, (size_t) (T - 1) * N * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(tok_m, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+                CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+                forward_mtp(T, pos, mtp_seed(), false, false);
+            }
+            CK(cudaMemcpyAsync(hlast, hmain + (size_t) (T - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += T;
             CK(cudaStreamSynchronize(st));
             on_chunk(i + T);
         }
+    }
+    /// the MTP seed rows of a prompt chunk: a buffer the block's own forward does not use (`moe_out`, [tmax][N])
+    float* mtp_seed() { return moe_out; }
+
+    /// One speculative step with D MTP drafts (greedy): `x` is the next token (decided, not processed); `fix` the
+    /// tokens of the rows the block must redo first (the drafts the last window accepted, seeded by hmain rows
+    /// 0 .. fix.size() - 1 of that window).  Drafts d1 .. dD, then the window [x, d1 .. dD] through the main model;
+    /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
+    int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
+        const int N = (int) m->g.n_embd;
+        const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
+        CK(cudaStreamSynchronize(st));
+        // rows of the first MTP call: (hmain row i, fix[i]) at positions pos - fix.size() + i, then (hlast, x) at pos
+        for (int i = 0; i < (int) fix.size(); ++i) hpin[16 + i] = fix[(size_t) i];
+        hpin[16 + fix.size()] = x_tok;
+        hpin[1] = (int32_t) (pos - (int64_t) fix.size());
+        CK(cudaMemcpyAsync(tok_m, hpin + 16, (size_t) T0 * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+        // seeds: hmain rows 0 .. fix - 1 are the h of the positions before the fixed rows; hlast is that before x
+        float* seeds = mtp_seed();
+        if (!fix.empty())
+            CK(cudaMemcpyAsync(seeds, hmain, fix.size() * (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+        CK(cudaMemcpyAsync(seeds + fix.size() * (size_t) N, hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+        forward_mtp(T0, pos - (int64_t) fix.size(), seeds, true, false);
+        drafts.assign((size_t) D, 0);
+        CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        drafts[0] = hpin[2];
+        int last_row = T0 - 1;   // the row of the previous MTP call whose output seeds the next draft
+        for (int d = 1; d < D; ++d) {   // chained: (the block's own output, the last draft) at the next position
+            hpin[0] = drafts[(size_t) d - 1];
+            hpin[1] = (int32_t) (pos + d);
+            CK(cudaMemcpyAsync(tok_m, hpin, 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(seeds, hmtp + (size_t) last_row * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+            last_row = 0;
+            graph_run(gm1, [&] { forward_mtp(1, pos + d, seeds, true, use_graph); });
+            CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            drafts[(size_t) d] = hpin[2];
+        }
+        // the verify window
+        const int T = D + 1;
+        hpin[16] = x_tok;
+        for (int d = 0; d < D; ++d) hpin[17 + d] = drafts[(size_t) d];
+        hpin[1] = (int32_t) pos;
+        CK(cudaMemcpyAsync(tok, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+        graph_run(gv[T], [&] { forward(T, pos, T, use_graph, true); });
+        CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        int a = 0;
+        while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+        for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
+        commit(a + 1);
+        CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+        pos += a + 1;
+        return a;
     }
 
     int greedy() {
@@ -1318,31 +1508,54 @@ int serve(Engine& E) {
         std::mt19937_64 rng(smp.seed);
         std::vector<int32_t> hist = ids;
         const auto d0 = Clock::now();
-        long long produced = 0;
+        long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
-        for (;;) {
-            int nx;
+        // greedy requests with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
+        // text); sampled ones one token at a time
+        const bool spec = E.mtp_d > 0 && !smp.needs_logits();
+        std::vector<int32_t> fix, drafts;
+        int32_t picks[16];
+        int nx = smp.needs_logits() ? -1 : E.greedy();
+        bool done = false;
+        while (!done) {
             if (smp.needs_logits()) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
-            } else {
-                nx = E.greedy();
             }
-            std::printf("T %d\n", nx);
-            std::fflush(stdout);
-            ++produced;
-            hist.push_back(nx);
-            if (is_eos(nx)) { finish = "stop"; break; }
-            if (produced >= max_new) break;
-            if (stop.load()) { finish = "cancel"; break; }
+            auto emit = [&](int t) {   // false: the answer ends here
+                std::printf("T %d\n", t);
+                std::fflush(stdout);
+                ++produced;
+                hist.push_back(t);
+                if (is_eos(t)) { finish = "stop"; return false; }
+                if (produced >= max_new) return false;
+                if (stop.load()) { finish = "cancel"; return false; }
+                return true;
+            };
+            if (!emit(nx)) break;
+            if (spec && E.pos + E.mtp_d + 1 <= E.ctx) {
+                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
+                offered += E.mtp_d;
+                accepted += a;
+                live.push_back(nx);
+                fix.assign(drafts.begin(), drafts.begin() + a);
+                for (int i = 0; i < a; ++i) {
+                    live.push_back(drafts[(size_t) i]);
+                    if (!emit(drafts[(size_t) i])) { done = true; break; }
+                }
+                nx = picks[a];
+                continue;
+            }
             if (E.pos + 1 > E.ctx) break;
             const int32_t one = nx;
             E.process(&one, 1, [](int64_t) {});
             live.push_back(nx);
+            fix.clear();
+            if (!smp.needs_logits()) nx = E.greedy();
         }
         const double decode_ms = ms_since(d0);
-        std::printf("DONE %lld %zu %.1f %.1f %s 0 0 %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
-                    decode_ms, finish, reuse, (long long) fresh);
+        std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
+                    decode_ms, finish, accepted, offered, reuse, (long long) fresh);
         std::fflush(stdout);
     }
 }
@@ -1351,7 +1564,7 @@ int serve(Engine& E) {
 
 int main(int argc, char** argv) {
     std::string model, tokens, force, dump_full;
-    int ctx = 32768, chunk = 512, n_gen = 64, bench_pp = 0, bench_tg = 0;
+    int ctx = 32768, chunk = 512, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0;
     bool serve_mode = false, graph = true;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -1370,7 +1583,15 @@ int main(int argc, char** argv) {
         else if (a == "--bench-pp") bench_pp = std::atoi(next().c_str());
         else if (a == "--bench-tg") bench_tg = std::atoi(next().c_str());
         else if (a == "--no-graph") graph = false;
-        else {
+        else if (a == "--mtp") mtp_d = std::atoi(next().c_str());
+        else if (serve_mode && a.rfind("--", 0) == 0) {
+            // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
+            // (with its value), not fatal
+            const bool val = i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0;
+            std::fprintf(stderr, "strata-q36: ignoring %s%s%s (not an option of this engine)\n", a.c_str(),
+                         val ? " " : "", val ? argv[i + 1] : "");
+            if (val) ++i;
+        } else {
             std::fprintf(stderr,
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
@@ -1382,11 +1603,12 @@ int main(int argc, char** argv) {
 #if !defined(_WIN32)
     setenv("STRATA_Q8_PACKED", "1", 0);   // the packed Q8_0 decode copy unless STRATA_Q8_PACKED is set otherwise
 #endif
+    if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 1 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
     Model m;
     std::string err;
     try {
-        if (!load(model, m, err)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
+        if (!load(model, m, err, mtp_d > 0)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "strata-q36: %s\n", e.what());
         return 1;
@@ -1395,6 +1617,7 @@ int main(int argc, char** argv) {
     E.use_graph = graph;
     E.init(m, ctx, chunk);
     E.reset();
+    E.mtp_d = m.has_mtp ? mtp_d : 0;
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
@@ -1432,6 +1655,31 @@ int main(int argc, char** argv) {
     E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
     const double pp_ms = ms_since(t0);
     const auto t1 = Clock::now();
+    if (E.mtp_d > 0 && forced.empty() && !ff) {
+        long long offered = 0, accepted = 0;
+        std::vector<int32_t> fix, drafts;
+        int32_t picks[16];
+        int nx = E.greedy();
+        while ((int) gen.size() < n_gen) {
+            gen.push_back(nx);
+            if ((int) gen.size() >= n_gen) break;
+            const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
+            offered += E.mtp_d;
+            accepted += a;
+            fix.assign(drafts.begin(), drafts.begin() + a);
+            for (int i = 0; i < a && (int) gen.size() < n_gen; ++i) gen.push_back(drafts[(size_t) i]);
+            nx = picks[a];
+        }
+        gen.resize((size_t) n_gen);
+        std::printf("gen:");
+        for (int t : gen) std::printf(" %d", t);
+        std::printf("\n");
+        std::fprintf(stderr, "strata-q36: prompt %zu tokens in %.1f ms, %zu generated in %.1f ms (%.1f tok/s), MTP %d drafts: "
+                     "%lld of %lld accepted (%.0f%%)\n", prompt.size(), pp_ms, gen.size(), ms_since(t1),
+                     gen.size() / (ms_since(t1) / 1000.0), E.mtp_d, accepted, offered,
+                     offered ? 100.0 * accepted / offered : 0.0);
+        return 0;
+    }
     for (int i = 0; i < n_gen; ++i) {
         const int a = E.greedy();
         gen.push_back(a);
