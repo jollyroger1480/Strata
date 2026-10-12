@@ -53,8 +53,8 @@ kernel void gr_norm(device float* R [[buffer(0)]], device const float* bo [[buff
 
 // rows: 0 .. hc_lr - 1 = w_down, hc_lr .. hc_lr + hc - 1 = w_inject (both bf16 rows of hc * n_embd).
 // SG simdgroups split the row's units KS ways; LPR = 32 (a simdgroup per row); RS = SG / KS rows per threadgroup.
-template <int SG, int KS>
-kernel void gr_down(device const uchar* w_down [[buffer(0)]], device const uchar* w_inject [[buffer(1)]],
+template <int SG, int KS, int F>
+kernel void gr_down_f(device const uchar* w_down [[buffer(0)]], device const uchar* w_inject [[buffer(1)]],
                     device const float* xn [[buffer(2)]], device float* lo [[buffer(3)]],
                     device float* inject [[buffer(4)]], constant GrArgs& a [[buffer(5)]],
                     uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
@@ -67,19 +67,20 @@ kernel void gr_down(device const uchar* w_down [[buffer(0)]], device const uchar
     const int nrows = int(a.hc_lr + a.hc);
     const int rr = min(row, nrows - 1);
     const int nin = int(a.hc * a.n_embd);
-    const uint rb = uint(nin) * 2;
+    constexpr int UNIT = fmt<F>::UNIT;
+    const uint rb = uint(nin / fmt<F>::QK * fmt<F>::BB);
     device const uchar* w = rr < int(a.hc_lr) ? w_down + ulong(rr) * rb : w_inject + ulong(rr - int(a.hc_lr)) * rb;
-    const int U = nin / 16, u0 = ks * U / KS, u1 = (ks + 1) * U / KS;
+    const int U = nin / UNIT, u0 = ks * U / KS, u1 = (ks + 1) * U / KS;
     float acc[8];
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
     for (int u = u0 + lane; u < u1; u += 32) {
-        float q[16];
+        float q[UNIT];
         float4 sc;
-        Dec<T_BF16>::run(w, u, q, sc, notab);
+        Dec<F>::run(w, u, q, sc, notab);
         for (int t = 0; t < GR_NTOK; ++t) {
-            float xs[16], xsum[2] = {0.0f, 0.0f};
-            load16(xn + t * nin + 16 * u, xs);
-            acc[t] += unit_combine<16>(q, sc, xs, xsum);
+            float xs[UNIT], xsum[2] = {0.0f, 0.0f};
+            for (int k = 0; k < UNIT; k += 16) load16(xn + t * nin + UNIT * u + k, xs + k);
+            acc[t] += unit_combine<UNIT>(q, sc, xs, xsum);
         }
     }
     for (int t = 0; t < GR_NTOK; ++t) {
@@ -103,7 +104,8 @@ kernel void gr_down(device const uchar* w_down [[buffer(0)]], device const uchar
 // A threadgroup owns 16 consecutive d for all hc = 4 streams: 8 simdgroups, simdgroup s -> stream s / 2 and
 // d0 + 8 (s % 2) .. + 8; LPR = 4 lanes per row (320 = 20 units of 16, 5 per lane).
 // XP: [4 kinds][n_tok][n] then S16 [n_tok][n / 16] (units.metal's xprep layout).
-kernel void gr_up(device const uchar* w_up [[buffer(0)]], device const float* lo [[buffer(1)]],
+template <int F>
+kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* lo [[buffer(1)]],
                   device const float* xn [[buffer(2)]], device float* xp [[buffer(3)]],
                   constant GrArgs& a [[buffer(4)]],
                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
@@ -113,18 +115,19 @@ kernel void gr_up(device const uchar* w_up [[buffer(0)]], device const float* lo
     threadgroup uint notab[1];
     const int n = int(a.n_embd), c = sg >> 1, dl = 8 * (sg & 1) + lane / 4, li = lane & 3;
     const int d = int(tg.x) * 16 + dl;
-    device const uchar* w = w_up + ulong(c * n + d) * (a.hc_lr * 2);
-    const int U = int(a.hc_lr) / 16;
+    constexpr int UNIT = fmt<F>::UNIT;
+    device const uchar* w = w_up + ulong(c * n + d) * (a.hc_lr / fmt<F>::QK * fmt<F>::BB);
+    const int U = int(a.hc_lr) / UNIT;
     float acc[8];
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
     for (int u = li; u < U; u += 4) {
-        float q[16];
+        float q[UNIT];
         float4 sc;
-        Dec<T_BF16>::run(w, u, q, sc, notab);
+        Dec<F>::run(w, u, q, sc, notab);
         for (int t = 0; t < GR_NTOK; ++t) {
-            float xs[16], xsum[2] = {0.0f, 0.0f};
-            load16(lo + t * int(a.hc_lr) + 16 * u, xs);
-            acc[t] += unit_combine<16>(q, sc, xs, xsum);
+            float xs[UNIT], xsum[2] = {0.0f, 0.0f};
+            for (int k = 0; k < UNIT; k += 16) load16(lo + t * int(a.hc_lr) + UNIT * u + k, xs + k);
+            acc[t] += unit_combine<UNIT>(q, sc, xs, xsum);
         }
     }
     for (int t = 0; t < GR_NTOK; ++t) {
@@ -160,9 +163,8 @@ kernel void gr_up(device const uchar* w_up [[buffer(0)]], device const float* lo
     }
 }
 
-template [[host_name("gr_down_8_8")]] kernel decltype(gr_down<8, 8>) gr_down<8, 8>;
-template [[host_name("gr_down_8_4")]] kernel decltype(gr_down<8, 4>) gr_down<8, 4>;
-template [[host_name("gr_down_4_4")]] kernel decltype(gr_down<4, 4>) gr_down<4, 4>;
-template [[host_name("gr_down_4_2")]] kernel decltype(gr_down<4, 2>) gr_down<4, 2>;
-template [[host_name("gr_down_16_16")]] kernel decltype(gr_down<16, 16>) gr_down<16, 16>;
-template [[host_name("gr_down_16_8")]] kernel decltype(gr_down<16, 8>) gr_down<16, 8>;
+#define GRD(S, K) template [[host_name("gr_down_" #S "_" #K)]] kernel decltype(gr_down_f<S, K, T_BF16>) gr_down_f<S, K, T_BF16>; \
+    template [[host_name("gr_down_q8_" #S "_" #K)]] kernel decltype(gr_down_f<S, K, T_Q8_0>) gr_down_f<S, K, T_Q8_0>;
+GRD(8, 8) GRD(8, 4) GRD(4, 4) GRD(4, 2) GRD(16, 16) GRD(16, 8)
+template [[host_name("gr_up")]] kernel decltype(gr_up_f<T_BF16>) gr_up_f<T_BF16>;
+template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8_0>;

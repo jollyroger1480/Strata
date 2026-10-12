@@ -171,8 +171,10 @@ int main(int argc, char** argv) {
         return &it->second;
     };
     // ---- GEMV by tensor, with a tile from the measured table
-    auto gemv2 = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c) {
-        const int n_in = (int)t.shape[0], n_out = t.shape.size() > 1 ? (int)t.shape[1] : 1, ty = t.type;
+    auto gemv2 = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c,
+                     int ty_override = -1) {
+        const int n_in = (int)t.shape[0], n_out = t.shape.size() > 1 ? (int)t.shape[1] : 1;
+        const int ty = ty_override >= 0 ? ty_override : t.type;
         int L = 16, Rr = 1, S = 4, K = 1;
         if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
         else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
@@ -180,7 +182,7 @@ int main(int argc, char** argv) {
         const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
                                std::to_string(S) + "_" + std::to_string(K);
         const mtl::Pipeline* p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
-        GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(ty, n_in), (uint32_t)n_in,
+        GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(t.type, n_in), (uint32_t)n_in,
                    (uint32_t)y_stride};
         mtl::Dispatch d;
         d.p = p;
@@ -194,6 +196,8 @@ int main(int argc, char** argv) {
     const mtl::Pipeline* pnorm = Pn(lib, "gr_norm", "gr_norm", {});
     const mtl::Pipeline* pdown = Pn(lib, "gr_down_8_8", "gr_down_8_8", mtl::Constants().i(1, ntok));
     const mtl::Pipeline* pup = Pn(lib, "gr_up", "gr_up", mtl::Constants().i(1, ntok));
+    const mtl::Pipeline* pdownq = Pn(lib, "gr_down_q8_8_8", "gr_down_q8_8_8", mtl::Constants().i(1, ntok));
+    const mtl::Pipeline* pupq = Pn(lib, "gr_up_q8", "gr_up_q8", mtl::Constants().i(1, ntok));
     const mtl::Pipeline* pprep = Pn(lib, "xprep", "xprep", {});
     const mtl::Pipeline* proute = Pn(lib, "moe_route", "moe_route", {});
     const mtl::Pipeline* pswi = Pn(lib, "swiglu_prep", "swiglu_prep", {});
@@ -215,7 +219,7 @@ int main(int argc, char** argv) {
     int cur_r = 0, cur_d = 0;
     std::map<std::string, size_t> q8off;
     mtl::Buffer Q8;
-    if (hc_mode == "q8") {
+    if (hc_mode == "q8" || hc_mode == "q8_3") {
         size_t tot = 0;
         for (const auto& kv : f.tensors) {
             const gguf::Tensor& t = kv.second;
@@ -240,7 +244,7 @@ int main(int argc, char** argv) {
     }
     int cur_inj = 0;
     auto gr_read = [&](const std::string& pre, bool apply, const Act& out, bool final_) {
-        if (hc_mode != "3") {
+        if (hc_mode != "3" && hc_mode != "q8_3") {
             const bool q8 = hc_mode == "q8";
             const gguf::Tensor& tn = T(pre + "_norm.weight");
             const gguf::Tensor& tdn = T(pre + "_down.weight");
@@ -282,6 +286,10 @@ int main(int argc, char** argv) {
         const gguf::Tensor& tup = T(pre + "_up.weight");
         const gguf::Tensor& tin = final_ ? tdn : T(pre + "_inject.weight");
         GrArgs a{N, HC, LR, (uint32_t)ntok, apply ? 1u : 0u, 1e-6f};
+        const bool q83 = hc_mode == "q8_3";
+        const mtl::Buffer& WB = q83 ? Q8 : W;
+        const size_t od = q83 ? q8off.at(tdn.name) : tdn.offset, oi = q83 ? q8off.at(tin.name) : tin.offset,
+                     ou = q83 ? q8off.at(tup.name) : tup.offset;
         mtl::Dispatch d1;
         d1.p = pnorm;
         d1.args = {mtl::Arg::B(R), mtl::Arg::B(bo), mtl::Arg::B(inj[cur_inj]), mtl::Arg::B(W, tn.offset), mtl::Arg::B(xn),
@@ -291,15 +299,15 @@ int main(int argc, char** argv) {
         d1.tg[0] = 256;
         push(d1, "hc", 0);
         mtl::Dispatch d2;
-        d2.p = pdown;
-        d2.args = {mtl::Arg::B(W, tdn.offset), mtl::Arg::B(W, tin.offset), mtl::Arg::B(xn), mtl::Arg::B(lo),
+        d2.p = q83 ? pdownq : pdown;
+        d2.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(xn), mtl::Arg::B(lo),
                    mtl::Arg::B(inj[1 - cur_inj]), mtl::Arg::V(a)};
         d2.grid[0] = LR + HC;
         d2.tg[0] = 256;
         push(d2, "hc", (double)tdn.bytes + (final_ ? 0 : tin.bytes));
         mtl::Dispatch d3;
-        d3.p = pup;
-        d3.args = {mtl::Arg::B(W, tup.offset), mtl::Arg::B(lo), mtl::Arg::B(xn), mtl::Arg::B(out.b), mtl::Arg::V(a)};
+        d3.p = q83 ? pupq : pup;
+        d3.args = {mtl::Arg::B(WB, ou), mtl::Arg::B(lo), mtl::Arg::B(xn), mtl::Arg::B(out.b), mtl::Arg::V(a)};
         d3.grid[0] = N / 16;
         d3.tg[0] = 256;
         push(d3, "hc", (double)tup.bytes);
@@ -405,9 +413,27 @@ int main(int argc, char** argv) {
         gr_read(b + "hc_ffn", true, XF, false);
         gemv2(T(b + "ffn_gate_inp.weight"), XF, logits, 512, "router");
         nb = true;
-        gemv2(T(b + "ffn_gate_shexp.weight"), XF, gsh, NFF, "shared");
-        nb = true;
-        gemv2(T(b + "ffn_up_shexp.weight"), XF, ush, NFF, "shared");
+        const bool pair = fuse && std::getenv("CHAIN_PAIR");   // measured slower (+0.11 ms): opt-in
+        if (pair) {
+            // the shared expert's gate + up + SwiGLU in one dispatch, h raw into XH's raw plane
+            const gguf::Tensor &tgs = T(b + "ffn_gate_shexp.weight"), &tus = T(b + "ffn_up_shexp.weight");
+            const std::string fn = "gemv_pair_" + std::to_string(tgs.type) + "_" + std::to_string(tus.type);
+            mtl::Dispatch d;
+            d.p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
+            GemvArgs ga{(uint32_t)N, (uint32_t)NFF, (uint32_t)ntok, (uint32_t)ref::row_bytes(tgs.type, N), (uint32_t)N,
+                        (uint32_t)NFF};
+            const uint32_t rbu = (uint32_t)ref::row_bytes(tus.type, N);
+            d.args = {mtl::Arg::B(W, tgs.offset), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tgs.type)),
+                      mtl::Arg::B(W, tus.offset), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tus.type)),
+                      mtl::Arg::B(XF.b, XF.plane_bytes() * 4), mtl::Arg::B(XH.b), mtl::Arg::V(ga), mtl::Arg::V(rbu)};
+            d.grid[0] = NFF / 4;
+            d.tg[0] = 128;
+            push(d, "shared", (double)tgs.bytes + tus.bytes);
+        } else {
+            gemv2(T(b + "ffn_gate_shexp.weight"), XF, gsh, NFF, "shared");
+            nb = true;
+            gemv2(T(b + "ffn_up_shexp.weight"), XF, ush, NFF, "shared");
+        }
         nb = true;
         gemv2(T(b + "ffn_gate_inp_shexp.weight"), XF, sg, 1, "shared");
         {
@@ -447,7 +473,8 @@ int main(int argc, char** argv) {
                 d.grid[1] = ntok;
                 d.tg[0] = 16;
                 nb = true;
-                push(d, "shared", 0);
+                if (!pair) push(d, "shared", 0);
+                nb = false;
             }
             const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" +
                                     std::to_string(gr) + "_" + std::to_string(gs);
@@ -462,7 +489,11 @@ int main(int argc, char** argv) {
             g.ind_off = P_IGU * 4;
             push(g, "experts", 10.0 * ntok * 2 * a.gu_stride);
             nb = true;
-            gemv2(T(b + "ffn_down_shexp.weight"), XH, ysh, N, "shared");
+            {
+                const gguf::Tensor& tds = T(b + "ffn_down_shexp.weight");
+                // with --fuse h is raw: a Q2_0 down reads it through the raw-activation decoder (type 142)
+                gemv2(tds, XH, ysh, N, "shared", pair && tds.type == ref::Q2_0 ? 142 : -1);
+            }
             mtl::Dispatch dd;
             dd.p = Pn(lib, dnn, dnn, {});
             dd.args = {mtl::Arg::B(W), mtl::Arg::B(h), mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::V(a), mtl::Arg::B(h)};
@@ -502,10 +533,10 @@ int main(int argc, char** argv) {
     // the producers' plane stride must be MAXT rows: gr_up's and swiglu's args carry n_tok for the stride, so the
     // gr_up launches above use a.n_tok = ntok - patch them to MAXT (the kernels loop over GR_NTOK tokens anyway)
     for (auto& d : ds)
-        if (d.p == pup || d.p == pnorm || d.p == pdown) {
+        if (d.p == pup || d.p == pupq || d.p == pnorm || d.p == pdown || d.p == pdownq) {
             GrArgs a;
             std::memcpy(&a, d.args.back().bytes.data(), sizeof a);
-            if (d.p == pup) a.n_tok = MAXT;
+            if (d.p == pup || d.p == pupq) a.n_tok = MAXT;
             std::memcpy(d.args.back().bytes.data(), &a, sizeof a);
         }
 
@@ -518,7 +549,7 @@ int main(int argc, char** argv) {
     while (mtl::now_s() - tw < 1.0) run();
     std::vector<double> t;
     for (int i = 0; i < reps; ++i) t.push_back(run());
-    std::printf("HC read: %s\n", hc_mode == "3" ? "BF16, 3 dispatches" : hc_mode == "2" ? "BF16, 2 dispatches" : "Q8_0, 2 dispatches");
+    std::printf("HC read: %s\n", hc_mode == "3" ? "BF16, 3 dispatches" : hc_mode == "2" ? "BF16, 2 dispatches" : hc_mode == "q8_3" ? "Q8_0, 3 dispatches" : "Q8_0, 2 dispatches");
     std::printf("encoding: %s\n", graph ? "concurrent encoder, barriers at dependencies" : "serial encoder");
     const double m = median(t);
     std::printf("decode step (%d token(s)): GPU %.3f ms  (min %.3f, max %.3f)  -> %.1f GB/s effective; %.1f tok/s if "
