@@ -98,6 +98,9 @@
 #endif
 
 #include <cuda_runtime.h>
+#if defined(STRATA_GPU_METAL)
+namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+#endif
 
 #include <array>
 #include <chrono>
@@ -2680,7 +2683,12 @@ int main(int argc, char** argv) {
     // The experimental older-CPU build (STRATA_ISA_FLOOR=avx|none, compiled on that PC; #394 #595 #623) has ggml-cpu
     // for that floor, so a native pack's experts run there on ggml-cpu (every AVX2 kernel is behind cpu_avx2_ok).
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
+#if defined(STRATA_GPU_METAL)   // Apple Silicon: every expert is on the GPU; ggml-cpu (NEON) is the only CPU expert code
+    strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
+    if (false) {
+#else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {
+#endif
         std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX2 with FMA and F16C, which this engine's "
                              "CPU expert kernels need; Strata runs on Intel Haswell (2013), AMD Zen (2017) or newer. "
                              "Older CPUs are EXPERIMENTAL and slow: setup compiles an engine for them on this PC "
@@ -2909,8 +2917,12 @@ int main(int argc, char** argv) {
     }
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
+#if defined(STRATA_GPU_METAL)   // Metal: the prompt is read through the decode windows (no batched prompt path yet)
+        if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical) {
+#else
         if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
             (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
+#endif
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
@@ -12890,7 +12902,11 @@ int main(int argc, char** argv) {
     // round emits (accepted drafts + 1) tokens.  `commit` keeps the state of the tokens that were emitted.
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
+#if defined(STRATA_GPU_METAL)   // Metal: also from position 0 (the prompt is read through the windows below)
+    if ((spec_pos > 0 || (native_pack && o.prefill_chunk <= 0)) && (int64_t) produced.size() < o.max_new && !ended) {
+#else
     if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
+#endif
         auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
             std::ifstream in(path);
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -13087,6 +13103,27 @@ int main(int argc, char** argv) {
         };
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
+#if defined(STRATA_GPU_METAL)
+        // Metal (no batched prompt path yet): the prompt's tokens before the last one go through one-token windows,
+        // each committed; the last one is the first window below, as after the batched path
+        if (native_pack && o.prefill_chunk <= 0 && spec_pos == 0 && n_prompt > 1) {
+            const Clock::time_point tpr = Clock::now();
+            std::vector<int32_t> po(1);
+            ver.set_head_sampling(false);
+            for (int64_t i = 0; i + 1 < n_prompt; ++i) {
+                const int32_t ti = (int32_t) o.tokens[(size_t) i];
+                if (!ver.run(1, &ti, i, &drive_pool_multi, &drive, po.data(), err) || !ver.commit(1, err)) {
+                    std::fprintf(stderr, "strata generate: the prompt window at %lld: %s\n", (long long) i, err.c_str());
+                    return 1;
+                }
+            }
+            ver.set_head_sampling(true);
+            p = n_prompt - 1;
+            x = (int32_t) o.tokens[(size_t) (n_prompt - 1)];
+            std::fprintf(stderr, "strata generate: Metal: the prompt's %lld tokens through one-token windows in %.1f ms\n",
+                         (long long) (n_prompt - 1), std::chrono::duration<double, std::milli>(Clock::now() - tpr).count());
+        }
+#endif
         std::vector<int32_t> drafts((size_t) o.spec, 0);
         std::vector<float> dprob((size_t) o.spec, 1.0f);
         std::vector<int64_t> window_hist((size_t) o.spec + 1, 0);

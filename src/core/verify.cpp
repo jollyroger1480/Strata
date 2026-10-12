@@ -60,6 +60,19 @@
 #include <exception>
 #include <immintrin.h>
 
+#if defined(STRATA_GPU_METAL)
+// The Metal backend's decode window (metal/src/engine/window.cpp): this file's init/run/commit hand over to it.
+namespace strata::metal_engine {
+void window_destroy(void* w);
+void* window_create();
+bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int max_t, int64_t max_cells,
+                 int64_t* n_vocab, std::string& err);
+bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
+bool window_commit(void* w, int n_keep, std::string& err);
+bool window_copy_logits(void* w, int t, float* host);
+}  // namespace strata::metal_engine
+#endif
+
 namespace strata::core {
 namespace {
 
@@ -474,7 +487,12 @@ void Verifier::diag(std::FILE* f) const {
     trace_dump(f);   // #649: STRATA_VERIFY_TRACE=1 only
 }
 
+
 Verifier::~Verifier() {
+#if defined(STRATA_GPU_METAL)
+    strata::metal_engine::window_destroy(metal_);
+    metal_ = nullptr;
+#endif
     const Verifier* self = this;
     g_diag_verifier.compare_exchange_strong(self, nullptr);
     for (auto& slot : g_live) {
@@ -557,6 +575,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     max_t_ = max_t;
     sampling_.greedy = true;      // a fresh verifier samples greedily until set_sampling says otherwise
     sampling_.temperature = 0.0f;
+#if defined(STRATA_GPU_METAL)
+    if (metal_ == nullptr) metal_ = strata::metal_engine::window_create();
+    return strata::metal_engine::window_init(metal_, g, ss, max_t, ss.qsa_states[ss.qsa_primary()].max_cells, &n_vocab_,
+                                             err);
+#endif
     if (max_t < 2 || max_t > strata::kernels::kVerifyMaxT || max_t > strata::kernels::cpu::MAXT) {
         err = "verify: the window must hold 2.." + std::to_string(strata::kernels::kVerifyMaxT) + " tokens";
         return false;
@@ -2135,6 +2158,11 @@ bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    (void) pool;
+    (void) user;
+    return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
+#endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     last_batch_ = false;
@@ -2495,6 +2523,9 @@ namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
 
 bool Verifier::commit(int n_keep, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    return strata::metal_engine::window_commit(metal_, n_keep, err);
+#endif
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     const Clock::time_point t0 = Clock::now();
@@ -2530,6 +2561,10 @@ bool Verifier::commit(int n_keep, std::string& err) {
 }
 
 bool Verifier::wait_commit(std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    (void) err;
+    return true;
+#endif
     if (commit_pending_) {
         const OnDevice on_device(device_);
         commit_pending_ = false;
@@ -3155,6 +3190,9 @@ void Verifier::note_nonfinite(int T, const int64_t* pos_b) {
 }
 
 bool Verifier::copy_logits(int t, float* host) const {
+#if defined(STRATA_GPU_METAL)
+    return strata::metal_engine::window_copy_logits(metal_, t, host);
+#endif
     if (next_ != nullptr) return next_->copy_logits(t, host);   // a layer split: the head is on the last stage
     if (head_logits_ == nullptr || host == nullptr || t < 0 || n_vocab_ <= 0) return false;
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),

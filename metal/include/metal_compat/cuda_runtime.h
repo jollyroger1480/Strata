@@ -59,6 +59,7 @@ inline cudaError_t cudaDeviceSynchronize() { return strata::gpu::device_synchron
 inline cudaError_t cudaMemGetInfo(size_t* f, size_t* t) { return strata::gpu::mem_get_info(f, t); }
 inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int d) { return strata::gpu::get_device_properties(p, d); }
 inline cudaError_t cudaRuntimeGetVersion(int* v) { return strata::gpu::runtime_version(v); }
+inline cudaError_t cudaDriverGetVersion(int* v) { return strata::gpu::runtime_version(v); }
 inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int d) {
     switch (a) {
         case cudaDevAttrIntegrated: return strata::gpu::device_integrated(v, d);
