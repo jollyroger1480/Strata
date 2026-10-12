@@ -18,6 +18,7 @@ Everything shared - the model table, the downloader, the config and run-script w
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -58,6 +59,8 @@ OVERHEAD_GB = 8.0
 # measured on the M5 Max; 3/4 is the conservative rule for the other sizes
 GPU_SHARE = 0.75
 CONTEXTS = [8192, 32768, 65536, 131072]
+MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
+             "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest"}
 TESTED_CONTEXT = 32768     # needles and the KL harness ran to 32K on the Mac
 
 
@@ -187,15 +190,19 @@ def engine_current() -> bool:
         meta = json.loads((BUILD_DIR / "BUILD.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return EXE.exists() and meta.get("version") == S.source_version() and meta.get("commit") == source_commit()
+    return EXE.exists() and meta.get("version") == S.source_version() and meta.get("source") == source_digest()
 
 
-def source_commit() -> str:
-    try:
-        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
-                              timeout=10).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
+def source_digest() -> str:
+    """What the engine is built from: every source file's path, size and modification time (src/, include/, metal/,
+    third_party/ggml).  A git pull, an unzipped update or a local edit changes it; nothing else does."""
+    h = hashlib.sha256()
+    for d in ("src", "include", "metal", "third_party/ggml"):
+        for f in sorted((ROOT / d).rglob("*")):
+            if f.is_file() and f.suffix in (".cpp", ".cu", ".h", ".hpp", ".mm", ".metal", ".inc", ".txt", ".cuh"):
+                st = f.stat()
+                h.update(f"{f.relative_to(ROOT).as_posix()}|{st.st_size}|{int(st.st_mtime)}\n".encode())
+    return h.hexdigest()
 
 
 def build_engine(llama: Path, jobs: int | None = None) -> Path:
@@ -218,7 +225,7 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
                 S.fail(f"the Metal engine did not build (see {log})",
                        "the last lines of the log name the problem; the Command Line Tools must be up to date "
                        "(softwareupdate --list)")
-    (BUILD_DIR / "BUILD.json").write_text(json.dumps({"version": S.source_version(), "commit": source_commit(),
+    (BUILD_DIR / "BUILD.json").write_text(json.dumps({"version": S.source_version(), "source": source_digest(),
                                                       "backend": "metal"}, indent=1), encoding="utf-8")
     S.ok(f"Metal engine built: {EXE}")
     return EXE
@@ -331,7 +338,7 @@ def main(argv=None) -> int:
     else:
         names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing")]   # --model offers the others
         for i, m in enumerate(names, 1):
-            S.say(f"  {i}) {m:8} {S.MODELS[m]['about']}  (maps {MAC_MODELS[m]['shard1_gb']:.0f} GB"
+            S.say(f"  {i}) {m:8} {MAC_ABOUT[m]}  (maps {MAC_MODELS[m]['shard1_gb']:.0f} GB"
                   + ("" if MAC_MODELS[m]["tested"] else ", not measured on a Mac") + ")"
                   + ("   <- recommended" if m == rec else ""))
         model = names[int(S.ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
