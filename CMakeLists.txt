@@ -1442,6 +1442,9 @@ if(STRATA_NATIVE_EXPERTS)
     if(NOT MSVC)   # its FP16 rounding helper uses the F16C intrinsics (GCC/Clang need the target flag)
       target_compile_options(mmq_nvfp4_parity PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mf16c>)
     endif()
+    # the routed-expert products (MMQ) timed at the prompt path's shapes (16 experts a launch)
+    add_executable(mmq_expert_bench src/prefill/mmq_expert_bench.cpp)
+    target_link_libraries(mmq_expert_bench PRIVATE strata_mmq ggml-base CUDA::cudart)
   elseif(STRATA_PREFILL_MMQ)
     # Compile only the pinned GGML MMQ and activation-quantizer sources used by prefill. This uses
     # common.cuh's native HIP path without enabling a second GGML HIP backend.
