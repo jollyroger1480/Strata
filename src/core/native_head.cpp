@@ -13,9 +13,15 @@
 namespace strata::core {
 
 NativeHead::~NativeHead() {
+    unload();
+}
+
+void NativeHead::unload() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (scratch_) cudaFree(scratch_);
     if (weights_) cudaFree(weights_);
+    scratch_ = nullptr;
+    weights_ = nullptr;
 }
 
 bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {

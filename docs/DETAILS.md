@@ -1763,6 +1763,12 @@ the pairs in which the switched arm won). They are here so you can try them on y
   tier's copies for layer 45 never landed" (RTX 4070 SUPER, driver 617.42). `STRATA_ADAPT_SIGNAL=copy` asks for the copy
   there; the engine now flushes the copy stream after queueing the swaps, which is meant to fix it but has not been run
   on Windows yet.
+- **`--prefill-head-alias` (`--serve`, one GPU): the output head's VRAM holds the prompt buffers while a prompt is read**,
+  and the head is read back in before the first generated token. It was not measured with the paired method above. On
+  an 8 GB RTX PRO 2000 Laptop (Windows, IQ3_XXS, 590 MiB reserve) it let the prompt path use 2,048-token chunks
+  instead of 512: prefill 292.5 -> 667.1 tok/s on a 29,854-token prompt (medians of 12 and 6 fresh-engine trials).
+  Reads of up to 512 fresh tokens cost about 0.6-0.75 s more per request, and the card had 0 MiB free while decoding.
+  Details, limits and the measurement: [PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md).
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 

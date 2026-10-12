@@ -930,7 +930,11 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
                    core::SessionState &ss, core::ExpertSource *src,
                    const core::ExpertCache *cache, const int32_t *host_res,
                    int64_t chunk, void *stream, std::string &err, void *borrow,
-                   uint64_t borrow_bytes) try {
+                   uint64_t borrow_bytes, bool borrow_spill) try {
+    if (borrow_spill) {
+        err = "prefill: a hybrid borrowed/owned layout (--prefill-head-alias) is not in the SYCL port";
+        return false;
+    }
     Impl& m = *impl_;
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = strata::q_of(stream); m.stats = &stats_;
