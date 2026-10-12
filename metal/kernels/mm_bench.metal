@@ -61,6 +61,13 @@ kernel void coop_layout(device int* out [[buffer(0)]], ushort lane [[thread_inde
     matmul2d<desc, execution_simdgroup> op;
     auto r = op.template get_right_input_cooperative_tensor<half, half, float>();
     auto l = op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto dd = op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(l)>,
+                                                             __tensor_ops_detail::__remove_addrspace_t<decltype(r)>, float>();
+    for (uint16_t i = 0; i < dd.get_capacity() && i < 128; ++i) {
+        auto ix = dd.get_multidimensional_index(i);
+        device int* o = out + ((2 * 32 + lane) * 128 + i) * 4;
+        o[0] = ix[0]; o[1] = ix[1]; o[2] = dd.get_capacity();
+    }
     for (uint16_t i = 0; i < r.get_capacity() && i < 128; ++i) {
         auto ix = r.get_multidimensional_index(i);
         device int* o = out + ((0 * 32 + lane) * 128 + i) * 4;
@@ -75,3 +82,4 @@ kernel void coop_layout(device int* out [[buffer(0)]], ushort lane [[thread_inde
 template [[host_name("coop_layout_16_32_16")]] kernel decltype(coop_layout<16, 32, 16>) coop_layout<16, 32, 16>;
 template [[host_name("coop_layout_32_32_16")]] kernel decltype(coop_layout<32, 32, 16>) coop_layout<32, 32, 16>;
 template [[host_name("coop_layout_16_64_32")]] kernel decltype(coop_layout<16, 64, 32>) coop_layout<16, 64, 32>;
+template [[host_name("coop_layout_16_32_32")]] kernel decltype(coop_layout<16, 32, 32>) coop_layout<16, 32, 32>;

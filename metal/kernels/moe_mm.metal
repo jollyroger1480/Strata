@@ -389,6 +389,7 @@ static inline half4 w4_signed(uint g, uint s, float sc) {
     return half4(q * sc);
 }
 template <> struct W4<T_Q2_0> {   // 64 values a block: fp16 d, 16 bytes of 2-bit codes (value v at byte v / 4)
+    // fp32 math then fp16 (an fp16-math decode was measured slower: 4.2 vs 3.5 ms a layer)
     static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
         device const uchar* b = row + (k >> 6) * 18;
         const float d = float(*(device const half*)b);
@@ -478,6 +479,7 @@ template <int F> struct W8 {
         b = W4<F>::run(row, k + 16, tab);
     }
 };
+// (a W8<T_Q2_0> sharing the block scale was measured slower than the two W4 of the generic one: 5.5 vs 3.5-4.2 ms)
 template <> struct W8<T_IQ3_XXS> {
     static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
         device const uchar* bl = row + (k >> 8) * 98;
@@ -593,8 +595,11 @@ kernel void mm_gu3(device const uchar* W [[buffer(0)]], device const half* XS [[
             device const uchar* rgw = g0 + ulong(n) * a.gu_row;
             device const uchar* ruw = u0 + ulong(n) * a.gu_row;
             half4 wg, wu, wg2, wu2;
-            if (TK == 32 && iy[0] == ix[0] + 16 && iy[1] == ix[1] && (ix[0] & 31) < 16) {
-                // the lane's two runs of this row sit in one 32-group (the layout: element i + cap / 2 is k + 16)
+            if (mm_probe == 1) {   // the bench probe: no decode (constant weights)
+                wg = half4(half(n & 7)); wu = wg; wg2 = half4(half(k & 7)); wu2 = wg2;
+            } else if (TK == 32) {
+                // the lane's two runs of this row sit in one 32-group: element i + cap / 2 is (k + 16, n) - part of
+                // the COOP_K4 layout (coop_probe checks it); a runtime check of it here cost 30%
                 W8<F>::run(rgw, k, tab, wg, wg2);
                 W8<F>::run(ruw, k, tab, wu, wu2);
             } else {

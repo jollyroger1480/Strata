@@ -10,14 +10,16 @@
 inline bool coop_k4(mtl::Context& cx) {
     if (const char* e = std::getenv("COOP_K4")) return std::atoi(e) != 0;
     const int lib = cx.compile({"mm_bench.metal"}, "#define NO_GGML_COMMON 1\n");
-    mtl::Pipeline p = cx.pipeline(lib, "coop_layout_16_64_32");
+    for (const char* tile : {"coop_layout_16_64_32", "coop_layout_16_32_32"}) {
+    mtl::Pipeline p = cx.pipeline(lib, tile);
     mtl::Buffer out = cx.alloc(4 * 3 * 32 * 128 * 4);
     mtl::Dispatch d;
     d.p = &p;
     d.args = {mtl::Arg::B(out)};
     d.tg[0] = 32;
     cx.run({d});
-    // every lane: elements 4j .. 4j + 3 are (k, n), (k + 1, n), (k + 2, n), (k + 3, n)
+    // every lane: elements 4j .. 4j + 3 are (k, n), (k + 1, n), (k + 2, n), (k + 3, n), and element i + cap / 2 is
+    // (k + 16, n) with k % 32 < 16 (mm_gu3's paired-run decode relies on it)
     const int* o = out.as<int>();
     for (int l = 0; l < 32; ++l) {
         const int* q = o + l * 128 * 4;
@@ -25,6 +27,10 @@ inline bool coop_k4(mtl::Context& cx) {
         for (int i = 0; i + 3 < cap; i += 4)
             for (int j = 1; j < 4; ++j)
                 if (q[(i + j) * 4] != q[i * 4] + j || q[(i + j) * 4 + 1] != q[i * 4 + 1]) return false;
+        for (int i = 0; i < cap / 2; i += 4)
+            if (q[(i + cap / 2) * 4] != q[i * 4] + 16 || q[(i + cap / 2) * 4 + 1] != q[i * 4 + 1] || (q[i * 4] & 31) >= 16)
+                return false;
+    }
     }
     return true;
 }

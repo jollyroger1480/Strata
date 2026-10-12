@@ -38,9 +38,11 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < ksc.bytes / 2; ++i) { ksc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); vsc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); }
     for (size_t i = 0; i < (size_t)T * QH * QD; ++i) qcur.as<float>()[i] = r.sym() * 3.0f;
     for (size_t i = 0; i < (size_t)T * QH * 2 * QD; ++i) qfull.as<float>()[i] = r.sym();
-    mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm", mtl::Constants().b(7, coop_k4(cx))),
+    mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm", mtl::Constants().b(7, coop_k4(cx)).i(8, std::getenv("QSA_STOP") ? std::atoi(std::getenv("QSA_STOP")) : 0)),
                   pq = cx.pipeline(lib, "qsa_q_f16"), pf = cx.pipeline(lib, "qsa_flash", mtl::Constants().b(7, coop_k4(cx)));
     mtl::Buffer xf = cx.alloc(2 * (size_t)T * QH * QD);
+    std::printf("pipelines: qsa_attn_mm max threads %d, tg mem %d; qsa_flash max threads %d, tg mem %d\n", pmm.max_threads,
+                pmm.static_tg_mem, pf.max_threads, pf.static_tg_mem);
     int fails = 0;
     for (uint32_t pos0 : {0u, 30000u}) {
         // ids: within the budget the identity; past it 2051 distinct ascending cells < n_kv
@@ -81,6 +83,18 @@ int main(int argc, char** argv) {
         cx.run(ref_ds);
         std::fill(part.as<float>(), part.as<float>() + part.bytes / 4, std::nanf(""));   // a kernel that writes nothing shows
         cx.run(mm_ds);
+        if (std::getenv("QSA_DEBUG")) {
+            // how much of the partials the matrix-unit kernel wrote, and token 5's first chunk (m, l, acc[0..3])
+            size_t written = 0, nonfinite = 0;
+            const float* pp = part.as<float>();
+            for (size_t i = 0; i < (size_t)T * NCH * QH * (QD + 2); ++i) {
+                if (!std::isnan(pp[i])) ++written;
+                if (!std::isfinite(pp[i]) && !std::isnan(pp[i])) ++nonfinite;
+            }
+            const float* q = pp + ((size_t)5 * NCH * QH) * (QD + 2);
+            std::printf("debug pos0 %u: %zu of %zu partial floats written (%zu inf); t5 h0: m %g l %g acc %g %g %g %g\n", pos0,
+                        written, (size_t)T * NCH * QH * (QD + 2), nonfinite, q[QD], q[QD + 1], q[0], q[1], q[2], q[3]);
+        }
         double se = 0, sr = 0;
         for (size_t i = 0; i < (size_t)T * QH * QD; ++i) {
             const double e = xb.as<float>()[i] - xa.as<float>()[i];

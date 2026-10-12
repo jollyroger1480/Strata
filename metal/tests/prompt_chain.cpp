@@ -126,8 +126,9 @@ int main(int argc, char** argv) {
     const char* hc_env = std::getenv("PC_HC");
     const std::string hc_mode = hc_env ? hc_env : "fused";   // fused | plain
     const char* qsa_env = std::getenv("PC_QSA");
-    // mm (matrix units; not on the M4's layout yet: qsa_attn_mm writes nothing there) | v1 (qsa_attn, fp32)
-    const std::string qsa_mode = qsa_env ? qsa_env : (k4 ? "mm" : "v1");
+    // flash (one pass on the matrix units, no partials) | mm (split-K on the matrix units + merge) | v1 (qsa_attn,
+    // fp32 + merge).  The M5: flash (= mm + merge or better); the M4: v1 attention (faster there) with the GEMM score.
+    const std::string qsa_mode = qsa_env ? qsa_env : (k4 ? "flash" : "v1");
     // the expert GEMMs: "v2" (threadgroup-staged weights) or "v3:TM,TN,TK,SG" (register operands, TN rows a simdgroup)
     const char* gu_env = std::getenv("PC_GU");
     const char* dn_env = std::getenv("PC_DN");
@@ -353,7 +354,7 @@ int main(int argc, char** argv) {
                    mtl::Arg::B(pooled[qi]), mtl::Arg::V(a)},
                   33, T, 256, "qsa prep");
                 if (pos0 + T > QB) {   // some token's context is past the budget: select
-                    if (qsa_mode == "mm")
+                    if (!std::getenv("PC_QSA_SCORE"))   // the GEMM score unless PC_QSA_SCORE (= the scalar qsa_score)
                         D(P(lqsa, "qsa_score_mm"), {mtl::Arg::B(qidx), mtl::Arg::B(pooled[qi]), mtl::Arg::B(dead[qi]),
                                                     mtl::Arg::B(scores), mtl::Arg::V(a)},
                           ((pos0 + T) / 4 + 1 + 63) / 64, (T + 15) / 16, 128, "qsa score");
@@ -365,6 +366,17 @@ int main(int argc, char** argv) {
                 } else {
                     // within the budget the selection is the identity: qsa_topk only writes 0..n_kv-1
                     D(P(lqsa, "qsa_topk"), {mtl::Arg::B(scores), mtl::Arg::B(qids), mtl::Arg::V(a)}, T, 1, 1024, "qsa sel");
+                }
+                if (qsa_mode == "flash") {
+                    const uint32_t nq = (uint32_t)T * 24 * 256;
+                    D(P(lqsa, "qsa_q_f16"), {mtl::Arg::B(qcur), mtl::Arg::B(qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256, "qsa attn");
+                    D(P(lqsa, "qsa_flash", mtl::Constants().b(7, k4)),
+                      {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]), mtl::Arg::B(vsc[qi]),
+                       mtl::Arg::B(qids), mtl::Arg::B(qfull), mtl::Arg::B(xqh), mtl::Arg::V(a)},
+                      2, T, 128, "qsa attn");
+                    gemm(xqh, Wout, bo, T, N, 6144, "qsa proj");
+                    ++qi;
+                    goto moe;
                 }
                 if (qsa_mode == "mm") {
                     const uint32_t nq = (uint32_t)T * 24 * 256;

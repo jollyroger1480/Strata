@@ -16,6 +16,11 @@ constant bool COOP_K4 [[function_constant(7)]];
 constant bool coop_k4 = is_function_constant_defined(COOP_K4) ? COOP_K4 : true;
 #endif
 
+// a bisection probe (function constant 8): stop at stage n and write m = n (1: after the ids, 2: after S, 3: after
+// the softmax); 0 = normal
+constant int QSA_STOP [[function_constant(8)]];
+constant int qsa_stop = is_function_constant_defined(QSA_STOP) ? QSA_STOP : 0;
+
 // grid (chunks, QKV, n_tok), 32 threads.  qh: the q heads as fp16 [t][QH][QD] (qcur rounded).
 kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* kq [[buffer(1)]],
                         device const char* vq [[buffer(2)]], device const half* ksc [[buffer(3)]],
@@ -42,6 +47,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
         for (int j = 0; j < 4; ++j) vs[c][j] = id >= 0 ? vsc[(uint(id) * QKV + g) * 4 + j] : half(0.0f);
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);
+    if (qsa_stop == 1) { if (lane < HPG) { pp[lane * (QD + 2) + QD] = 1.0f; pp[lane * (QD + 2) + QD + 1] = 1.0f; } return; }
     // ---- S = Q K^T
     {
         constexpr auto desc = matmul2d_descriptor(16, QCH, 32, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
@@ -81,6 +87,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
         acc.store(tS);
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);
+    if (qsa_stop == 2) { if (lane < HPG) { pp[lane * (QD + 2) + QD] = 2.0f; pp[lane * (QD + 2) + QD + 1] = 1.0f; } return; }
     // ---- softmax pieces per head (lane = head for the reductions; 12 heads)
     float mh = -INFINITY, lh = 0.0f;
     if (lane < HPG) {
@@ -94,26 +101,42 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
         for (int c = 0; c < QCH; ++c) p[lane * QCH + c] = half(0.0f);
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);
+    if (qsa_stop == 3) { if (lane < HPG) { pp[lane * (QD + 2) + QD] = 3.0f; pp[lane * (QD + 2) + QD + 1] = 1.0f; } return; }
     // ---- acc = P V, 64 dims at a time
     {
-        constexpr auto desc = matmul2d_descriptor(16, 64, QCH, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+        // K = 32 cells a run (two runs a 64-cell chunk): K = 64 runs compute garbage on the M4
+        constexpr auto desc = matmul2d_descriptor(16, 64, 32, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
         matmul2d<desc, execution_simdgroup> op;
         tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline> tP(p, dextents<int32_t, 2>(QCH, 16));
         tensor<device float, dextents<int32_t, 2>, tensor_inline> tO(pp, dextents<int32_t, 2>(QD + 2, HPG));
         for (int d0 = 0; d0 < QD; d0 += 64) {
             auto rv = op.template get_right_input_cooperative_tensor<half, half, float>();
-            auto acc = op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tP)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();
+            auto tPh = tP.template slice<32, 16>(0, 0);
+            auto acc = op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();
             for (uint16_t i = 0; i < acc.get_capacity(); ++i)
                 if (acc.is_valid_element(i)) acc[i] = 0.0f;
+            for (int c0 = 0; c0 < QCH; c0 += 32) {
 #pragma clang loop unroll(full)
-            for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
-                const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
-                const int c = ix[0], d = d0 + ix[1], id = cid[c];
-                rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vs[c][d >> 6])) : half(0.0f);
+                for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
+                    const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
+                    const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
+                    rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vs[c][d >> 6])) : half(0.0f);
+                }
+                tPh = tP.template slice<32, 16>(c0, 0);
+                op.run(tPh, rv, acc);
             }
-            op.run(tP, rv, acc);
-            auto mO = tO.slice(d0, 0);
-            acc.store(mO);
+            if (qsa_stop == 4) {   // the bisection: the old direct store into the 258-float rows
+                auto mO = tO.slice(d0, 0);
+                acc.store(mO);
+                continue;
+            }
+            // through threadgroup memory (s is free now): a matmul2d store into rows of QD + 2 floats loses the
+            // whole threadgroup on the M4
+            tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tT(s, dextents<int32_t, 2>(64, 16));
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            acc.store(tT);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            for (int it = lane; it < HPG * 64; it += 32) pp[(it >> 6) * (QD + 2) + d0 + (it & 63)] = s[it];
         }
     }
     if (lane < HPG) { pp[lane * (QD + 2) + QD] = mh; pp[lane * (QD + 2) + QD + 1] = lh; }
@@ -198,17 +221,20 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
     const int nch = int((width + QCH - 1) / QCH);
     if (tid < 16) { mrun[tid] = -INFINITY; lsum[tid] = 0.0f; }
     constexpr auto dS = matmul2d_descriptor(16, QCH, 32, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
-    constexpr auto dO = matmul2d_descriptor(16, 64, QCH, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    constexpr auto dO = matmul2d_descriptor(16, 64, 32, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<dS, execution_simdgroup> opS;
     matmul2d<dO, execution_simdgroup> opO;
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tQ((device half*)qh + (uint(t) * QH + g * HPG) * QD,
                                                                dextents<int32_t, 2>(QD, HPG));
     tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline> tP(p, dextents<int32_t, 2>(QCH, 16));
     auto rv = opO.template get_right_input_cooperative_tensor<half, half, float>();
-    auto acc = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tP)>,
+    auto tPh = tP.template slice<32, 16>(0, 0);
+    auto acc = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>,
                                                                __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();
+    auto tot = acc;   // the running output; acc takes one chunk (fresh each chunk: on the M4 a run does not accumulate
+                      // into elements rescaled in place)
     for (uint16_t i = 0; i < acc.get_capacity(); ++i)
-        if (acc.is_valid_element(i)) acc[i] = 0.0f;
+        if (acc.is_valid_element(i)) tot[i] = 0.0f;
     const int d0 = sg * 64;
     for (int ch = 0; ch < nch; ++ch) {
         const int c0 = ch * QCH, nc = min(QCH, int(width) - c0);
@@ -282,14 +308,19 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // rescale this simdgroup's accumulator rows, then acc += P V over its 64 dims
         for (uint16_t i = 0; i < acc.get_capacity(); ++i)
-            if (acc.is_valid_element(i)) acc[i] *= fac[acc.get_multidimensional_index(i)[1]];
+            if (acc.is_valid_element(i)) acc[i] = 0.0f;
+        for (int c0 = 0; c0 < QCH; c0 += 32) {   // K = 32 cells a run (K = 64 is wrong on the M4)
 #pragma clang loop unroll(full)
-        for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
-            const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
-            const int c = ix[0], d = d0 + ix[1], id = cid[c];
-            rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vsc[(uint(id) * QKV + g) * 4 + sg])) : half(0.0f);
+            for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
+                const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
+                const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
+                rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vsc[(uint(id) * QKV + g) * 4 + sg])) : half(0.0f);
+            }
+            tPh = tP.template slice<32, 16>(c0, 0);
+            opO.run(tPh, rv, acc);
         }
-        opO.run(tP, rv, acc);
+        for (uint16_t i = 0; i < acc.get_capacity(); ++i)
+            if (acc.is_valid_element(i)) tot[i] = fma(tot[i], fac[acc.get_multidimensional_index(i)[1]], acc[i]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint16_t i = 0; i < acc.get_capacity(); ++i)
@@ -299,7 +330,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             if (h < HPG) {
                 const int hh = g * HPG + h;
                 const float gate = qfull[(uint(t) * QH + hh) * 2 * QD + QD + d];
-                xqh[(uint(t) * QH + hh) * QD + d] = half(acc[i] / lsum[h] * (1.0f / (1.0f + exp(-gate))));
+                xqh[(uint(t) * QH + hh) * QD + d] = half(tot[i] / lsum[h] * (1.0f / (1.0f + exp(-gate))));
             }
         }
 }
