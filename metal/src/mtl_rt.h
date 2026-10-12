@@ -67,6 +67,7 @@ public:
     bool supports_metal4() const;
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
+    uint64_t allocated() const { return allocated_; }   // bytes of alloc() + wrap() buffers so far
 
     // Compiles a library from MSL source files (paths), prepended by `prelude` (defines) and, if include_ggml,
     // ggml-common.h with GGML_COMMON_DECL_METAL/IMPL_METAL.  Returns a library id (index); aborts with the
@@ -85,6 +86,12 @@ public:
     // A dependency graph in ONE concurrent encoder: a memory barrier only before dispatches with `barrier` set, so
     // the dispatches between two barriers may overlap.  Returns the GPU time in seconds.
     double run_graph(const std::vector<Dispatch>& ds);
+    // run_graph in segments: the dispatches [cuts[s-1], cuts[s]) are one concurrent encoder; after segment s (for
+    // s < cuts.size()) the GPU signals a shared event and waits until the host has run at_cut(s) - the host's turn
+    // between two parts of one committed command buffer (the SSD-streaming handshake: the routing is read, the
+    // missing experts are put in place).  Returns the GPU time in seconds.
+    double run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
+                         void* user);
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
 
@@ -100,6 +107,7 @@ public:
 private:
     struct Impl;
     Impl* impl_;
+    uint64_t allocated_ = 0;
 };
 
 double now_s();                                  // monotonic wall clock (seconds)

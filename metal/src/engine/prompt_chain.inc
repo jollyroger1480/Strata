@@ -111,7 +111,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     const size_t rb = ref::row_bytes(te.type, N);
     for (int t = 0; t < nT; ++t) {
         float* r = b.R.as<float>() + (size_t) t * HC * N;
-        ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[t] * rb, r, N);
+        ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
         for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
     }
     if (ple_on_) {

@@ -20,6 +20,7 @@
 
 #include <sys/sysctl.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -41,6 +42,7 @@ struct Alloc {
     uint8_t* cpu = nullptr;
     size_t bytes = 0;
     bool host = false;   // from host_alloc (the host code holds the CPU address)
+    bool purged = false; // purge_device_allocations: its memory given back (any later copy is an error)
 };
 
 struct Op {
@@ -181,10 +183,20 @@ Error wait_value(MTL::SharedEvent* ev, uint64_t v) {
     return kSuccess;
 }
 
+void check_purged(const Alloc* a, const char* what) {
+    if (a && a->purged) {
+        std::fprintf(stderr, "strata metal runtime: a %s touches a device allocation of %.1f MB that was given back "
+                             "(STRATA_METAL_KEEP_HOST_WEIGHTS=1 keeps it)\n", what, a->bytes / 1e6);
+        std::abort();
+    }
+}
+
 Error encode_copy(StreamImpl* s, void* dst, const void* src, size_t n) {
     size_t od = 0, os = 0;
     const Alloc* ad = find(dst, &od);
     const Alloc* as = find(src, &os);
+    check_purged(ad, "copy");
+    check_purged(as, "copy");
     if (ad && as) {   // buffer to buffer: a blit, in stream order
         end_encoder(s);
         MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
@@ -207,6 +219,7 @@ Error encode_fill(StreamImpl* s, void* p, int value, size_t n) {
     size_t off = 0;
     const Alloc* a = find(p, &off);
     if (!a) return fail(kErrorInvalidValue);
+    check_purged(a, "fill");
     end_encoder(s);
     MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
     b->fillBuffer(a->buf, NS::Range::Make(off, n), (uint8_t) value);
@@ -251,12 +264,21 @@ Error run_op(StreamImpl* s, const Op& o) {
     return kSuccess;
 }
 
+// STRATA_METAL_ALLOC_LOG=1: every allocation of 16 MB or more, with the running total (memory budgets on small Macs)
+void alloc_log(const char* what, size_t n) {
+    static const bool on = std::getenv("STRATA_METAL_ALLOC_LOG") != nullptr;
+    static std::atomic<uint64_t> tot{0};
+    const uint64_t t = tot += n;
+    if (on && n >= (16u << 20)) std::fprintf(stderr, "strata metal runtime: %s %.1f MB (total %.2f GB)\n", what, n / 1e6, t / 1e9);
+}
+
 Error new_alloc(void** p, size_t bytes, bool host) {
     Runtime& r = rt();
     const size_t n = bytes ? bytes : 1;
     MTL::Buffer* b = r.dev->newBuffer(n, MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeUntracked);
     if (!b) return fail(kErrorMemoryAllocation);
     Alloc a{b, b->gpuAddress(), (uint8_t*) b->contents(), n, host};
+    alloc_log(host ? "host alloc" : "device alloc", n);
     {
         std::lock_guard<std::mutex> lk(r.mu);
         r.by_gpu[a.gpu] = a;
@@ -293,6 +315,26 @@ void* host_view(const void* p) {
     size_t off = 0;
     const Alloc* a = find(p, &off);
     return a ? a->cpu + off : nullptr;
+}
+
+// The Metal decode window reads the model itself; the device copies of the weights the shared host code uploads for
+// the CUDA-shaped kernels (the pack's dense pool, the native head, ...) are never read on Metal.  On a small Mac their
+// memory is worth more as expert arena: every device (not host) allocation of min_bytes or more is made purgeable-empty
+// and dropped from the residency set.  Returns the bytes given back.
+uint64_t purge_device_allocations(size_t min_bytes) {
+    Runtime& r = rt();
+    device_synchronize();
+    std::lock_guard<std::mutex> lk(r.mu);
+    uint64_t n = 0;
+    for (auto& [gpu, a] : r.by_gpu) {
+        if (a.host || a.purged || a.bytes < min_bytes) continue;
+        r.rs->removeAllocation(a.buf);
+        a.buf->setPurgeableState(MTL::PurgeableStateEmpty);
+        a.purged = true;
+        n += a.bytes;
+    }
+    r.rs->commit();
+    return n;
 }
 
 Error get_last_error() { const Error e = t_last; t_last = kSuccess; return e; }
@@ -366,6 +408,7 @@ Error host_register(void* p, size_t bytes, unsigned) {
     MTL::Buffer* b = r.dev->newBuffer(p, n, MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeUntracked, nullptr);
     if (!b) return fail(kErrorMemoryAllocation);
     Alloc a{b, b->gpuAddress(), (uint8_t*) b->contents(), n, true};
+    alloc_log("host register", n);
     std::lock_guard<std::mutex> lk(r.mu);
     r.by_gpu[a.gpu] = a;
     r.by_cpu[(uintptr_t) a.cpu] = a.gpu;

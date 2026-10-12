@@ -14,6 +14,8 @@
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "stream.h"
+#include "../../tests/coop_probe.h"
 
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
@@ -30,8 +32,12 @@
 #include <memory>
 #include <string>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
+#include <mach/mach.h>
 #include <thread>
 #include <vector>
+
+namespace strata::gpu { uint64_t purge_device_allocations(size_t min_bytes); }   // metal/src/gpu/runtime.cpp
 
 namespace strata::metal_engine {
 
@@ -94,6 +100,7 @@ public:
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
+    bool streaming() const { return stream_; }
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
@@ -113,14 +120,33 @@ private:
     }
     const mtl::Pipeline* P(int lib, const std::string& fn, const mtl::Constants& c, const std::string& key) {
         auto it = pcache_.find(key);
-        if (it == pcache_.end()) it = pcache_.emplace(key, cx_->pipeline(lib, fn, c)).first;
+        if (it == pcache_.end()) {
+            it = pcache_.emplace(key, cx_->pipeline(lib, fn, c)).first;
+            pkey_of_[&it->second] = key;
+        }
         return &it->second;
     }
     void push(std::vector<mtl::Dispatch>& ds, mtl::Dispatch d) {
         d.barrier = !nb_;
         nb_ = false;
+        // timing only (WRONG answers): STRATA_METAL_SKIP=a,b,... runs the dispatches whose pipeline name contains one
+        // of the words as empty grids (the marginal cost of a kernel class by leaving it out)
+        static const std::vector<std::string> skip = [] {
+            std::vector<std::string> v;
+            if (const char* e = std::getenv("STRATA_METAL_SKIP")) {
+                std::string s = e, w;
+                for (char c : s + ",") { if (c == ',') { if (!w.empty()) v.push_back(w); w.clear(); } else w += c; }
+            }
+            return v;
+        }();
+        if (!skip.empty()) {
+            const std::string& k = pkey_of_[d.p];
+            for (const auto& w : skip)
+                if (k.find(w) != std::string::npos) { d.indirect = nullptr; d.grid[0] = 0; break; }
+        }
         ds.push_back(std::move(d));
     }
+    std::map<const mtl::Pipeline*, std::string> pkey_of_;
     void gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride,
               int ntok, size_t y_off = 0, const mtl::Buffer* wb = nullptr);
     void xprep(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const Act& out, int n);
@@ -199,10 +225,47 @@ private:
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
         std::vector<mtl::Dispatch> ds;
+        std::vector<int> cuts;                  // SSD streaming: the segment ends (one per layer, before its experts)
         std::vector<std::pair<int, int>> qsa;   // (dispatch, kind): 0 QsaArgs n_tok = T, 1 the merge (MAXT), 2 the scores
     };
     std::map<int, Cached> wcache_;
     std::vector<std::pair<int, int>>* rec_ = nullptr;
+    // ---- SSD streaming (stream.h): the dense weights in W_, the routed experts in the arena
+    std::unique_ptr<ExpertStream> st_;
+    bool stream_ = false, st_pred_ = false;
+    std::vector<int>* cuts_ = nullptr;
+    mtl::Buffer predL_, predL2_;     // 48 x MAXT x 512: layer l + 1's (l + 2's) router logits from layer l's FFN input
+    int seg_T_ = 0;
+    bool stream_arena(std::string& err);
+    double run_ds(Cached& c);
+    // prompts on the matrix units (prompt_chunk below)
+    struct PromptGemm;
+    PromptGemm* pg_ = nullptr;
+    const int32_t* cut_ids_ = nullptr;    // the routed ids the handshake reads (a prompt chunk's; else ids_)
+    const mtl::Buffer* mtp_src_ = nullptr;   // the rows the draft layer's prompt K/V read (a prompt chunk's; else R_)
+    double pg_ms_ = 0;
+    int64_t pg_tok_ = 0;
+public:
+    bool prompt_gemm_on(int64_t n) const;
+    bool prompt_gemm_init(std::string& err);
+    bool prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err);
+    int prompt_chunk_rows() const;
+    void prompt_region(bool hold) { if (stream_ && st_ && st_->ready()) st_->hold_region(hold); }
+    void stream_report(FILE* f) const {
+        if (!st_) return;
+        st_->report(f);
+        for (int t = 1; t <= MAXT; ++t)
+            if (win_n_[t])
+                std::fprintf(f, "stream windows T=%d     %d (%s): %.2f ms each (GPU incl. the host's turns %.2f ms)\n", t, win_n_[t],
+                             t == 8 ? "prompt rows" : "decode", win_ms_[t] / win_n_[t], win_gpu_[t] / win_n_[t]);
+    }
+    int win_n_[MAXT + 1] = {};
+    double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
+    void at_cut(int s) {
+        st_->at_layer(s, seg_T_, TOPK, cut_ids_ ? cut_ids_ : ids_.as<int32_t>(), st_pred_ && !cut_ids_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
+                      predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
+    }
+private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
     bool ple_on_ = false;
     int last_T_ = 0;
@@ -283,9 +346,16 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     const double t0 = now_ms();
     if (!f_.open(shard1, err)) return false;
     cx_ = std::make_unique<mtl::Context>();
-    madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
-    W_ = cx_->wrap(f_.map, f_.map_bytes);
-    if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
+    stream_ = ExpertStream::wanted(f_, *cx_);
+    if (stream_) {
+        // the model does not fit: the dense weights are read into memory below, the experts stream from the SSD
+        st_ = std::make_unique<ExpertStream>();
+        if (!st_->open(f_, err)) return false;
+    } else {
+        madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
+        W_ = cx_->wrap(f_.map, f_.map_bytes);
+        if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
+    }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"});
@@ -366,12 +436,19 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         for (unsigned k = 0; k < nth; ++k)
             th.emplace_back([&, k] {
                 std::vector<float> tmp;
+                std::vector<uint8_t> raw;
                 for (size_t i = k; i < names.size(); i += nth) {
                     const gguf::Tensor& x = *f_.find(names[i]);
                     uint64_t ne = 1;
                     for (uint64_t d : x.shape) ne *= d;
                     tmp.resize(ne);
-                    ref::dequant(ref::BF16, (const uint8_t*) f_.map + x.offset, tmp.data(), ne);
+                    const uint8_t* src = (const uint8_t*) f_.map + x.offset;
+                    if (stream_) {   // F_NOCACHE reads: the page cache is kept for the arena
+                        raw.resize(x.bytes);
+                        if (!st_->read(raw.data(), x.bytes, x.offset)) { std::fprintf(stderr, "strata metal: read failed\n"); std::exit(6); }
+                        src = raw.data();
+                    }
+                    ref::dequant(ref::BF16, src, tmp.data(), ne);
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
@@ -379,12 +456,22 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         std::fprintf(stderr, "strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): %zu matrices, %.0f MB, made in %.0f ms\n",
                      names.size(), tot / 1e6, now_ms() - tq);
     }
+    if (stream_) {
+        std::vector<std::string> skip;   // the BF16 originals of the Q8_0 HC copies are not read again
+        if (hc_q8_)
+            for (const auto& kv : q8off_) skip.push_back(kv.first);
+        if (!st_->load_dense(f_, *cx_, skip, W_, err)) return false;
+        const char* e = std::getenv("STRATA_METAL_PREFETCH");
+        st_pred_ = !(e && std::atoi(e) <= 0);
+        if (st_pred_) predL_ = A(4 * (size_t) 48 * MAXT * 512);
+        if (st_pred_ && st_->ahead2() > 0) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
+    }
     ple_on_ = ss.ple.ready() && f_.find("blk.1.ple_key.weight") != nullptr;
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
     last_norm_.assign((size_t) MAXT * strata::kernels::NG_HC_DIM, 0.0f);
-    std::fprintf(stderr, "strata metal: decode window on %s: %s wrapped (%.1f GB), %d cells, PLE %s, ready in %.0f ms\n",
-                 cx_->device_name().c_str(), shard1.c_str(), f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF",
-                 now_ms() - t0);
+    std::fprintf(stderr, "strata metal: decode window on %s: %s %s (%.1f GB), %d cells, PLE %s, ready in %.0f ms\n",
+                 cx_->device_name().c_str(), shard1.c_str(), stream_ ? "streamed from the SSD (experts)" : "wrapped",
+                 f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF", now_ms() - t0);
     return true;
 }
 
@@ -396,6 +483,16 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
     if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
     else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
     else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { L = 32; Rr = 1; S = 4; K = 1; }
+    {
+        // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
+        // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.
+        static const int nr_env = [] { const char* e = std::getenv("STRATA_METAL_GEMV_NR"); return e ? std::atoi(e) : 1; }();
+        if (ntok > 1 && nr_env == 2 && n_out >= 2048) {
+            if (S == 8 && K == 2) { S = 4; K = 2; }
+            if (S == 8 && K == 1) S = 4;
+            if (K == 1 || (L == 32 && K == 2)) Rr = 2;
+        }
+    }
     const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
                            std::to_string(S) + "_" + std::to_string(K);
     const mtl::Pipeline* p = P(lib_, fn, mtl::Constants().i(0, ntok), fn + "#" + std::to_string(ntok));
@@ -571,6 +668,17 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, trt, XF_, logits_, 512, ntok);
         nb_ = true;
     }
+    if (stream_ && st_pred_ && l + 1 < 48) {   // the next layer's routing guessed from this layer's FFN input
+        nb_ = !rf;   // beside the router GEMV; with router_route it is the first reader of XF_ here: a barrier
+        gemv(ds, T("blk." + std::to_string(l + 1) + ".ffn_gate_inp.weight"), XF_, predL_, 512, ntok,
+             (size_t) l * MAXT * 512 * 4);
+        if (predL2_.ptr && l + 2 < 48) {
+            nb_ = true;
+            gemv(ds, T("blk." + std::to_string(l + 2) + ".ffn_gate_inp.weight"), XF_, predL2_, 512, ntok,
+                 (size_t) l * MAXT * 512 * 4);
+        }
+        nb_ = true;
+    }
     gemv(ds, T(b + "ffn_gate_shexp.weight"), XF_, gsh_, NFF, ntok);
     nb_ = true;
     gemv(ds, T(b + "ffn_up_shexp.weight"), XF_, ush_, NFF, ntok);
@@ -583,6 +691,11 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         a.gate_off = tg_.offset;
         a.up_off = tu.offset;
         a.down_off = td.offset;
+        if (stream_) {   // offsets inside the expert's arena slot
+            a.gate_off = 0;
+            a.up_off = st_->up_in_slot(l);
+            a.down_off = st_->down_in_slot(l);
+        }
         a.gu_row = (uint32_t) ref::row_bytes(tg_.type, N);
         a.d_row = (uint32_t) ref::row_bytes(td.type, NFF);
         a.gu_stride = (uint64_t) a.gu_row * NFF;
@@ -629,18 +742,28 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
                                 std::to_string(dr) + "_" + std::to_string(ds_);
         mtl::Dispatch g;
-        g.p = P(lib_, gun, {}, gun);
-        g.args = {mtl::Arg::B(W_), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
+        const mtl::Buffer& EW = stream_ ? st_->chunk(0) : W_;
+        const mtl::Constants ac = stream_ ? mtl::Constants().b(20, true) : mtl::Constants();
+        const std::string ak = stream_ ? "#arena" : "";
+        g.p = P(lib_, gun, ac, gun + ak);
+        g.args = {mtl::Arg::B(EW), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
                   mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
+        if (stream_)
+            for (int c = -1; c < 3; ++c)
+                g.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
         g.tg[0] = 32 * gs;
         g.indirect = &plan_;
         g.ind_off = P_IGU * 4;
+        if (cuts_) cuts_->push_back((int) ds.size());   // the host's turn: this layer's experts put in place
         push(ds, g);
         nb_ = true;
         gemv(ds, T(b + "ffn_down_shexp.weight"), XH_, ysh_, N, ntok);
         mtl::Dispatch dd;
-        dd.p = P(lib_, dnn, {}, dnn);
-        dd.args = {mtl::Arg::B(W_), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
+        dd.p = P(lib_, dnn, ac, dnn + ak);
+        dd.args = {mtl::Arg::B(EW), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
+        if (stream_)
+            for (int c = -1; c < 3; ++c)
+                dd.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
         dd.tg[0] = 32 * ds_;
         dd.indirect = &plan_;
         dd.ind_off = P_IDN * 4;
@@ -677,10 +800,10 @@ void gnorm(const float* x, const float* w, float* y, int n_embd, int hc, float e
 void Window::ple_cpu(int Tn) {
     using namespace strata::kernels;
     const int hc_dim = NG_HC_DIM;
-    const float* nkey = (const float*) ((const uint8_t*) f_.map + T("blk.1.ple_norm_key.weight").offset);
-    const float* nqry = (const float*) ((const uint8_t*) f_.map + T("blk.1.ple_norm_query.weight").offset);
-    const float* nconv = (const float*) ((const uint8_t*) f_.map + T("blk.1.ple_norm_conv.weight").offset);
-    const uint16_t* kw = (const uint16_t*) ((const uint8_t*) f_.map + T("blk.1.ple_conv1d.weight").offset);
+    const float* nkey = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_key.weight").offset);
+    const float* nqry = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_query.weight").offset);
+    const float* nconv = (const float*) ((const uint8_t*) W_.ptr + T("blk.1.ple_norm_conv.weight").offset);
+    const uint16_t* kw = (const uint16_t*) ((const uint8_t*) W_.ptr + T("blk.1.ple_conv1d.weight").offset);
     std::vector<float> key(hc_dim), query(hc_dim), gated(hc_dim), norm(hc_dim), hist = ple_hist_;
     for (int t = 0; t < Tn; ++t) {
         float* hidden = R_.as<float>() + (size_t) t * HC * N;
@@ -720,6 +843,7 @@ void Window::ple_cpu(int Tn) {
 }
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
+    mtp_src_ = nullptr;
     if (Tn < 1 || Tn > MAXT || (head && Tn > max_t_)) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
     const double t0 = now_ms();
@@ -728,7 +852,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     const size_t rb = ref::row_bytes(te.type, N);
     for (int t = 0; t < Tn; ++t) {
         float* r = R_.as<float>() + (size_t) t * HC * N;
-        ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[t] * rb, r, N);
+        ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
         for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
     }
     // ---- the PLE rows (the table read is the shared host code's), projected on the GPU
@@ -765,19 +889,22 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             std::memcpy(d.args.back().bytes.data(), &a, sizeof a);
             if (kind == 2) d.grid[0] = (uint32_t) (((pos0 + Tn) / 4 + 1 + 7) / 8);
         }
+        seg_T_ = Tn;
         const double r0 = now_ms();
-        last_gpu_ms_ = 1000.0 * cx_->run_graph(c.ds);
+        last_gpu_ms_ = 1000.0 * run_ds(c);
         {
             static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
             static int seen = 0;
-            if (kt == Tn && head && ++seen == 20) kprof(c.ds, Tn);
+            if (kt == Tn && head && ++seen == 20 && !stream_) kprof(c.ds, Tn);
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
         return finish(Tn, tokens, pos0, head, out, t0);
     }
+    if (stream_ && !st_->ready() && !stream_arena(err)) return false;
     Cached& cw = wcache_[key];
     rec_ = &cw.qsa;
+    cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;
     if (fold_n > 0) fold(ds, fold_n, 1 - hp_);   // the last window's commit (hp_ already turned)
@@ -845,11 +972,71 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         push(ds, d2);
     }
     rec_ = nullptr;
+    cuts_ = nullptr;
+    seg_T_ = Tn;
     const double r0 = now_ms();
-    last_gpu_ms_ = 1000.0 * cx_->run_graph(ds);
+    last_gpu_ms_ = 1000.0 * run_ds(cw);
     tp_rg_ = now_ms() - r0;
     last_n_disp_ = (int) ds.size();
     return finish(Tn, tokens, pos0, head, out, t0);
+}
+
+double Window::run_ds(Cached& c) {
+    if (!stream_) return cx_->run_graph(c.ds);
+    return cx_->run_graph_seg(c.ds, c.cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+}
+
+namespace {
+Window* g_stream_window = nullptr;
+void stream_atexit() {
+    if (g_stream_window) g_stream_window->stream_report(stderr);
+}
+}  // namespace
+
+// The arena, once the rest is allocated (the MTP layer loads after init): what the GPU working set and the RAM leave
+// with STRATA_METAL_KEEP_FREE_GB (default 7) kept for macOS; STRATA_METAL_ARENA_GB sets it.
+bool Window::stream_arena(std::string& err) {
+    uint64_t phys = 0;
+    size_t len = sizeof phys;
+    sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
+    const double gb = 1e9;
+    if (!(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS") && std::string(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS")) == "1")) {
+        const uint64_t g = strata::gpu::purge_device_allocations(32u << 20);
+        std::fprintf(stderr, "strata metal stream: %.2f GB of the host code's device weight copies given back (unused by the "
+                             "Metal window)\n", g / 1e9);
+    }
+    const double used = (double) cx_->allocated();
+    const char* ek = std::getenv("STRATA_METAL_KEEP_FREE_GB");
+    const double keep = (ek ? std::atof(ek) : 7.0) * gb;
+    // what macOS could give now: free + inactive + speculative + purgeable pages (the file cache is given back)
+    double avail = (double) phys - used;
+    {
+        vm_statistics64_data_t vs;
+        mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS)
+            avail = (double) (vs.free_count + vs.inactive_count + vs.speculative_count + vs.purgeable_count) * (double) vm_page_size;
+    }
+    double budget = std::min((double) cx_->recommended_working_set() - used - 1.0 * gb, avail - keep);
+    if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) budget = std::atof(e) * gb;
+    if (budget < 2 * gb) {
+        std::fprintf(stderr, "strata metal stream: only %.1f GB left for the expert arena (the GPU working set %.1f GB, RAM %.1f GB, "
+                             "%.1f GB allocated): expect a low hit rate\n", budget / gb, cx_->recommended_working_set() / gb,
+                     phys / gb, used / gb);
+        budget = std::max(budget, 1.0 * gb);
+    }
+    std::string prof;
+    if (const char* e = std::getenv("STRATA_METAL_EXPERT_PROFILE")) prof = e;
+    else prof = std::string(STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
+    std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena; RAM %.1f GB (%.1f GB available, %.1f GB kept "
+                         "for macOS), GPU working set %.1f GB\n", used / gb, phys / gb, avail / gb, keep / gb,
+                 cx_->recommended_working_set() / gb);
+    const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
+    const bool pg_on = !(epg && std::string(epg) == "0");
+    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err)) return false;
+    if (pg_on && !prompt_gemm_init(err)) return false;
+    g_stream_window = this;
+    std::atexit(stream_atexit);
+    return true;
 }
 
 void Window::logpos(int Tn, const int32_t* tokens, int64_t pos0, bool head) {
@@ -949,6 +1136,9 @@ Window::~Window() {
 }
 
 bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0) {
+    ++win_n_[Tn];
+    win_ms_[Tn] += now_ms() - t0;
+    win_gpu_[Tn] += last_gpu_ms_;
     static const bool prof = std::getenv("STRATA_METAL_PROFILE") != nullptr;
     if (prof) {
         Prof& x = prof_[Tn * 2 + (head ? 1 : 0)];
@@ -1130,7 +1320,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
             const size_t rb = ref::row_bytes(h.type, N);
             mhead_ = A(dvocab_.size() * rb + 4096);
             for (size_t i = 0; i < dvocab_.size(); ++i)
-                std::memcpy(mhead_.as<uint8_t>() + i * rb, (const uint8_t*) f_.map + h.offset + (size_t) dvocab_[i] * rb, rb);
+                std::memcpy(mhead_.as<uint8_t>() + i * rb, (const uint8_t*) W_.ptr + h.offset + (size_t) dvocab_[i] * rb, rb);
             mhead_t_ = h;
             mhead_t_.offset = 0;
             mhead_t_.shape = {(uint64_t) N, (uint64_t) dvocab_.size()};
@@ -1166,7 +1356,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
                 d.tg[0] = 256;
                 push(ds, d);
                 cx_->run_graph(ds);
-                ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) probe[k] * rb, ref_row.data(), N);
+                ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) probe[k] * rb, ref_row.data(), N);
                 for (int i = 0; i < N; ++i) worst = std::max(worst, (double) std::fabs(ref_row[i] - memb_.as<float>()[i]));
             }
             std::fprintf(stderr, "strata metal: MTP draft round in one command buffer (embedding type %d on the GPU: max "
@@ -1225,7 +1415,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     const size_t rb = ref::row_bytes(te.type, N);
     if (tokens)
         for (int i = 0; i < n; ++i)
-            ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[i] * rb,
+            ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[i] * rb,
                          (membp_ ? *membp_ : memb_).as<float>() + (size_t) (erow + i) * N, N);
     const std::string L = "mtp.layers.0.";
     auto rms = [&](const mtl::Buffer& x, size_t xo, const std::string& w, mtl::Buffer& y, int width, int rows) {
@@ -1426,7 +1616,8 @@ bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, s
     nb_ = false;
     for (int64_t c = 0; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);
-        mtp_encode(ds, mpsrc_ ? *mpsrc_ : R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false, (int) c, 0);
+        mtp_encode(ds, mpsrc_ ? *mpsrc_ : mtp_src_ ? *mtp_src_ : R_, (size_t) c * HC * N * 4, k, next_tokens + c,
+                   cell0 + c, false, (int) c, 0);
     }
     membp_ = nullptr;
     cx_->run_graph(ds);
@@ -1520,6 +1711,467 @@ bool Window::copy_logits(int t, float* host) const {
     return true;
 }
 
+
+// ================================================================================== prompts through the matrix units
+// A prompt chunk of T rows (mac-kern's tests/prompt_chain.cpp, on the engine's state): every dense matrix dequantized
+// to fp16 once a chunk and multiplied on the matrix units (MPP), the GDN scan, QSA over the chunk, the routed experts
+// as grouped GEMMs (v2 on the M4, v3 on the M5).  The GDN state, the conv history, the K/V and indexer cells and the
+// PLE history are the decode window's own, so decoding goes on from them.  With SSD streaming the experts of a layer
+// are put in place at the layer's handshake (the arena's misses) and the next layer's are streamed in behind it.
+// STRATA_METAL_PROMPT_GEMM=0: prompts through the decode window (8 rows at a time).  Its numerics differ from the
+// window's (fp16 operands): STRATA_METAL_PROMPT_GEMM_MIN (default 64) keeps shorter prompts on the window path.
+namespace {
+struct PgDq { uint32_t n_in, n_out, row_bytes, perm; };
+struct PgGemm { int M, N, K, pad; };
+struct PgEpi { uint32_t n_tok, n_embd, hc, hc_lr; };
+struct PgGdnP { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
+struct PgPlan { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
+struct PgMm { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 ? 16 : 32; }
+}  // namespace
+
+struct Window::PromptGemm {
+    int MT = 0, QS = 256, TM = 16, maxrows = 0, nblk_max = 0;
+    int lib = -1, lgdn = -1, lqsa = -1;
+    bool k4 = false, gu_v3 = false, dn_v3 = false, flash = false;
+    mtl::Buffer R, bo, inj[2], xnh, V, loh, mixed, mixh, qkv, z, al, be, ygh, gqn, gkn, gvc, ggb, gkq, go, yg, qfull, kcur, vcur,
+        iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta, stok, sw, pos,
+        XS, HS, YE, yr, gsh, ush, hh, ys, sgv, emb, embh, pkey, pval, keyn, qn, gated, normW;
+    mtl::Buffer WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr, Wsg, Wshg, Wshu, Wshd, Wpk, Wpv;
+};
+
+int Window::prompt_chunk_rows() const { return pg_ ? pg_->MT : 0; }
+
+bool Window::prompt_gemm_on(int64_t n) const {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
+        return e ? std::string(e) != "0" : true;
+    }();
+    static const int64_t mn = [] {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM_MIN");
+        return e ? (int64_t) std::atoll(e) : (int64_t) 64;
+    }();
+    return on && n >= mn && pg_ != nullptr;
+}
+
+bool Window::prompt_gemm_init(std::string& err) {
+    if (pg_) return true;
+    if (stream_ && !st_->ready()) return stream_arena(err);   // it makes the prompt buffers after the arena
+    const char* ec = std::getenv("STRATA_METAL_PROMPT_CHUNK");
+    const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? 1024 : 2048)) / 64 * 64;
+    auto pg = std::make_unique<PromptGemm>();
+    PromptGemm& p = *pg;
+    p.MT = C;
+    p.QS = std::min(C, 256);
+    p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
+                          "prompt.metal"});
+    p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    p.k4 = ::coop_k4(*cx_);
+    const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
+    p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;
+    const char* eq = std::getenv("STRATA_METAL_PROMPT_QSA");       // v1 | flash (default: flash with the M5's layout)
+    p.flash = eq ? std::string(eq) == "flash" : p.k4;
+    const size_t MT = (size_t) C;
+    p.maxrows = C * TOPK + NEXP * p.TM;
+    p.nblk_max = (C * TOPK + 1023) / 1024;
+    const int MB = (int) max_cells_ / 4 + 2;
+    // the buffers: measured first, then placed - on a streaming Mac inside the expert arena (a region of its slots
+    // reserved only while a prompt runs: the prompt's scratch costs no decode memory), else allocated
+    uint64_t need = 0;
+    uint8_t* region = nullptr;
+    bool measure = true;
+    auto AB = [&](size_t bytes) -> mtl::Buffer {
+        const size_t b = (bytes + 16383) / 16384 * 16384;
+        if (measure) { need += b; return mtl::Buffer{}; }
+        if (region == nullptr) return cx_->alloc(bytes);
+        mtl::Buffer r = cx_->wrap(region, b);
+        region += b;
+        return r;
+    };
+    auto F32 = [&](size_t n) { return AB(4 * n); };
+    auto F16 = [&](size_t n) { return AB(2 * n); };
+    auto make = [&] {
+        const size_t mr = (size_t) p.maxrows;
+        p.R = F32(MT * HC * N); p.bo = F32(MT * N); p.inj[0] = F32(MT * HC); p.inj[1] = F32(MT * HC); p.xnh = F16(MT * HC * N);
+        p.V = F32(MT * (LR + HC)); p.loh = F16(MT * LR); p.mixed = F32(MT * N); p.mixh = F16(MT * N);
+        p.qkv = F32(MT * 10240); p.z = F32(MT * 6144); p.al = F32(MT * 48); p.be = F32(MT * 48); p.yg = F32(MT * 6144);
+        p.ygh = F16(MT * 6144); p.gqn = F32(MT * 16 * 128); p.gkn = F32(MT * 16 * 128); p.gvc = F32(MT * 6144);
+        p.ggb = F32(MT * 96); p.gkq = F32(MT * 16); p.go = F32(MT * 6144);
+        p.qfull = F32(MT * 12288); p.kcur = F32(MT * 512); p.vcur = F32(MT * 512); p.iqr = F32(MT * 512); p.ikr = F32(MT * 128);
+        p.qcur = F32(MT * 24 * 256); p.qcurh = F16(MT * 24 * 256); p.qidx = F32(MT * 4 * 128); p.scores = F32(MT * (size_t) MB);
+        p.qids = AB(4 * MT * 2051);
+        p.part = p.flash ? F32(16) : F32((size_t) p.QS * 33 * 24 * 258);
+        p.XQ = F32(4 * MT * 6144 + 3 * (size_t) p.QS * 6144 + MT * 384); p.xqh = F16(MT * 6144);
+        p.logits = F32(MT * NEXP); p.ids = AB(4 * MT * TOPK); p.wts = F32(MT * TOPK);
+        p.bcnt = AB(4 * (size_t) p.nblk_max * NEXP); p.boff = AB(4 * (size_t) p.nblk_max * NEXP);
+        p.eoff = AB(4 * NEXP); p.tiles = AB(8 * (mr / p.TM + 1)); p.meta = AB(64);
+        p.stok = AB(4 * mr); p.sw = F32(mr); p.pos = AB(4 * MT * TOPK); p.XS = F16(mr * N); p.HS = F16(mr * NFF);
+        p.YE = F32(mr * N); p.yr = F32(MT * N); p.gsh = F32(MT * NFF); p.ush = F32(MT * NFF); p.hh = F16(MT * NFF);
+        p.ys = F32(MT * N); p.sgv = F32(MT);
+        p.WD = F16((size_t) (LR + HC) * HC * N); p.WU = F16((size_t) HC * N * LR); p.Wqkv = F16((size_t) 10240 * N);
+        p.Wz = F16((size_t) 6144 * N); p.Wal = F16((size_t) 48 * N); p.Wbe = F16((size_t) 48 * N); p.Wout = F16((size_t) N * 6144);
+        p.Wq = F16((size_t) 12288 * N); p.Wk = F16((size_t) 512 * N); p.Wv = F16((size_t) 512 * N); p.Wiq = F16((size_t) 512 * N);
+        p.Wik = F16((size_t) 128 * N); p.Wr = F16((size_t) NEXP * N); p.Wsg = F16((size_t) N); p.Wshg = F16((size_t) NFF * N);
+        p.Wshu = F16((size_t) NFF * N); p.Wshd = F16((size_t) N * NFF);
+        if (ple_on_) {
+            p.emb = F32(MT * N); p.embh = F16(MT * N); p.pkey = F32(MT * 10240); p.pval = F32(MT * N); p.keyn = F32(MT * 10240);
+            p.qn = F32(MT * 10240); p.gated = F32(MT * 10240); p.normW = F32(MT * 10240);
+            p.Wpk = F16((size_t) 10240 * N); p.Wpv = F16((size_t) N * N);
+        }
+    };
+    make();
+    measure = false;
+    if (stream_) {
+        region = st_->region(need);
+        if (region == nullptr) { err = "metal prompt: no arena region for the prompt buffers"; return false; }
+    }
+    make();
+    pg_ = pg.release();
+    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s; "
+                         "%.2f GB of buffers%s)\n", C, p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other",
+                 need / 1e9, stream_ ? ", in the expert arena while a prompt runs" : "");
+    (void) err;
+    return true;
+}
+
+bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
+    PromptGemm& p = *pg_;
+    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
+    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
+    auto TN = [this](const std::string& n) -> const gguf::Tensor& { return this->T(n); };
+    if (Tn < 1 || Tn > p.MT) { err = "metal prompt: chunk size out of range"; return false; }
+    if (pos0 + Tn + 1 >= max_cells_) { err = "metal prompt: the chunk runs past the context"; return false; }
+    if (stream_ && !st_->ready() && !stream_arena(err)) return false;
+    if (pend_fold_ > 0) {   // the last decode window's commit, still pending
+        std::vector<mtl::Dispatch> fd;
+        nb_ = false;
+        fold(fd, pend_fold_, 1 - hp_);
+        cx_->run_graph(fd);
+        pend_fold_ = 0;
+    }
+    const int T = Tn;
+    // ---- the embeddings into every stream, the PLE rows
+    {
+        const gguf::Tensor& te = TN("token_embd.weight");
+        const size_t rb = ref::row_bytes(te.type, N);
+        for (int t = 0; t < T; ++t) {
+            float* r = p.R.as<float>() + (size_t) t * HC * N;
+            ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+            for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
+        }
+    }
+    strata::core::SessionState& ss = *ss_;
+    if (ple_on_) {
+        std::vector<uint32_t> rows((size_t) T * strata::kernels::PLE_N_HEADS);
+        int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+        for (int t = 0; t < T; ++t) {
+            strata::kernels::ngram_rows(&tokens[t], prev, 1, ss.ple.consts, rows.data() + (size_t) t * strata::kernels::PLE_N_HEADS);
+            prev[0] = prev[1];
+            prev[1] = tokens[t];
+        }
+        if (!ss.ple.table->gather_batch(rows.data(), (size_t) T, p.emb.as<float>(), err)) return false;
+    }
+    std::vector<mtl::Dispatch> ds;
+    std::vector<int> cuts;
+    nb_ = false;
+    auto D = [&](const mtl::Pipeline* pp, std::vector<mtl::Arg> a, uint32_t gx, uint32_t gy, uint32_t tg, uint32_t gz = 1) {
+        mtl::Dispatch d;
+        d.p = pp;
+        d.args = std::move(a);
+        d.grid[0] = gx; d.grid[1] = gy; d.grid[2] = gz;
+        d.tg[0] = tg;
+        push(ds, d);
+    };
+    auto PP = [&](int lib, const std::string& fn, const mtl::Constants& c = {}, const std::string& key = "") {
+        return P(lib, fn, c, "pg:" + (key.empty() ? fn : key));
+    };
+    auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
+        const int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        const std::string fn = "gemm_f16_" + std::to_string(tm) + "_" + std::to_string(tn) + "_4";
+        PgGemm g{M, Nn, K, 0};
+        D(PP(p.lib, fn), {mtl::Arg::B(A), mtl::Arg::B(B), mtl::Arg::B(Y), mtl::Arg::V(g)}, (Nn + tn - 1) / tn, (M + tm - 1) / tm, 128);
+    };
+    auto dqb = [&](const mtl::Buffer& src, size_t off, int type, int n_in, int n_out, const mtl::Buffer& out, size_t out_off = 0,
+                   uint32_t perm = 0) {
+        PgDq a{(uint32_t) n_in, (uint32_t) n_out, (uint32_t) ref::row_bytes(type, n_in), perm};
+        D(PP(p.lib, "dq_f16_" + std::to_string(type)), {mtl::Arg::B(src, off), mtl::Arg::B(out, out_off), mtl::Arg::V(a)},
+          (n_in / pg_unit(type) + 63) / 64, n_out, 64);
+    };
+    auto dq = [&](const gguf::Tensor& t, const mtl::Buffer& out, size_t out_off = 0, uint32_t perm = 0) {
+        const int n_in = (int) t.shape[0], n_out = t.shape.size() > 1 ? (int) t.shape[1] : 1;
+        if (hc_q8_ && q8off_.count(t.name)) dqb(Q8_, q8off_.at(t.name), ref::Q8_0, n_in, n_out, out, out_off, perm);
+        else dqb(W_, t.offset, t.type, n_in, n_out, out, out_off, perm);
+    };
+    auto act16 = [&](const mtl::Buffer& x, const mtl::Buffer& xh, size_t n) {
+        const uint32_t nn = (uint32_t) n;
+        D(PP(p.lib, "act_f16"), {mtl::Arg::B(x), mtl::Arg::B(xh), mtl::Arg::V(nn)}, (nn + 255) / 256, 1, 256);
+    };
+    int ci = 0;
+    auto hc_read = [&](const std::string& pre, bool apply) {
+        const gguf::Tensor &tn = TN(pre + "_norm.weight"), &tdn = TN(pre + "_down.weight"), &tin = TN(pre + "_inject.weight"),
+                           &tup = TN(pre + "_up.weight");
+        dq(tdn, p.WD);
+        dq(tin, p.WD, (size_t) 2 * LR * HC * N);
+        dq(tup, p.WU, 0, HC);
+        GrArgs a{N, HC, LR, (uint32_t) T, apply ? 1u : 0u, eps_};
+        PgEpi ea{(uint32_t) T, N, HC, LR};
+        D(PP(p.lib, "gr_norm_h"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                   mtl::Arg::B(p.xnh), mtl::Arg::V(a)}, HC, T, 256);
+        gemm(p.xnh, p.WD, p.V, T, LR + HC, HC * N);
+        D(PP(p.lib, "gr_epi_down"), {mtl::Arg::B(p.V), mtl::Arg::B(p.loh), mtl::Arg::B(p.inj[1 - ci]), mtl::Arg::V(ea)},
+          (T * (LR + HC) + 255) / 256, 1, 256);
+        PgGemm g{T, HC * N, LR, 0};
+        D(PP(p.lib, "gemm_hc_up_64_64_4"), {mtl::Arg::B(p.loh), mtl::Arg::B(p.WU), mtl::Arg::B(p.xnh), mtl::Arg::B(p.mixed),
+                                            mtl::Arg::B(p.mixh), mtl::Arg::V(g), mtl::Arg::V(ea)}, HC * N / 64, (T + 63) / 64, 128);
+        ci = 1 - ci;
+    };
+    // the PLE projections (the window's gemv pair as GEMMs)
+    if (ple_on_) {
+        act16(p.emb, p.embh, (size_t) T * N);
+        dq(TN("blk.1.ple_key.weight"), p.Wpk);
+        dq(TN("blk.1.ple_value.weight"), p.Wpv);
+        gemm(p.embh, p.Wpk, p.pkey, T, 10240, N);
+        gemm(p.embh, p.Wpv, p.pval, T, N, N);
+    }
+    const int MB = (int) max_cells_ / 4 + 2;
+    (void) MB;
+    for (int l = 0; l < 48; ++l) {
+        const std::string b = "blk." + std::to_string(l) + ".";
+        hc_read(b + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        if (l % 4 != 3) {
+            const int gi = l - l / 4;
+            dq(TN(b + "attn_qkv.weight"), p.Wqkv);
+            dq(TN(b + "attn_gate.weight"), p.Wz);
+            dq(TN(b + "ssm_alpha.weight"), p.Wal);
+            dq(TN(b + "ssm_beta.weight"), p.Wbe);
+            dq(TN(b + "ssm_out.weight"), p.Wout);
+            gemm(p.mixh, p.Wqkv, p.qkv, T, 10240, N);
+            gemm(p.mixh, p.Wz, p.z, T, 6144, N);
+            gemm(p.mixh, p.Wal, p.al, T, 48, N);
+            gemm(p.mixh, p.Wbe, p.be, T, 48, N);
+            PgGdnP ga{(uint32_t) T, 16, 48, 10240, eps_, 0};
+            D(PP(p.lgdn, "gdn_pre"),
+              {mtl::Arg::B(p.qkv), mtl::Arg::B(ghist_[hp_][(size_t) gi]), mtl::Arg::B(W_, TN(b + "ssm_conv1d.weight").offset),
+               mtl::Arg::B(p.al), mtl::Arg::B(p.be), mtl::Arg::B(W_, TN(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, TN(b + "ssm_a").offset),
+               mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb), mtl::Arg::B(p.gkq),
+               mtl::Arg::B(ghist_[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
+            D(PP(p.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0), "gdn_scanr_4"),
+              {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
+               mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, 48 * 4, 1, 32 * 4);
+            D(PP(p.lgdn, "gdn_post"), {mtl::Arg::B(p.go), mtl::Arg::B(p.z), mtl::Arg::B(W_, TN(b + "ssm_norm.weight").offset),
+                                       mtl::Arg::B(p.ygh), mtl::Arg::B(p.yg), mtl::Arg::V(ga)}, 48, T, 128);
+            gemm(p.ygh, p.Wout, p.bo, T, N, 6144);
+        } else {
+            const int qi = l / 4;
+            dq(TN(b + "attn_q.weight"), p.Wq);
+            dq(TN(b + "attn_k.weight"), p.Wk);
+            dq(TN(b + "attn_v.weight"), p.Wv);
+            dq(TN(b + "indexer.q_proj.weight"), p.Wiq);
+            dq(TN(b + "indexer.k_proj.weight"), p.Wik);
+            dq(TN(b + "attn_output.weight"), p.Wout);
+            gemm(p.mixh, p.Wq, p.qfull, T, 12288, N);
+            gemm(p.mixh, p.Wk, p.kcur, T, 512, N);
+            gemm(p.mixh, p.Wv, p.vcur, T, 512, N);
+            gemm(p.mixh, p.Wiq, p.iqr, T, 512, N);
+            gemm(p.mixh, p.Wik, p.ikr, T, 128, N);
+            QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) T, eps_};
+            D(PP(p.lqsa, "qsa_prep"),
+              {mtl::Arg::B(p.qfull), mtl::Arg::B(p.kcur), mtl::Arg::B(p.vcur), mtl::Arg::B(p.iqr), mtl::Arg::B(p.ikr),
+               mtl::Arg::B(W_, TN(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "attn_k_norm.weight").offset),
+               mtl::Arg::B(W_, TN(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "indexer.k_norm.weight").offset),
+               mtl::Arg::B(cs_), mtl::Arg::B(p.qcur), mtl::Arg::B(p.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
+               mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
+               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a)}, 33, T, 256);
+            if (pos0 + T > 2051)
+                D(PP(p.lqsa, "qsa_score_mm"), {mtl::Arg::B(p.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
+                                               mtl::Arg::B(p.scores), mtl::Arg::V(a)},
+                  (uint32_t) (((pos0 + T) / 4 + 1 + 63) / 64), (T + 15) / 16, 128);
+            D(PP(p.lqsa, "qsa_topk"), {mtl::Arg::B(p.scores), mtl::Arg::B(p.qids), mtl::Arg::V(a)}, T, 1, 1024);
+            if (p.flash) {
+                const uint32_t nq = (uint32_t) T * 24 * 256;
+                D(PP(p.lqsa, "qsa_q_f16"), {mtl::Arg::B(p.qcur), mtl::Arg::B(p.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
+                D(PP(p.lqsa, "qsa_flash", mtl::Constants().b(7, p.k4), "qsa_flash"),
+                  {mtl::Arg::B(p.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
+                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
+                  2, T, 128);
+            } else {
+                // v1 attention + merge in slices of QS rows (the partials of a slice only)
+                for (int t0 = 0; t0 < T; t0 += p.QS) {
+                    const int ns = std::min(p.QS, T - t0);
+                    QsaArgs as{(uint32_t) (pos0 + t0), 0, (uint32_t) max_cells_, (uint32_t) ns, eps_};
+                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
+                                               mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
+                                               mtl::Arg::B(p.qids, (size_t) t0 * 2051 * 4), mtl::Arg::B(p.part), mtl::Arg::V(as)},
+                      33, 2, 256, (uint32_t) ns);
+                    D(PP(p.lqsa, "qsa_merge"), {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
+                                                mtl::Arg::B(p.XQ, (size_t) t0 * 6144 * 4), mtl::Arg::V(as)}, 24, ns, 256);
+                }
+                act16(p.XQ, p.xqh, (size_t) T * 6144);
+            }
+            gemm(p.xqh, p.Wout, p.bo, T, N, 6144);
+        }
+        if (l == 0 && ple_on_) {
+            // layer 0's attention write applied to R happens in the FFN read below; the PLE block comes after the FFN
+        }
+        // ---- the MoE
+        hc_read(b + "hc_ffn", true);
+        const gguf::Tensor &tr = TN(b + "ffn_gate_inp.weight"), &tsg = TN(b + "ffn_gate_inp_shexp.weight"),
+                           &tg_ = TN(b + "ffn_gate_shexp.weight"), &tu_ = TN(b + "ffn_up_shexp.weight"),
+                           &td_ = TN(b + "ffn_down_shexp.weight"), &eg = TN(b + "ffn_gate_exps.weight"),
+                           &ed = TN(b + "ffn_down_exps.weight");
+        dq(tr, p.Wr);
+        dq(tsg, p.Wsg);
+        dq(tg_, p.Wshg);
+        dq(tu_, p.Wshu);
+        dq(td_, p.Wshd);
+        gemm(p.mixh, p.Wr, p.logits, T, NEXP, N);
+        const uint32_t nt = (uint32_t) T;
+        D(PP(p.lib, "route_topk"), {mtl::Arg::B(p.logits), mtl::Arg::B(p.ids), mtl::Arg::B(p.wts), mtl::Arg::V(nt)}, (T + 7) / 8, 1, 256);
+        const int nent = T * TOPK, nblk = (nent + 1023) / 1024;
+        PgPlan pa{(uint32_t) nent, TOPK, NEXP, (uint32_t) p.TM, (uint32_t) nblk};
+        const uint32_t nclr = (uint32_t) p.maxrows;
+        D(PP(p.lib, "mm_clear"), {mtl::Arg::B(p.stok), mtl::Arg::V(nclr)}, (p.maxrows + 255) / 256, 1, 256);
+        D(PP(p.lib, "mm_hist"), {mtl::Arg::B(p.ids), mtl::Arg::B(p.bcnt), mtl::Arg::V(pa)}, nblk, 1, 1024);
+        D(PP(p.lib, "mm_scan"), {mtl::Arg::B(p.bcnt), mtl::Arg::B(p.boff), mtl::Arg::B(p.eoff), mtl::Arg::B(p.tiles),
+                                 mtl::Arg::B(p.meta), mtl::Arg::V(pa)}, 1, 1, NEXP);
+        D(PP(p.lib, "mm_place"), {mtl::Arg::B(p.ids), mtl::Arg::B(p.wts), mtl::Arg::B(p.boff), mtl::Arg::B(p.eoff),
+                                  mtl::Arg::B(p.stok), mtl::Arg::B(p.sw), mtl::Arg::B(p.pos), mtl::Arg::V(pa)}, nblk, 1, 1024);
+        PgMm ma{eg.offset, TN(b + "ffn_up_exps.weight").offset, ed.offset, 0, 0, (uint32_t) ref::row_bytes(eg.type, N),
+                (uint32_t) ref::row_bytes(ed.type, NFF), N, NFF};
+        ma.gu_stride = (uint64_t) ma.gu_row * NFF;
+        ma.d_stride = (uint64_t) ma.d_row * N;
+        if (stream_) { ma.gate_off = 0; ma.up_off = st_->up_in_slot(l); ma.down_off = st_->down_in_slot(l); }
+        const uint32_t ne_ = N;
+        {
+            mtl::Dispatch g;
+            g.p = PP(p.lib, "mm_gather");
+            g.args = {mtl::Arg::B(p.mixed), mtl::Arg::B(p.stok), mtl::Arg::B(p.XS), mtl::Arg::V(ne_)};
+            g.tg[0] = 256;
+            g.indirect = &p.meta;
+            g.ind_off = 8 * 4;
+            push(ds, g);
+        }
+        const mtl::Buffer& EW = stream_ ? st_->chunk(0) : W_;
+        auto arena_args = [&](mtl::Dispatch& d) {
+            if (!stream_) return;
+            d.args.push_back(mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4));
+            for (int c = 1; c < 4; ++c) d.args.push_back(mtl::Arg::B(st_->chunk(c)));
+        };
+        const std::string ak = stream_ ? "#arena" : "";
+        mtl::Dispatch gu;
+        if (p.gu_v3) {
+            const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_16_32_32_4";
+            mtl::Constants c = mtl::Constants().b(7, p.k4);
+            if (stream_) c.b(20, true);
+            gu.p = PP(p.lib, fn, c, fn + ak);
+            gu.tg[0] = 32 * 4;
+        } else {
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + "_16_64_16_2";
+            mtl::Constants c = mtl::Constants().i(5, 0);
+            if (stream_) c.b(20, true);
+            gu.p = PP(p.lib, fn, c, fn + ak);
+            gu.tg[0] = 64;
+        }
+        gu.args = {mtl::Arg::B(EW), mtl::Arg::B(p.XS), mtl::Arg::B(p.HS), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        arena_args(gu);
+        gu.indirect = &p.meta;
+        gu.ind_off = 2 * 4;
+        if (stream_) cuts.push_back((int) ds.size());   // the host's turn: this layer's experts put in place
+        push(ds, gu);
+        mtl::Dispatch dn;
+        if (p.dn_v3) {
+            const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_16_64_32_2";
+            mtl::Constants c = mtl::Constants().b(7, p.k4);
+            if (stream_) c.b(20, true);
+            dn.p = PP(p.lib, fn, c, fn + ak);
+            dn.tg[0] = 32 * 2;
+        } else {
+            const std::string fn = "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2");
+            mtl::Constants c;
+            if (stream_) c.b(20, true);
+            dn.p = PP(p.lib, fn, c, fn + ak);
+            dn.tg[0] = 64;
+        }
+        dn.args = {mtl::Arg::B(EW), mtl::Arg::B(p.HS), mtl::Arg::B(p.YE), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        arena_args(dn);
+        dn.indirect = &p.meta;
+        dn.ind_off = 5 * 4;
+        push(ds, dn);
+        const uint32_t ca[4] = {(uint32_t) T, N, TOPK, 0};
+        D(PP(p.lib, "mm_combine"), {mtl::Arg::B(p.YE), mtl::Arg::B(p.pos), mtl::Arg::B(p.sw), mtl::Arg::B(p.yr), mtl::Arg::V(ca)},
+          (T * N + 255) / 256, 1, 256);
+        gemm(p.mixh, p.Wshg, p.gsh, T, NFF, N);
+        gemm(p.mixh, p.Wshu, p.ush, T, NFF, N);
+        const uint32_t nh = (uint32_t) T * NFF;
+        D(PP(p.lib, "swiglu_h"), {mtl::Arg::B(p.gsh), mtl::Arg::B(p.ush), mtl::Arg::B(p.hh), mtl::Arg::V(nh)}, (nh + 255) / 256, 1, 256);
+        gemm(p.hh, p.Wshd, p.ys, T, N, NFF);
+        gemm(p.mixh, p.Wsg, p.sgv, T, 1, N);
+        const uint32_t oa[2] = {(uint32_t) T, N};
+        D(PP(p.lib, "moe_out"), {mtl::Arg::B(p.yr), mtl::Arg::B(p.ys), mtl::Arg::B(p.sgv), mtl::Arg::B(p.bo), mtl::Arg::V(oa)},
+          (T * N + 255) / 256, 1, 256);
+        if (l == 0 && ple_on_) {
+            // layer 0's FFN write applied to R, then the PLE block (as the window, for T rows)
+            const gguf::Tensor& tn = TN("blk.1.hc_attn_norm.weight");
+            GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
+            D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                                  mtl::Arg::B(p.YE), mtl::Arg::V(a)}, HC, T, 256);
+            struct PleArgs { uint32_t n_embd, hc; float eps; } pl{N, HC, strata::kernels::NG_RMS_EPS};
+            auto off = [&](const char* n) { return TN(n).offset; };
+            D(P(lple_, "ple_gnorm", {}, "ple_gnorm"), {mtl::Arg::B(p.pkey), mtl::Arg::B(W_, off("blk.1.ple_norm_key.weight")),
+                                                      mtl::Arg::B(p.keyn), mtl::Arg::V(pl)}, HC, T, 256);
+            nb_ = true;
+            D(P(lple_, "ple_gnorm", {}, "ple_gnorm"), {mtl::Arg::B(p.R), mtl::Arg::B(W_, off("blk.1.ple_norm_query.weight")),
+                                                      mtl::Arg::B(p.qn), mtl::Arg::V(pl)}, HC, T, 256);
+            D(P(lple_, "ple_gate_norm", {}, "ple_gate_norm"),
+              {mtl::Arg::B(p.keyn), mtl::Arg::B(p.qn), mtl::Arg::B(p.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
+               mtl::Arg::B(p.gated), mtl::Arg::B(p.normW), mtl::Arg::V(pl)}, HC, T, 256);
+            D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
+              {mtl::Arg::B(pleHist_), mtl::Arg::B(p.normW), mtl::Arg::B(W_, off("blk.1.ple_conv1d.weight")), mtl::Arg::B(p.gated),
+               mtl::Arg::B(p.R), mtl::Arg::V(pl)}, HC * N / 256, T, 256);
+        }
+    }
+    // the last layer's write applied to R (the draft layer's K/V read the final residual rows)
+    {
+        const gguf::Tensor& tn = TN("output_hc_norm.weight");
+        GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
+        D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
+                                              mtl::Arg::B(p.YE), mtl::Arg::V(a)}, HC, T, 256);
+    }
+    const double t0 = now_ms();
+    if (stream_) {
+        seg_T_ = T;
+        cut_ids_ = p.ids.as<int32_t>();
+        cx_->run_graph_seg(ds, cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+        cut_ids_ = nullptr;
+    } else {
+        cx_->run_graph(ds);
+    }
+    pg_ms_ += now_ms() - t0;
+    pg_tok_ += T;
+    static const bool trace = std::getenv("STRATA_METAL_TRACE") != nullptr;
+    if (trace) std::fprintf(stderr, "strata metal: prompt chunk pos %lld, %d rows: %.0f ms\n", (long long) pos0, T, now_ms() - t0);
+    // the window's state after the chunk: the conv history turned, the PLE history and token window advanced
+    hp_ = 1 - hp_;
+    if (ple_on_) {
+        using namespace strata::kernels;
+        float* hist = pleHist_.as<float>();
+        const float* nw = p.normW.as<float>();
+        for (int c = 0; c < NG_HC_DIM; ++c) {
+            float col[NG_HIST];
+            for (int r = 0; r < NG_HIST; ++r) {
+                const int src = T - NG_HIST + r;   // row r of the new history: chunk row src, or the old history
+                col[r] = src >= 0 ? nw[(size_t) src * NG_HC_DIM + c] : hist[(size_t) c * NG_HIST + (size_t) (r + T)];
+            }
+            std::memcpy(hist + (size_t) c * NG_HIST, col, sizeof col);
+        }
+    }
+    if (T >= 2) { ss.ple_prev[0] = tokens[T - 2]; ss.ple_prev[1] = tokens[T - 1]; }
+    else { ss.ple_prev[0] = ss.ple_prev[1]; ss.ple_prev[1] = tokens[0]; }
+    mtp_src_ = &p.R;   // the draft layer's prompt K/V read this chunk's final rows
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------- the hook's entry points
 namespace {
 std::string g_shard1;
@@ -1538,6 +2190,10 @@ void* window_create() {
 }
 void window_destroy(void* w) {
     if (w != nullptr && w == g_the_window) {
+        if (g_stream_window == g_the_window) {
+            g_the_window->stream_report(stderr);
+            g_stream_window = nullptr;
+        }
         delete g_the_window;
         g_the_window = nullptr;
         window_register(nullptr);
@@ -1605,7 +2261,26 @@ bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
-    if (!windows && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
+    if (!windows && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
+    if (!windows && g_window->streaming()) {
+        const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
+        const char* em = std::getenv("STRATA_METAL_PROMPT_GEMM_MIN");
+        const int64_t mn = em ? std::atoll(em) : 64;
+        if (!(e && std::string(e) == "0") && n >= mn) {
+            if (!g_window->prompt_gemm_init(err)) return false;
+            const int C = g_window->prompt_chunk_rows();
+            std::vector<int32_t> tk32((size_t) C);
+            g_window->prompt_region(true);
+            bool ok = true;
+            for (int64_t c = 0; c < n && ok; c += C) {
+                const int k = (int) std::min<int64_t>(C, n - c);
+                for (int i = 0; i < k; ++i) tk32[(size_t) i] = (int32_t) tokens[c + i];
+                ok = g_window->prompt_chunk(tk32.data(), k, pos0 + c, err) && (!on_chunk || on_chunk(nullptr, k, pos0 + c, err));
+            }
+            g_window->prompt_region(false);
+            return ok;
+        }
+    }
     int32_t tk[MAXT], out[MAXT];
     for (int64_t c = 0; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);
