@@ -28,3 +28,30 @@ void missing(const char* name) {
 }
 
 }  // namespace strata::metal_engine
+
+// ---- entry points the shared host loop asks every request, with nothing to do on Metal yet
+#include "strata/kernels/cvec.hpp"
+namespace strata::kernels {
+// no control vector on Metal (--control-vector-scaled is not ported): the empty one, `loaded()` false
+const Cvec& cvec() {
+    static const Cvec none{};
+    return none;
+}
+}  // namespace strata::kernels
+
+// an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
+// lldb needs a debugging permission a user's session may not have)
+#include <execinfo.h>
+#include <exception>
+#include <unistd.h>
+namespace {
+[[noreturn]] void metal_terminate() {
+    void* fr[64];
+    const int n = backtrace(fr, 64);
+    const char msg[] = "strata metal: terminate - the call stack:\n";
+    (void) !write(2, msg, sizeof msg - 1);
+    backtrace_symbols_fd(fr, n, 2);
+    std::abort();
+}
+const bool g_terminate_set = (std::set_terminate(metal_terminate), true);
+}  // namespace
