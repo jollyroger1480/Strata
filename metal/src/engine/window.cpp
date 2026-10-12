@@ -186,6 +186,12 @@ private:
     // holds it from init, restored after a window that selected).  STRATA_METAL_FUSE=0: off.
     bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
     bool qdirty_ = false;
+    // mac-kern's router_route (3f9ca996): the BF16 router GEMV and moe_route in one dispatch, beside the shared
+    // expert's GEMVs (bitwise).  Opt-in (STRATA_METAL_ROUTE=1): in this window, where the router GEMV already runs
+    // beside the shared GEMVs, it measured no faster (T2 GPU 13.035 vs 13.027 ms; the fused kernel alone 0.615 ms vs
+    // 0.566 for the two) and 0.3-0.5% slower end to end on the M5 Max.
+    bool routef_ = std::getenv("STRATA_METAL_ROUTE") && std::string(std::getenv("STRATA_METAL_ROUTE")) == "1";
+    mtl::Buffer rcounter_;
     // STRATA_METAL_KPROF=T (test tooling): once, after the 20th cached window of T tokens with the head, the GPU time
     // of each kernel class alone (the window's own dispatches of that pipeline + weight role, run by themselves)
     void kprof(const std::vector<mtl::Dispatch>& ds, int Tn);
@@ -281,7 +287,9 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     W_ = cx_->wrap(f_.map, f_.map_bytes);
     if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
-    lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal"});
+    lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
+                         "glue.metal"});
+    rcounter_ = cx_->alloc(16);
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -557,8 +565,12 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
     }
     // ---- the MoE
     gr_read(ds, b + "hc_ffn", true, XF_, false, ntok);
-    gemv(ds, T(b + "ffn_gate_inp.weight"), XF_, logits_, 512, ntok);
-    nb_ = true;
+    const gguf::Tensor& trt = T(b + "ffn_gate_inp.weight");
+    const bool rf = routef_ && trt.type == ref::BF16;
+    if (!rf) {
+        gemv(ds, trt, XF_, logits_, 512, ntok);
+        nb_ = true;
+    }
     gemv(ds, T(b + "ffn_gate_shexp.weight"), XF_, gsh_, NFF, ntok);
     nb_ = true;
     gemv(ds, T(b + "ffn_up_shexp.weight"), XF_, ush_, NFF, ntok);
@@ -585,9 +597,21 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
-        r.p = P(lib_, "moe_route", {}, "moe_route");
-        r.args = {mtl::Arg::B(logits_), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
-        r.tg[0] = 512;
+        if (rf) {
+            // the router GEMV + moe_route (bitwise both), beside the shared expert's GEMVs
+            r.p = P(lib_, "router_route_30", mtl::Constants().i(0, ntok), "router_route#" + std::to_string(ntok));
+            GemvArgs ga{(uint32_t) N, 512, (uint32_t) ntok, (uint32_t) ref::row_bytes(trt.type, N), (uint32_t) N, 512};
+            r.args = {mtl::Arg::B(W_, trt.offset), mtl::Arg::B(XF_.b, 0), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4),
+                      mtl::Arg::B(logits_), mtl::Arg::V(ga), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_),
+                      mtl::Arg::V(a), mtl::Arg::B(rcounter_)};
+            r.grid[0] = 512 / 16;
+            r.tg[0] = 512;
+            nb_ = true;
+        } else {
+            r.p = P(lib_, "moe_route", {}, "moe_route");
+            r.args = {mtl::Arg::B(logits_), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
+            r.tg[0] = 512;
+        }
         push(ds, r);
         {
             GlueArgs ga{NFF, MAXT, N, TOPK};
@@ -597,7 +621,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             d.grid[0] = NFF / 16;
             d.grid[1] = ntok;
             d.tg[0] = 16;
-            nb_ = true;
+            nb_ = !rf;   // with router_route the shared GEMVs are not behind a barrier yet: this one waits for them
             push(ds, d);
         }
         const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" + std::to_string(gr) +
