@@ -173,6 +173,11 @@ private:
     // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
     // the two (the drafter reads the window's rows and its own caches).  STRATA_METAL_LAZY_FOLD=0: at commit.
     int pend_fold_ = 0;
+    // token_chain's --fuse (mac-kern): the GDN step writes the prepared y planes itself (no xprep), and a window whose
+    // context is within the selection budget skips the QSA score and top-k (the cell list is the identity: qids_
+    // holds it from init, restored after a window that selected).  STRATA_METAL_FUSE=0: off.
+    bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
+    bool qdirty_ = false;
     void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
@@ -453,7 +458,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "ssm_alpha.weight"), XA_, alL_, 48, ntok, o_ab);
         nb_ = true;
         gemv(ds, T(b + "ssm_beta.weight"), XA_, beL_, 48, ntok, o_ab);
-        GdnArgs a{16, 48, 10240, self_commit ? 1u : 0u, eps_, 0};
+        GdnArgs a{16, 48, 10240, self_commit ? 1u : 0u, eps_, fuse_ ? (uint32_t) (MAXT * 6144) : 0u};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
         const int hp = hp_;
@@ -461,13 +466,13 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
                   mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                   mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
                   mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, T(b + "ssm_a").offset),
-                  mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset), mtl::Arg::B(yg_), mtl::Arg::V(a),
+                  mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse_ ? XY_.b : yg_), mtl::Arg::V(a),
                   mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
         d.grid[0] = 48;
         d.tg[0] = 512;
         push(ds, d);
         (void) self_commit;   // the history ping-pong turns after the window (run) or at commit
-        xprep(ds, yg_, XY_, 6144);
+        if (!fuse_) xprep(ds, yg_, XY_, 6144);
         gemv(ds, T(b + "ssm_out.weight"), XY_, bo_, N, ntok);
     } else {
         const int qi = l / 4;
@@ -502,15 +507,20 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         s.grid[0] = (uint32_t) (((pos0 + ntok) / 4 + 1 + 7) / 8);
         s.grid[1] = ntok;
         s.tg[0] = 256;
-        push(ds, s);
-        if (rec_) rec_->push_back({(int) ds.size() - 1, 2});
+        const bool sel = !(fuse_ && pos0 + ntok <= 2051);
+        if (sel) {
+            push(ds, s);
+            if (rec_) rec_->push_back({(int) ds.size() - 1, 2});
+        }
         mtl::Dispatch k;
         k.p = P(lqsa_, "qsa_topk2", {}, "qsa_topk");
         k.args = {mtl::Arg::B(scores_), mtl::Arg::B(qids_), mtl::Arg::V(a)};
         k.grid[0] = ntok;
         k.tg[0] = 1024;
-        push(ds, k);
-        if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
+        if (sel) {
+            push(ds, k);
+            if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
+        }
         mtl::Dispatch at;
         at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
         at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
@@ -698,7 +708,14 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         if (!ss.ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
     }
     tp_pre_ = now_ms();
-    const int key = (((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_;
+    const bool sel = !(fuse_ && pos0 + Tn <= 2051);
+    if (sel) qdirty_ = true;
+    else if (qdirty_) {
+        for (int t = 0; t < MAXT; ++t)
+            for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
+        qdirty_ = false;
+    }
+    const int key = ((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0);
     const int fold_n = pend_fold_;
     pend_fold_ = 0;
     auto hit = wcache_.find(key);
