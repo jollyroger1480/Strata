@@ -72,10 +72,79 @@ run: byte-identical rows):
 
 | Quant | Same top token as Q8_0 | Mean KL | KL p99 | Perplexity (Q8_0: 4.052) |
 |---|---:|---:|---:|---:|
+| UD-Q6_K_XL | 94.61% | 0.033 | 0.494 | 4.020 |
 | UD-Q5_K_XL | 94.55% | 0.038 | 0.636 | 4.024 |
 | UD-Q4_K_XL | 93.09% | 0.056 | 0.829 | 4.068 |
 | IQ3_S | 87.69% | 0.144 | 1.975 | 4.097 |
 | IQ3_XXS | 84.46% | 0.202 | 2.433 | 4.119 |
 | Q2_0 | 80.60% | 0.315 | 3.643 | 4.475 |
 
-UD-Q6_K_XL and UD-IQ4_XS follow.
+UD-IQ4_XS follows. The same file on another backend is not the same answers: UD-Q4_K_XL on an RTX A4000 (CUDA, the RAM
+budget mode of a 62 GB PC) against UD-Q4_K_XL on the R9700 is 94.5% the same top token (KL 0.038), mostly near-ties.
+
+**The prompt path:** `tools/quant_quality.py prompt` / `pcompare` score the batched prompt path the same way (20 prompts
+of 256-1,000 tokens of the set, the full vocabulary's KL of the next token's distribution against Q8_0's): every
+quant above picks Q8_0's top token after all 20 prompts. The K-quants' MMQ kernels (`STRATA_MMQ_KQ=1`) against the FP16
+path on the R9700: UD-Q4_K_XL mean KL 0.095 / median 0.0027 (FP16: 0.081 / 0.0047), UD-Q5_K_XL 0.038 / 0.00055 (FP16:
+0.025 / 0.0016) - a better median, a worse mean (a few prompts), so it stays opt-in.
+
+## Speed, and the bound
+
+Measured on the AMD box: one Radeon AI PRO R9700 (32 GB, capped at 225 W), EPYC 7452 (32 cores, 8 channels of
+DDR4-2400: 106 GB/s read by `rdbw` at 32 threads), every expert in RAM (setup's rule below), `--expert-cache auto`,
+40K context, 8-bit K/V, MTP drafts; `rbench.py` cases, the second of two requests; prompt speed varies between runs on
+this box by up to 2x (the range is given).
+
+| File | Short story (tok/s) | Code (tok/s) | After a 6K document | Prompt 32K (tok/s) | llama.cpp 8bb3cf0d2 (same card, `-ngl 99 --n-cpu-moe 38-48`): decode / prompt 4K |
+|---|---:|---:|---:|---:|---:|
+| IQ3_S (for comparison) | 75 | 95 | 77 | 1,555 | - |
+| UD-Q4_K_XL | 63-64 | 85-88 | 70-72 | 1,110-1,320 | 18-20 / 198-257 |
+| UD-Q5_K_XL | 57-60 | 81-83 | 62 | 810-1,260 | 17-18 / 226-270 |
+| UD-Q6_K_XL | 54 | 76 | 61 | 1,020 | - |
+| Q8_0 | 53-57 | 66-74 | 54-55 | 1,230-1,300 | 16-18 / 186-225 |
+
+**Where a decode window goes** (`STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1`, UD-Q4_K_XL, the short story, 2.0
+tokens per window, 34.3 ms per window): the bandwidth bound of what a window must read is ~12.5 ms - the routed
+experts in VRAM (~2.7 GB at 644 GB/s: 4.2 ms bound, 6.0 measured), the dense Q8_0 projections (2.84 GB: 4.4 ms bound,
+7.2 measured), the hyper-connections (0.67 GB: 1.0 ms bound, 4.0 measured), router and shared expert (0.5 GB: 0.8 ms
+bound, 3.7 measured), the head (1.05 bound, 1.26 measured), the CPU pool's experts at RAM bandwidth in parallel
+(1.2 ms), plus the MTP draft (5.8 ms measured). Decode runs at ~35-40% of that bound for every file, IQ3_S included:
+the formats' own kernels are near their bandwidth (VRAM-resident experts ~70%, the CPU pool 84-97% of RAM bandwidth,
+the head 83%); the rest is the per-window latency of the small kernels and the draft, the same for every model.
+
+The CPU pool's expert rows (`kq_cpu_bench`, the engine's own calls on T threads over 4 GB of experts):
+
+| Pair | EPYC 7452, 32 threads, 1 token per expert | 3 tokens | Ryzen 5600X, 6 threads, 1 token | 3 tokens | Xeon E5-2643 v3, 12 threads, 1 token | 3 tokens |
+|---|---:|---:|---:|---:|---:|---:|
+| Q4_K / Q5_1 | 97% of RAM bandwidth | 80% | 100% | 85% | 94% | 36% |
+| Q5_K / Q8_0 | 97% | 89% | 100% | 95% | 98% | 47% |
+| Q6_K / Q8_0 | 97% | 93% | 100% | 100% | 99% | 63% |
+| Q8_0 / Q8_0 | 96% | 90% | 100% | 100% | 99% | 64% |
+
+One token per expert (most of decode) is at the RAM bound on all three; older CPUs fall behind with several tokens per
+expert (ggml's dot decodes the weights once per token; `STRATA_KQ256=1`, bit-exact, takes 11-20% off Q4_K at 3-4
+tokens).
+
+**Dense Q8_0 GEMVs** (`q8_gemv_bench`, the engine's shapes, 2-4 columns): one row per block where it was measured
+faster, the same bits as two (R9700: 2560 -> 10240 / 6144 / 12288 at 76-86% of 644 GB/s instead of 51-80%; RTX A4000:
++1-4%, and 6144 -> 2560 at 6 columns 70% -> 76%). UD-Q4_K_XL decode +1.0-2.7% on the R9700, the same text.
+
+**NVIDIA with the RAM budget** (RTX A4000 16 GB, Xeon E5-2643 v3, 62 GB: UD-Q4_K_XL with 39 GiB of its experts in RAM,
+the rest read from an NVMe SSD at 2.1 GB/s): 14-20 tokens/s and a 4K prompt at 134-144 tokens/s, bound by the SSD;
+llama.cpp on the same PC and file 14.8-16.5 / 117-123.
+
+**The hyper-connections on NVIDIA:** the pack's `--compat-bf16` copy of the Q8_0 HC projections rounds them to BF16
+(and doubles their bytes). `STRATA_HC_Q8=1` reads the file's own Q8_0 instead (on AMD gfx12 it is the default): on the
+A4000 UD-Q4_K_XL then comes closer to Q8_0 (yardstick KL 0.0562 -> 0.0526, p99 0.925 -> 0.716) and to the same file on
+AMD (KL 0.038 -> 0.033). Opt-in until decided.
+
+## Images
+
+Every Unsloth file reads pictures with the model's own encoder: setup's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (from
+ISTA-DASLab's repository) has the same 334 tensors, byte for byte, as Unsloth's `mmproj-BF16.gguf`. Run end to end
+with a test picture (a line of text and three coloured shapes), two questions through `/v1/chat/completions`: on an RTX
+A4000 with the GPU encoder (UD-Q4_K_XL, IQ3_XXS) and on an R9700 with the CPU encoder (UD-Q4_K_XL, UD-Q5_K_XL,
+IQ3_XXS), every answer had the text and the three shapes right, as llama.cpp's `mtmd-cli` did on the same GGUF and
+mmproj. The GPU encoder keeps ~1.3 GB of VRAM free (UD-Q4_K_XL on 16 GB: 2,331 expert slots instead of 2,741); the CPU
+encoder takes none. Setup turns images on by default for these files on an NVIDIA card of 16 GB or more, and on AMD
+(Linux, the CPU encoder) where every expert stays in RAM.
