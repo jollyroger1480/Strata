@@ -4360,6 +4360,7 @@ int main(int argc, char** argv) {
         bin.later_stages = (int) stages.size();
         bin.batch_mtp = mtp_on;
         bin.adapt_async = o.adapt_async != 0;
+        { const char* ms = std::getenv("STRATA_BATCH_MTP_SERIAL"); bin.mtp_serial = ms != nullptr && ms[0] != '\0' && ms[0] != '0'; }
         return strata::program::batch_groups::resolve(bin);
     };
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
@@ -4372,7 +4373,12 @@ int main(int argc, char** argv) {
                         : !o.serve ? "it needs --serve" : nullptr;
         // the groups it would run with (the default gives way to it: one group; a number or auto given pipelines)
         if (why == nullptr && !stages.empty() && batch_groups_for(true).groups > 1)
-            why = "it does not combine with --batch-groups (pipelined slot groups) yet";
+            why = batch_groups_for(true).mtp_dropped
+                ? "a layer split with --batch pipelines the slots in groups by default and the pipelined groups run no slot "
+                  "drafts (4 streams on 2 GPUs: 25-30% faster than the serial MTP windows); --batch-groups 1 or "
+                  "STRATA_BATCH_MTP_SERIAL=1 keeps --batch-mtp with serial windows (fewer streams, or when prompts arrive "
+                  "rarely, it can be the faster choice)"
+                : "it does not combine with --batch-groups (pipelined slot groups) yet";
         // (a layer split with helper-GPU expert caches or --remote-expert-opt has not been run with slot drafters)
         if (why == nullptr && !stages.empty() && (remote_caches || o.remote_expert_opt))
             why = "it is not run with helper expert caches on a layer split";
