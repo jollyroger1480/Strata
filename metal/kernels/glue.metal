@@ -45,3 +45,19 @@ kernel void moe_combine_sh(device const float* ye [[buffer(0)]], device const in
     const float gs = 1.0f / (1.0f + exp(-sg[t]));
     bo[gid] = fma(gs, ysh[gid], s);
 }
+
+// slc_touch: reads n16 16-byte words (a weight range the next kernels will need) so they sit in the SLC; the xor is
+// written only if it equals a value it never takes (keeps the loads alive).  grid (ceil(n16 / 1024)), 256 threads,
+// 4 words a thread.
+kernel void slc_touch(device const uint4* src [[buffer(0)]], device uint* sink [[buffer(1)]], constant uint& n16 [[buffer(2)]],
+                      uint gid [[thread_position_in_grid]]) {
+    uint s = 0;
+    for (uint k = 0; k < 4; ++k) {
+        const uint j = (gid >> 8) * 1024 + k * 256 + (gid & 255);
+        if (j < n16) {
+            const uint4 v = src[j];
+            s ^= v.x ^ v.y ^ v.z ^ v.w;
+        }
+    }
+    if (s == 0x9e3779b9u) sink[0] = s;
+}

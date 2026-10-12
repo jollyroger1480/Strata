@@ -82,3 +82,4 @@ kernel void coop_layout(device int* out [[buffer(0)]], ushort lane [[thread_inde
 template [[host_name("coop_layout_16_32_16")]] kernel decltype(coop_layout<16, 32, 16>) coop_layout<16, 32, 16>;
 template [[host_name("coop_layout_32_32_16")]] kernel decltype(coop_layout<32, 32, 16>) coop_layout<32, 32, 16>;
 template [[host_name("coop_layout_16_64_32")]] kernel decltype(coop_layout<16, 64, 32>) coop_layout<16, 64, 32>;
+template [[host_name("coop_layout_16_32_32")]] kernel decltype(coop_layout<16, 32, 32>) coop_layout<16, 32, 32>;

@@ -33,6 +33,9 @@ int main(int argc, char** argv) {
                 yB = F((size_t)TMAX * HV * S), yh = cx.alloc(2 * (size_t)TMAX * HV * S), qn = F((size_t)TMAX * HK * S),
                 kn = F((size_t)TMAX * HK * S), vc = F((size_t)TMAX * HV * S), gb = F(2 * TMAX * HV), kq = F(TMAX * HK),
                 o = F((size_t)TMAX * HV * S);
+    const size_t NCM = (TMAX + 31) / 32;
+    mtl::Buffer cU = F((size_t)HV * NCM * 32 * S), cW = F((size_t)HV * NCM * 32 * S), clg = F((size_t)HV * NCM * 32),
+                cD = F((size_t)HV * NCM * 32 * S);
     ref::Rng r(21);
     for (size_t i = 0; i < (size_t)TMAX * CH; ++i) qkv.as<float>()[i] = r.sym() * 2.0f;
     for (int i = 0; i < TMAX * HV; ++i) { al.as<float>()[i] = r.sym() * 3.0f; be.as<float>()[i] = r.sym() * 2.0f; }
@@ -54,6 +57,22 @@ int main(int argc, char** argv) {
         d1.grid[1] = T;
         d1.tg[0] = 256;
         ds.push_back(d1);
+        if (cb == -100) {   // the chunked form: gdn_cprep, gdn_cstate, gdn_cout
+            const uint32_t nc = (T + 31) / 32;
+            static mtl::Pipeline pcp = cx.pipeline(lib, "gdn_cprep"), pcs = cx.pipeline(lib, "gdn_cstate"),
+                                 pco = cx.pipeline(lib, "gdn_cout");
+            mtl::Dispatch e1; e1.p = &pcp;
+            e1.args = {mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(vc), mtl::Arg::B(gb), mtl::Arg::B(cU), mtl::Arg::B(cW),
+                       mtl::Arg::B(clg), mtl::Arg::V(a)};
+            e1.grid[0] = HV; e1.grid[1] = nc; e1.tg[0] = 256; ds.push_back(e1);
+            mtl::Dispatch e2; e2.p = &pcs;
+            e2.args = {mtl::Arg::B(stB), mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(cU), mtl::Arg::B(cW), mtl::Arg::B(clg),
+                       mtl::Arg::B(cD), mtl::Arg::B(o), mtl::Arg::V(a)};
+            e2.grid[0] = HV * 4; e2.tg[0] = 256; ds.push_back(e2);
+            mtl::Dispatch e3; e3.p = &pco;
+            e3.args = {mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(cD), mtl::Arg::B(clg), mtl::Arg::B(o), mtl::Arg::V(a)};
+            e3.grid[0] = HV; e3.grid[1] = nc; e3.tg[0] = 128; ds.push_back(e3);
+        } else {
         mtl::Dispatch d2;
         d2.p = &scan;
         d2.args = {mtl::Arg::B(stB), mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(vc), mtl::Arg::B(gb), mtl::Arg::B(kq),
@@ -62,6 +81,7 @@ int main(int argc, char** argv) {
         d2.grid[0] = cb > 0 ? HV * 4 / cb : HV * 4;
         d2.tg[0] = 32 * (cb > 0 ? cb : -cb);
         ds.push_back(d2);
+        }
         mtl::Dispatch d3;
         d3.p = &post;
         d3.args = {mtl::Arg::B(o), mtl::Arg::B(z), mtl::Arg::B(gam), mtl::Arg::B(yh), mtl::Arg::B(yB), mtl::Arg::V(a)};
@@ -74,10 +94,10 @@ int main(int argc, char** argv) {
     int fails = 0;
     if (!bench)
         for (int T : {1, 3, 37, 300})
-            for (int cb : {1, 4, -2, -4, -8, -9}) {
+            for (int cb : {1, 4, -2, -4, -8, -9, -100}) {
                 mtl::Constants pc;
                 if (cb < 0 && cb != -9) pc.i(6, 0);
-                mtl::Pipeline scan = cx.pipeline(lib, cb == -9 ? std::string("gdn_scan_v") : cb > 0 ? "gdn_scan_" + std::to_string(cb) : "gdn_scanr_" + std::to_string(-cb), pc);
+                mtl::Pipeline scan = cx.pipeline(lib, cb == -100 ? std::string("gdn_scanr_4") : cb == -9 ? std::string("gdn_scan_v") : cb > 0 ? "gdn_scan_" + std::to_string(cb) : "gdn_scanr_" + std::to_string(-cb), cb == -100 ? mtl::Constants().i(6, 0) : pc);
                 if (cb == -9) cb = -8;
                 mtl::Pipeline step = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, T));
                 std::copy(st0.as<float>(), st0.as<float>() + S * HV * S, stA.as<float>());
@@ -136,14 +156,18 @@ int main(int argc, char** argv) {
         return median(t);
     };
     std::printf("T %d: decode step over the chunk %.2f ms\n", T, timeit({d}) * 1e3);
-    for (const char* nm : {"gdn_scan_v", "gdn_scanr_4", "gdn_scanr_8", "gdn_scan_v", "gdn_scanr_8"}) {
-        const int cb = nm[9] == 'v' ? -8 : nm[8] == 'r' ? -(nm[10] - '0') : nm[9] - '0';
+    for (const char* nm : {"gdn_scanr_4", "chunked", "gdn_scanr_4", "chunked"}) {
+        const bool ch = std::string(nm) == "chunked";
+        const int cb = ch ? -100 : nm[9] == 'v' ? -8 : nm[8] == 'r' ? -(nm[10] - '0') : nm[9] - '0';
         mtl::Constants pc;
         if (cb < 0 && nm[9] != 'v') pc.i(6, std::getenv("GDN_PROBE") ? std::atoi(std::getenv("GDN_PROBE")) : 0);
-        mtl::Pipeline scan = cx.pipeline(lib, nm, pc);
+        mtl::Pipeline scan = cx.pipeline(lib, ch ? "gdn_scanr_4" : nm, pc);
         std::vector<mtl::Dispatch> ds;
         prompt_ds(T, pre, scan, post, cb, ds);
-        const double all = timeit(ds), tp = timeit({ds[0]}), ts = timeit({ds[1]}), to = timeit({ds[2]});
+        const double all = timeit(ds), tp = timeit({ds[0]}),
+                     ts = timeit(std::vector<mtl::Dispatch>(ds.begin() + 1, ds.end() - 1)), to = timeit({ds.back()});
+        if (ch) std::printf("  chunked parts: cprep %.3f, cstate %.3f, cout %.3f ms\n", timeit({ds[1]}) * 1e3, timeit({ds[2]}) * 1e3,
+                            timeit({ds[3]}) * 1e3);
         std::printf("T %d, %-13s: pre %.3f + scan %.3f + post %.3f ms = %.3f ms together\n", T, nm, tp * 1e3, ts * 1e3,
                     to * 1e3, all * 1e3);
     }
