@@ -4,6 +4,7 @@
 //
 //   moe_mm_parity [--gu Q2_0] [--dn Q2_0] [--T 256] [--tile 32,64,64,4]          parity (64 experts)
 //   moe_mm_parity --bench [--gu ..] [--dn ..] [--T 2048] [--tile ..]            per-layer time, 512 experts
+#include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
 
@@ -31,7 +32,7 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 16, SG = 2, DTN = -1, DTK = -1, DSG = -1;
-    bool bench = false, v2 = false;
+    bool bench = false, v2 = false, v3 = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--gu") gu = type_of(argv[++i]);
@@ -41,6 +42,7 @@ int main(int argc, char** argv) {
         else if (a == "--dtile") std::sscanf(argv[++i], "%d,%d,%d", &DTN, &DTK, &DSG);   // the down kernel's TN,TK,SG
         else if (a == "--bench") bench = true;
         else if (a == "--v2") v2 = true;
+        else if (a == "--v3") v2 = v3 = true;   // v2's gather + the register-operand GEMMs (TN per simdgroup)
     }
     if (bench && T == 256) T = 2048;
     mtl::Context cx;
@@ -89,8 +91,12 @@ int main(int argc, char** argv) {
     const std::string dtl = std::to_string(TM) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
     mtl::Constants probe;
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
-    mtl::Pipeline pgu = cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
-                  pdn = cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
+    const bool k4 = coop_k4(cx);
+    if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
+    mtl::Pipeline pgu = v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4))
+                           : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
+                  pdn = v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
+                           : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
                   pgat = cx.pipeline(lib, "mm_gather");
     MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)TM, (uint32_t)nblk};
     auto encode = [&](int layer, std::vector<mtl::Dispatch>& ds, bool plan, bool gemm) {
@@ -113,9 +119,9 @@ int main(int argc, char** argv) {
             mtl::Dispatch g; g.p = &pgu;
             if (v2) g.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             else g.args = {mtl::Arg::B(W), mtl::Arg::B(x), mtl::Arg::B(H), mtl::Arg::B(stok), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            g.grid[0] = N_FF / TN; g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 32 * SG; ds.push_back(g);
+            g.grid[0] = N_FF / (v3 ? TN * SG : TN); g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 32 * SG; ds.push_back(g);
             mtl::Dispatch d; d.p = &pdn; d.args = {mtl::Arg::B(W), mtl::Arg::B(v2 ? HS : H), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            d.grid[0] = N_EMBD / (v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * (v2 ? DSG : SG); ds.push_back(d);
+            d.grid[0] = N_EMBD / (v3 ? DTN * DSG : v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * (v2 ? DSG : SG); ds.push_back(d);
             const uint32_t ca[4] = {(uint32_t)T, N_EMBD, TOPK, 0};
             mtl::Dispatch cb; cb.p = &pcomb; cb.args = {mtl::Arg::B(YE), mtl::Arg::B(pos), mtl::Arg::B(sw), mtl::Arg::B(y), mtl::Arg::V(ca)};
             cb.grid[0] = (T * N_EMBD + 255) / 256; cb.tg[0] = 256; ds.push_back(cb);
