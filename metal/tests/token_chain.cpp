@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     std::string hc_mode = "3";   // 3: BF16, 3 dispatches; 2: BF16, 2 dispatches; q8: Q8_0 copies, 2 dispatches
     bool fuse = false;           // the GDN y prep in the step; no QSA score/top-k within the selection budget
     bool fold_comb = false;      // the MoE combine folded into the next 2-dispatch HC read (measured slower)
-    std::string only;
+    std::string only, skip;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--ntok") ntok = std::atoi(argv[++i]);
@@ -75,6 +75,7 @@ int main(int argc, char** argv) {
         else if (a == "--fuse") fuse = true;
         else if (a == "--fold-comb") fold_comb = true;
         else if (a == "--only") only = argv[++i];
+        else if (a == "--skip") skip = argv[++i];
     }
     gguf::File f;
     std::string err;
@@ -158,6 +159,7 @@ int main(int argc, char** argv) {
         d.barrier = !nb;
         nb = false;
         if (!only.empty() && c != only) return;
+        if (!skip.empty() && c == skip) return;
         ds.push_back(d);
         cls.push_back(c);
         bytes_by[c] += bytes;
