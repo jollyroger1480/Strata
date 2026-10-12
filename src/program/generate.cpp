@@ -2685,6 +2685,7 @@ int main(int argc, char** argv) {
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
 #if defined(STRATA_GPU_METAL)   // Apple Silicon: every expert is on the GPU; ggml-cpu (NEON) is the only CPU expert code
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
+    o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
 #else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {

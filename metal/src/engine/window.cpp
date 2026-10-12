@@ -115,7 +115,7 @@ private:
     // buffers
     mtl::Buffer R_, bo_, inj_[2], xn_, lo_, qkv_, z_, al_, be_, yg_, logits_, ids_, wts_, plan_, h_, ye_, gsh_, ush_,
         ysh_, sg_, qfull_, kcur_, vcur_, iqr_, ikr_, qcur_, qidx_, scores_, qids_, part_, cs_, lm_, apv_, api_, tokout_,
-        emb_, pkey_, pval_;
+        emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_;
     Act XA_, XF_, XY_, XQ_, XH_, XE_;
     int cur_inj_ = 0;
     // state
@@ -164,6 +164,9 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     cs_ = A(8 * (size_t) (MAXC + 16) * 32); lm_ = A(4 * (size_t) MAXT * n_vocab_); apv_ = A(4 * MAXT * 120);
     api_ = A(4 * MAXT * 120); tokout_ = A(4 * MAXT); emb_ = A(4 * MAXT * N); pkey_ = A(4 * MAXT * 10240);
     pval_ = A(4 * MAXT * N);
+    // the GDN layers' window inputs, kept per layer so commit() can fold the accepted prefix into the state
+    qkvL_ = A(4 * (size_t) 36 * MAXT * 10240); alL_ = A(4 * (size_t) 36 * MAXT * 48); beL_ = A(4 * (size_t) 36 * MAXT * 48);
+    zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
     // RoPE: cos/sin [pos][32] for the first 64 dims, NEOX pairs (i, i + 32), in double as build_rope_table
@@ -274,26 +277,31 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
     gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_), XA_, false, ntok);
     if (l % 4 != 3) {
         const int gi = l - l / 4;
-        gemv(ds, T(b + "attn_qkv.weight"), XA_, qkv_, 10240, ntok);
+        // a one-token window commits in the step; a longer one leaves the state and commit() folds the kept prefix
+        // from the inputs kept per layer (qkvL_ ...)
+        const bool self_commit = ntok == 1;
+        const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
+        gemv(ds, T(b + "attn_qkv.weight"), XA_, qkvL_, 10240, ntok, o_qkv);
         nb_ = true;
-        gemv(ds, T(b + "attn_gate.weight"), XA_, z_, 6144, ntok);
+        gemv(ds, T(b + "attn_gate.weight"), XA_, zL_, 6144, ntok, o_z);
         nb_ = true;
-        gemv(ds, T(b + "ssm_alpha.weight"), XA_, al_, 48, ntok);
+        gemv(ds, T(b + "ssm_alpha.weight"), XA_, alL_, 48, ntok, o_ab);
         nb_ = true;
-        gemv(ds, T(b + "ssm_beta.weight"), XA_, be_, 48, ntok);
-        GdnArgs a{16, 48, 10240, 1, eps_, 0};
+        gemv(ds, T(b + "ssm_beta.weight"), XA_, beL_, 48, ntok, o_ab);
+        GdnArgs a{16, 48, 10240, self_commit ? 1u : 0u, eps_, 0};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
         const int hp = hpar_[(size_t) gi];
-        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkv_), mtl::Arg::B(al_),
-                  mtl::Arg::B(be_), mtl::Arg::B(z_), mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
+        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+                  mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
+                  mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
                   mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, T(b + "ssm_a").offset),
                   mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset), mtl::Arg::B(yg_), mtl::Arg::V(a),
                   mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
         d.grid[0] = 48;
         d.tg[0] = 512;
         push(ds, d);
-        hpar_[(size_t) gi] = 1 - hp;   // committed (T = 1 windows commit in the step)
+        if (self_commit) hpar_[(size_t) gi] = 1 - hp;   // the history ping-pong turns with every commit
         xprep(ds, yg_, XY_, 6144);
         gemv(ds, T(b + "ssm_out.weight"), XY_, bo_, N, ntok);
     } else {
@@ -497,7 +505,7 @@ void Window::ple_cpu(int Tn) {
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     (void) head;
-    if (Tn != 1) { err = "metal window: only one-token windows so far (run with --mtp-max-t 1)"; return false; }
+    if (Tn < 1 || Tn > max_t_) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
     const double t0 = now_ms();
     // ---- the embeddings (CPU dequant of the token rows straight into the shared buffer), broadcast to the streams
@@ -584,8 +592,36 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
 }
 
 bool Window::commit(int n_keep, std::string& err) {
-    if (n_keep != last_T_) { err = "metal window: partial commits come with the MTP windows"; return false; }
+    if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
+    if (last_T_ > 1) {
+        // the GDN layers: the kept prefix folded into the state (gdn_step over n_keep tokens from the window's own
+        // inputs, with commit; bitwise the window's trajectory).  K/V and indexer cells past the prefix are rewritten
+        // when those positions run again, before anything reads them.
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        for (int l = 0; l < 48; ++l) {
+            if (l % 4 == 3) continue;
+            const int gi = l - l / 4;
+            const std::string b = "blk." + std::to_string(l) + ".";
+            const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
+            GdnArgs a{16, 48, 10240, 1u, eps_, 0};
+            mtl::Dispatch d;
+            d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
+            const int hp = hpar_[(size_t) gi];
+            d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+                      mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
+                      mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
+                      mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
+                      mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
+            d.grid[0] = 48;
+            d.tg[0] = 512;
+            nb_ = true;   // the layers' folds are independent of each other
+            push(ds, d);
+            hpar_[(size_t) gi] = 1 - hp;
+        }
+        cx_->run_graph(ds);
+    }
     strata::core::SessionState& ss = *ss_;
     for (int t = 0; t < n_keep; ++t) {
         if (ple_on_) {
