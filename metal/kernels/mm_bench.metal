@@ -52,3 +52,26 @@ kernel void sg_mm(device const T* A [[buffer(0)]], device const T* B [[buffer(1)
 template [[host_name("sg_mm_half")]] kernel decltype(sg_mm<half>) sg_mm<half>;
 template [[host_name("sg_mm_float")]] kernel decltype(sg_mm<float>) sg_mm<float>;
 
+
+// the element layout of single-simdgroup matmul2d cooperative tensors (right input, left input, destination) for a
+// TM x TN x TK descriptor: out[((which * 32 + lane) * 128 + i) * 4 + (0, 1)] = the two indices, [2] = capacity
+template <int TM, int TN, int TK>
+kernel void coop_layout(device int* out [[buffer(0)]], ushort lane [[thread_index_in_simdgroup]]) {
+    constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    auto r = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto l = op.template get_left_input_cooperative_tensor<half, half, float>();
+    for (uint16_t i = 0; i < r.get_capacity() && i < 128; ++i) {
+        auto ix = r.get_multidimensional_index(i);
+        device int* o = out + ((0 * 32 + lane) * 128 + i) * 4;
+        o[0] = ix[0]; o[1] = ix[1]; o[2] = r.get_capacity();
+    }
+    for (uint16_t i = 0; i < l.get_capacity() && i < 128; ++i) {
+        auto ix = l.get_multidimensional_index(i);
+        device int* o = out + ((1 * 32 + lane) * 128 + i) * 4;
+        o[0] = ix[0]; o[1] = ix[1]; o[2] = l.get_capacity();
+    }
+}
+template [[host_name("coop_layout_16_32_16")]] kernel decltype(coop_layout<16, 32, 16>) coop_layout<16, 32, 16>;
+template [[host_name("coop_layout_32_32_16")]] kernel decltype(coop_layout<32, 32, 16>) coop_layout<32, 32, 16>;
+template [[host_name("coop_layout_16_64_32")]] kernel decltype(coop_layout<16, 64, 32>) coop_layout<16, 64, 32>;

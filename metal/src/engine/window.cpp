@@ -175,6 +175,11 @@ private:
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
     int hp_ = 0;                     // which of the two history buffers holds the committed conv history (all layers)
+    // commit(n) of a window of several tokens: the GDN fold of the kept prefix waits for the next window and runs at
+    // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
+    // the two (the drafter reads the window's rows and its own caches).  STRATA_METAL_LAZY_FOLD=0: at commit.
+    int pend_fold_ = 0;
+    void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
         std::vector<mtl::Dispatch> ds;
@@ -213,6 +218,26 @@ private:
     int last_n_disp_ = 0;
     int32_t last_tokens_[MAXT] = {};
     std::vector<float> last_norm_;   // the window's normalized PLE rows (T x hc_dim), for commit
+    // STRATA_METAL_LOGPOS=<path> (test tooling, one-token windows): per decode position the log-probability of the
+    // token that came next (the next window's input: with --spec-follow, the forced text) and the top 64, in the
+    // KL harness's row format (phaseA-tests cuda_p0/cuda_kl.py load_lp): pos, target, lp, argmax, 4 x 0, id:lp ...
+    std::FILE* logpos_ = nullptr;
+    bool lp_pend_ = false;
+    int64_t lp_pos_ = 0, lp_first_ = -1;
+    int32_t lp_arg_ = 0;
+    double lp_lse_ = 0.0;
+    std::vector<float> lp_row_;
+    std::vector<std::pair<float, int32_t>> lp_top_;
+    void logpos(int Tn, const int32_t* tokens, int64_t pos0, bool head);
+    // STRATA_METAL_PROFILE=1: where a window's time goes, per window size (printed when the window goes away)
+    struct Prof { int64_t n = 0; double pre = 0, rg = 0, gpu = 0, fin = 0, all = 0; };
+    std::map<int, Prof> prof_;
+    Prof cprof_, dprof_;   // commit (folds), the draft rounds
+    double tp_pre_ = 0, tp_rg_ = 0;
+public:
+    ~Window();
+    void prof_add(bool draft, double ms) { Prof& x = draft ? dprof_ : cprof_; ++x.n; x.all += ms; }
+private:
     // the Q8_0 copies of the hyper-connection matrices (the default; STRATA_HC_Q8=0: the BF16 originals)
     bool hc_q8_ = false;
     mtl::Buffer Q8_;
@@ -747,7 +772,10 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         }
         if (!ss.ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
     }
-    const int key = (Tn * 2 + (head ? 1 : 0)) * 2 + hp_;
+    tp_pre_ = now_ms();
+    const int key = (((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_;
+    const int fold_n = pend_fold_;
+    pend_fold_ = 0;
     auto hit = wcache_.find(key);
     if (hit != wcache_.end()) {
         // the same window shape: only the positions change (QSA's cells, the score grid)
@@ -759,7 +787,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             if (kind == 2) d.grid[0] = (uint32_t) (((pos0 + Tn) / 4 + 1 + 7) / 8);
         }
         seg_T_ = Tn;
+        const double r0 = now_ms();
         last_gpu_ms_ = 1000.0 * run_ds(c);
+        tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
         return finish(Tn, tokens, pos0, head, out, t0);
     }
@@ -769,6 +799,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;
+    if (fold_n > 0) fold(ds, fold_n, 1 - hp_);   // the last window's commit (hp_ already turned)
     if (ple_on_) {
         xprep(ds, emb_, XE_, N);
         gemv(ds, T("blk.1.ple_key.weight"), XE_, pkey_, 10240, Tn);
@@ -835,7 +866,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     rec_ = nullptr;
     cuts_ = nullptr;
     seg_T_ = Tn;
+    const double r0 = now_ms();
     last_gpu_ms_ = 1000.0 * run_ds(cw);
+    tp_rg_ = now_ms() - r0;
     last_n_disp_ = (int) ds.size();
     return finish(Tn, tokens, pos0, head, out, t0);
 }
@@ -890,10 +923,69 @@ bool Window::stream_arena(std::string& err) {
     return true;
 }
 
+void Window::logpos(int Tn, const int32_t* tokens, int64_t pos0, bool head) {
+    static const char* path = std::getenv("STRATA_METAL_LOGPOS");
+    if (path == nullptr || !head) return;
+    if (logpos_ == nullptr) logpos_ = std::fopen(path, "ab");
+    if (logpos_ == nullptr) return;
+    if (lp_pend_ && Tn >= 1 && pos0 == lp_pos_ + 1) {
+        const int32_t tgt = tokens[0];
+        std::fprintf(logpos_, "%lld\t%d\t%.6f\t%d\t0\t0\t0\t0", (long long) (lp_pos_ - lp_first_), tgt,
+                     (double) lp_row_[(size_t) tgt] - lp_lse_, lp_arg_);
+        for (const auto& [v, id] : lp_top_) std::fprintf(logpos_, "\t%d:%.6f", id, (double) v - lp_lse_);
+        std::fputc('\n', logpos_);
+        std::fflush(logpos_);
+    }
+    lp_pend_ = false;
+    if (Tn != 1) return;
+    if (lp_first_ < 0) lp_first_ = pos0;
+    const float* lg = lm_.as<float>();
+    lp_row_.assign(lg, lg + n_vocab_);
+    float mx = lg[0];
+    int32_t am = 0;
+    for (int64_t i = 1; i < n_vocab_; ++i) if (lg[i] > mx) { mx = lg[i]; am = (int32_t) i; }
+    double s = 0.0;
+    for (int64_t i = 0; i < n_vocab_; ++i) s += std::exp((double) (lg[i] - mx));
+    lp_lse_ = (double) mx + std::log(s);
+    lp_arg_ = am;
+    lp_top_.clear();
+    for (int64_t i = 0; i < n_vocab_; ++i) lp_top_.push_back({lg[i], (int32_t) i});
+    std::partial_sort(lp_top_.begin(), lp_top_.begin() + 64, lp_top_.end(),
+                      [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+    lp_top_.resize(64);
+    lp_pos_ = pos0;
+    lp_pend_ = true;
+}
+
+Window::~Window() {
+    if (logpos_) std::fclose(logpos_);
+    if (std::getenv("STRATA_METAL_PROFILE") == nullptr) return;
+    auto line = [](const char* what, const Prof& x) {
+        if (x.n == 0) return;
+        std::fprintf(stderr, "strata metal profile: %-10s %6lld x  %.3f ms: host before %.3f, run_graph %.3f (GPU %.3f, so "
+                             "encode/submit/wait %.3f), patch+finish %.3f\n", what, (long long) x.n, x.all / x.n, x.pre / x.n,
+                     x.rg / x.n, x.gpu / x.n, (x.rg - x.gpu) / x.n, x.fin / x.n);
+    };
+    for (const auto& [k, x] : prof_) {
+        const std::string w = "window T" + std::to_string(k / 2) + (k % 2 ? "" : " nohead");
+        line(w.c_str(), x);
+    }
+    line("commit", cprof_);
+    line("draft", dprof_);
+}
+
 bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0) {
     ++win_n_[Tn];
     win_ms_[Tn] += now_ms() - t0;
     win_gpu_[Tn] += last_gpu_ms_;
+    static const bool prof = std::getenv("STRATA_METAL_PROFILE") != nullptr;
+    if (prof) {
+        Prof& x = prof_[Tn * 2 + (head ? 1 : 0)];
+        const double t1 = now_ms();
+        ++x.n; x.pre += tp_pre_ - t0; x.rg += tp_rg_; x.gpu += last_gpu_ms_; x.fin += t1 - tp_pre_ - tp_rg_;
+        x.all += t1 - t0;
+    }
+    logpos(Tn, tokens, pos0, head);
     if (Tn == 1) hp_ = 1 - hp_;   // a one-token window committed its GDN steps
     for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
@@ -913,6 +1005,28 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
     return true;
 }
 
+void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
+    for (int l = 0; l < 48; ++l) {
+        if (l % 4 == 3) continue;
+        const int gi = l - l / 4;
+        const std::string b = "blk." + std::to_string(l) + ".";
+        const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
+        GdnArgs a{16, 48, 10240, 1u, eps_, 0};
+        mtl::Dispatch d;
+        d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
+        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+                  mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
+                  mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
+                  mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
+                  mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
+        d.grid[0] = 48;
+        d.tg[0] = 512;
+        nb_ = true;   // the layers' folds are independent of each other
+        push(ds, d);
+    }
+    nb_ = false;   // what follows reads the folded state: a barrier
+}
+
 bool Window::commit(int n_keep, std::string& err) {
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
@@ -920,28 +1034,15 @@ bool Window::commit(int n_keep, std::string& err) {
         // the GDN layers: the kept prefix folded into the state (gdn_step over n_keep tokens from the window's own
         // inputs, with commit; bitwise the window's trajectory).  K/V and indexer cells past the prefix are rewritten
         // when those positions run again, before anything reads them.
-        std::vector<mtl::Dispatch> ds;
-        nb_ = false;
-        for (int l = 0; l < 48; ++l) {
-            if (l % 4 == 3) continue;
-            const int gi = l - l / 4;
-            const std::string b = "blk." + std::to_string(l) + ".";
-            const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
-            GdnArgs a{16, 48, 10240, 1u, eps_, 0};
-            mtl::Dispatch d;
-            d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
-            const int hp = hp_;
-            d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
-                      mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
-                      mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
-                      mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
-                      mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
-            d.grid[0] = 48;
-            d.tg[0] = 512;
-            nb_ = true;   // the layers' folds are independent of each other
-            push(ds, d);
+        static const bool lazy = !(std::getenv("STRATA_METAL_LAZY_FOLD") && std::string(std::getenv("STRATA_METAL_LAZY_FOLD")) == "0");
+        if (lazy) {
+            pend_fold_ = n_keep;   // folded at the start of the next window (from the history parity before the turn)
+        } else {
+            std::vector<mtl::Dispatch> ds;
+            nb_ = false;
+            fold(ds, n_keep, hp_);
+            cx_->run_graph(ds);
         }
-        cx_->run_graph(ds);
         hp_ = 1 - hp_;
     }
     strata::core::SessionState& ss = *ss_;
@@ -1469,7 +1570,12 @@ bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionSt
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     return ((Window*) w)->run(T, tokens, pos0, head, out, err);
 }
-bool window_commit(void* w, int n_keep, std::string& err) { return ((Window*) w)->commit(n_keep, err); }
+bool window_commit(void* w, int n_keep, std::string& err) {
+    const double t0 = now_ms();
+    const bool ok = ((Window*) w)->commit(n_keep, err);
+    ((Window*) w)->prof_add(false, now_ms() - t0);
+    return ok;
+}
 bool window_copy_logits(void* w, int t, float* host) { return ((Window*) w)->copy_logits(t, host); }
 
 // the MTP hook (src/core/mtp.cpp under STRATA_GPU_METAL): the drafter lives beside the decode window it reads
@@ -1520,7 +1626,10 @@ bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::stri
 bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
                int* n_drafts, std::string& err) {
     if (g_window == nullptr) { err = "metal mtp: no decode window"; return false; }
-    return g_window->mtp_draft(T, tokens, p, a, max_steps, drafts, probs, min_p, n_drafts, err);
+    const double t0 = now_ms();
+    const bool ok = g_window->mtp_draft(T, tokens, p, a, max_steps, drafts, probs, min_p, n_drafts, err);
+    g_window->prof_add(true, now_ms() - t0);
+    return ok;
 }
 
 }  // namespace strata::metal_engine
