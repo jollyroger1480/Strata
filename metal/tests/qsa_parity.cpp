@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     // QSA_TOPK=1: the v1 top-k; QSA_ATTN=1|2|3 (default 3): which attention (2 has its own chunking and merge)
     const int av = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
     const bool v2 = av == 2;
-    mtl::Pipeline pprep = cx.pipeline(lib, "qsa_prep"), pscore = cx.pipeline(lib, "qsa_score"),
+    mtl::Pipeline pprep = cx.pipeline(lib, "qsa_prep", mtl::Constants().b(24, std::getenv("QSA_MROPE") != nullptr)), pscore = cx.pipeline(lib, "qsa_score"),
                   ptopk = cx.pipeline(lib, std::getenv("QSA_TOPK") ? "qsa_topk" : "qsa_topk2"),
                   pattn = cx.pipeline(lib, av == 1 ? "qsa_attn" : av == 2 ? "qsa_attn2" : "qsa_attn3"),
                   pmerge = cx.pipeline(lib, v2 ? "qsa_merge2" : "qsa_merge");
@@ -66,6 +66,17 @@ int main(int argc, char** argv) {
     for (int i = 0; i < QD; ++i) { qn.as<float>()[i] = 1.0f + 0.2f * r.sym(); kn.as<float>()[i] = 1.0f + 0.2f * r.sym(); }
     for (int i = 0; i < ID; ++i) { iqn.as<float>()[i] = 1.0f + 0.2f * r.sym(); ikn.as<float>()[i] = 1.0f + 0.2f * r.sym(); }
     const uint32_t pos_base = 0;
+    // QSA_MROPE=1: qsa_prep with the M-RoPE table (function constant 24): random (t, h, w) positions per cell, the CPU
+    // reference rotating pair i by row tab[cell * 3 + i % 3]; QSA_MROPE=id: the identity table, checked bitwise
+    // against the plain kernel
+    const char* mre = std::getenv("QSA_MROPE");
+    const bool mrope = mre != nullptr, mid = mrope && std::string(mre) == "id";
+    mtl::Buffer mtab = cx.alloc(4 * 3 * (size_t)(MAXC + 16));
+    {
+        ref::Rng rm(77);
+        for (int c = 0; c < MAXC + 16; ++c)
+            for (int k = 0; k < 3; ++k) mtab.as<int>()[c * 3 + k] = mid ? c : (int)(rm.next() % (uint64_t)(MAXC + 16));
+    }
     for (int p = 0; p < MAXC + 16; ++p)
         for (int i = 0; i < 32; ++i) {
             const double inv = std::pow(1e7, -2.0 * i / 64.0), th = (double)p * inv;
@@ -81,7 +92,7 @@ int main(int argc, char** argv) {
                   mtl::Arg::B(ik, 4 * (size_t)pos0 * ID), mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(iqn),
                   mtl::Arg::B(ikn), mtl::Arg::B(cs), mtl::Arg::B(qcur), mtl::Arg::B(qidx), mtl::Arg::B(kq),
                   mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc), mtl::Arg::B(tail), mtl::Arg::B(dead),
-                  mtl::Arg::B(pooled), mtl::Arg::V(a)};
+                  mtl::Arg::B(pooled), mtl::Arg::V(a), mtl::Arg::B(mtab)};
         d.grid[0] = 33;
         d.grid[1] = nt;
         d.tg[0] = 256;
@@ -165,7 +176,8 @@ int main(int argc, char** argv) {
             for (int i = 0; i < w; ++i) out[i] = rs * x[i] * g[i];
             if (rope)
                 for (int i = 0; i < 32; ++i) {
-                    const double c = cs.as<float>()[(absp * 32 + i) * 2], s = cs.as<float>()[(absp * 32 + i) * 2 + 1];
+                    const int pp = mrope ? mtab.as<int>()[absp * 3 + i % 3] : absp;
+                    const double c = cs.as<float>()[(pp * 32 + i) * 2], s = cs.as<float>()[(pp * 32 + i) * 2 + 1];
                     const double a = out[i], b = out[i + 32];
                     out[i] = a * c - b * s;
                     out[i + 32] = a * s + b * c;

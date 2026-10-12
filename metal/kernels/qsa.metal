@@ -29,6 +29,12 @@
 #define QCH 64
 
 constant int QSA_NTOK [[function_constant(3)]];
+// QSA_MROPE (function constant 24): interleaved M-RoPE (the vision path; strata/kernels/mrope.hpp, ggml IMROPE,
+// sections 11/11/10): buffer 20 of qsa_prep is a table int32 [cells][3] (t, h, w), and rotary pair i (0..31) of the row
+// at (pos_base + cell) rotates by the cos/sin table's row tab[(pos_base + cell) * 3 + i % 3] instead of its own -
+// the pooled indexer keys too (position pos_base + 4 b of a block).  Off: exactly the plain RoPE.
+constant bool QSA_MROPE [[function_constant(24)]];
+constant bool qsa_mrope = is_function_constant_defined(QSA_MROPE) && QSA_MROPE;
 
 struct QsaArgs {
     uint pos0;        // the window's first cell (relative to the sequence)
@@ -55,7 +61,7 @@ static inline float tg_sum256(float v, threadgroup float* part, ushort sg, ushor
 // one row (width w <= 256 = threads) : out = rope((rs * x) * g)  (RoPE on the first 64 dims, NEOX pairs i, i+32)
 static inline float norm_rope(float x, float xhi_unused, device const float* g, threadgroup float* row,
                               threadgroup float* part, ushort tid, ushort sg, ushort lane, int w, float eps,
-                              device const float2* cs, uint absp, bool rope) {
+                              device const float2* cs, uint absp, bool rope, device const int* mtab) {
     const float ss = tg_sum256(tid < w ? x * x : 0.0f, part, sg, lane, 8);
     const float rs = rsqrt(ss / float(w) + eps);
     const float y = tid < w ? (rs * x) * g[tid] : 0.0f;
@@ -64,7 +70,8 @@ static inline float norm_rope(float x, float xhi_unused, device const float* g, 
     float o = y;
     if (rope && tid < QROT) {
         const int p = tid & 31;
-        const float2 c = cs[absp * 32 + p];
+        const uint pp = qsa_mrope ? uint(mtab[absp * 3 + uint(p % 3)]) : absp;
+        const float2 c = cs[pp * 32 + p];
         const float a = row[p], b = row[p + 32];
         o = tid < 32 ? a * c.x - b * c.y : a * c.y + b * c.x;
     }
@@ -84,6 +91,7 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
                      device char* kq [[buffer(12)]], device char* vq [[buffer(13)]], device half* ksc [[buffer(14)]],
                      device half* vsc [[buffer(15)]], device float* tail [[buffer(16)]], device float* dead [[buffer(17)]],
                      device float* pooled [[buffer(18)]], constant QsaArgs& a [[buffer(19)]],
+                     device const int* mtab [[buffer(20)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup float part[8];
@@ -99,14 +107,14 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
             if (tid < ID) tail[(cell & 3) * ID + tid] = x;
             threadgroup_barrier(mem_flags::mem_device);
             if (cell == 0) {
-                const float o = norm_rope(x, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, 0, false);
+                const float o = norm_rope(x, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, 0, false, mtab);
                 if (tid < ID) dead[tid] = o;
             }
             if ((cell & 3) == 3) {
                 float m = 0.0f;
                 if (tid < ID) m = (((tail[tid] + tail[ID + tid]) + tail[2 * ID + tid]) + tail[3 * ID + tid]) * 0.25f;
                 const uint b = cell >> 2;
-                const float o = norm_rope(m, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, a.pos_base + 4 * b, true);
+                const float o = norm_rope(m, 0.0f, ikn, row, part, tid, sg, lane, ID, a.eps, cs, a.pos_base + 4 * b, true, mtab);
                 if (tid < ID) pooled[b * ID + tid] = o;
             }
             threadgroup_barrier(mem_flags::mem_device);
@@ -117,13 +125,13 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
     const uint cell = a.pos0 + uint(t), absp = a.pos_base + cell;
     if (r < QH) {
         const float x = qfull[(t * QH + r) * 2 * QD + tid];
-        const float o = norm_rope(x, 0.0f, qn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true);
+        const float o = norm_rope(x, 0.0f, qn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
         qcur[(t * QH + r) * QD + tid] = o;
     } else if (r < QH + 2 * QKV) {
         const bool isv = r >= QH + QKV;
         const int h = r - QH - (isv ? QKV : 0);
         float x = (isv ? vcur : kcur)[(t * QKV + h) * QD + tid];
-        if (!isv) x = norm_rope(x, 0.0f, kn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true);
+        if (!isv) x = norm_rope(x, 0.0f, kn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
         // int8 with an fp16 scale per 64 values: groups = simdgroup pairs (64 threads)
         float m = simd_max(fabs(x));
         if (lane == 0) amax[sg] = m;
@@ -140,7 +148,7 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
     } else {
         const int h = r - QH - 2 * QKV;
         const float x = tid < ID ? iqraw[(t * IH + h) * ID + tid] : 0.0f;
-        const float o = norm_rope(x, 0.0f, iqn, row, part, tid, sg, lane, ID, a.eps, cs, absp, true);
+        const float o = norm_rope(x, 0.0f, iqn, row, part, tid, sg, lane, ID, a.eps, cs, absp, true, mtab);
         if (tid < ID) qidx[(t * IH + h) * ID + tid] = o;
     }
 }
