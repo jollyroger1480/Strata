@@ -10913,9 +10913,28 @@ int main(int argc, char** argv) {
                         if (!refill_one(p, e)) return false;
                     }
                     const strata::core::OnDevice on(p.dev);
-                    const int32_t first = std::max<int32_t>(p.first, (int32_t) (p.cache->slots() - part_slots(p, want)));
-                    if (want != p.sp->chunk() || first != p.first_now) {
-                        if (!p.sp->relayout(want, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
+                    // #2090: the loan a chunk needs is NOT monotonic in the chunk: a chunk above the scan's small_max
+                    // lays out the byte-budget ring (199 slots at 5120), one at or below it 0.1.39's (384 at 4096), so
+                    // a request's smaller chunk can need MORE slots than the auto chunk's region (p.first) holds.  The
+                    // loan starts where the chunk itself needs it (the 128-slot floor aside); a chunk that cannot be
+                    // lent even then is halved until it can, instead of ending the engine.
+                    int64_t want_p = want;
+                    int64_t need_p = part_slots(p, want_p);
+                    while ((need_p <= 0 || need_p + 128 > p.cache->slots()) && want_p > 256) {
+                        want_p = std::max<int64_t>(256, want_p / 2 / 256 * 256);
+                        need_p = part_slots(p, want_p);
+                    }
+                    if (need_p <= 0 || need_p + 128 > p.cache->slots()) {
+                        e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
+                        return false;
+                    }
+                    if (want_p != want)
+                        std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: its "
+                                     "buffers do not fit the slots that can be lent (#2090)\n", (long long) want,
+                                     (long long) want_p);
+                    const int32_t first = (int32_t) (p.cache->slots() - need_p);
+                    if (want_p != p.sp->chunk() || first != p.first_now) {
+                        if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
@@ -10927,7 +10946,7 @@ int main(int argc, char** argv) {
                                 any = true;
                             }
                         }
-                    p.lent_chunk = want;
+                    p.lent_chunk = want_p;
                 }
                 if (any) res_upload();
                 if (trace) {
