@@ -71,6 +71,19 @@ double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::
 
 }  // namespace
 
+// the prompt chain's state (prompt_chain.inc): kernel libraries, the variant, buffers for chunks of C rows
+struct PromptBufs {
+    int lib = -1, lgdn = -1, lqsa = -1;
+    bool k4 = false;
+    int C = 0, maxrows = 0;
+    double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
+    int gu3[4] = {}, dn3[4] = {};
+    mtl::Buffer R, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
+        kcur, vcur, iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta,
+        stok, sw, pos, XS, HS, YE, yr, gsh, ush, hh, ys, sgv, WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr,
+        Wsg, Wshg, Wshu, Wshd, pemb, pembh, pkey, pval, keyn, qn, gated, normW, Wpk, Wpv;
+};
+
 class Window {
 public:
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1, int max_t,
@@ -88,6 +101,9 @@ public:
     bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
                    float min_p, int* n_drafts, std::string& err);
     bool mtp_loaded() const { return mtp_on_; }
+    // the prompt through mac-kern's prompt kernels (prompt_chain.inc)
+    bool prompt(const int64_t* tokens, int64_t n, int64_t pos0,
+                const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err);
 
 private:
     const gguf::Tensor& T(const std::string& name) const {
@@ -217,6 +233,14 @@ private:
         return it != mq8t_.end() ? it->second : TM(name);
     }
     Act XEn_, XHn_;
+    PromptBufs pb_;
+    mtl::Buffer mpemb_;                    // the drafter's prompt embedding rows (mtp_prefill, one command buffer)
+    size_t mpemb_rows_ = 0;
+    const mtl::Buffer* membp_ = nullptr;   // mtp_encode's embedding rows (nullptr: memb_)
+    const mtl::Buffer* mpsrc_ = nullptr;   // the drafter's prompt rows (nullptr: R_)
+    bool coop_k4();
+    bool pc_setup(int C);
+    bool pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err);
     // the draft round in one command buffer (msl/mtp_chain.metal): STRATA_METAL_MTP_CHAIN=0 runs a command buffer
     // per step with the host's pick and embedding (as before)
     int lchain_ = -1;
@@ -1080,7 +1104,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     if (tokens)
         for (int i = 0; i < n; ++i)
             ref::dequant(te.type, (const uint8_t*) f_.map + te.offset + (size_t) tokens[i] * rb,
-                         memb_.as<float>() + (size_t) (erow + i) * N, N);
+                         (membp_ ? *membp_ : memb_).as<float>() + (size_t) (erow + i) * N, N);
     const std::string L = "mtp.layers.0.";
     auto rms = [&](const mtl::Buffer& x, size_t xo, const std::string& w, mtl::Buffer& y, int width, int rows) {
         mtl::Dispatch d;
@@ -1119,7 +1143,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         push(ds, d);
     };
     // ---- e = fc_embedding(rms(embed(tok)) * (1 + w)),  h = fc_hidden per stream (rms_10240(R) * (1 + w)),  R = h + e
-    rms(memb_, (size_t) erow * N * 4, "mtp.pre_fc_norm_embedding.weight", men_, N, n);
+    rms(membp_ ? *membp_ : memb_, (size_t) erow * N * 4, "mtp.pre_fc_norm_embedding.weight", men_, N, n);
     xp(men_, 0, XEn_, N, n, N);
     gm("mtp.fc_embedding.weight", XEn_, me2_, N, n);
     rms(srcR, src_off, "mtp.pre_fc_norm_hidden.weight", mhn_, HC * N, n);
@@ -1269,13 +1293,21 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
 // the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
 bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    // every group of MAXT rows in one command buffer: the embedding rows of all of them in mpemb_ (row c + i)
+    if ((int64_t) mpemb_rows_ < n) {
+        if (mpemb_rows_ > 0) cx_->free(mpemb_);
+        mpemb_rows_ = (size_t) std::max<int64_t>(n, 64);
+        mpemb_ = cx_->alloc(4 * mpemb_rows_ * N);
+    }
+    membp_ = &mpemb_;
+    std::vector<mtl::Dispatch> ds;
+    nb_ = false;
     for (int64_t c = 0; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);
-        std::vector<mtl::Dispatch> ds;
-        nb_ = false;
-        mtp_encode(ds, R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false);
-        cx_->run_graph(ds);
+        mtp_encode(ds, mpsrc_ ? *mpsrc_ : R_, (size_t) c * HC * N * 4, k, next_tokens + c, cell0 + c, false, (int) c, 0);
     }
+    membp_ = nullptr;
+    cx_->run_graph(ds);
     return true;
 }
 
@@ -1449,6 +1481,9 @@ bool mtp_load_pending(Window* w, std::string& err) {
 bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0,
                 const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
+    static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
+    static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
+    if (!windows && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
     int32_t tk[MAXT], out[MAXT];
     for (int64_t c = 0; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);
@@ -1470,5 +1505,7 @@ bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, in
     g_window->prof_add(true, now_ms() - t0);
     return ok;
 }
+
+#include "prompt_chain.inc"
 
 }  // namespace strata::metal_engine
