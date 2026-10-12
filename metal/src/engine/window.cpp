@@ -540,23 +540,32 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     d1.grid[1] = ntok;
     d1.tg[0] = 256;
     push(ds, d1);
-    const mtl::Buffer& WB = hc_q8_ ? Q8_ : W_;
-    const size_t od = hc_q8_ ? q8off_.at(tdn.name) : tdn.offset, oi = hc_q8_ ? q8off_.at(tin.name) : tin.offset,
-                 ou = hc_q8_ ? q8off_.at(tup.name) : tup.offset;
+    // each matrix: its load-time Q8_0 copy (q8off_), else the file's own tensor (Unsloth's are Q8_0 already, their
+    // inject rows F32)
+    auto src = [&](const gguf::Tensor& t) -> std::pair<const mtl::Buffer*, size_t> {
+        auto it = q8off_.find(t.name);
+        return it != q8off_.end() ? std::make_pair(&Q8_, it->second) : std::make_pair(&W_, (size_t) t.offset);
+    };
+    auto is_q8 = [&](const gguf::Tensor& t) { return q8off_.count(t.name) || t.type == ref::Q8_0; };
+    const auto [bd, od] = src(tdn);
+    const auto [bi, oi] = src(tin);
+    const auto [bu, ou] = src(tup);
+    const bool q8 = is_q8(tdn) && is_q8(tup);
+    const bool injf = q8 && !final_ && !q8off_.count(tin.name) && tin.type == ref::F32;
     mtl::Dispatch d2;
-    const char* dn = hc_q8_ ? "gr_down_q8_8_8" : "gr_down_8_8";
+    const char* dn = injf ? "gr_down_q8f_8_8" : q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
     d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
-    d2.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
+    d2.args = {mtl::Arg::B(*bd, od), mtl::Arg::B(*bi, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_[1 - cur_inj_]), mtl::Arg::V(a)};
     d2.grid[0] = LR + HC;
     d2.tg[0] = 256;
     push(ds, d2);
     mtl::Dispatch d3;
-    const char* up = hc_q8_ ? "gr_up_q8" : "gr_up";
+    const char* up = q8 ? "gr_up_q8" : "gr_up";
     d3.p = P(lib_, up, mtl::Constants().i(1, ntok), std::string(up) + "#" + std::to_string(ntok));
     GrArgs au = a;
     au.n_tok = MAXT;   // the plane stride of the prepared activation
-    d3.args = {mtl::Arg::B(WB, ou), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
+    d3.args = {mtl::Arg::B(*bu, ou), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
     d3.grid[0] = N / 16;
     d3.tg[0] = 256;
     push(ds, d3);
@@ -669,7 +678,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
     // ---- the MoE
     gr_read(ds, b + "hc_ffn", true, XF_, false, ntok);
     const gguf::Tensor& trt = T(b + "ffn_gate_inp.weight");
-    const bool rf = routef_ && trt.type == ref::BF16;
+    const bool rf = routef_ && (trt.type == ref::BF16 || trt.type == ref::F32);
     if (!rf) {
         gemv(ds, trt, XF_, logits_, 512, ntok);
         nb_ = true;
@@ -718,7 +727,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         mtl::Dispatch r;
         if (rf) {
             // the router GEMV + moe_route (bitwise both), beside the shared expert's GEMVs
-            r.p = P(lib_, "router_route_30", mtl::Constants().i(0, ntok), "router_route#" + std::to_string(ntok));
+            r.p = P(lib_, "router_route_" + std::to_string(trt.type), mtl::Constants().i(0, ntok), "router_route_" + std::to_string(trt.type) + "#" + std::to_string(ntok));
             GemvArgs ga{(uint32_t) N, 512, (uint32_t) ntok, (uint32_t) ref::row_bytes(trt.type, N), (uint32_t) N, 512};
             r.args = {mtl::Arg::B(W_, trt.offset), mtl::Arg::B(XF_.b, 0), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4),
                       mtl::Arg::B(logits_), mtl::Arg::V(ga), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_),
@@ -1800,7 +1809,14 @@ struct PgEpi { uint32_t n_tok, n_embd, hc, hc_lr; };
 struct PgGdnP { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
 struct PgPlan { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct PgMm { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
-int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 ? 16 : 32; }
+int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 || t == ref::F32 ? 16 : 32; }
+// the v2 (M4) expert tiles: the K-quants need TK 128, Q8_0 / IQ4_XS TK 32 (their 32-value units), the rest TK 16
+std::string gu2_tile(int t) {
+    if (t == ref::Q4_K || t == ref::Q5_K || t == ref::Q6_K) return "_16_32_128_2";
+    if (t == ref::Q8_0 || t == ref::IQ4_XS) return "_16_64_32_2";
+    return "_16_64_16_2";
+}
+std::string dn2_tile(int t) { return t == ref::IQ4_NL || t == ref::Q5_1 || t == ref::Q8_0 ? "_16_64_32_2" : "_16_64_16_2"; }
 }  // namespace
 
 struct Window::PromptGemm {
@@ -2140,7 +2156,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gu.p = PP(p.lib, fn, c, fn + ak);
             gu.tg[0] = 32 * 4;
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + (eg.type == ref::IQ4_XS ? "_16_64_32_2" : "_16_64_16_2");   // IQ4_XS: K tile >= 32
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type);
             mtl::Constants c = mtl::Constants().i(5, 0);
             if (stream_) c.b(20, true);
             gu.p = PP(p.lib, fn, c, fn + ak);
@@ -2160,7 +2176,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             dn.p = PP(p.lib, fn, c, fn + ak);
             dn.tg[0] = 32 * 2;
         } else {
-            const std::string fn = "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2");
+            const std::string fn = "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type);
             mtl::Constants c;
             if (stream_) c.b(20, true);
             dn.p = PP(p.lib, fn, c, fn + ak);
