@@ -948,7 +948,7 @@ bool Window::stream_arena(std::string& err) {
     std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena; RAM %.1f GB (%.1f GB available, %.1f GB kept "
                          "for macOS), GPU working set %.1f GB\n", used / gb, phys / gb, avail / gb, keep / gb,
                  cx_->recommended_working_set() / gb);
-    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, err)) return false;
+    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, pg_ ? 576 : 64, err)) return false;
     g_stream_window = this;
     std::atexit(stream_atexit);
     return true;

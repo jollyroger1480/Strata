@@ -44,7 +44,8 @@ public:
     bool load_dense(gguf::File& f, mtl::Context& cx, const std::vector<std::string>& skip, mtl::Buffer& out,
                     std::string& err);
     // The arena: `budget` bytes of slots, filled from the profile's ranking (or layer-interleaved if none).
-    bool make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, std::string& err);
+    // min_slots: each size class at least this many slots (576 with prompt chunks, else 64)
+    bool make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err);
     bool ready() const { return !chunks_.empty(); }
     // the arena's buffers (at most 4, each within the device's maxBufferLength): chunk(i) for i >= count is chunk 0
     const mtl::Buffer& chunk(int i) const { return chunks_[(size_t) i < chunks_.size() ? (size_t) i : 0]; }
@@ -95,7 +96,7 @@ private:
     bool stop_ = false;
     int outstanding_ = 0;
     int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
-    bool prefetch_ = true, fake_ = false;
+    bool prefetch_ = true, fake_ = false, pre_mru_ = false;
     // stats
     uint64_t stamp_ = 1;   // the handshake count: slots pinned with the current one are in use on the GPU
     uint64_t p_lookups_ = 0, p_hits_ = 0, p_pre_ = 0, p_misses_ = 0, p_streamed_ = 0, p_chunks_ = 0;

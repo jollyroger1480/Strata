@@ -59,25 +59,45 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
         if (!g || !u || !d) { err = "metal stream: layer " + std::to_string(l) + " has no routed experts"; return false; }
         lay_[(size_t) l] = {g->offset, g->bytes / NE, u->offset, u->bytes / NE, d->offset, d->bytes / NE, -1};
     }
-    // size classes: slots of the same page count share one LRU pool
-    std::map<uint64_t, int> by_pages;
-    for (int l = 0; l < NL; ++l) {
-        const Lay& x = lay_[(size_t) l];
-        const uint64_t pages = (x.gs + x.us + x.ds + PAGE - 1) / PAGE;
-        auto it = by_pages.find(pages);
-        if (it == by_pages.end()) {
-            it = by_pages.emplace(pages, (int) cls_.size()).first;
-            Cls c;
-            c.pages = pages;
-            cls_.push_back(c);
+    // size classes: one LRU pool per class.  The layers' slot sizes (9 in the IQ3_XXS mix) are merged into a few
+    // classes, each as big as its largest member, so that no member wastes more than STRATA_METAL_CLASS_WASTE (default
+    // 0.15) of its slot: every class must hold a whole layer's experts for a prompt chunk, so fewer classes = less
+    // memory tied up in those minimums.
+    {
+        const char* ew = std::getenv("STRATA_METAL_CLASS_WASTE");
+        const double waste = ew ? std::atof(ew) : 0.15;
+        std::vector<uint64_t> pages_of(NL);
+        std::vector<uint64_t> sizes;
+        for (int l = 0; l < NL; ++l) {
+            const Lay& x = lay_[(size_t) l];
+            pages_of[(size_t) l] = (x.gs + x.us + x.ds + PAGE - 1) / PAGE;
+            sizes.push_back(pages_of[(size_t) l]);
         }
-        lay_[(size_t) l].cls = it->second;
+        std::sort(sizes.begin(), sizes.end());
+        sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+        std::vector<uint64_t> tops;   // each class's slot pages, largest first
+        for (auto it = sizes.rbegin(); it != sizes.rend(); ++it)
+            if (tops.empty() || (double) *it < (1.0 - waste) * (double) tops.back()) tops.push_back(*it);
+        for (uint64_t t : tops) { Cls c; c.pages = t; cls_.push_back(c); }
+        for (int l = 0; l < NL; ++l) {
+            int best = 0;   // the smallest class that holds the layer's slot
+            for (int c = 0; c < (int) cls_.size(); ++c)
+                if (cls_[(size_t) c].pages >= pages_of[(size_t) l]) best = c;
+            lay_[(size_t) l].cls = best;
+        }
     }
     nio_ = std::max(1, env_int("STRATA_METAL_IO_THREADS", 6));
-    split_ = std::max(1, std::min(8, env_int("STRATA_METAL_READ_SPLIT", 2)));
-    pre_k_ = env_int("STRATA_METAL_PREFETCH", 10);
+    split_ = std::max(1, std::min(8, env_int("STRATA_METAL_READ_SPLIT", 1)));
+    // The read-ahead's depth and where its experts wait in the LRU, measured on the M4 (notes-mac-ssd.md, 3 interleaved
+    // pairs each): Q2_0 (1.38 MB experts) top 10 at the LRU front 12.2 tok/s vs top 6 at the tail 11.3; the IQ3_XXS
+    // mix (1.75 MB, the SSD is the limit) top 6 at the tail 8.06 vs top 10 at the front 7.43.
+    uint64_t eb = 0;
+    for (const auto& x : lay_) eb += x.gs + x.us + x.ds;
+    const bool big = (double) eb / NL > 1.5e6;
+    pre_k_ = env_int("STRATA_METAL_PREFETCH", big ? 6 : 10);
     pre_k2_ = env_int("STRATA_METAL_PREFETCH2", 0);
     prefetch_ = pre_k_ > 0;
+    pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
     fake_ = env_int("STRATA_METAL_STREAM_FAKE", 0) != 0;
     return true;
@@ -267,7 +287,7 @@ void ExpertStream::promote_slot(int s) {
     for (auto it = mine.rbegin(); it != mine.rend(); ++it) urgent_q_.push_front(*it);
 }
 
-bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, std::string& err) {
+bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err) {
     const double t0 = now_ms();
     // the ranking: the profile's pairs, then every pair it misses, layer-interleaved
     std::vector<std::pair<int, int>> rank;
@@ -294,23 +314,22 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     for (int e = 0; e < NE; ++e)
         for (int l = 0; l < NL; ++l)
             if (!seen[(size_t) l * NE + e]) rank.push_back({l, e});
-    // the pool of each size class: the top-ranked pairs that fit in the budget
+    // the pool of each size class: at least min_slots (a prompt chunk's layer needs up to 512 at once), then the
+    // top-ranked pairs that fit in the budget
     uint64_t used = 0;
+    for (const auto& k : cls_) used += (uint64_t) min_slots * k.pages * PAGE;
     std::vector<std::pair<int, int>> fill;
     for (const auto& p : rank) {
-        const Cls& k = cls_[(size_t) lay_[(size_t) p.first].cls];
-        if (used + k.pages * PAGE > budget) break;
-        used += k.pages * PAGE;
-        ++cls_[(size_t) lay_[(size_t) p.first].cls].n;
+        Cls& k = cls_[(size_t) lay_[(size_t) p.first].cls];
+        const uint64_t cost = k.n < min_slots ? 0 : k.pages * PAGE;
+        if (used + cost > budget) break;
+        used += cost;
+        ++k.n;
         fill.push_back(p);
     }
     int base = 0;
     for (auto& k : cls_) {
-        if (k.n < 64 && !fill.empty()) {   // a class needs room for at least a few windows' experts
-            const int add = 64 - k.n;
-            k.n = 64;
-            used += (uint64_t) add * k.pages * PAGE;
-        }
+        k.n = std::max(k.n, min_slots);
         k.base = base;
         base += k.n;
     }
@@ -419,7 +438,8 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
             if (s < 0) break;
             submit(s, ln, pw[j].second, false);
             slots_[(size_t) s].pin = stamp_;
-            lru_front(s);
+            if (pre_mru_) lru_front(s);
+            else lru_back(s);
             ++pre_issued_;
             any = true;
         }
@@ -459,6 +479,8 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             }
             for (int s : drop) cancel_slot(s);
         }
+        for (int j = 0; j < nw; ++j)   // pass 1: pin what is resident (or on its way), so no miss below evicts it
+            if (where_[(size_t) (l * NE + want[j])] >= 0) slots_[(size_t) where_[(size_t) (l * NE + want[j])]].pin = stamp_;
         for (int j = 0; j < nw; ++j) {
             const int e = want[j], key = l * NE + e;
             uint64_t& lk = prompt ? p_lookups_ : lookups_;
