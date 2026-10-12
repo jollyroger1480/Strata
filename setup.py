@@ -198,6 +198,47 @@ KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 
+# NVFP4 experts (MODEL-UPDATE Phase 4; the engine path is ported from sergqwer/strata-nvfp4, MIT).  Ready-made Strata
+# packs on Hugging Face by the fork's author: nothing is converted here.  Every file is pinned by its upload's commit,
+# size and SHA-256 (the fork's setup.py NVFP4_REPOS, checked against the Hub's LFS pointers 2026-10-12).  The FP8 n-gram
+# table and the BF16 token embedding are the same files in both repositories (a second install links them).  The
+# MTP draft layer is setup's own, as for every other model, so the repositories' mtp/ folder is not downloaded.
+# role: pack = the experts pack folder (index.txt, experts.bin, ...), dense = the dense GGUF (--native and
+# --native-dense-gguf), ple = the FP8 n-gram table (--ple-gguf), embd = the BF16 token embedding (--embd-gguf)
+NVFP4_GPTQ_REPO = "Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata"     # Qwen's BF16 experts by GPTQ (the fork)
+NVFP4_NVIDIA_REPO = "Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata"  # nvidia/Qwen3.8-Flash-Next-NVFP4, converted
+_NVFP4_TOKENIZER = {
+    "pack/tokenizer/chat_template.jinja": ("pack", 8952, "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"),
+    "pack/tokenizer/merges.txt": ("pack", 3600844, "080cf95432173729d160346b7882bd2a644b07f7a3813a3eb73f4e66787bfde9"),
+    "pack/tokenizer/token_type.json": ("pack", 744960, "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"),
+    "pack/tokenizer/tokenizer.json": ("pack", 554, "87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54"),
+    "pack/tokenizer/vocab.json": ("pack", 5737005, "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"),
+}
+_NVFP4_SHARED = {
+    "ple-fp8.gguf": ("ple", 51200246176, "37f89b8ce5a3425932763257c40229ec02723ad2ab14b4bbfc26a486f4725c9c"),
+    "token-embd-bf16.gguf": ("embd", 1271398656, "386203af9070c7b43acb24ded8922876721d97bbad1a709b25cb49d694a7f51d"),
+}
+NVFP4_REPOS = {
+    NVFP4_GPTQ_REPO: {"revision": "640a1db97446ddd5e89d2b70ecd0297987192c93", "files": {
+        "pack/dense.bin": ("pack", 1538035200, "974df6dcefcae85e3fd2c19fcc12eeaacaadde8261ab732d5af5af6ce2e25a7a"),
+        "pack/experts.bin": ("pack", 67948118016, "325e5e0d85c262a8d8278daf73b20696ec877d9a3ff584e57391fa69ad10bc64"),
+        "pack/index.txt": ("pack", 93663, "f62dc71e1c74a72794db54d3917bc71131cc6eae6f3dcdc3fdada48ff70f93ab"),
+        "pack/native_experts.txt": ("pack", 1599, "615f655fb28bf60b243664860b135710bf4177b111c6be89073e780a35de1018"),
+        **_NVFP4_TOKENIZER,
+        "qwen-nvfp4-gptq-dense.gguf": ("dense", 5991569472, "abdf74336b53d8f7ca3d99947f1eac8f19b8a544966750127cb61e561b127e3b"),
+        **_NVFP4_SHARED}},
+    NVFP4_NVIDIA_REPO: {"revision": "cca8f7fee5ce0af932097340a75e06df25c4e57d", "files": {
+        "pack/dense.bin": ("pack", 1538625024, "1f1c2422069de292673ae6cee7d69f7090732dec69f3f125612a0de456279714"),
+        "pack/experts.bin": ("pack", 67948118016, "bb42080bb7585505b64d091d5a734c05376bbd6171406fa9688a46fbc261b957"),
+        "pack/index.txt": ("pack", 117490, "17793d1c5b187a73d3c1dc1677af4d4c9b23845394dd7e88bfa53396b41b77e3"),
+        "pack/native_experts.txt": ("pack", 1590, "d7f8b4372bb122f3d711030e5d522bff1c8746ac7d133a59a2cc7277283e59b6"),
+        **_NVFP4_TOKENIZER,
+        "qwen-nvidia-nvfp4-dense.gguf": ("dense", 5992176896, "0f795ca0cbb908e0cf2b894b30103e21455b5a05346a7ef79da208540cfd2be3"),
+        **_NVFP4_SHARED}},
+}
+# the first release engine with NVFP4 experts (a source build of this checkout has them whatever its number says)
+NVFP4_ENGINE = (0, 1, 47)
+
 MODELS = {
     # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
     # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
@@ -230,6 +271,21 @@ MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
+    # MODEL-UPDATE Phase 4: NVFP4 experts, ready-made packs (NVFP4_REPOS).  63.3 GiB (68.0 GB) of experts in the
+    # pack's experts.bin; the low-RAM mode reads them from there on a PC whose RAM does not hold them.  NVIDIA only
+    # (the HIP and SYCL engines have no NVFP4 kernels).  Images: not set up for these packs yet.
+    "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
+                       "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
+              "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_GPTQ_REPO,
+              "engine": NVFP4_ENGINE,
+              "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's): https://huggingface.co/Qwen/Qwen3.8-Flash-Next"},
+    "NVFP4-NVIDIA": {"about": "NVIDIA's own NVFP4 checkpoint (plain rounding), converted by sergqwer; the same size "
+                              "and speed as NVFP4", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
+                     "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_NVIDIA_REPO,
+                     "engine": NVFP4_ENGINE,
+                     "license": "NVIDIA Open Model License (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
+                                "License) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
+                                "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4"},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -297,6 +353,11 @@ FAMILIES = {
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+    # MODEL-UPDATE Phase 4: the original model with NVFP4 experts, as ready-made packs (NVFP4_REPOS): the files come
+    # as the engine reads them (no GGUF to pack), each size has its own repository ("repo" in MODELS)
+    "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "by": "NVFP4 packs by sergqwer (strata-nvfp4)",
+              "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, ~80 GB of RAM to keep every expert in RAM",
+              "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True, "vision": False},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1592,6 +1653,8 @@ def gguf_choice(name: str) -> tuple | None:
     """#444: (--family, --model) whose published first shard this file is, or None (the Coder's IQ1_M is named like
     the original's sizes: the size tells them apart)."""
     for f, d in FAMILIES.items():
+        if d.get("ready"):                             # ready-made packs (NVFP4): no GGUF shards to match
+            continue
         for m in MODELS:
             if f in MODELS[m].get("families", ("qwen", "swift")) and name == model_file(d, m, 1):
                 return f, m
@@ -1646,6 +1709,64 @@ def verify_sha256(s: Path, size: int, sha: str) -> None:
         fail(f"{s.name} has the wrong SHA-256 ({h.hexdigest()}, expected {sha}): deleted",
              "run setup again to download it again")
     mark(s, f"sha256 {sha}")
+
+
+def ready_files(model: str) -> list:
+    """A ready-made pack's files (NVFP4_REPOS): (role, repo, revision, path, bytes, sha256) each."""
+    repo = MODELS[model]["repo"]
+    t = NVFP4_REPOS[repo]
+    return [(role, repo, t["revision"], path, size, sha) for path, (role, size, sha) in t["files"].items()]
+
+
+def ready_where(models_dir: Path, f) -> Path:
+    """Where one of them goes: <models>/<owner>--<repo>/<its path in the repository> (the repository's layout, so the
+    pack folder is whole as the engine reads it)."""
+    return Path(models_dir) / f[1].replace("/", "--") / f[3]
+
+
+def ready_paths(model: str, models_dir: Path) -> dict:
+    """What the engine is given: the pack folder and the dense, PLE and embedding GGUFs."""
+    out = {}
+    for f in ready_files(model):
+        p = ready_where(models_dir, f)
+        if f[0] == "pack" and p.name == "index.txt":
+            out["pack"] = p.parent
+        elif f[0] in ("dense", "ple", "embd"):
+            out[f[0]] = p
+    return out
+
+
+def ready_verified(p: Path, sha: str) -> bool:
+    """Downloaded whole and checked: its finish mark holds the pinned SHA-256 (verify_sha256)."""
+    m = p.with_name(p.name + ".done")
+    try:
+        return p.is_file() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def ready_fetch(model: str, models_dir: Path) -> None:
+    """Every file of a ready-made pack: already here and checked; the same file (by SHA-256) checked for another
+    ready-made pack, linked instead of downloaded (the PLE table and the embedding); or downloaded from its pinned
+    revision and checked against its size and SHA-256 (a wrong file is deleted and setup stops)."""
+    others = [(ready_where(models_dir, g), g[5]) for m in MODELS if MODELS[m].get("repo") for g in ready_files(m)]
+    for f in ready_files(model):
+        dst, size, sha = ready_where(models_dir, f), f[4], f[5]
+        if ready_verified(dst, sha):
+            ok(f"{f[3]} already downloaded")
+            continue
+        src = next((p for p, s in others if s == sha and p != dst and ready_verified(p, s)), None)
+        if src is not None and not dst.exists():
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.link(src, dst)
+                mark(dst, f"sha256 {sha}")
+                ok(f"{f[3]}: the same file as {src} (linked, not downloaded again)")
+                continue
+            except OSError:
+                pass                                   # another drive: downloaded
+        download(f"{hf_endpoint()}/{f[1]}/resolve/{f[2]}/{f[3]}", dst, f"{f[1].split('/')[-1]}: {f[3]}")
+        verify_sha256(dst, size, sha)
 
 
 def resident_budget_gib(model, ram, kv_ram_gb=0.0) -> int:
@@ -5203,7 +5324,10 @@ def main() -> int:
                 verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
                                                  else "the rest is read from the SSD as needed)"))
-            any_fits = any_fits or not verdict.startswith("does not fit")
+            if hip and d.get("repo"):                  # the ready-made NVFP4 packs: no AMD kernels at all
+                verdict = "NVIDIA only (the AMD engine has no NVFP4 kernels)"
+            else:
+                any_fits = any_fits or not verdict.startswith("does not fit")
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
@@ -5228,6 +5352,13 @@ def main() -> int:
         family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)],
                               str(fams.index(rec_fam) + 1), a.yes)) - 1]
     fam = FAMILIES[family]
+    if fam.get("ready") and hip:
+        # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
+        fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",
+             "UD-IQ4_XS is about the same size and runs on AMD: --family unsloth --model UD-IQ4_XS")
+    if fam.get("ready") and a.gguf_dir:
+        warn(f"--gguf-dir does not apply to {fam['title']}: its files are ready-made packs, not GGUF shards")
+        a.gguf_dir = None
     ok(f"model: {fam['title']}")
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
@@ -5299,6 +5430,8 @@ def main() -> int:
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
+    if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
+        say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
@@ -5435,26 +5568,37 @@ def main() -> int:
     elif esp_choice.lower() not in ("", "off", "no", "n", "0"):
         warn("the experimental speed projection is made for the original Qwen3.8-Flash-Next, not Swift 1.5: left off"
              if family == "swift" else f"the experimental speed projection is not tested with {model}: left off")
-    models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
-    shards = gguf_dir_shards(models_dir, fam, model) if a.gguf_dir else \
-        [models_dir / model_file(fam, model, i) for i in range(1, model_shards(fam, model) + 1)]
+    ready = bool(fam.get("ready"))                     # NVFP4: ready-made packs (NVFP4_REPOS), no GGUF shards
+    if ready:
+        models_dir = Path(a.models_dir)
+        for r in elsewhere:                            # already downloaded and checked in a Strata folder elsewhere
+            if all(ready_verified(ready_where(r / "models", f), f[5]) for f in ready_files(model)):
+                models_dir = r / "models"
+                ok(f"model files found in {models_dir}")
+                break
+        shards = [ready_where(models_dir, f) for f in ready_files(model)]
+    else:
+        models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
+        shards = gguf_dir_shards(models_dir, fam, model) if a.gguf_dir else \
+            [models_dir / model_file(fam, model, i) for i in range(1, model_shards(fam, model) + 1)]
     problem = gguf_dir_problem(models_dir, shards[0], fam, model) if a.gguf_dir else None
     if problem:                                        # #444: files Strata cannot run, or another choice's files
         fail(*problem)
-    if not a.gguf_dir and not all(sh.exists() and done(sh) for sh in shards):
+    if not ready and not a.gguf_dir and not all(sh.exists() and done(sh) for sh in shards):
         for r in elsewhere:                            # already downloaded in a Strata folder on another drive
             cand = [r / "models" / tag / sh.name for sh in shards]
             if all(c.exists() and done(c) for c in cand):
                 models_dir, shards = cand[0].parent, cand
                 ok(f"model files found in {models_dir}")
                 break
-    for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
+    for s in ([] if ready else shards):                # #173: a whole file copied in by hand has no finish mark
         if s.exists() and not done(s) and whole_shard(s):
             try:
                 mark(s, "whole (checked against its own tensor directory)")
             except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
                 warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
-    have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
+    have_model = all(ready_verified(ready_where(models_dir, f), f[5]) for f in ready_files(model)) if ready else \
+        all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count
     on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
@@ -5462,7 +5606,7 @@ def main() -> int:
     # count only what step 6 will still write: a pack whose experts.bin is already there (the AVX-512 Q2_0
     # conversion, or the low-RAM mode's copy) and an existing MTP draft layer need no new room
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
-    pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
+    pack_bin = ready or ((pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists())   # ready: in the download
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
     need = to_fetch + (2 if mtp_have else 8) + \
@@ -5503,6 +5647,12 @@ def main() -> int:
     if eng is None:
         eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    if ready and meta.get("source") != "local" and \
+            tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit()) < MODELS[model]["engine"]:
+        # a ready-made engine from before NVFP4 cannot read these experts: one compiled from this source can
+        warn(f"the ready-made engine {meta.get('version')} has no NVFP4 experts yet: compiling the engine from this source")
+        eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
+        meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
     else:
@@ -5516,7 +5666,12 @@ def main() -> int:
 
     # ---- 5. the model files
     step(5, f"downloading {fam['title']} {model}")
-    if not a.gguf_dir:
+    if ready:                                          # pinned files of the pack's repository, each SHA-256-checked
+        say(f"  The model files go in {models_dir / MODELS[model]['repo'].replace('/', '--')}")
+        if model_source() == "modelscope":
+            warn("these packs are on Hugging Face only: downloading them from " + hf_endpoint())
+        ready_fetch(model, models_dir)
+    elif not a.gguf_dir:
         missing = [s.name for s in shards if not (s.exists() and done(s))]
         if missing:                                    # #495: files downloaded by hand go here, or --gguf-dir
             say(f"  The model files go in {models_dir}")
@@ -5544,13 +5699,14 @@ def main() -> int:
                 except OSError:
                     pass
             download(fam["hf"].format(q=model) + s.name, s)
-    check_shards(shards)
-    for s in shards:                                   # the Unsloth files: pinned sizes and SHA-256
+    if not ready:
+        check_shards(shards)
+    for s in ([] if ready else shards):                # the Unsloth files: pinned sizes and SHA-256
         if s.name in fam.get("sha256", {}):
             verify_sha256(s, *fam["sha256"][s.name])
     ok("model files present")
-    mmproj = Path(a.models_dir) / fam["mmproj"]
-    if not mmproj.exists():
+    mmproj = Path(a.models_dir) / fam.get("mmproj", MMPROJ)
+    if not mmproj.exists() and not ready:
         mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
@@ -5566,7 +5722,9 @@ def main() -> int:
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
-    if model == "Q2_0" and avx512 and family == "qwen":
+    if ready:                                          # the downloaded pack folder is the pack, experts.bin included
+        pack = ready_paths(model, models_dir)["pack"]
+    elif model == "Q2_0" and avx512 and family == "qwen":
         # the Q2_0 experts repacked for the AVX-512 kernel (the measured speed): a one-time ~40 GB conversion
         if not (pack / "index.txt").exists() or not (pack / "experts.bin").exists():   # index.txt is written last
             say("  Converting the Q2_0 experts for the AVX-512 kernel (one time, ~40 GB written, 2-5 min) ...")
@@ -5581,7 +5739,7 @@ def main() -> int:
         # (UD-Q4_K_XL: --compat-bf16 - its Q8_0 hyper-connection projections become BF16, the form the engine reads)
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              *fam.get("pack_args", [])], env=env)
-    if low_ram and not (pack / "experts.bin").exists():
+    if low_ram and not ready and not (pack / "experts.bin").exists():
         say(f"  Writing the experts into one file for the low-RAM mode (one time, {MODELS[model]['arena_gb']:.0f} GB) ...")
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin"], env=env)
@@ -5612,11 +5770,19 @@ def main() -> int:
     step(7, "writing the start script")
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
-    ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
-    if ple is None:
-        fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
-    # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
+    if ready:   # the dense GGUF as --native and --native-dense-gguf (--native alone would look for a second shard),
+        rp = ready_paths(model, models_dir)            # the FP8 n-gram table, the BF16 token embedding
+        ple = rp["ple"]
+        model_args = ["--pack", str(pack), "--native", str(rp["dense"]), "--native-dense-gguf", str(rp["dense"]),
+                      "--ple-gguf", str(ple), "--embd-gguf", str(rp["embd"])]
+    else:
+        ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
+        if ple is None:
+            fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+        # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
+        model_args = ["--pack", str(pack), "--native", str(shards[0]),
+                      *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
+    args = [*model_args,
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
@@ -5632,8 +5798,8 @@ def main() -> int:
         args += ["--resident-experts" if resident else "--mmap-experts"]
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
-        tensor = next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
-        size = getattr(tensor, "expected_bytes", lambda: None)()
+        tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
+        size = ple.stat().st_size if ready else getattr(tensor, "expected_bytes", lambda: None)()
         table_gb = size / 1e9 if size else 28.8
         if ram >= MODELS[model]["ram_gb"] + table_gb + 4:
             args += ["--ple-io", "ram"]
