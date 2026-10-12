@@ -4039,6 +4039,18 @@ def choices_from_config(cfg_path: Path) -> dict:
                 vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
 
 
+def calibration_targets(have: list, model: str | None, family: str | None) -> list:
+    """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
+    if not (model or family):
+        return list(have)
+    out = []
+    for c in have:
+        ch = choices_from_config(c)
+        if (not model or ch["model"] == model) and (not family or ch["family"] == family):
+            out.append(c)
+    return out
+
+
 def find_in(roots: list, rel: str):
     """The first of roots/rel that exists."""
     for r in roots:
@@ -4981,7 +4993,17 @@ def main() -> int:
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = start_gpus(a.gpus) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
-    if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
+    if a.calibrate and (a.setup or a.check or not have):    # #2036: said, not dropped
+        why = ("--setup" if a.setup else "--check" if a.check else "no model is installed yet")
+        warn(f"--calibrate does nothing with {why}: it tunes a model that is already installed. Run setup first, "
+             "then " + ("START-HERE.bat" if WIN else "./setup.sh") + " --calibrate [--model NAME]")
+    if have and a.calibrate and not (a.setup or a.check):
+        targets = calibration_targets(have, a.model, a.family)
+        if not targets:                                # #2036: --model names a model that is not installed
+            names = ", ".join(sorted({choices_from_config(c)["model"] or c.stem for c in have}))
+            fail(f"--calibrate: {a.model or a.family} is not installed (installed: {names})",
+                 "calibrate an installed model, or set this one up first without --calibrate")
+        have = targets
         if not a.build:
             update_installed_engine(a.prebuilt)
         pick_cfg = have[0]
