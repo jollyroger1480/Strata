@@ -2467,6 +2467,19 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
                                std::string& err) {
     if (next_ != nullptr) return next_->window_logprobs(targets, T, pos0, extra_id, out, err);
     const OnDevice on_device(device_);
+#if defined(STRATA_GPU_METAL)
+    // the head logits are the Metal window's (window_copy_logits, row by row)
+    if (n_vocab_ <= 0 || T <= 0 || targets == nullptr || out == nullptr) {
+        err = "window_logprobs: no head logits for this window";
+        return false;
+    }
+    std::vector<float> h((size_t) T * (size_t) n_vocab_);
+    for (int t = 0; t < T; ++t)
+        if (!strata::metal_engine::window_copy_logits(metal_, t, h.data() + (size_t) t * (size_t) n_vocab_)) {
+            err = "window_logprobs: the head logits copy failed";
+            return false;
+        }
+#else
     if (head_logits_ == nullptr || n_vocab_ <= 0 || T <= 0 || targets == nullptr || out == nullptr) {
         err = "window_logprobs: no head logits for this window";
         return false;
@@ -2477,6 +2490,7 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
         err = "window_logprobs: the head logits copy failed";
         return false;
     }
+#endif
     for (int t = 0; t < T; ++t) {
         const float* row = h.data() + (size_t) t * (size_t) n_vocab_;
         const int32_t tgt = targets[t];

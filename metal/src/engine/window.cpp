@@ -2367,7 +2367,10 @@ bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionSt
     return window_init(window_create(), g, ss, MAXT, max_cells, &nv, err);
 }
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
-    return ((Window*) w)->run(T, tokens, pos0, head, out, err);
+    // STRATA_LOGPOS (the quant yardstick, the KL harness): every window's head logits are read, also the prompt's
+    // windows that sample nothing (head_sampling off)
+    static const bool logpos = std::getenv("STRATA_LOGPOS") != nullptr;
+    return ((Window*) w)->run(T, tokens, pos0, head || logpos, out, err);
 }
 void window_reset() {
     if (g_the_window != nullptr && g_the_window->ready()) g_the_window->reset();
