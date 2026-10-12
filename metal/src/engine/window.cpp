@@ -173,6 +173,14 @@ private:
     // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
     // the two (the drafter reads the window's rows and its own caches).  STRATA_METAL_LAZY_FOLD=0: at commit.
     int pend_fold_ = 0;
+    // gdn_step's partial commit (mac-kern 56526aed, commit = 0x100 | k): a verify window of T > 1 commits its first
+    // row in place (it is always kept), so commit(1) needs no fold and commit(n) folds rows 1..n-1 only; a window
+    // without the head (the prompt) commits all its rows in the step.  Opt-in (STRATA_METAL_PARTIAL=1): at --spec 2
+    // it measured 0.3-0.8% slower on the M5 Max (the in-place state write costs every window, the fold it saves
+    // only the rounds with no accepted draft).  Off: the window commits nothing and commit(n) folds n rows.
+    bool partial_ = std::getenv("STRATA_METAL_PARTIAL") && std::string(std::getenv("STRATA_METAL_PARTIAL")) == "1";
+    bool win_head_ = true;      // the window being encoded has the head
+    bool last_head_ = true;     // the last window had it
     // token_chain's --fuse (mac-kern): the GDN step writes the prepared y planes itself (no xprep), and a window whose
     // context is within the selection budget skips the QSA score and top-k (the cell list is the identity: qids_
     // holds it from init, restored after a window that selected).  STRATA_METAL_FUSE=0: off.
@@ -453,6 +461,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // a one-token window commits in the step; a longer one leaves the state and commit() folds the kept prefix
         // from the inputs kept per layer (qkvL_ ...)
         const bool self_commit = ntok == 1;
+        const uint32_t cm = self_commit ? 1u : !partial_ ? 0u : win_head_ ? (0x100u | 1u) : 1u;
         const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
         gemv(ds, T(b + "attn_qkv.weight"), XA_, qkvL_, 10240, ntok, o_qkv);
         nb_ = true;
@@ -461,7 +470,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "ssm_alpha.weight"), XA_, alL_, 48, ntok, o_ab);
         nb_ = true;
         gemv(ds, T(b + "ssm_beta.weight"), XA_, beL_, 48, ntok, o_ab);
-        GdnArgs a{16, 48, 10240, self_commit ? 1u : 0u, eps_, fuse_ ? (uint32_t) (MAXT * 6144) : 0u};
+        GdnArgs a{16, 48, 10240, cm, eps_, fuse_ ? (uint32_t) (MAXT * 6144) : 0u};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
         const int hp = hp_;
@@ -721,6 +730,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     const int key = ((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0);
     const int fold_n = pend_fold_;
     pend_fold_ = 0;
+    win_head_ = head;
     auto hit = wcache_.find(key);
     if (hit != wcache_.end()) {
         // the same window shape: only the positions change (QSA's cells, the score grid)
@@ -923,7 +933,8 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
         x.all += t1 - t0;
     }
     logpos(Tn, tokens, pos0, head);
-    if (Tn == 1) hp_ = 1 - hp_;   // a one-token window committed its GDN steps
+    if (Tn == 1 || partial_) hp_ = 1 - hp_;   // the window committed its first row (or all of them) in the step
+    last_head_ = head;
     for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
     for (int t = 0; t < Tn; ++t) last_tokens_[t] = tokens[t];
@@ -943,11 +954,13 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
 }
 
 void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
+    const size_t off = partial_ ? 1 : 0;   // rows 1.. (row 0 was committed in the window's step)
     for (int l = 0; l < 48; ++l) {
         if (l % 4 == 3) continue;
         const int gi = l - l / 4;
         const std::string b = "blk." + std::to_string(l) + ".";
-        const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
+        const size_t o_qkv = ((size_t) gi * MAXT + off) * 10240 * 4, o_ab = ((size_t) gi * MAXT + off) * 48 * 4,
+                     o_z = ((size_t) gi * MAXT + off) * 6144 * 4;
         GdnArgs a{16, 48, 10240, 1u, eps_, 0};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
@@ -972,15 +985,26 @@ bool Window::commit(int n_keep, std::string& err) {
         // inputs, with commit; bitwise the window's trajectory).  K/V and indexer cells past the prefix are rewritten
         // when those positions run again, before anything reads them.
         static const bool lazy = !(std::getenv("STRATA_METAL_LAZY_FOLD") && std::string(std::getenv("STRATA_METAL_LAZY_FOLD")) == "0");
-        if (lazy) {
-            pend_fold_ = n_keep;   // folded at the start of the next window (from the history parity before the turn)
-        } else {
-            std::vector<mtl::Dispatch> ds;
-            nb_ = false;
-            fold(ds, n_keep, hp_);
-            cx_->run_graph(ds);
+        int nf = n_keep;
+        if (partial_) {
+            if (!last_head_) {   // the prompt's window committed every row in its step
+                if (n_keep != last_T_) { err = "metal window: a prompt window commits all its rows"; return false; }
+                nf = 0;
+            } else {
+                nf = n_keep - 1;   // row 0 is in
+            }
         }
-        hp_ = 1 - hp_;
+        if (nf > 0) {
+            if (lazy) {
+                pend_fold_ = nf;   // folded at the start of the next window (from the history parity before the turn)
+            } else {
+                std::vector<mtl::Dispatch> ds;
+                nb_ = false;
+                fold(ds, nf, hp_);
+                cx_->run_graph(ds);
+            }
+            hp_ = 1 - hp_;
+        }
     }
     strata::core::SessionState& ss = *ss_;
     for (int t = 0; t < n_keep; ++t) {
