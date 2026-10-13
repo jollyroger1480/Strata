@@ -2256,6 +2256,24 @@ def size_tag(family: str, m: str) -> str:
     return " (recommended)" if m in RECOMMENDED_SIZES.get(family, ()) else ""
 
 
+def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool) -> dict:
+    """0.1.44 (owner, review-quants.md section 5): the run-config "env" setup writes for Unsloth's files.
+    STRATA_MMQ_KQ=1 (the K-quant MMQ prompt kernels) for UD-Q5_K_XL and UD-Q6_K_XL, where its prompt-path KL is equal
+    or better than the FP16 path's; UD-Q4_K_XL keeps it opt-in.  STRATA_HC_Q8=1 on CUDA for the UD-* files (the
+    GGUF's own Q8_0 hyper-connection projections, closer to the file and faster; the GSQ-RCO packs are untouched).
+    STRATA_ROUTE_TAIL_SKIP=0 where every expert is in RAM (the skip costs KL there); the RAM-budget mode keeps it."""
+    env = {}
+    if family != "unsloth":
+        return env
+    if model in ("UD-Q5_K_XL", "UD-Q6_K_XL"):
+        env["STRATA_MMQ_KQ"] = "1"
+    if not hip and model.startswith("UD-"):
+        env["STRATA_HC_Q8"] = "1"
+    if not in_budget:
+        env["STRATA_ROUTE_TAIL_SKIP"] = "0"
+    return env
+
+
 def menu_families(hip: bool) -> list:
     """The families the model menu lists, in menu order.  The NVFP4 packs run on NVIDIA cards only (the AMD and Intel
     engines have no NVFP4 kernels), so on those the menu does not offer them; `--family nvfp4` still says why not."""
@@ -4383,7 +4401,8 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
+                       "STRATA_ROUTE_TAIL_SKIP"})   # the "env" entries setup writes
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
@@ -6592,6 +6611,8 @@ def main() -> int:
            "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
+    if (uenv := unsloth_default_env(family, model, hip, in_budget)):
+        cfg["env"] = uenv
     if hip:
         cfg["backend"] = "hip"
         # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%

@@ -104,6 +104,33 @@ class RecommendedSizes(unittest.TestCase):
         self.assertEqual(setup.recommended_size("coder", n, 64.0), n[0])
 
 
+class UnslothDefaultEnv(unittest.TestCase):
+    """0.1.44 (owner): the env setup writes for Unsloth's files (review-quants.md section 5)."""
+
+    def test_q5_and_q6_turn_the_k_quant_prompt_kernels_on_q4_does_not(self):
+        f = setup.unsloth_default_env
+        self.assertEqual(f("unsloth", "UD-Q5_K_XL", False, False)["STRATA_MMQ_KQ"], "1")
+        self.assertEqual(f("unsloth", "UD-Q6_K_XL", True, True)["STRATA_MMQ_KQ"], "1")
+        for m in ("UD-Q4_K_XL", "UD-IQ4_XS", "Q8_0"):
+            self.assertNotIn("STRATA_MMQ_KQ", f("unsloth", m, False, False), m)
+
+    def test_hc_q8_on_cuda_for_the_ud_files_only(self):
+        f = setup.unsloth_default_env
+        for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"):
+            self.assertEqual(f("unsloth", m, False, True)["STRATA_HC_Q8"], "1", m)
+            self.assertNotIn("STRATA_HC_Q8", f("unsloth", m, True, True), m)          # not on AMD
+        self.assertNotIn("STRATA_HC_Q8", f("unsloth", "Q8_0", False, True))
+
+    def test_tail_skip_off_only_when_every_expert_is_in_ram(self):
+        f = setup.unsloth_default_env
+        self.assertEqual(f("unsloth", "UD-Q4_K_XL", False, False)["STRATA_ROUTE_TAIL_SKIP"], "0")
+        self.assertNotIn("STRATA_ROUTE_TAIL_SKIP", f("unsloth", "UD-Q4_K_XL", False, True))   # budget mode keeps the skip
+
+    def test_other_families_are_untouched(self):
+        for fam, m in (("qwen", "IQ3_S"), ("swift", "Q2_0"), ("coder", "IQ1_M"), ("nvfp4", "NVFP4")):
+            self.assertEqual(setup.unsloth_default_env(fam, m, False, False), {}, fam)
+
+
 class EnginePlaceholders(unittest.TestCase):
     def test_every_engine_minimum_is_this_release(self):
         self.assertEqual(setup.NVFP4_ENGINE, (0, 1, 44))
