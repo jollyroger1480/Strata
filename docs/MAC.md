@@ -109,6 +109,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 | The experts' copy (one read per expert) | **8.62 tok/s** | **84.1 tok/s** | 31.5 ms |
 
 - The tokens are identical in all 10 runs.
+- The 4K-token prompt (3 interleaved runs each, default arena): 72.9 tok/s with the copy against 62.5 with the model file (+17%), the same tokens.
 - The SSD alone measures the same: 2.97 GB/s for one 1.75 MB read per expert against 2.30 GB/s for three 0.58 MB reads (6 threads, uncached).
 - The arena's size matters most. With the model file, a 7.5 GB arena gave 5.5 tok/s, 10.5 GB gave 6.7 and 12 GB gave 7.5. The read-ahead depth, the I/O threads and the eviction order each moved decode by less than 3%.
 - The Q2_0 copy is not measured yet. The numbers in the table above are with the model file.
