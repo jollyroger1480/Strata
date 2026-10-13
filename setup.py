@@ -5072,6 +5072,64 @@ def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
     return lines
 
 
+# Unsloth's files on a card of about 8 GB.  The dense side is Q8_0 (~3 GB) and the draft layer binds ~0.8 GB, so little is
+# left for the expert cache.  Measured on an 8 GB Arc A750 (the Intel worker, 2026-10-13): setup's 8192 / int8 / reserve 400
+# start stopped with "no VRAM is left for the expert cache, short 473 MiB"; --max-context 4608 --kv q4_0 --vram-reserve-mib 0
+# started with 3 cache slots (4.4 tok/s).  UD_FIT_FIXED_MIB is that measurement turned into a constant (everything but the
+# session's KV, the reserve and the draft layer); an ESTIMATE for CUDA and HIP cards of the same size, whose engine says what
+# is short if it is off.  The engine itself lowers its default reserve to 300 MiB on such a card.
+UD_FIT_FIXED_MIB = 7356
+UD_FIT_MTP_MIB = 802
+UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estimate's error
+UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
+UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
+UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
+UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13)
+UD_FIT_CTX_STEPS = (8192, 6144, 4608)
+
+
+def unsloth_runtime_mib(gpu: dict) -> int:
+    return 0 if (gpu or {}).get("driver") in ("xe", "i915") else UD_FIT_RUNTIME_MIB
+
+
+def unsloth_vram_slack_mib(vram_gb: float, ctx: int, kv: str, reserve_mib: int, mtp: bool = True,
+                           runtime_mib: int = 0) -> float:
+    """MiB left for the expert cache by setup's estimate (negative: the engine would refuse to start)."""
+    session = ctx * 13 * UD_FIT_KV_BYTES.get(kv, 1056) / 2 ** 20
+    return vram_gb * 1024 - UD_FIT_FIXED_MIB - (UD_FIT_MTP_MIB if mtp else 0) - session - max(reserve_mib, 0) - runtime_mib
+
+
+def unsloth_small_card_plan(vram_gb: float, ctx: int, kv: str, reserve_mib: int | None, ctx_fixed=False, kv_fixed=False,
+                            runtime_mib: int = 0):
+    """(ctx, kv, mtp, slack_mib) of the least harmful start that the estimate says fits, or None when none does.
+    Order of harm: the KV in 4 bits, then a smaller context (down to 4608), then no draft layer on the GPU (decode
+    up to 2x slower, but 0.8 GB for the cache); a value the user chose (--context, --kv) is not changed."""
+    reserve = UD_FIT_ENGINE_RESERVE_MIB if reserve_mib is None else reserve_mib
+    ctxs = [ctx] if ctx_fixed else [ctx] + [c for c in UD_FIT_CTX_STEPS if c < ctx]
+    kvs = [kv] if kv_fixed or kv == "q4_0" else [kv, "q4_0"]
+    for mtp in (True, False):
+        for c in ctxs:
+            for k in kvs:
+                slack = unsloth_vram_slack_mib(vram_gb, c, k, reserve, mtp, runtime_mib)
+                if slack >= UD_FIT_MIN_SLACK_MIB:
+                    return c, k, mtp, slack
+    return None
+
+
+def unsloth_small_card_lines(model: str, vram_gb: float, plan, start_ok: bool) -> list[str]:
+    """The words for a ~8 GB card: that UD-* is very slow here and what to pick instead (always), and when the start
+    would have stopped, that and what setup changed instead.  Recommend, never force."""
+    lines = [f"{model} on a {vram_gb:.0f} GB card is very slow: the dense side and the draft layer fill the card, the expert "
+             "cache gets a few slots, and nearly every expert comes from RAM or the SSD (3-5 tok/s measured on an 8 GB "
+             "Arc A750). IQ3_XXS or IQ3_S of the Qwen3.8-Flash-Next family fit such a card far better; run setup again "
+             "and pick one of them."]
+    if not start_ok and plan is None:
+        lines.append("By setup's estimate even a 4608 context with a 4-bit KV cache and no draft layer leaves no room "
+                     "for the expert cache on this card: the start will probably stop with \"no VRAM is left for the "
+                     "expert cache\".")
+    return lines
+
+
 PARALLEL_MAX = 8               # #465: the engine's batch window holds at most 8 requests
 PARALLEL_SHARE = 0.2           # #465: the slots' sessions may take this share of the VRAM the expert cache would hold
 PARALLEL_HELD = 0.5            # #465: ... and only where the cache still holds this share of the experts beside them
@@ -6589,6 +6647,42 @@ def main() -> int:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
+    if not multi and family == "unsloth" and 0 < gpu.get("vram_gb", 0.0) <= UD_FIT_CARD_GB:
+        # a card of about 8 GB: the config setup would write may not start (measured on an A750).  Pick the least
+        # harmful one that fits and say so; what the user chose with --context / --kv / --vram-reserve-mib is kept
+        res_arg = int(args[args.index("--vram-reserve-mib") + 1]) if "--vram-reserve-mib" in args[:-1] else None
+        vg = gpu["vram_gb"]
+        rt_mib = unsloth_runtime_mib(gpu)
+        fits = unsloth_vram_slack_mib(vg, ctx, kv, UD_FIT_ENGINE_RESERVE_MIB if res_arg is None else res_arg, True,
+                                      rt_mib) >= UD_FIT_MIN_SLACK_MIB
+        plan = None
+        if not fits:
+            plan = unsloth_small_card_plan(vg, ctx, kv, res_arg, ctx_fixed=bool(a.context), kv_fixed=bool(a.kv),
+                                           runtime_mib=rt_mib)
+            if plan is not None:
+                nctx, nkv, nmtp, slack = plan
+                changes = []
+                if nctx != ctx:
+                    args[args.index("--max-context") + 1] = str(nctx)
+                    changes.append(f"context {ctx} -> {nctx}")
+                    ctx = nctx
+                if nkv != kv:
+                    if "--kv" in args[:-1]:
+                        args[args.index("--kv") + 1] = nkv
+                    else:
+                        args += ["--kv", nkv]
+                    changes.append(f"KV cache {kv} -> {nkv}")
+                    kv = nkv
+                if not nmtp and "--mtp" in args[:-1]:
+                    i = args.index("--mtp")
+                    del args[i:i + 2]
+                    changes.append("no MTP draft layer on the GPU (about 0.8 GB more for the expert cache; decode is slower)")
+                warn(f"with the usual settings {model} would not start on this {vg:.0f} GB card (setup's estimate: no VRAM "
+                     "left for the expert cache). Setup chose the least harmful start that fits: " + ", ".join(changes)
+                     + ". A bigger context, 8-bit KV or the draft layer need a card with more VRAM (or "
+                     "--vram-reserve-mib 0, which leaves nothing for other programs).")
+        for line in unsloth_small_card_lines(model, vg, plan, fits):
+            warn(line)
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.

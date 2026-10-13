@@ -148,7 +148,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
-             family=True):
+             family=True, vram=11.9):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
         asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
         self.asked = []
@@ -162,7 +162,7 @@ class Base(unittest.TestCase):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": "local"}))
-        found = [{"index": i, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.9, "arch": "120", "driver": "580.97"}
+        found = [{"index": i, "name": "NVIDIA GeForce RTX 5070", "vram_gb": vram, "arch": "120", "driver": "580.97"}
                  for i in range(n_gpus)]
 
         def fake_download(url, dst, what=None):
