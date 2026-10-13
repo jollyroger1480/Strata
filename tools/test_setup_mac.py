@@ -107,6 +107,48 @@ class Vision(unittest.TestCase):
         self.assertIn('cfg["args"] += ["--vision"]', src)
 
 
+class ExpertsFile(unittest.TestCase):
+    """The streaming Mac's <model>.experts: written only with room on the disk, else a warning and the GGUF."""
+
+    def run_it(self, free_gb, done=False):
+        import tempfile
+        sys.path.insert(0, str(ROOT / "metal" / "tools"))
+        import stream_experts
+        d = Path(tempfile.mkdtemp())
+        native = d / "m.gguf"
+        native.write_bytes(b"")
+        if done:
+            (d / "m.gguf.experts").write_bytes(b"")
+            (d / "m.gguf.experts.done").write_text("x")
+        with mock.patch.object(stream_experts, "size_bytes", return_value=40e9), \
+                mock.patch.object(M.S, "free_gb", return_value=free_gb), \
+                mock.patch.object(M.S, "run") as run, mock.patch.object(M.S, "warn") as warn, \
+                mock.patch.object(M.S, "mark") as mark, mock.patch.object(M.S, "say"), mock.patch.object(M.S, "ok"):
+            M.experts_file(native)
+        return run, warn, mark
+
+    def test_fits_needs_the_margin(self):
+        self.assertFalse(M.experts_file_fits(40, 40 + M.EXPERTS_MARGIN_GB - 0.1))
+        self.assertTrue(M.experts_file_fits(40, 40 + M.EXPERTS_MARGIN_GB))
+
+    def test_written_and_verified_with_room(self):
+        run, warn, mark = self.run_it(100)
+        self.assertIn("--verify", run.call_args[0][0])
+        self.assertTrue(str(run.call_args[0][0][1]).endswith("stream_experts.py"))
+        mark.assert_called_once()
+        warn.assert_not_called()
+
+    def test_too_little_disk_warns_and_goes_on(self):
+        run, warn, mark = self.run_it(45)
+        run.assert_not_called()
+        mark.assert_not_called()
+        self.assertIn("not written", warn.call_args[0][0])
+
+    def test_done_is_not_written_again(self):
+        run, warn, mark = self.run_it(100, done=True)
+        run.assert_not_called()
+
+
 class HandOver(unittest.TestCase):
     def test_darwin_hands_the_run_to_setup_mac(self):
         with mock.patch.object(setup.sys, "platform", "darwin"), \

@@ -86,6 +86,7 @@ IQ3_S_FROM_GB = 110
 # a pack that does not fit Metal's share streams its experts from the SSD (the engine decides by itself, f-mac-ssd):
 # measured on a 32 GB M4 Mac mini, one token per step (MTP is slower there: its layer's memory is worth more as cache)
 STREAM_MEASURED = {"Q2_0": "~14 tok/s", "IQ3_XXS": "~10 tok/s"}
+STREAM_COPY_GAIN = "decoding about 15%, prompts about 25%"   # without the experts' copy, on the 32 GB M4 (IQ3_XXS)
 # beside the mapped file: the prompt kernels' buffers (chunks of 2,048 rows), the KV cache, the draft layer, the
 # Q8_0 copies of the hyper-connection matrices and the macOS desktop
 OVERHEAD_GB = 8.0
@@ -327,6 +328,41 @@ def ple_shard(files: list) -> Path:
     S.fail(f"no shard of {files[0].name} holds the n-gram table (per_layer_token_embd)")
 
 
+# the experts' streaming copy (metal/tools/stream_experts.py): what stays free on the disk after it is written
+EXPERTS_MARGIN_GB = 10.0
+
+
+def experts_file_fits(need_gb: float, free_gb: float) -> bool:
+    return free_gb >= need_gb + EXPERTS_MARGIN_GB
+
+
+def experts_file(native: Path) -> None:
+    """A streaming Mac: <model>.experts beside the GPU's GGUF - every expert's rows in one piece, read with one SSD
+    request per expert instead of three (the engine uses it when it is there and matches; else the GGUF).  Written
+    only when the disk has room for it and EXPERTS_MARGIN_GB more; otherwise setup says so and goes on."""
+    out = native.with_name(native.name + ".experts")
+    if out.exists() and S.done(out):
+        S.ok(f"the experts' streaming copy: {out.name}")
+        return
+    sys.path.insert(0, str(ROOT / "metal" / "tools"))
+    import stream_experts as X
+    need = X.size_bytes(native) / 1e9
+    free = S.free_gb(native.parent)
+    if not os.access(native.parent, os.W_OK):
+        S.warn(f"{native.parent} cannot be written: the experts' streaming copy ({need:.0f} GB) is not written; the "
+               f"engine streams from the model file ({STREAM_COPY_GAIN} slower)")
+        return
+    if not experts_file_fits(need, free):
+        S.warn(f"the experts' streaming copy needs {need:.0f} GB and {EXPERTS_MARGIN_GB:.0f} GB to spare on the disk "
+               f"({free:.0f} GB free): not written; the engine streams from the model file ({STREAM_COPY_GAIN} "
+               f"slower). Free some space and run ./setup.sh --setup again to add it")
+        return
+    S.say(f"  Writing the experts in SSD-read order (one time, {need:.0f} GB; each expert is read with one request) ...")
+    S.run([sys.executable, str(ROOT / "metal" / "tools" / "stream_experts.py"), "--gguf", str(native), "--verify"])
+    S.mark(out)
+    S.ok(f"the experts' streaming copy: {out.name}")
+
+
 def mac_config(exe: Path, args: list, pack: Path, model_name: str, tag: str, port: int) -> dict:
     return {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
             "model_name": model_name, "log": str(ROOT / f"strata-{tag.lower()}.log"), "lib_dirs": [], "port": port,
@@ -514,6 +550,7 @@ def main(argv=None) -> int:
     if stream:
         S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "
              "./setup.sh --setup on a Mac with more memory adds it")
+        experts_file(shards[0])
     elif not (mtp / "mtp-q2_0.gguf").exists():
         S.say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of")
         S.say("  MTP tensors are downloaded.")
