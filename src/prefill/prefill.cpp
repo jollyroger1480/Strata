@@ -386,6 +386,7 @@ struct Alloc {
     uint64_t failed_bytes = 0;          ///< the take that could not be allocated; the failure message names it
     uint64_t granule = 0;               ///< count_only: each take rounds up to this (cudaMalloc's 2 MiB pages: owned buffers)
     bool count_only = false;
+    bool spill = false, spilled = false;
     std::vector<void*>* owned = nullptr;
     template <typename T> T* take(size_t n, bool& ok) {
         uint64_t bytes = ((uint64_t) n * sizeof(T) + 256 + 255) & ~255ull;
@@ -394,14 +395,15 @@ struct Alloc {
             used += bytes;
             return nullptr;
         }
-        if (base != nullptr) {
-            if (used + bytes > cap) { ok = false; failed_bytes = bytes; return nullptr; }
+        if (base != nullptr && !spilled && used + bytes <= cap) {
             T* p = (T*) (base + used);
             used += bytes;
             return p;
         }
+        if (base != nullptr && !spill) { ok = false; failed_bytes = bytes; return nullptr; }
         void* p = nullptr;
         if (cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; failed_bytes = bytes; return nullptr; }
+        spilled = true;
         owned->push_back(p);
         used += bytes;
         return (T*) p;
@@ -756,7 +758,7 @@ struct Prefill::Impl {
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
-    bool borrowed = false;
+    bool borrowed = false, borrow_spill = false;
     cudaStream_t cs = nullptr, copy = nullptr;
     Gemm gemm;
     std::vector<void*> owned;
@@ -1070,7 +1072,7 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
 
 bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
-                   void* stream, std::string& err, void* borrow, uint64_t borrow_bytes) {
+                   void* stream, std::string& err, void* borrow, uint64_t borrow_bytes, bool borrow_spill) {
     Impl& m = *impl_;
 #if defined(STRATA_GPU_METAL)
     (void) wt; (void) src; (void) cache; (void) host_res; (void) stream; (void) borrow;
@@ -1109,6 +1111,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     const size_t T = (size_t) chunk;
     m.T_max = chunk;
     m.borrowed = borrow != nullptr;
+    m.borrow_spill = m.borrowed && borrow_spill;
     bool ok = true;
     // one-time: events, the stager, the host buffers (for the largest chunk), the identity page table
     for (int i = 0; i < ring_cap(); ++i) {
@@ -1198,6 +1201,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     Alloc o;
     o.base = (uint8_t*) borrow;
     o.cap = borrow_bytes;
+    o.spill = m.borrow_spill;
     o.owned = &m.owned;
     {
         uint16_t* gs = o.take<uint16_t>((size_t) GEMM_SCRATCH, ok);
@@ -1244,9 +1248,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     if (bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     {
@@ -1328,6 +1330,10 @@ bool Prefill::carve(size_t T, void* alloc) {
 
 bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err) {
     Impl& m = *impl_;
+    if (m.borrow_spill) {
+        err = "prefill: a hybrid borrowed/owned layout cannot be changed between requests";
+        return false;
+    }
     if (!m.borrowed || borrow == nullptr || chunk <= 0 || chunk > m.T_max) {
         err = "prefill: relayout needs borrowed buffers and a chunk of at most " + std::to_string(m.T_max);
         return false;
@@ -1448,9 +1454,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     if (!mtp.idle(err)) return false;   // the drafter's own stream (its graph uploads) before this writes its K/V
     const double ms_idle = ms_since(ti0);
     const auto tl0 = Clock::now();
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     std::vector<int32_t> tk((size_t) B);
     if (q8) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
@@ -1885,9 +1889,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     if (bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
@@ -2076,9 +2078,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     // read once (STRATA_KV_PREFETCH=1/0: the next streamed layer's KV prefix is staged on its own stream)
     static const bool kv_prefetch_on = [] {
         const char* e = std::getenv("STRATA_KV_PREFETCH");

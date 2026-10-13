@@ -2642,7 +2642,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     has_archs = set(archs) <= set(meta.get("archs", []))
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
-        (meta.get("isa_floor") or "") == floor
+        (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
     vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
@@ -2671,6 +2671,10 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
                  f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
+    if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
+        fail(f"the engine build finished without a new engine ({EXE} is version "
+             f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "
+             "the installed engine is left as it was", "delete the folder build-hip and run this again")
     shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
@@ -3108,7 +3112,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                      "starting the installed one")
         return
     if meta.get("backend") == "hip":                   # AMD: compiled here, again when its source changed
-        if meta.get("src") != source_hash(ENGINE_SOURCES):
+        if meta.get("src") != source_hash(ENGINE_SOURCES) or stale_binary(eng / EXE):
             try:
                 usable = [x for x in amd_gpus() if amd_problem(x) is None]
                 g = next((x for x in usable if x["arch"] in meta.get("archs", [])), usable[0] if usable else None)
@@ -3125,7 +3129,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
-        if meta.get("src") == source_hash(ENGINE_SOURCES) and \
+        if meta.get("src") == source_hash(ENGINE_SOURCES) and not stale_binary(eng / EXE) and \
                 (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
             return
     elif ver >= MIN_ENGINE:
@@ -3208,6 +3212,14 @@ def sm120_nvcc(nvcc, cuda_v, archs):
     return nvcc, cuda_v
 
 
+def cuda_apt_repo(osr):
+    """The NVIDIA apt repo for this distribution ("ubuntu2404", "debian13") from /etc/os-release, or None when it is
+    not one setup adds the CUDA keyring for.  Both families publish cuda-keyring and CUDA 13.x."""
+    ver = osr.get("VERSION_ID", "").strip('"').replace(".", "")
+    repo = {"ubuntu": "ubuntu", "debian": "debian"}.get(osr.get("ID", ""), "") + ver
+    return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -3266,16 +3278,25 @@ def install_build_tools(gpu, yes):
             run(["sudo", "apt-get", "install", "-y", "build-essential"])
         if nvcc is None or cuda_v < need_cuda:
             osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
-            ver = osr.get("VERSION_ID", "").strip('"').replace(".", "")
-            if osr.get("ID") != "ubuntu" or ver not in ("2204", "2404"):
-                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 only",
+            repo = cuda_apt_repo(osr)
+            if repo is None:
+                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
             deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ver}/x86_64/cuda-keyring_1.1-1_all.deb",
+            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
+                run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            else:
+                # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
+                for minor in range(10):
+                    if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
+                        break
+                else:
+                    fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
+                         "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
@@ -3400,7 +3421,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     new_arch = local and not set(archs) <= built
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
-        (meta.get("isa_floor") or "") == floor
+        (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
@@ -3421,6 +3442,10 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
+        if stale_binary(bdir / EXE):                      # #2054: the stamp below is written only for a binary of this source
+            fail(f"the engine build finished without a new engine ({EXE} is version {binary_engine_version(bdir / EXE)}, "
+                 f"this source is {source_version()}): the installed engine and its stamp are left as they were",
+                 "the build folder " + str(bdir) + " may be configured for something else: delete it and run this again")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
@@ -4031,6 +4056,18 @@ def choices_from_config(cfg_path: Path) -> dict:
                 vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
 
 
+def calibration_targets(have: list, model: str | None, family: str | None) -> list:
+    """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
+    if not (model or family):
+        return list(have)
+    out = []
+    for c in have:
+        ch = choices_from_config(c)
+        if (not model or ch["model"] == model) and (not family or ch["family"] == family):
+            out.append(c)
+    return out
+
+
 def find_in(roots: list, rel: str):
     """The first of roots/rel that exists."""
     for r in roots:
@@ -4065,6 +4102,24 @@ def source_version() -> str:
     """The engine version the source tree builds (CMakeLists.txt's project version)."""
     m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
     return m.group(1) if m else "0"
+
+
+def binary_engine_version(exe) -> str | None:
+    """The version compiled into an engine binary (the `engine=X.Y.Z` line it prints at start; 0.1.13 and newer carry
+    it), read from the file without running it.  None: unreadable, or a binary without it."""
+    try:
+        m = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", Path(exe).read_bytes())
+    except OSError:
+        return None
+    return m.group(1).decode() if m else None
+
+
+def stale_binary(exe) -> bool:
+    """#2054: the engine binary is of another version than this source tree builds.  A BUILD.json that carries the
+    source's hash and version cannot be trusted alone: a build that stopped (a host compiler the toolkit rejects) can
+    leave the old binary beside a stamp of the new source, and nothing would ever compile it again."""
+    v = binary_engine_version(exe)
+    return v is not None and v != source_version()
 
 
 def engine_version(exe: Path) -> tuple:
@@ -4234,10 +4289,10 @@ def update_install(have: list, a) -> int:
                 "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
     if not a.build:
         update_installed_engine(a.prebuilt)
+    mtp_done: set = set()
     for cfg_path in have:
         cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
-        if "--mtp" in cfg["args"][:-1]:
-            refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
+        refresh_shared_draft_vocab(cfg, mtp_done)
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
@@ -4641,6 +4696,25 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
     shutil.copyfile(new, dst)
 
 
+def refresh_shared_draft_vocab(cfg: dict, done: set) -> None:
+    """update_install's draft subset of one config, for configs taken most recently used first (installed_configs'
+    order): an MTP folder already in `done` is left alone.  Several configs can name one MTP folder (a second config of
+    the same model: another GPU mode, another context), each with its own "draft_vocab".  Refreshed once per config,
+    the folder ended with the subset of the config used LONGEST ago: a config without the key (cjk) put the default
+    subset over the cyrillic one of the config in use, and its Russian answers were drafted without Cyrillic tokens.
+    The folder takes the subset of the most recently used config that names it; a start still installs its own
+    config's."""
+    args = cfg.get("args") or []
+    if "--mtp" not in args[:-1]:
+        return
+    rt = Path(args[args.index("--mtp") + 1])
+    key = os.path.normcase(os.path.abspath(rt))
+    if key in done:
+        return
+    done.add(key)
+    refresh_draft_vocab(rt, cfg.get("draft_vocab", "cjk"))
+
+
 def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """The installed engine must have code for every card the model starts on: a card added later (--gpus with an
     older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
@@ -4964,7 +5038,17 @@ def main() -> int:
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = start_gpus(a.gpus) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
-    if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
+    if a.calibrate and (a.setup or a.check or not have):    # #2036: said, not dropped
+        why = ("--setup" if a.setup else "--check" if a.check else "no model is installed yet")
+        warn(f"--calibrate does nothing with {why}: it tunes a model that is already installed. Run setup first, "
+             "then " + ("START-HERE.bat" if WIN else "./setup.sh") + " --calibrate [--model NAME]")
+    if have and a.calibrate and not (a.setup or a.check):
+        targets = calibration_targets(have, a.model, a.family)
+        if not targets:                                # #2036: --model names a model that is not installed
+            names = ", ".join(sorted({choices_from_config(c)["model"] or c.stem for c in have}))
+            fail(f"--calibrate: {a.model or a.family} is not installed (installed: {names})",
+                 "calibrate an installed model, or set this one up first without --calibrate")
+        have = targets
         if not a.build:
             update_installed_engine(a.prebuilt)
         pick_cfg = have[0]

@@ -2,10 +2,17 @@
 #include "strata/core/batch_rows.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#include "strata/core/host_graph_launch.hpp"
+#endif
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <intrin.h>
 #endif
 
@@ -318,15 +325,7 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    return s;
-}
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);
@@ -1909,7 +1908,14 @@ bool Verifier::capture(int T, std::string& err) {
             if (ty == hipGraphNodeTypeKernel) {
                 hipKernelNodeParams kp{};
                 if (hipGraphKernelNodeGetParams(nd, &kp) == hipSuccess && kp.func != nullptr) {
+#if defined(_WIN32)
+                    using Fn_hipKernelNameRefByPtr = const char* (*)(const void*, hipStream_t);
+                    static auto p_hipKernelNameRefByPtr = reinterpret_cast<Fn_hipKernelNameRefByPtr>(
+                        GetProcAddress(GetModuleHandleA("amdhip64_7.dll"), "hipKernelNameRefByPtr"));
+                    const char* fn = p_hipKernelNameRefByPtr ? p_hipKernelNameRefByPtr(kp.func, nullptr) : nullptr;
+#else
                     const char* fn = hipKernelNameRefByPtr(kp.func, nullptr);
+#endif
                     if (fn != nullptr) name = fn;
                 }
             } else if (ty == hipGraphNodeTypeMemcpy) name = "memcpy";
@@ -2197,10 +2203,25 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
     if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
         !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
+    static const bool threaded_launch = [] {
+        const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
+        return value != nullptr && value[0] == '1';
+    }();
+    HostGraphLaunch launch(ar_off_ ? exec_nr_[T] : exec_[T], cs_, device_, threaded_launch,
+                           [this] { (void) release_gpu_waits(5000); });
+    const cudaError_t le = launch.status();
+#else
     const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[T] : exec_[T], cs_);
+#endif
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    (void) launch.query();
+#else
     (void) cudaStreamQuery(cs_);
+#endif
     VDBG("launched\n");
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
@@ -2234,7 +2255,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
                 last_flush = now;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+                const cudaError_t q = launch.query();
+#else
                 const cudaError_t q = cudaStreamQuery(cs_);
+#endif
                 if (q != cudaErrorNotReady && *seq < want) {
                     trace_ev("NEVER-RANG", k, l, (int64_t) q);
                     trace_dump(stderr);
@@ -2245,7 +2270,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
             if (now - a > std::chrono::seconds(20)) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+                trace_ev("TIMEOUT", k, l, (int64_t) launch.query());
+#else
                 trace_ev("TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
+#endif
                 if (g_trace) {
                     diag(stderr);   // the words and the breadcrumbs before the release ...
                     const bool drained = release_gpu_waits(5000);
@@ -2310,6 +2339,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // spin kernel outlives the process - the case that left Windows GPUs "lost" until a power cycle.  The wait
     // itself stays a blocking sync: a cudaStreamQuery poll here cost IQ3_S ~3% decode (a core calling the driver
     // beside the expert workers).
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    const cudaError_t launch_result = launch.finish();
+    if (launch_result != cudaSuccess) {
+        err = std::string("verify: launch: ") + cudaGetErrorString(launch_result);
+        return false;
+    }
+#endif
     trace_ev("SYNC", -1, -1, 0);
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);

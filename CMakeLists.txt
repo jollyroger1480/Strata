@@ -99,6 +99,9 @@ endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
+# #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
+# native-experts section far below, so a first configure registered four tests fewer than the second)
+option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -254,6 +257,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_read_test tests/program/batch_read_test.cpp)
   target_include_directories(batch_read_test PRIVATE include)
   add_test(NAME batch_read_test COMMAND batch_read_test)
+  # the model's geometry from its metadata, and the check against the kernels' compiled shape (synthetic)
+  add_executable(gguf_geometry_test tests/core/gguf_geometry_test.cpp)
+  target_link_libraries(gguf_geometry_test PRIVATE strata_artifact)
+  add_test(NAME gguf_geometry_test COMMAND gguf_geometry_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
@@ -476,6 +483,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+    add_executable(host_graph_launch_test tests/core/host_graph_launch_test.cu)
+    target_include_directories(host_graph_launch_test PRIVATE include)
+    target_link_libraries(host_graph_launch_test PRIVATE CUDA::cudart Threads::Threads)
+    add_test(NAME host_graph_launch_test COMMAND host_graph_launch_test)
+    set_tests_properties(host_graph_launch_test PROPERTIES TIMEOUT 30)
+  endif()
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exchange_storage_test.cpp")
     add_executable(exchange_storage_test tests/core/exchange_storage_test.cpp)
     target_include_directories(exchange_storage_test PRIVATE include)
@@ -779,6 +793,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
+    # the wide dequant kernels (a thread per 8 values; sm_61's default), bitwise vs the per-group ones (GPU, synthetic,
+    # no model; --bench adds old/new timings)
+    add_executable(dequant_wide_parity src/kernels/dequant_wide_parity.cpp)
+    target_include_directories(dequant_wide_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dequant_wide_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME dequant_wide_parity COMMAND dequant_wide_parity)
   endif()
   # programmatic dependent launch (pdl.hpp) in a captured verify-shaped chain: bitwise vs ordinary launches over
   # replays with poisoned buffers, and only kernel-to-kernel programmatic edges (GPU, synthetic, no model; the edges
@@ -818,6 +838,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(gemm_bf16_parity src/prefill/gemm_bf16_parity.cu)
     target_link_libraries(gemm_bf16_parity PRIVATE strata_prefill )
     add_test(NAME gemm_bf16_parity COMMAND gemm_bf16_parity)
+    # Pascal, opt-in STRATA_DENSE_F32=1: the dense projections' FP16 GEMMs as cublasSgemm on FP32 copies, bitwise vs
+    # the cuBLAS FP16 call over a sweep of chunk sizes (GPU, synthetic, no model; --full sweeps every size, --bench
+    # adds timings).  Not a ctest: whether the two agree is a property of the cuBLAS build, which this checks.
+    add_executable(gemm_f32_parity src/prefill/gemm_f32_parity.cu)
+    target_link_libraries(gemm_f32_parity PRIVATE strata_prefill )
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
@@ -1207,7 +1232,6 @@ target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
 # weight means exactly what it means in llama.cpp.  ggml is built static from a llama.cpp checkout: a local one
 # with -DSTRATA_GGML_DIR=..., otherwise the pinned upstream commit (third_party/ggml/VERSION.txt).
-option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
 set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
 if(STRATA_PREFILL_MMQ AND NOT STRATA_NATIVE_EXPERTS)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_NATIVE_EXPERTS=ON for GGML sources")

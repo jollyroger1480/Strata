@@ -52,6 +52,35 @@ struct SharedArenaHeader {
 };
 static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
 
+#ifndef _WIN32
+// bytes in free blocks of 2 MiB or more (/proc/buddyinfo, order >= 9): what MADV_HUGEPAGE can get without compaction
+uint64_t free_huge_bytes() {
+    uint64_t total = 0;
+    if (std::FILE* f = std::fopen("/proc/buddyinfo", "r")) {
+        char line[512];
+        while (std::fgets(line, sizeof line, f) != nullptr) {
+            const char* z = std::strstr(line, "zone");
+            if (z == nullptr) continue;
+            const char* q = z + 4;
+            while (*q == ' ') ++q;
+            while (*q != '\0' && *q != ' ') ++q;   // the zone's name
+            unsigned long long c[11] = {0};
+            int n = 0;
+            for (; n < 11; ++n) {
+                char* e = nullptr;
+                const unsigned long long v = std::strtoull(q, &e, 10);
+                if (e == q) break;
+                c[n] = v;
+                q = e;
+            }
+            for (int o = 9; o < n; ++o) total += c[o] * (4096ull << o);
+        }
+        std::fclose(f);
+    }
+    return total;
+}
+#endif
+
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
 // A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
@@ -60,6 +89,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
               uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
     mapping_base = nullptr;
     mapping_bytes = 0;
+
 #ifdef _WIN32
     if (!shared_file.empty()) {
         note = "shared-file arena backing is not implemented on Windows";
@@ -261,6 +291,19 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         note += std::getenv("STRATA_NO_ARENA_THP") != nullptr
                     ? "; transparent huge pages skipped (STRATA_NO_ARENA_THP)"
                     : "; transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested";
+    } else if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && std::getenv("STRATA_ARENA_THP") == nullptr &&
+               free_huge_bytes() < bytes / 2) {
+        // #2126: THP "madvise" + defrag "madvise" makes every fault of a MADV_HUGEPAGE mapping reclaim and compact
+        // until it finds a 2 MiB block.  When less than half of the arena could be backed by blocks that are free
+        // now (a 62 GB box holding 47 GB of anonymous memory: 148K failed compactions, 100% system time, the load
+        // never ended), that is minutes of kernel work per GiB for a TLB gain.  Said, and STRATA_ARENA_THP=1 asks for it anyway.
+        const std::string four_k = "; using 4 KB pages";
+        if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
+            note.resize(note.size() - four_k.size());
+        note += "; transparent huge pages NOT requested: only " + std::to_string(free_huge_bytes() >> 30) +
+                " GiB of free 2 MiB blocks for a " + std::to_string(bytes >> 30) +
+                " GiB arena, compaction would stall the load (STRATA_ARENA_THP=1 requests them anyway) (#2126)";
+        std::fprintf(stderr, "strata: expert arena: %s\n", note.c_str());   // said now: the load that follows can take minutes
     } else if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
