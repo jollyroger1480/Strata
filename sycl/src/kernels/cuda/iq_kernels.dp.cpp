@@ -4518,8 +4518,9 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
     check("iq_mmvq");
 }
 
-void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {
-    if (n % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
+void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream, const float* scale) {
+    // scale: NVFP4's s_down (CUDA only; the SYCL port has no NVFP4 experts, so it is never given here)
+    if (n % 256 != 0 || !is_iq(t) || scale != nullptr) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
     {
 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -4616,9 +4617,11 @@ void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream)
     check("iq_dequant_f32");
 }
 
-void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream) {
+void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream,
+                       const float* tail) {
     // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
-    if (n_embd % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
+    // (tail: NVFP4's per-expert scales, CUDA only - never given on SYCL)
+    if (n_embd % 256 != 0 || !is_iq(t) || tail != nullptr) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
     const int64_t per_row = n_embd / 256;
     {
 

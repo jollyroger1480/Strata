@@ -2934,7 +2934,8 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     check("gather_rows16");
 }
 void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream) {
+                 int64_t T, void* stream, const float* row_sd) {
+    if (row_sd != nullptr) { std::fprintf(stderr, "moe_combine: per-row scales (NVFP4) are CUDA only\n"); std::exit(1); }
 #ifndef STRATA_W_NO_COMB
     if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared) | reinterpret_cast<uintptr_t>(bo)) & 15) == 0) {
         {
