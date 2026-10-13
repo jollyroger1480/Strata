@@ -661,6 +661,20 @@ Shipped tables:
   no fallbacks over prompts of 28-7,880 tokens. Setup does not use it (it does not install for gfx1150): point
   `STRATA_HIPBLASLT_TUNING` at it. Measurements and the per-row timings:
   [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+- `gfx1103-hipblaslt-100401.txt`: Radeon 780M (gfx1103, RDNA3, 12 CUs, unified memory), calibrated with ROCm 10.1
+  (`rocm/dev-ubuntu-24.04:10.1.0-full`, hipBLASLt 1.4.1, version number 100401) and the engine's 32 MiB workspace. The
+  16 dense GEMM geometries a Qwen3.8-Flash-Next prompt logs on the card at T = 64, 128, ..., 16384: 144 cases, two
+  `tune_hipblaslt` passes back to back, each row the solution with the lowest median of all six repetitions. One row
+  is left out (`bf16 N=1 K=2560 T=64`: no candidate beat plain hipBLAS at 0.04 ms), so the table has **143 rows**,
+  1.05-23.30x per GEMM, geometric mean 4.95x. Without it the engine prefills on plain hipBLAS: a 4K prompt on Q2_0
+  read 90 tok/s, 187 with the table and 277 with the WMMA opt-ins (one 780M; 32K context, MTP). The merged table
+  prefilled the 4K prompt at 187.2 tok/s. A context ladder to 131K (shipping configuration, fresh prompts) puts the
+  full 128K read at 198-221 tok/s, its last ~14K at ~206, and decode at ~10 tok/s at that depth; the numbers are in
+  the report folder. `hip_prefill_hipblaslt_gemm` reports `fallbacks=0`;
+  `hip_prefill_hcd_exact_parity` skips, because the table picks no 1176 / 1177 for the HC down GEMM (the skip the
+  gfx1150 table gets too). Setup installs for gfx1103 only with `STRATA_EXPERIMENTAL_GFX1103=1` and then uses the
+  table when the installed hipBLASLt reports 1.4.1. Measurements:
+  [bench/results/2026-10-12-community-gfx1103](../bench/results/2026-10-12-community-gfx1103/README.md).
 
 Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
 R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,
