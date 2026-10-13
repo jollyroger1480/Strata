@@ -75,18 +75,20 @@ run: byte-identical rows):
 | UD-Q6_K_XL | 94.61% | 0.033 | 0.494 | 4.020 |
 | UD-Q5_K_XL | 94.55% | 0.038 | 0.636 | 4.024 |
 | UD-Q4_K_XL | 93.09% | 0.056 | 0.829 | 4.068 |
+| UD-IQ4_XS | 88.91% | 0.101 | 1.596 | 4.120 |
 | IQ3_S | 87.69% | 0.144 | 1.975 | 4.097 |
 | IQ3_XXS | 84.46% | 0.202 | 2.433 | 4.119 |
 | Q2_0 | 80.60% | 0.315 | 3.643 | 4.475 |
 
-UD-IQ4_XS follows. The same file on another backend is not the same answers: UD-Q4_K_XL on an RTX A4000 (CUDA, the RAM
+The same file on another backend is not the same answers: UD-Q4_K_XL on an RTX A4000 (CUDA, the RAM
 budget mode of a 62 GB PC) against UD-Q4_K_XL on the R9700 is 94.5% the same top token (KL 0.038), mostly near-ties.
 
 **The prompt path:** `tools/quant_quality.py prompt` / `pcompare` score the batched prompt path the same way (20 prompts
 of 256-1,000 tokens of the set, the full vocabulary's KL of the next token's distribution against Q8_0's): every
 quant above picks Q8_0's top token after all 20 prompts. The K-quants' MMQ kernels (`STRATA_MMQ_KQ=1`) against the FP16
 path on the R9700: UD-Q4_K_XL mean KL 0.095 / median 0.0027 (FP16: 0.081 / 0.0047), UD-Q5_K_XL 0.038 / 0.00055 (FP16:
-0.025 / 0.0016) - a better median, a worse mean (a few prompts), so it stays opt-in.
+0.025 / 0.0016), UD-Q6_K_XL 0.028 / 0.00029 (FP16: 0.029 / 0.00069) - a better median everywhere, a worse mean on Q4/Q5
+(a few prompts), so it stays opt-in.
 
 ## Speed, and the bound
 
@@ -131,7 +133,20 @@ faster, the same bits as two (R9700: 2560 -> 10240 / 6144 / 12288 at 76-86% of 6
 
 **NVIDIA with the RAM budget** (RTX A4000 16 GB, Xeon E5-2643 v3, 62 GB: UD-Q4_K_XL with 39 GiB of its experts in RAM,
 the rest read from an NVMe SSD at 2.1 GB/s): 14-20 tokens/s and a 4K prompt at 134-144 tokens/s, bound by the SSD;
-llama.cpp on the same PC and file 14.8-16.5 / 117-123.
+llama.cpp on the same PC and file 14.8-16.5 / 117-123. `STRATA_PROMPT_DIRECT=1` (Linux, opt-in) reads the prompt
+path's experts unbuffered while decode keeps the file cache: the same output (6 of 6 prompts identical with fixed
+flags), the 4K prompt 152 -> 315 tokens/s, a 20K prompt 217 -> 500, decode +2-15% (5 interleaved pairs, page cache
+dropped before each run). Reading everything unbuffered (`STRATA_UNBUFFERED_LOAD=1`) doubled the prompt too but cost
+decode 9-13%; a larger or smaller RAM budget, more fetch threads, a deeper read-ahead or a wider look-ahead did not
+help.
+
+**Several cards** (R9700 box, every expert in RAM, layer split, 2 runs each): UD-Q4_K_XL on 1 / 2 / 3 / 4 cards writes
+63 / 64 / 55 / 52 tokens/s on the short story and 88 / 96 / 123 / 96 on code, and reads a 32K prompt at 1,110 /
+1,275 / 1,987 / 2,381 tokens/s; UD-Q5_K_XL 57 / 60 / 62 / 46 and 83 / 94 / 101 / 89, prompt 1,264 / 1,177 / 1,767 /
+2,067. llama.cpp on 3 / 4 cards: 24.5 / 28.2 tokens/s and 497 / 800 (4K prompt) for UD-Q4_K_XL. More cards read
+prompts faster; for short answers the split's per-stage cost outweighs the experts it keeps in VRAM, since one card with
+every expert in RAM is already fast (`--pipeline-windows 0` helps short answers at 3-4 cards, x1.3, and costs code
+6-20%).
 
 **Every expert in RAM against the old RAM budget** (setup's new rule, R9700 box, UD-Q4_K_XL, 5 interleaved pairs, the
 old config's `--resident-budget-gib 71` holding the same experts read from the GGUF in place): decode x1.34-1.40 (short

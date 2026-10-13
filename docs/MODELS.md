@@ -130,7 +130,7 @@ on an NVIDIA card of 16 GB or more (and on AMD with the CPU encoder where the ex
 
 | Size | Download | Experts | RAM for all of them in RAM | Same top token as Q8_0 | AMD R9700 (32 GB): story / code / 32K prompt |
 | --- | ---: | ---: | ---: | ---: | --- |
-| **UD-IQ4_XS** (setup's first) | 94 GB | 55 GiB | ~72 GB | (measured next) | - |
+| **UD-IQ4_XS** (setup's first) | 94 GB | 55 GiB | ~72 GB | 88.9% | - |
 | **UD-Q4_K_XL** | 111 GB | 72 GiB | ~88 GB | 93.1% | 63 / 87 tok/s / 1,110-1,320 tok/s |
 | **UD-Q5_K_XL** | 158 GB | 92 GiB | ~108 GB | 94.6% | 57-60 / 82 / 810-1,260 |
 | **UD-Q6_K_XL** | 169 GB | 102 GiB | ~118 GB | 94.6% | 54 / 76 / 1,020 |
