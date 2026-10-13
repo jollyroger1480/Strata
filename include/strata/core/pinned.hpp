@@ -140,7 +140,11 @@ struct PadMap {
 /// arena under WDDM, even on large pages; a layer boundary inside a page puts that page in both registrations).
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready = nullptr, const PadMap* pad = nullptr);
+                              const std::atomic<int>* ready = nullptr);
+/// (an overload, not a default argument: the SYCL build has its own pinned.dp.cpp that defines the signature above only)
+LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready, const PadMap* pad);
 
 /// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
 /// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =
