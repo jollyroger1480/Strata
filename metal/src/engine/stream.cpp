@@ -5,6 +5,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -62,6 +63,54 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
         const gguf::Tensor* d = f.find(b + "ffn_down_exps.weight");
         if (!g || !u || !d) { err = "metal stream: layer " + std::to_string(l) + " has no routed experts"; return false; }
         lay_[(size_t) l] = {g->offset, g->bytes / NE, u->offset, u->bytes / NE, d->offset, d->bytes / NE, -1};
+    }
+    // the expert-contiguous copy beside the GGUF, when it is this GGUF's (sizes in its header) and its first and
+    // last experts match the GGUF's bytes
+    if (env_int("STRATA_METAL_CONTIG", 1) != 0) {
+        const std::string cp = f.path + ".experts";
+        const int cfd = ::open(cp.c_str(), O_RDONLY);
+        bool ok = cfd >= 0;
+        std::vector<uint64_t> off(NL);
+        if (ok) {
+            uint8_t h[64];
+            std::vector<uint64_t> t((size_t) NL * 4);
+            struct stat st {};
+            ::fstat(fd_, &st);
+            ok = ::pread(cfd, h, 64, 0) == 64 && std::memcmp(h, "STRX", 4) == 0 &&
+                 ::pread(cfd, t.data(), t.size() * 8, 64) == (ssize_t) (t.size() * 8);
+            uint32_t ver = 0, nl = 0, ne = 0;
+            uint64_t src = 0;
+            std::memcpy(&ver, h + 4, 4); std::memcpy(&nl, h + 8, 4); std::memcpy(&ne, h + 12, 4); std::memcpy(&src, h + 16, 8);
+            ok = ok && ver == 1 && nl == (uint32_t) NL && ne == (uint32_t) NE && src == (uint64_t) st.st_size;
+            for (int l = 0; ok && l < NL; ++l) {
+                const Lay& x = lay_[(size_t) l];
+                ok = t[(size_t) l * 4 + 1] == x.gs && t[(size_t) l * 4 + 2] == x.us && t[(size_t) l * 4 + 3] == x.ds;
+                off[(size_t) l] = t[(size_t) l * 4];
+            }
+            if (ok) {   // spot check: layer 0's first and layer 47's last expert, every slice
+                for (const int l : {0, NL - 1}) {
+                    const Lay& x = lay_[(size_t) l];
+                    const int e = l == 0 ? 0 : NE - 1;
+                    std::vector<uint8_t> a(x.gs + x.us + x.ds), b(a.size());
+                    ok = ok && ::pread(cfd, a.data(), a.size(), (off_t) (off[(size_t) l] + (uint64_t) e * a.size())) == (ssize_t) a.size() &&
+                         ::pread(fd_, b.data(), x.gs, (off_t) (x.g + (uint64_t) e * x.gs)) == (ssize_t) x.gs &&
+                         ::pread(fd_, b.data() + x.gs, x.us, (off_t) (x.u + (uint64_t) e * x.us)) == (ssize_t) x.us &&
+                         ::pread(fd_, b.data() + x.gs + x.us, x.ds, (off_t) (x.d + (uint64_t) e * x.ds)) == (ssize_t) x.ds &&
+                         a == b;
+                }
+            }
+        }
+        if (ok) {
+            fcntl(cfd, F_NOCACHE, 1);
+            fcntl(cfd, F_RDAHEAD, 0);
+            cfd_ = cfd;
+            coff_ = off;
+            std::fprintf(stderr, "strata metal stream: experts read from %s (one request per expert)\n", cp.c_str());
+        } else if (cfd >= 0) {
+            ::close(cfd);
+            std::fprintf(stderr, "strata metal stream: %s is not this GGUF's (sizes or bytes differ): the GGUF is read\n",
+                         cp.c_str());
+        }
     }
     // size classes: one LRU pool per class.  The layers' slot sizes (9 in the IQ3_XXS mix) are merged into a few
     // classes, each as big as its largest member, so that no member wastes more than STRATA_METAL_CLASS_WASTE (default
@@ -215,6 +264,23 @@ int ExpertStream::victim(int ci) {
 // SSD's throughput, is what a layer waits for).
 void ExpertStream::read_part(int s, int l, int e, int part) {
     const Lay& x = lay_[(size_t) l];
+    if (cfd_ >= 0) {   // the contiguous copy: the whole expert, piece part of split_ (the slot keeps gate | up | down)
+        const uint64_t len = x.gs + x.us + x.ds, src = coff_[(size_t) l] + (uint64_t) e * len;
+        const uint64_t a = len * (uint64_t) part / (uint64_t) split_ / 4096 * 4096;
+        const uint64_t b = part + 1 == split_ ? len : len * (uint64_t) (part + 1) / (uint64_t) split_ / 4096 * 4096;
+        uint8_t* p = host_[(size_t) s] + a;
+        uint64_t n = b - a, o = src + a;
+        while (n > 0) {
+            const ssize_t r = ::pread(cfd_, p, (size_t) n, (off_t) o);
+            if (r <= 0) {
+                std::fprintf(stderr, "strata metal stream: reading expert %d of layer %d failed\n", e, l);
+                std::exit(6);
+            }
+            p += r; o += (uint64_t) r; n -= (uint64_t) r;
+        }
+        bytes_read_ += b - a;
+        return;
+    }
     const int k = part / split_, p = part % split_;
     const uint64_t len = k == 0 ? x.gs : (k == 1 ? x.us : x.ds);
     const uint64_t src = (k == 0 ? x.g : (k == 1 ? x.u : x.d)) + (uint64_t) e * len;
@@ -262,10 +328,11 @@ void ExpertStream::submit(int s, int l, int e, bool urgent) {
     x.e = (int16_t) e;
     x.state = 1;
     x.pre = !urgent;
-    x.left = 3 * split_;
+    const int parts = cfd_ >= 0 ? split_ : 3 * split_;
+    x.left = parts;
     ++outstanding_;
     where_[(size_t) (l * NE + e)] = s;
-    for (int p = 0; p < 3 * split_; ++p) (urgent ? urgent_q_ : pre_q_).push_back({s, l, e, p});
+    for (int p = 0; p < parts; ++p) (urgent ? urgent_q_ : pre_q_).push_back({s, l, e, p});
 }
 
 // a queued read-ahead nobody wants: its pieces dropped, the slot freed (only before any piece has started)

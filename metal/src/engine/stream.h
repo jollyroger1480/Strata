@@ -89,6 +89,10 @@ private:
     void wait_slot(int s);
 
     int fd_ = -1;
+    // <gguf>.experts (metal/tools/stream_experts.py): each expert's gate, up and down rows together, read with one
+    // request (cfd_ >= 0); else the GGUF's three slices.  STRATA_METAL_CONTIG=0: the GGUF always.
+    int cfd_ = -1;
+    std::vector<uint64_t> coff_;
     std::vector<Lay> lay_;
     std::vector<Cls> cls_;
     std::vector<Slot> slots_;
