@@ -727,7 +727,20 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
-    if (cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess) {
+    bool copy_made = false;
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    // engine-latency, STRATA_COPY_HIP_PRIO=1 (opt-in): the copy stream at high priority, so it gets a hardware queue of
+    // its own (ROCm hands queues out per priority).  Sharing one with the window's stream, --pcie-mode dma's copies and
+    // their host function queue behind the window's graph, which spins on the flag they raise (a timeout at layer 1).
+    {
+        static const bool cp = [] { const char* v = std::getenv("STRATA_COPY_HIP_PRIO"); return v != nullptr && std::atoi(v) != 0; }();
+        int lo = 0, hi = 0;
+        if (cp && hipDeviceGetStreamPriorityRange(&lo, &hi) == hipSuccess)
+            copy_made = hipStreamCreateWithPriority(&copy_, hipStreamNonBlocking, hi) == hipSuccess;
+        (void) cudaGetLastError();
+    }
+#endif
+    if (!copy_made && cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess) {
         err = "verify: copy stream create failed";
         return false;
     }
