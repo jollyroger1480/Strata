@@ -6424,7 +6424,8 @@ int main(int argc, char** argv) {
     // IQ3_XXS: 3,907 slots / 6.38 GiB against 2,068 / 3.37 GiB), and every lent slot's expert is read from the RAM side
     // during the read.  On a 30 GB PC with --resident-experts that was 3.4 GB available, 20 GB in swap, 1.5M major faults
     // and a killed engine on 38-47K prompts; 8192 ran them at 95 tok/s.  The ceiling is the engine's default, not the
-    // user's pick, so when the RAM available now does not cover the extra loan plus 4 GiB the default stays at 8192.
+    // user's pick, so when the RAM available now does not cover the extra loan plus 6 GiB (that PC thrashed with 3.4 GB left and
+    // ran with ~6.4) the default stays at 8192.
     // STRATA_GFX12_CHUNK=1 keeps 16384 anyway.
     if (o.prefill_gfx12_16k && auto_ceiling > 8192) {
         static const char* force16 = std::getenv("STRATA_GFX12_CHUNK");
@@ -6432,14 +6433,24 @@ int main(int argc, char** argv) {
         const uint64_t extra_mib = ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20;
         const auto hm = strata::core::sample_host_memory();   // the cgroup / --memory-limit-mib cap counts too
         const uint64_t avail_mib = hm ? hm->available >> 20 : mem_sample().avail_mib;
-        if (avail_mib > 0 && avail_mib < extra_mib + 4096 && !(force16 != nullptr && force16[0] == '1')) {
+        // --resident-experts pins its RAM copy after this point, and that copy also holds the lent slots' experts: what
+        // has to fit is every expert the cache does not hold plus the 16384 loan (R9700 IQ3_XXS: 23.35 GiB at 16384)
+        uint64_t pin_mib = 0;
+        if (o.resident_cpu_experts) {
+            const uint64_t total = strata::kernels::cpu::expert_layout().total;
+            const uint64_t cached = (uint64_t) std::max<int64_t>(0, (int64_t) xcache.bytes());
+            pin_mib = ((total > cached ? total - cached : 0) +
+                       (uint64_t) std::max<int64_t>(0, lend_slots(8192)) * strata::kernels::cpu::expert_layout().max_blob) >> 20;
+        }
+        if (avail_mib > 0 && avail_mib < pin_mib + extra_mib + 6144 && !(force16 != nullptr && force16[0] == '1')) {
             auto_ceiling = std::min<int64_t>(auto_ceiling, 8192);
             o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, 8192);
             o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, 8192);
             std::fprintf(stderr, "strata generate: gfx12: prompt chunks stay at 8192: 16384 would lend %lld more cache slots "
-                                 "(%llu MiB read from RAM during a prompt) and %llu MiB of RAM is available (#2090; "
-                                 "STRATA_GFX12_CHUNK=1 takes 16384 anyway)\n",
-                         (long long) extra_slots, (unsigned long long) extra_mib, (unsigned long long) avail_mib);
+                                 "(%llu MiB more held in RAM during a prompt), and %llu MiB of RAM is available for %llu MiB "
+                                 "of resident experts plus that (#2090; STRATA_GFX12_CHUNK=1 takes 16384 anyway)\n",
+                         (long long) extra_slots, (unsigned long long) extra_mib, (unsigned long long) avail_mib,
+                         (unsigned long long) pin_mib);
         }
     }
     if (o.prefill_auto_cap > 0) auto_ceiling = std::min<int64_t>(auto_ceiling, o.prefill_auto_cap);   // #1630
