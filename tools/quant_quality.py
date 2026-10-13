@@ -41,7 +41,7 @@ FIXED_ENV = {"STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_PREFILL_CPU_SHARE": "0", "ST
 # config args the yardstick replaces (value-taking) or drops (flags)
 DROP_VALUE = {"--expert-cache", "--adapt-every", "--pcie-frac", "--suffix-draft", "--prompt-cache", "--max-context",
               "--prefill", "--prompt-cache-every", "--short-read", "--conversation-cache-mib", "--eos-ids",
-              "--resident-budget-gib", "--kv", "--kv-resident"}
+              "--kv", "--kv-resident"}   # (--resident-budget-gib stays: a PC whose RAM does not hold the experts)
 DROP_FLAG = {"--serve", "--vision", "--resident-experts", "--resident-cpu-experts"}
 
 
@@ -81,7 +81,7 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
-def engine_args(cfg: dict, gpu_experts: bool, seg_tokens: int) -> list[str]:
+def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -95,7 +95,7 @@ def engine_args(cfg: dict, gpu_experts: bool, seg_tokens: int) -> list[str]:
         i += 1
     fixed = list(FIXED)
     if gpu_experts:
-        fixed[1] = "1500"
+        fixed[1] = gpu_experts if isinstance(gpu_experts, str) else "1500"
     return [cfg["exe"], "--serve", *out, *fixed, "--max-context", str(seg_tokens + 512),
             "--short-read", str(seg_tokens + 64), "--prefill", "512"]
 
@@ -351,7 +351,8 @@ def main() -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--ids", default=str(SET_DIR / "set.ids.json"))
     p.add_argument("--env", action="append")
-    p.add_argument("--gpu-experts", action="store_true", help="--expert-cache 1500 instead of one slot (the experts on the GPU kernels)")
+    p.add_argument("--gpu-experts", nargs="?", const=True, default=False,
+                   help="--expert-cache 1500 (or the N given, e.g. auto) instead of one slot (the experts on the GPU kernels)")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap", help="a command prefix for the engine, e.g. 'systemd-run --user --scope -p MemoryMax=200G'")
     p = sub.add_parser("prompt", help="the batched prompt path's next-token logits after 20 prompts (a directory)")

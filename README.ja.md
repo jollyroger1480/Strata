@@ -128,8 +128,10 @@ NVIDIA でも AMD でも手順は同じです。インストーラーがカー�
   回答の品質をほぼ保ったまま、より短い時間で答えが返ってきます。
 - **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs)：** Unsloth による約 4-bit のモデルです。回答の品質は IQ3_S と UD-Q4_K_XL の中間です。
   ダウンロード容量は 94 GB です。RAM が約 80 GB 未満の場合、回答の生成中にモデルの一部を SSD から読み込むため、速度が落ちます（NVMe SSD を使うと改善します）。
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)**（試験的）：回答の品質がフルモデルに最も近いモデルです。
-  ただし、回答の生成中にモデルの大部分を SSD から読み込むため、RAM が 64 GB の PC では毎秒 7-8.5 トークン程度の速度になります。
+- **[Unsloth UD-Q4_K_XL / UD-Q5_K_XL / UD-Q6_K_XL / Q8_0](docs/MODELS.md#unsloths-files-ud-iq4_xs-to-q8_0)：** 4〜8 ビットで、フルモデルにより近いモデルです
+  （次のトークンが Q8_0 と一致する割合は 93〜95%）。すべてのエキスパートが RAM に収まる場合（UD-Q4_K_XL で約 88 GB、
+  Q8_0 で約 136 GB）は高速です。RAM が足りない場合は回答の生成中に一部を SSD から読み込むため、大幅に遅くなります
+  （RAM が 64 GB の PC で UD-Q4_K_XL は毎秒 7-8.5 トークン程度）。
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)：** 手動でのセットアップが必要です。
   インストーラーのメニューからは選べません。
 

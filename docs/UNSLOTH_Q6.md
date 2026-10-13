@@ -1,7 +1,9 @@
-# Unsloth UD-Q6_K_XL (experimental)
+# Unsloth UD-Q6_K_XL
 
-**Experimental; manual workflow only — setup does not offer this model yet.** This is Unsloth's 6-bit file of the
-same model the other packs use:
+**In setup since MODEL-UPDATE Phase 2** (`START-HERE.bat --setup --family unsloth --model UD-Q6_K_XL`, engine 0.1.44 or
+newer: every expert in RAM from ~118 GB, else it asks and keeps a RAM budget; quality, speed and images in
+[QUANTS.md](QUANTS.md); UD-Q5_K_XL and Q8_0 likewise). The manual workflow below still works. This is Unsloth's 6-bit
+file of the same model the other packs use:
 [unsloth/Qwen3.8-Flash-Next-GGUF, `UD-Q6_K_XL`, revision `38bb39e`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q6_K_XL).
 Build it for engine 0.1.38 or newer (earlier engines read `per_layer_token_embd.weight` in IQ4_NL, Q5_0 or FP8 only,
 below). UD-Q4_K_XL's manual workflow asks nothing of setup, and neither does this one.

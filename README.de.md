@@ -133,9 +133,10 @@ stark komprimiert. Kleinere Größen sind schneller. Größere sind etwas klüge
 - **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** die ~4-Bit-Version von Unsloth, in der Qualität
   zwischen IQ3_S und UD-Q4_K_XL. 94 GB Download. Mit weniger als ~80 GB RAM liest Strata einen Teil davon während
   der Antwort von der SSD, dort ist es also langsamer (eine NVMe-SSD hilft).
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimentell): am nächsten am vollen
-  Modell. Aber Strata liest das meiste davon während der Antwort von der SSD, deshalb schreibt es auf einem PC mit
-  64 GB nur 7-8.5 Tokens/s.
+- **[Unsloth UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL und Q8_0](docs/MODELS.md#unsloths-files-ud-iq4_xs-to-q8_0):** 4 bis 8 Bit, näher am vollen Modell
+  (93-95 % das gleiche nächste Token wie Q8_0). Schnell, wenn alle Experten in den RAM passen (~88 GB für UD-Q4_K_XL
+  bis ~136 GB für Q8_0); mit weniger RAM liest Strata einen Teil davon während der Antwort von der SSD, was viel
+  langsamer ist (7-8.5 Tokens/s für UD-Q4_K_XL auf einem PC mit 64 GB).
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** Das richtest du von Hand
   ein. Es steht nicht im Menü des Installers.
 

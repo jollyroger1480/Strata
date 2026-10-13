@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "s26_tsum.cuh"
@@ -3480,7 +3481,23 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         return;
     }
     // stream B: UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down (see S27 above)
-    static const bool v2k = [] { const char* v = std::getenv("STRATA_EXPERT_V2K"); return v && v[0] == '1'; }();
+    // MODEL-UPDATE: on by default on gfx12 (every output the old kernels' bits; R9700, UD-Q4_K_XL decode, 5 interleaved
+    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5); STRATA_EXPERT_V2K=0 turns it off, =1 turns it on
+    // elsewhere (not measured on other cards)
+    static const bool v2k = [] {
+        const char* v = std::getenv("STRATA_EXPERT_V2K");
+        if (v != nullptr && v[0] != '\0') return v[0] == '1';
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+        int dev = 0;
+        cudaDeviceProp p;
+        const bool g12 = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+        (void) cudaGetLastError();
+        return g12;
+#else
+        return false;
+#endif
+    }();
     if (v2k && (L.gu_type == 12 || L.gu_type == 13) && (L.d_type == 7 || L.d_type == 8) && L.n_embd == 2560 &&
         L.n_ff == 640) {
         static const bool ts = [] { const char* v = std::getenv("STRATA_TSUM"); return v && v[0] == '1'; }();
