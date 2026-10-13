@@ -126,7 +126,8 @@ def main():
                    "kl_mean": float(kl.mean()), "kl_first": float(kl[0]), "top1": float(top1.mean()), "steps": int(len(kl))}
             if a.floor:
                 fl = os.path.join(a.out, tag + ".cpu.logits")
-                run([a.dump, "--model", a.model, "--mmproj", a.mmproj, "--image", pic, "--prompt", prompt, "--n", str(a.n),
+                run([a.dump, "--model", a.model, "--mmproj", a.mmproj, *sum([["--image", p] for p in pics], []),
+                     "--prompt", prompt, "--n", str(a.n),
                      "--dump-full-logits", fl, "--mm-cpu", "1", "--max-tokens", "1024", "--ngl", "0", "--force",
                      ",".join(map(str, gen[:-1]))], "", os.path.join(a.out, tag + ".cpu.log"))
                 C = np.fromfile(fl, dtype=np.float32).reshape(-1, V)

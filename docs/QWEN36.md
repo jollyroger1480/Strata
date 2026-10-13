@@ -38,6 +38,8 @@ HIP run, the noise two correct engines have on this model):
 | 640x400, list the shapes | 294 | same | 0.035 | 0.039 |
 | 800x450, text in the image | 378 | same | 0.021 | 0.031 |
 | 800x450, describe the shapes | 381 | same | 0.0005 | 0.0019 |
+| 1024x1024, the title (1,024 image tokens, read in 3 chunks) | 1,042 | same | 0.0022 | 0.0026 |
+| two pictures in one request, the text in each | 655 | differs (a near tie: the floor's KL at this step is 0.16 too) | 0.014 | 0.022 |
 
 The answers are the same text as llama.cpp's: `STRATA 42` (with llama.cpp's own spelling ` STRATA42`), `CODE 4217`, `Red circle / Blue square
 / Green triangle`, `A red square is positioned on the left ... A blue circle is positioned on the right ...`. With the picture options on,
@@ -53,8 +55,12 @@ picture); a different picture starts that conversation again.
 (`--batch N`, up to 8) and decode them together: every window carries one token of each conversation, so the dense weights, the head and
 every routed expert two conversations share are read once for all of them. The server needs no change: it speaks the same engine protocol
 as for Flash-Next ([BATCHING.md](BATCHING.md)). A request that arrives while another is read waits only for that read: the prompt of a
-new request is read **between** the decode windows of the others (one window per prompt chunk), and a conversation continues in the slot
-that holds its start (or the engine copies the longer held start from another slot).
+new request is read **between** the decode windows of the others, and a conversation continues in the slot that holds its start (or the
+engine copies the longer held start from another slot). A 3,008-token prompt read in 0.95 s (3,200 tok/s, 6 chunks) beside three decoding
+slots: each of them paused at most 160 ms (one chunk) instead of the whole read, and produced 20 tokens meanwhile (one window per chunk,
+the default); `STRATA_Q36_READ_WINDOWS=4` gives them 65 tokens during a 1.14 s read (more of the time, a slower read).
+A request that runs alone (the solo path, with its MTP drafts) and is moved into a batch slot when another arrives, and back when it is
+alone again, gives the text it gives running alone (the server's hand-over reuses the held state).
 
 Aggregate decode speed, N requests at once, same prompts, greedy, 128 new tokens each, wall time from the first request to the last
 answer, **R9700 32 GB, UD-Q4_K_XL, llama.cpp `llama-server -np N`** (5 interleaved pairs, median; Strata `--batch 8 --mtp 0`):
