@@ -98,8 +98,8 @@ of the second request on (the first request after the start pays a few seconds o
 |---|---|---|---|---|
 | Quality against Q8_0 (top-1 / KL) | 87.9% / 0.142 | 92.8% / 0.055 | not measured | not measured |
 | Decode, short question, no MTP / MTP | 75.4 / 101.9 | 60.7 / 94.0 | - | - |
-| Decode, story, no MTP / MTP | 74.8 / 94.7 | 59.7 / 73.7 | 28 / 50.6 (`--spec 3`) | - / 49.6-50.8 (`--spec 3`) |
-| Prompt 4K / 32K | ~1,180 / ~1,290 | ~1,150 / ~1,290 | ~740 / ~700 | ~690 / ~685 |
+| Decode, story, no MTP / MTP | 74.8 / 94.7 | 59.7 / 73.7 | 28 / 46-51 (`--spec 3`) | not measured / 47-51 (`--spec 3`) |
+| Prompt 4K / 32K | ~1,180 / ~1,290 | ~1,150 / ~1,290 | ~1,070 / ~1,110 | ~1,020 / ~1,020 |
 | llama.cpp Metal, decode (story / code) | 51.1 / 44.1 | 48.4 / 47.3 | 45.1 / 43.2 | does not run (Insufficient Memory) |
 | llama.cpp Metal, prompt 4K / 32K | 791 / 730 | 821 / 739 | 729 / 693 | - |
 
@@ -107,7 +107,7 @@ of the second request on (the first request after the start pays a few seconds o
 - **The cost is a fixed hand-shake per layer** (the engine reads the router's choice and makes sure the experts are in the arena), not the SSD. A window of 2 tokens costs 38 ms against ~17 resident, so a longer window pays: Q5 story 28 tok/s without MTP, 41.8 with `--spec 2`, 50.6 with `--spec 3`, 46 with `--spec 4`. Setup writes `--spec 3` and keeps the MTP draft layer for a streaming Mac with 96 GB or more.
 - **The arena is limited to 67% of the RAM together with the engine's other buffers.** Wired memory above that made macOS swap: with UD-Q6, a 90 GB arena swapped 29,000 pages in 8 seconds and the Mac later froze, an 84 GB arena ran clean. The "keep 15% free" rule alone did not catch it, because macOS counts file cache as available.
 - **The experts' copy** (`<model>.experts`, 98 GB for Q5) did not pay on the M5 Max: decode 50.3 against 50.2 tok/s without it, 4K prompt 741 against 685 (noisy). Setup does not write it on a Mac with 96 GB or more.
-- Prompt chunks of 2048 instead of 1024 gave +27% on the 4K and 32K prompts in one pair of runs (`STRATA_METAL_PROMPT_CHUNK=2048`); not made the default.
+- **Prompts stream in chunks of 4096** on a streaming Mac with 96 GB or more (the engine's own default there; 1024 on a smaller one): every chunk makes one pass over the experts that are not in the arena, so a longer chunk reads them fewer times. UD-Q5, warm, 2 interleaved rounds: chunks of 1024 gave 700 tok/s on the 4K prompt, 2048 gave 920 and 4096 gave 1,100 (32K: 710, 970, 1,100); the decode did not change. `STRATA_METAL_PROMPT_CHUNK=N` sets it. On a resident model 4096 instead of 2048 gained only 2-4% (Q2_0), so that default stays.
 
 ### M4 Mac mini, 32 GB, experts streamed from the SSD
 
@@ -138,6 +138,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - The SSD alone measures the same: 2.97 GB/s for one 1.75 MB read per expert against 2.30 GB/s for three 0.58 MB reads (6 threads, uncached).
 - The arena's size matters most. With the model file, a 7.5 GB arena gave 5.5 tok/s, 10.5 GB gave 6.7 and 12 GB gave 7.5. The read-ahead depth, the I/O threads and the eviction order each moved decode by less than 3%.
 - The Q2_0 copy is not measured yet. The numbers in the table above are with the model file.
+- **Measured again on the release build, with less memory free:** the M4 had 13-17 GB available when the engine started (another user's programs held the rest), so the arena was 5.7 GB (Q2_0) and 9.3 GB (IQ3_XXS, with the experts' copy). One token per step, medians of 3: Q2_0 story 8.3 tok/s, 4K prompt 80; IQ3_XXS story 8.3, 4K prompt 89. That is the arena's size effect above, not a regression: with a 6.6 GB arena the engine used to stop at the first prompt ("no free slot"); a small arena now gives the prompt's 1.6 GB of buffers their own allocation, and a 26-minute server run with a 5.4 GB arena (29 requests, 6K and 31K needles found) was clean.
 - With the default arena (12.1-12.2 GB here), the experts' copy gives 8.35-8.48 tok/s decode and 82.5-82.8 tok/s on the prompt. Nothing was swapped out. macOS's memory pressure stayed "normal", except for one 2-second "warn" sample while the arena fills; keeping 7 GB for macOS shows the same sample.
 - Those runs and the server run below kept 5 GB for macOS. The default is now 7 GB with the stepped fill: after the 6K document, 7.3 and 6.7 tok/s decode (arenas 9.3 and 7.6 GB, as much as was free), the same tokens, the memory pressure "normal" throughout and nothing swapped out.
 
