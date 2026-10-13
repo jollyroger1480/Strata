@@ -69,6 +69,9 @@ int main(int argc, char** argv) {
         else if (a == "--dump-full-logits") dump_full = v;
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
+    // STRATA_DUMP_NGL: the GPU layers when the caller asks for the GPU (--ngl > 0) but the file does not fit (UD-Q4_K_XL
+    // on a 12 GB card); the other layers run on llama.cpp's CPU backend
+    if (const char* g = std::getenv("STRATA_DUMP_NGL"); g != nullptr && ngl > 0) ngl = std::atoi(g);
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = ngl;
