@@ -609,17 +609,18 @@ gr_up_multi_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void gr_up_multi_kernel(GrMulti m) {
+template <int COLS = UPM_COLS, bool ILP = false>   // columns per block: 16 (the original), 8 or 4 - each row's dot, butterfly and the per-column
+__dpct_inline__ void gr_up_multi_kernel(GrMulti m) {   // stream sum unchanged, so the same bits; more blocks, fewer serial rows per warp
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     float[kFusedGrMaxT][LR]>(
     sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &g = *sycl::ext::oneapi::group_local_memory_for_overwrite<
-        float[kFusedGrMaxT][HC][UPM_COLS]>(
+        float[kFusedGrMaxT][HC][COLS]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
     const int T = m.T;
-    const int d0 = item_ct1.get_group(2) * UPM_COLS;
+    const int d0 = item_ct1.get_group(2) * COLS;
 #pragma unroll
     for (int i = t; i < T * LR; i += THREADS) {   // the down kernel's partial sums, in split order, then silu
         const int k = i / LR, r = i % LR;
@@ -637,8 +638,8 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    for (int r = warp; r < HC * UPM_COLS; r += WARPS) {
-        const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
+    for (int r = warp; r < HC * COLS; r += WARPS) {
+        const int c = r / COLS, dd = r - c * COLS, i = c * N + d0 + dd;
         const sycl::uint4 *w4 =
             reinterpret_cast<const sycl::uint4 *>(m.a[0].w_up + (size_t)i * LR);
         /*
@@ -666,6 +667,26 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
             if (apply) { bo = a.bo_prev[d0 + dd]; ip = a.inj_prev[c]; }
         }
         float mine = 0.0f;
+        if constexpr (ILP) {   // STRATA_GR_UP_ILP: the T dots first, then their butterflies interleaved step by step -
+            float accs[kFusedGrMaxT];   // each value sees warp_sum's shuffles in warp_sum's order: the same bits
+#pragma unroll
+            for (int k = 0; k < kFusedGrMaxT; ++k) {
+                float acc = 0.0f;
+                if (k < T) {
+                    acc = dot8(wa, lo[k] + lane * 8);
+                    if (lane < LR / 8 - 32) acc += dot8(wb, lo[k] + (32 + lane) * 8);
+                }
+                accs[k] = acc;
+            }
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1)
+#pragma unroll
+                for (int k = 0; k < kFusedGrMaxT; ++k)
+                    if (k < T) accs[k] += dpct::experimental::permute_sub_group_by_xor(
+                                   0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), accs[k], o);
+#pragma unroll
+            for (int k = 0; k < kFusedGrMaxT; ++k) if (k < T && lane == k) mine = accs[k];
+        } else {
 #pragma unroll
         for (int k = 0; k < kFusedGrMaxT; ++k) {
             if (k >= T) break;
@@ -673,6 +694,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
             if (lane < LR / 8 - 32) acc += dot8(wb, lo[k] + (32 + lane) * 8);
             acc = warp_sum(acc);
             if (lane == k) mine = acc;
+        }
         }
         if (lane < T) {
             if (apply) {
@@ -689,8 +711,8 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    for (int i = t; i < T * UPM_COLS; i += THREADS) {
-        const int k = i / UPM_COLS, col = i - k * UPM_COLS;
+    for (int i = t; i < T * COLS; i += THREADS) {
+        const int k = i / COLS, col = i - k * COLS;
         float s = 0.0f;
 #pragma unroll
         for (int c = 0; c < HC; ++c) s += g[k][c][col];
@@ -698,6 +720,39 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     }
 }
 
+
+// SYCL port: the up step with COLS columns per block. 16 (160 blocks, 8 rows per warp one after another) was
+// latency-bound on Xe2 (B70: 23.7 us for 6.55 MB of BF16, 46% of the bandwidth). STRATA_GR_UP_COLS=8 / 4 run 320 /
+// 640 blocks with 4 / 2 rows per warp; every row's dot and butterfly and every column's stream sum are the same.
+inline int gr_up_cols() {
+    static const int v = [] { const char* e = std::getenv("STRATA_GR_UP_COLS"); const int c = e ? std::atoi(e) : UPM_COLS;
+                              return c == 4 || c == 8 || c == 32 || c == 64 ? c : UPM_COLS; }();
+    return v;
+}
+inline bool gr_up_ilp() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_GR_UP_ILP"); return e && e[0] == '1'; }();
+    return v;
+}
+template <int C>
+void launch_gr_up_cols(dpct::queue_ptr st, const GrMulti& m) {
+    auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+    const sycl::nd_range<3> r(sycl::range(1, 1, N / C) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+    if (gr_up_ilp())
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols_ilp, dpct_kernel_scalar<C>>>(r, exp_props,
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C, true>(m); });
+    else
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols, dpct_kernel_scalar<C>>>(r, exp_props,
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C>(m); });
+}
+inline void launch_gr_up_multi(dpct::queue_ptr st, const GrMulti& m) {
+    switch (gr_up_cols()) {
+        case 4: launch_gr_up_cols<4>(st, m); return;
+        case 8: launch_gr_up_cols<8>(st, m); return;
+        case 32: launch_gr_up_cols<32>(st, m); return;
+        case 64: launch_gr_up_cols<64>(st, m); return;
+        default: launch_gr_up_cols<UPM_COLS>(st, m); return;
+    }
+}
 
 // ================================ hc read v3 (opt-in: STRATA_GR_V3=1) - two kernels, stream-split ================
 // The norm kernel runs on only T blocks (~16 us of pure latency per call) and `down` on 41 blocks (~280 GB/s).
@@ -1562,19 +1617,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_1a7280>>(
-            sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) *
-                                  sycl::range(1, 1, THREADS),
-                              sycl::range(1, 1, THREADS)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                gr_up_multi_kernel(m);
-            });
-    }
+    launch_gr_up_multi(st, m);   // STRATA_GR_UP_COLS (16 default, 8, 4): the same bits
 }
 
 /// STRATA_HC_SPLIT: unset or 2 = the newest the check accepts (staged), 1 = at most split, 0 = the plain read
@@ -1860,19 +1903,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_1a727f>>(
-            sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) *
-                                  sycl::range(1, 1, THREADS),
-                              sycl::range(1, 1, THREADS)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                gr_up_multi_kernel(m);
-            });
-    }
+    launch_gr_up_multi(st, m);   // STRATA_GR_UP_COLS (16 default, 8, 4): the same bits
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You
