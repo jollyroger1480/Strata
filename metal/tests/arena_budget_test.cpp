@@ -41,13 +41,63 @@ int main() {
     // never below 1 GB; the GPU working set bounds it too
     ArenaMem tiny{16 * kGB, 10 * kGB, 9.5 * kGB, 8 * kGB};
     check(std::fabs(arena_budget(tiny) - 1.0 * kGB) < 1e6, "a 16 GB Mac with nothing left: 1 GB (low hit rate)", arena_budget(tiny));
+    // the caps.  Anonymous memory (arena, Metal buffers, host memory): 40% of the RAM left on a big Mac; a resident pack: 30%.
+    check(std::fabs(footprint_cap(m5) - 0.60 * 137.4 * kGB) < 1e6, "M5 Max: the footprint cap is 60% of the RAM (82.4 GB; 40% left)", footprint_cap(m5));
+    check(std::fabs(resident_cap(m5) - 0.70 * 137.4 * kGB) < 1e6, "M5 Max: a resident pack may hold 70% (30% left)", resident_cap(m5));
+    check(std::fabs(footprint_cap(m4) - 26.8 * kGB) < 1e6, "M4 32 GB: the cap is its 26.8 GB working set (7 GB left, as measured)", footprint_cap(m4));
+    check(std::fabs(resident_cap(m4) - 26.8 * kGB) < 1e6, "M4 32 GB: same for a resident pack", resident_cap(m4));
+    ArenaMem fc = m5;   // the kernel's file-cache floor (37.2 GB here) + 12 GB: never less than that is left
+    fc.filecache_min = 37.2 * kGB;
+    check(std::fabs(footprint_cap(fc) - 0.60 * 137.4 * kGB) < 1e6, "M5 Max with its 37.2 GB file-cache floor: 49.2 GB < 55 GB, the share binds", footprint_cap(fc));
+    fc.filecache_min = 50.0 * kGB;   // a macOS that keeps more: 62 GB left
+    check(std::fabs(footprint_cap(fc) - (137.4 - 62.0) * kGB) < 1e6, "a larger file-cache floor (50 GB): the cap follows it (75.4 GB)", footprint_cap(fc));
     ArenaMem gpu = m5;
     gpu.available = 200 * kGB;
-    check(std::fabs(arena_budget(gpu) - (0.67 * 137.4 - 7.0) * kGB) < 1e6, "plenty free: the wired share (67% of the RAM) bounds it", arena_budget(gpu));
-    ArenaMem q6 = m5;   // UD-Q6_K_XL after a reboot: 7.5 GB allocated, 125 GB "available" (cache): 84 GB ran, 90 GB swapped
+    check(std::fabs(arena_budget(gpu) - (0.60 * 137.4 - 7.0 - 0.5) * kGB) < 1e6, "plenty free: the footprint cap bounds it (cap - 7 GB held - 0.5 reserve)", arena_budget(gpu));
+    ArenaMem q6 = m5;   // UD-Q6_K_XL after a reboot: 7.5 GB allocated, 125 GB "available" (cache); 84 GB ran, 90 GB swapped
     q6.allocated = 7.5 * kGB;
     q6.available = 125 * kGB;
-    check(arena_budget(q6) <= 84.7 * kGB && arena_budget(q6) > 84.0 * kGB, "M5 Max, UD-Q6 with 125 GB available: 84.6 GB, not 104", arena_budget(q6));
+    check(arena_budget(q6) <= 74.5 * kGB && arena_budget(q6) > 74.0 * kGB, "M5 Max, UD-Q6 with 125 GB available: 74.4 GB, not 104", arena_budget(q6));
+    // the process holds more than the Metal buffers (host memory): the larger count is the base.  UD-Q6 on the M5 held 11.6-15.1 GB
+    // against 7.5 GB of Metal buffers; the arena gives up the difference, so the total stays at the cap
+    ArenaMem held = q6;
+    held.proc_footprint = 15.1 * kGB;
+    check(std::fabs(arena_budget(held) - (arena_budget(q6) - 7.6 * kGB)) < 1e6, "the process holds 15.1 GB against 7.5 GB of Metal buffers: the arena gives up the 7.6 GB", arena_budget(held));
+    FootprintPlan fp = footprint_plan(held, arena_budget(held));
+    check(!fp.over() && std::fabs(fp.total - fp.cap) < 1e6, "the planned total (arena + held + n-gram reserve) ends at the cap, not over it", fp.total);
+    check(137.4 * kGB - fp.total >= 0.40 * 137.4 * kGB - 1e6, "RAM less the planned total is at least 40% of the RAM", 137.4 * kGB - fp.total);
+    check(std::fabs(fp.total - 82.4 * kGB) < 0.1 * kGB && std::fabs(fp.arena - 66.8 * kGB) < 0.1 * kGB, "= the measured 66.8 GB arena / 82.4 GB total of the clear run", fp.total);
+    // a footprint smaller than the Metal buffers never makes the arena grow
+    ArenaMem less = q6;
+    less.proc_footprint = 1.0 * kGB;
+    check(std::fabs(arena_budget(less) - arena_budget(q6)) < 1e6, "a smaller process count than the Metal buffers changes nothing", arena_budget(less));
+    // little free memory (a 24 GB program already running): the free-memory rule binds below the cap
+    ArenaMem busy = held;
+    busy.available = 60 * kGB;
+    check(arena_budget(busy) < arena_budget(held) && std::fabs(arena_budget(busy) - (60.0 - 20.61 - 0.5) * kGB) < 0.1 * kGB, "a program already holds memory: the free-memory rule binds (38.9 GB)", arena_budget(busy));
+    // the explicit arena is kept (never forced) but the plan says it is over the cap
+    ArenaMem ex = q6;
+    ex.arena_gb = 90.0;
+    fp = footprint_plan(ex, arena_budget(ex));
+    check(std::fabs(fp.arena - 90.0 * kGB) < 1e6 && fp.over(), "STRATA_METAL_ARENA_GB=90 on the M5: kept, and flagged over the cap", fp.total);
+    ex.arena_gb = 60.0;
+    check(!footprint_plan(ex, arena_budget(ex)).over(), "STRATA_METAL_ARENA_GB=60: under the cap", footprint_plan(ex, arena_budget(ex)).total);
+    ArenaMem sh = q6;   // STRATA_METAL_LEAVE_SHARE (for measuring)
+    sh.leave_share = 0.30;
+    check(std::fabs(footprint_cap(sh) - 0.70 * 137.4 * kGB) < 1e6, "STRATA_METAL_LEAVE_SHARE=0.30: the old 30% (96.2 GB)", footprint_cap(sh));
+    // the working set still binds where it is tighter than the RAM share
+    ArenaMem m64{68.7 * kGB, 48.0 * kGB, 5.0 * kGB, 55.0 * kGB};
+    check(std::fabs(footprint_cap(m64) - 41.2 * kGB) < 0.1 * kGB, "64 GB Mac: 60% of the RAM (41.2 GB), under the 48 GB working set", footprint_cap(m64));
+    check(std::fabs(resident_cap(m64) - 48.0 * kGB) < 1e6, "64 GB Mac: a resident pack: the 48 GB working set (30% left would give 48.1)", resident_cap(m64));
+    ArenaMem m96{103.1 * kGB, 77.3 * kGB, 6.0 * kGB, 90.0 * kGB};
+    check(std::fabs(footprint_cap(m96) - 0.60 * 103.1 * kGB) < 1e6, "96 GB Mac: 60% of the RAM (61.9 GB)", footprint_cap(m96));
+    check(std::fabs(resident_cap(m96) - 0.70 * 103.1 * kGB) < 1e6, "96 GB Mac: resident 70% (72.2 GB), under its 77.3 GB working set", resident_cap(m96));
+    // a resident pack: its bytes + 12 GiB must fit the resident cap (stream.cpp: wanted)
+    const double G12 = 12.0 * 1073741824.0;
+    check(resident_fits(137.4 * kGB, 115.4 * kGB, 54.8 * kGB, G12), "M5 Max: IQ3_S (54.8 GB) stays resident", 54.8 * kGB);
+    check(resident_fits(137.4 * kGB, 115.4 * kGB, 82.5 * kGB, G12), "M5 Max: UD-Q4_K_XL (82.5 GB) stays resident (measured: wired 91.7 GB, nothing compressed)", 82.5 * kGB);
+    check(!resident_fits(137.4 * kGB, 115.4 * kGB, 103.9 * kGB, G12), "M5 Max: UD-Q5_K_XL (103.9 GB) streams", 103.9 * kGB);
+    check(!resident_fits(34.4 * kGB, 26.8 * kGB, 37.6 * kGB, G12), "M4 32 GB: Q2_0 (37.6 GB) streams", 37.6 * kGB);
     // memory taken between planning and committing: it shrinks, never grows
     const double s1 = arena_shrink(m5, b5, 60.0 * kGB);
     check(s1 < b5 && std::fabs(s1 - (60.0 - 20.61 - 0.5) * kGB) < 0.1 * kGB, "less free when committing: it shrinks", s1);
