@@ -453,7 +453,10 @@ OWN_PATH_FAMILIES = {
                # V in fp32 (strata-q36)
                "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
                "mtp": 2,                     # drafts per step (greedy requests): measured best on the R9700
-               "vision": False},             # the image encoder for this family is not wired up yet
+               # pictures: Unsloth's mmproj (the same projector family as Flash-Next's: qwen3vl_merger) through
+               # strata-vision; a parallel slot's session: its KV cache (kv_bytes_per_token) and the recurrent state of
+               # the 30 GDN layers (state_gb)
+               "vision": True, "state_gb": 0.07}
 }
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -4555,8 +4558,9 @@ def choices_from_config(cfg_path: Path) -> dict:
         size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
+        vis = cfg.get("vision")
         return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
-                "vision": "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
+                "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
                 "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
@@ -5507,6 +5511,89 @@ def own_path_size(fam: dict, ram: float) -> str:
     return max(fits, key=lambda m: fam["sha256"][fam["file"].format(q=m)][0]) if fits else next(iter(fam["models"]))
 
 
+def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
+    """The image encoder for an own-path family (Qwen3.6-35B-A3B): "gpu", "cpu" or "none".  The Flash-Next families' rules:
+    --vision yes|no|gpu|cpu, else a question whose default answer is yes where the GPU encoder costs little - an NVIDIA
+    card of 16 GB or more (its ~1.4 GB is under a tenth of it) - and, on AMD under Linux, yes with the CPU encoder (it takes
+    no VRAM; there is no GPU encoder for AMD yet).  A smaller NVIDIA card is recommended the CPU encoder (the GPU one takes
+    room from the experts); what is asked for with --vision gpu is kept, with a note (recommend, never force)."""
+    asked = a.vision
+    vram = float(gpu.get("vram_gb", 0.0))
+    big = vram >= UNSLOTH_IMAGES_MIN_VRAM_GB
+    if asked in ("no", "none"):
+        return "none"
+    if asked is None:
+        say()
+        say(f"  Images: {fam['title']} can also read pictures (screenshots, photos, scanned pages). This adds a "
+            f"{fam['sha256'][fam['mmproj']][0] / 1e9:.1f} GB download" + (
+                "; the encoder runs on the CPU (no VRAM), a few seconds per picture." if hip else
+                " and the image encoder runs on the GPU (~1.4 GB of VRAM kept free, 0.1-0.5 s per picture)." if big else
+                "; the encoder runs on the CPU (a few seconds per picture), because the GPU encoder would take ~1.4 GB "
+                "of VRAM from the experts on this card."))
+        default = "n" if (hip and WIN) else "y" if (big or hip) else "n"
+        if ask("Do you want images?", ["y", "n"], default, a.yes) != "y":
+            return "none"
+        asked = "cpu" if (hip or not big) else "gpu"
+    if hip:
+        if asked == "gpu":
+            say("  The AMD backend has no GPU image encoder yet: the encoder runs on the CPU.")
+        if WIN:
+            warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
+                 "image encoder): images off")
+            return "none"
+        return "cpu"
+    if asked == "yes":
+        asked = "gpu" if big else "cpu"
+    if asked == "gpu" and not big and vram > 0:
+        warn(f"the GPU image encoder takes ~1.4 GB of VRAM, which on a {vram:.0f} GB card is room the experts would use: "
+             "--vision cpu reads pictures on the CPU instead (a few seconds each); kept as you chose")
+    return asked
+
+
+def own_path_parallel_slot_gb(fam: dict, ctx: int) -> float:
+    """The VRAM one batch slot's session takes: its KV cache (fp32 K and V of the attention layers and the MTP block) and
+    the recurrent state of the GDN layers."""
+    return ctx * fam["kv_bytes_per_token"] / 1e9 + fam["state_gb"]
+
+
+def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int) -> int:
+    """How many requests at once to recommend: 0 = one at a time.  Only where every routed expert still fits in VRAM with
+    the slots' sessions (a batch then reads each expert once for all its rows); where some experts run on the CPU the
+    batch reads more distinct experts from RAM and every slot's VRAM is room the expert slots lose."""
+    size = fam["sha256"][fam["file"].format(q=model)][0] / 1e9
+    base = size * 0.93 + 4.5       # the routed experts + the dense weights and buffers (the file's 7% beyond them)
+    slot = own_path_parallel_slot_gb(fam, ctx)
+    best = 0
+    for n in (2, 3, 4):
+        if base + (n + 1) * slot <= vram_gb:
+            best = n
+    return best
+
+
+def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ctx: int) -> list:
+    """What setup says about "parallel" for an own-path family: the recommendation, or how the asked count compares with
+    it (kept as asked: recommend, never force)."""
+    rec = own_path_parallel_recommend(fam, model, vram_gb, ctx)
+    slot = own_path_parallel_slot_gb(fam, ctx)
+    if a_parallel is None or a_parallel <= 1:
+        if not rec:
+            return ["Several requests at once: left at one at a time - this card does not hold every expert beside more "
+                    "sessions, and the experts that run on the CPU make a batch read more of them (docs/BATCHING.md)."]
+        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
+                f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
+    lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "
+             f"{a_parallel * slot:.1f} GB in all)"]
+    if a_parallel > PARALLEL_MAX:
+        lines.append(f"the engine runs at most {PARALLEL_MAX} at once; it will use {PARALLEL_MAX}")
+    if not rec:
+        lines.append("recommended for this card: one at a time - not every expert fits in VRAM beside more sessions; "
+                     "kept as you chose")
+    elif a_parallel > rec:
+        lines.append(f"recommended for this card: {rec} - more slots leave fewer experts in VRAM, which can make every "
+                     "request slower; kept as you chose")
+    return lines
+
+
 def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
     """Steps 2-7 for a family with its own engine path (OWN_PATH_FAMILIES: Qwen3.6-35B-A3B): the size, the context, the
     engine, the GGUF (pinned revision, size and SHA-256), the tokenizer from the GGUF, the config and the start
@@ -5558,8 +5645,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn(f"{ctx // 1024}K is past {fam['title']}'s trained 262,144 positions and this engine path has no rope "
              "scaling yet: kept as you chose, but answers past 256K are untested")
     ok(f"context: {ctx} tokens")
-    if a.vision not in (None, "no", "none"):
-        warn(f"images are not available with {fam['title']} yet: off")
+    vision = own_path_vision(a, fam, gpu, hip)
+    ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
@@ -5576,7 +5663,10 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                 "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
 
     step(4, "the Strata engine")
-    llama, eng, meta, lib_dirs, gpu, _ = engine_step(a, gpu, hip, amd, cuda_tk, "none")
+    llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
+    if vision != "none" and not (eng / VEXE).exists():
+        warn("this engine has no image encoder: images off (run setup again with --build to compile it)")
+        vision = "none"
     if fam["arch"] not in engine_families(eng):
         fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
              "update Strata, or compile the engine with --build, and run setup again")
@@ -5591,6 +5681,16 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         download(fam["hf"] + gguf.name, gguf)
     verify_sha256(gguf, *fam["sha256"][gguf.name])
     ok(f"model file: {gguf}")
+    mmproj = folder / fam["mmproj"]
+    if vision != "none":                               # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
+        if mmproj.exists() and done(mmproj):
+            ok(f"{mmproj.name} already downloaded")
+        else:
+            if a.gguf_dir:
+                fail(f"{mmproj} is missing", f"put {mmproj.name} in {folder}, or drop --gguf-dir to download it")
+            download(fam["mmproj_hf"] + mmproj.name, mmproj, "vision encoder")
+        verify_sha256(mmproj, *fam["sha256"][mmproj.name])
+        ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
     data, _ = data_folder(a.data_dir)
@@ -5625,6 +5725,27 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["open_browser"] = a.browser
     cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    if vision != "none":
+        old_cfg = cfg_path if cfg_path.is_file() else adopted
+        vt = vision_tokens(getattr(a, "vision_tokens", None), vision, old_cfg)
+        cfg["args"].append("--vision")
+        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(gguf), "gpu": vision == "gpu",
+                         "max_tokens": vt}          # the text model, opened vocab-only
+        if vision == "cpu":
+            cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
+    elif getattr(a, "vision_tokens", None) is not None:
+        warn("--vision-tokens: images are off, so it is not used")
+    # requests at once ("parallel", opt-in): written only when given; the recommendation is said once
+    vram_gb = float(gpu.get("vram_gb", 0.0))
+    par = getattr(a, "parallel", None)
+    if par is not None:
+        if par >= 2:
+            cfg["parallel"] = par
+            for i, line in enumerate(own_path_parallel_note(par, fam, model, vram_gb, ctx)):
+                (ok if i == 0 else warn)(line)
+        else:
+            cfg["parallel"] = 1
+            ok("parallel requests: one at a time (--parallel 1)")
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     ok(f"start script: {script.name}")
@@ -5633,6 +5754,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
+    if vision != "none":
+        say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
+    if par is None:                                    # the opt-in, said once (nothing changes)
+        for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
+            say("  " + line)
     if a.no_start:
         return 0
     return start(cfg_path, port)
@@ -5687,8 +5813,8 @@ def main() -> int:
         return mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
-                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5 (qwen36 = Qwen3.6-35B-A3B: download only, the "
-                         "engine does not run it yet)")
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
+                         "several requests at once with --parallel; docs/QWEN36.md)")
     ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"])])))
     ap.add_argument("--context", type=int)
