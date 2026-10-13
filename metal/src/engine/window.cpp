@@ -1062,8 +1062,8 @@ void stream_atexit() {
 }  // namespace
 
 // The arena, once the rest is allocated (the MTP layer loads after init): what the GPU working set and the RAM leave
-// with STRATA_METAL_KEEP_FREE_GB kept for macOS (default: 7 GB, or 15% of the RAM when that is more - the M5 Max
-// froze with an 89 GB arena and 7 GB left beside a 50 GB n-gram table read through the file cache);
+// with STRATA_METAL_KEEP_FREE_GB kept for macOS (default: 5 GB, or 15% of the RAM when that is more - the M5 Max
+// froze with an 89 GB arena and 7 GB left beside a 50 GB n-gram table read through the file cache; arena_budget.h);
 // STRATA_METAL_ARENA_GB sets it.
 bool Window::stream_arena(std::string& err) {
     uint64_t phys = 0;

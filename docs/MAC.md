@@ -24,10 +24,11 @@ with 32 GB, where the experts stream from the SSD. Other chips and memory sizes 
 | IQ3_S (the best quality) | 54.8 GB | 63 GB | 110 GB (the 128 GB Macs) |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
-- **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer.
+- **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
 - **A Mac whose memory cannot hold the pack (32-48 GB):** the engine streams the experts from the SSD instead. It decides this by itself when the experts are more than 60% of Metal's share.
-  - It keeps the most-used experts in an arena: Metal's share, or the memory macOS reports as available less 7 GB for macOS, whichever is smaller.
-  - It reads the rest as each token needs them.
+  - It keeps the most-used experts in an arena: Metal's share, or the memory macOS reports as available less what it keeps for macOS, whichever is smaller. It keeps 5 GB, or 15% of the RAM when that is more, and it also keeps the n-gram table's share. It checks the free memory again just before it takes the arena, and takes less if less is free.
+  - It reads the rest as each token needs them, and reads ahead the experts the next layer will probably use.
+  - Setup writes a second copy of the experts for such a Mac (`<model>.experts`, 40 GB for IQ3_XXS). In it each expert's three matrices sit together, so the SSD reads an expert with one request instead of three. On the 32 GB M4 that is about 17% faster decoding and 30% faster prompts, with the same tokens. Setup writes it only when the disk has room for it plus 10 GB; otherwise it warns, and the engine reads the model file as before.
   - Setup configures such a Mac without the MTP draft layer: one token per step is faster there.
   - Measured at 32 GB (below). Smaller Macs are untested.
 - **Setup recommends, and never forces.** It recommends the pack by memory; a bigger pack chosen with `--model` is kept, with a warning about what it risks.
@@ -46,7 +47,7 @@ What the first run does (each step is skipped when it is already done):
 3. **Python packages** into `.venv`. CMake and Ninja come from pip.
 4. **Builds the engine** (`build-metal/strata`). It uses Apple's metal-cpp headers (pinned by SHA-256) and llama.cpp's ggml at the commit the PC build pins.
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
-6. **Prepares the model:** the pack (seconds), and the MTP draft layer (about 5 GB of the original checkpoint).
+6. **Prepares the model:** the pack (seconds), and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that streams: the experts' copy instead of the draft layer (about 3 minutes on the M4, checked byte for byte against the model file).
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
 The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read (below). After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC:
@@ -54,7 +55,7 @@ The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read 
 - the Anthropic API on `/v1/messages`;
 - the chat page on `http://127.0.0.1:8080/`.
 
-Options: `--model Q2_0|IQ3_XXS|IQ3_S`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
+Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
 
@@ -100,6 +101,19 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - No memory was swapped out during the runs; the least memory left to macOS was 7.1 GB.
 - MTP was slower here (Q2_0 story 12.1-12.3 with it against 12.3-12.8 without). The draft layer's 1.2 GB do more as expert cache.
 
+**The experts' copy** (`<model>.experts`, one SSD request per expert): IQ3_XXS after the 6K-token document, the arena held at 12 GB, medians of 5 interleaved runs each:
+
+| | Decode | The 6K prompt | SSD wait per token |
+|---|---|---|---|
+| The model file (three reads per expert) | 7.37 tok/s | 64.7 tok/s | 46.6 ms |
+| The experts' copy (one read per expert) | **8.62 tok/s** | **84.1 tok/s** | 31.5 ms |
+
+- The tokens are identical in all 10 runs.
+- The SSD alone measures the same: 2.97 GB/s for one 1.75 MB read per expert against 2.30 GB/s for three 0.58 MB reads (6 threads, uncached).
+- The arena's size matters most. With the model file, a 7.5 GB arena gave 5.5 tok/s, 10.5 GB gave 6.7 and 12 GB gave 7.5. The read-ahead depth, the I/O threads and the eviction order each moved decode by less than 3%.
+- The Q2_0 copy is not measured yet. The numbers in the table above are with the model file.
+- With the default arena (12.1-12.2 GB here), the experts' copy gives 8.35-8.48 tok/s decode and 82.5-82.8 tok/s on the prompt. Nothing was swapped out. macOS's memory pressure stayed "normal", except for one 2-second "warn" sample while the arena fills; keeping 7 GB for macOS shows the same sample.
+
 **Why `--spec 2`:** measured with MTP on the same two prompts.
 
 | Window | Q2_0 (prompt1 / story) | IQ3_XXS (prompt1 / story) |
@@ -130,12 +144,12 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 ## Limits (this version)
 
-- **Images (vision):** not on Mac yet. Setup does not offer them.
+- **Images (vision):** `--vision yes` in setup. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal the HIP engine's, and text output is unchanged with vision on. No other tests yet.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next is measured. The Swift and Coder releases and the Unsloth files are not set up on Mac yet.
+- **Families:** the original Qwen3.8-Flash-Next is measured, and Unsloth's UD-Q4_K_XL (in memory on the M5 Max: 60.6 / 60.0 tok/s without MTP, 93.9 / 74.0 with it, prompts 1,374 / 1,288 tok/s at 4K / 32K; llama.cpp Metal 48.4 / 47.3 and 821 / 739). Setup repacks Unsloth's shards into one file for the GPU. Setup offers UD-Q5_K_XL and UD-Q6_K_XL, but they are not measured yet. The Swift and Coder releases are not set up on Mac yet.
 - **Engine only from source.** There is no ready-made Mac engine in the release zips.
 
 ## Switches (for testing; all off unless set, the defaults are above)
@@ -150,6 +164,8 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 | `STRATA_METAL_FUSE=0`, `STRATA_METAL_LAZY_FOLD=0` | Turn off two decode fusions (same tokens, slower) |
 | `STRATA_METAL_PARTIAL=1`, `STRATA_METAL_ROUTE=1` | Two decode variants that measured no faster here (same tokens) |
 | `STRATA_METAL_STREAM=1` / `=0` | Stream the experts from the SSD even when the pack fits / never (the default decides by size) |
+| `STRATA_METAL_CONTIG=0` | Streaming: read the model file even when the experts' copy is there |
+| `STRATA_METAL_ARENA_GB=N`, `STRATA_METAL_KEEP_FREE_GB=N` | Streaming: the arena's size, or the memory left to macOS when the arena is sized |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2-3 GB) instead of giving them back to macOS |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 
