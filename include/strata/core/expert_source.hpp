@@ -953,8 +953,11 @@ public:
     /// priority - the profile's ranked pairs the GPU cache will NOT hold, then the unranked ones.  open() merges
     /// neighbours into byte ranges and registers only those (PinnedArena::ByNeed); pinned()/device_alias()/pcie_layer()
     /// then follow the registered ranges instead of a prefix.  Never called: the old prefix pinning, unchanged.
-    void set_pin_priority(std::vector<std::pair<int32_t, int32_t>> ranked) {
+    /// `n_first`: the first n_first pairs are the non-resident estimate; the rest (the pairs taken as GPU-resident, which
+    /// only get what the cap leaves over) never merge into a run with them, so their ranges come after all of the first.
+    void set_pin_priority(std::vector<std::pair<int32_t, int32_t>> ranked, size_t n_first = (size_t) -1) {
         pin_pairs_ = std::move(ranked);
+        pin_first_ = n_first;
         pin_by_need_ = true;
     }
     /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
@@ -1000,6 +1003,7 @@ private:
     /// where blob (layer, expert) starts in the arena: the ONE address function of this class
     uint64_t arena_off(int64_t layer, int64_t expert) const;
     std::vector<std::pair<int32_t, int32_t>> pin_pairs_;
+    size_t pin_first_ = (size_t) -1;   // pin_pairs_[0, pin_first_) are the first tier (see set_pin_priority)
     std::vector<uint64_t> pin_start_, pin_end_;
     std::vector<const uint8_t*> pin_dev_;
     std::vector<uint8_t> layer_pcie_;

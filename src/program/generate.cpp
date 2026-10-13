@@ -4924,7 +4924,8 @@ int main(int argc, char** argv) {
         // order) are what the arena pins, hottest first, until the driver refuses.  R is under-estimated a little
         // (x0.98): a resident pair pinned by mistake costs a few MiB, a hot non-resident one skipped costs DMA.
         // STRATA_PIN_BY_NEED_SKIP=<n> forces R.  Single GPU, profile given, no helper caches only.
-        std::vector<std::pair<int32_t, int32_t>> pin_cand;   // the non-resident estimate, by decreasing rank
+        std::vector<std::pair<int32_t, int32_t>> pin_cand;   // the non-resident estimate, by decreasing rank, then the resident one
+        size_t pin_nonres = 0;                               // (how many of them are the non-resident estimate)
         if (const char* pn = std::getenv("STRATA_PIN_BY_NEED"); pn != nullptr && pn[0] != '\0' && pn[0] != '0') {
             const char* off_why = profile.empty() ? "it needs --expert-profile (the ranking)"
                                 : multi_gpu || o.peer_device >= 1 ? "not with a layer split or a peer GPU"
@@ -4975,10 +4976,14 @@ int main(int argc, char** argv) {
                 for (int64_t l = 0; l < g.n_layers; ++l)
                     for (int64_t e = 0; e < g.n_expert; ++e)
                         if (!seen[(size_t) (l * g.n_expert + e)]) pin_cand.emplace_back((int32_t) l, (int32_t) e);
+                pin_nonres = pin_cand.size();   // (the report counts these)
+                // what the cap leaves over goes to the pairs taken as GPU-resident (last in line): the adaptive tier
+                // swaps them out as the conversation moves, and the prompt read streams whatever is not resident then
+                pin_cand.insert(pin_cand.end(), profile.begin(), profile.begin() + (long) skip);
                 std::fprintf(stderr, "strata generate: pin by need: %zu of the %zu ranked pairs taken as GPU-resident "
                                      "(STRATA_PIN_BY_NEED_SKIP=<n> sets it), %zu candidates to pin\n",
-                             skip, profile.size(), pin_cand.size());
-                arena_src.set_pin_priority(pin_cand);
+                             skip, profile.size(), pin_nonres);
+                arena_src.set_pin_priority(pin_cand, pin_nonres);
             }
         }
         if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
@@ -4989,7 +4994,8 @@ int main(int argc, char** argv) {
         if (!pin_cand.empty()) {
             const auto& pl = strata::kernels::cpu::expert_layout();
             uint64_t cand_b = 0, pin_b = 0;
-            for (const auto& pr : pin_cand) {
+            for (size_t ci = 0; ci < pin_nonres; ++ci) {
+                const auto& pr = pin_cand[ci];
                 const uint64_t b = pl.blob_bytes(pr.first);
                 cand_b += b;
                 if (arena_src.pinned(pr.first, pr.second)) pin_b += b;

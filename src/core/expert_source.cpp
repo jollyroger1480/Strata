@@ -4619,7 +4619,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     if (by_need) {
         // every blob starts on a page and owns its whole stride (pad included), so a run of adjacent blobs is one exact
         // range: [first start, last start + stride).  The best rank of a run's members is its priority.
-        struct Ext { uint64_t off, len; size_t rank; };
+        struct Ext { uint64_t off, len; size_t rank; int tier; };
         std::vector<Ext> ex;
         ex.reserve(pin_pairs_.size());
         std::vector<uint8_t> seen((size_t) (n_layers * n_expert), 0);
@@ -4627,12 +4627,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             const int64_t l = pin_pairs_[i].first, e = pin_pairs_[i].second;
             if (l < 0 || l >= n_layers || e < 0 || e >= n_expert || seen[(size_t) (l * n_expert + e)]) continue;
             seen[(size_t) (l * n_expert + e)] = 1;
-            ex.push_back({arena_off(l, e), pad_.stride[(size_t) l], i});
+            ex.push_back({arena_off(l, e), pad_.stride[(size_t) l], i, i < pin_first_ ? 0 : 1});
         }
         std::sort(ex.begin(), ex.end(), [](const Ext& a, const Ext& b) { return a.off < b.off; });
         std::vector<Ext> merged;
         for (const Ext& x : ex) {
-            if (!merged.empty() && merged.back().off + merged.back().len == x.off) {
+            if (!merged.empty() && merged.back().off + merged.back().len == x.off && merged.back().tier == x.tier) {
                 merged.back().len += x.len;
                 merged.back().rank = std::min(merged.back().rank, x.rank);
             } else {
