@@ -166,7 +166,14 @@ void advise_willneed(const void* p, uint64_t bytes) {
 void advise_willneed(int fd, uint64_t offset, uint64_t bytes) {
     if (fd < 0 || !read_ahead_enabled()) return;
     for (uint64_t at = 0; at < bytes; at += kAdviseStep)
+#if defined(__APPLE__)   // macOS: F_RDADVISE is the read-ahead hint
+    {
+        radvisory ra{(off_t) (offset + at), (int) std::min(kAdviseStep, bytes - at)};
+        (void) fcntl(fd, F_RDADVISE, &ra);
+    }
+#else
         (void) posix_fadvise(fd, (off_t) (offset + at), (off_t) std::min(kAdviseStep, bytes - at), POSIX_FADV_WILLNEED);
+#endif
 }
 #endif
 

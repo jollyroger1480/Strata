@@ -99,10 +99,15 @@
 #include <unistd.h>
 #include <cerrno>
 #include <sys/stat.h>
+#if !defined(__APPLE__)   // major() / minor(): <sys/types.h> on macOS
 #include <sys/sysmacros.h>
+#endif
 #endif
 
 #include <cuda_runtime.h>
+#if defined(STRATA_GPU_METAL)
+namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+#endif
 
 #include <array>
 #include <chrono>
@@ -553,7 +558,11 @@ struct Options {
     /// Plan v0.3 P6: speculative decoding with a verify window of this many tokens (the last accepted token and
     /// spec-1 drafts); 0 = plain decode.  `spec_oracle` drafts from a token file (the expected continuation, for
     /// the exactness test); `spec_corrupt` N > 0 replaces every Nth draft with a wrong token.
+#if defined(STRATA_GPU_METAL)
+    int spec = 2;   // Metal: a window of 2 by default (measured best on the M5 Max; an explicit --spec wins)
+#else
     int spec = 0;
+#endif
     /// --serve runs up to this many sequences at once, one token each per batch window (0 = off).  A request
     /// sent as `BGEN <slot> <max_new> ...` reads its prompt and its first token through the usual path, then
     /// continues in slot <slot> of the batch windows (`BT <slot> <id>` lines, then `BDONE <slot> ...`).
@@ -2754,7 +2763,13 @@ int main(int argc, char** argv) {
     // The experimental older-CPU build (STRATA_ISA_FLOOR=avx|none, compiled on that PC; #394 #595 #623) has ggml-cpu
     // for that floor, so a native pack's experts run there on ggml-cpu (every AVX2 kernel is behind cpu_avx2_ok).
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
+#if defined(STRATA_GPU_METAL)   // Apple Silicon: every expert is on the GPU; ggml-cpu (NEON) is the only CPU expert code
+    strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
+    o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
+    if (false) {
+#else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {
+#endif
         std::fprintf(stderr, "strata generate: this CPU (%s) does not support AVX2 with FMA and F16C, which this engine's "
                              "CPU expert kernels need; Strata runs on Intel Haswell (2013), AMD Zen (2017) or newer. "
                              "Older CPUs are EXPERIMENTAL and slow: setup compiles an engine for them on this PC "
@@ -4782,7 +4797,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s\n", dev, name,
                      strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
                      strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "");
-#if !defined(STRATA_HIP_GFX906)   // a CUDA toolkit mismatch; the gfx906 HIP build has no CUDART_VERSION
+#if !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)   // a CUDA toolkit mismatch; the gfx906 HIP build has no CUDART_VERSION
         {   // #542: a build whose libcudart is older than its headers (a CUDA 13 kit with a dangling libcudart.so that
             // CMake resolved to the system's CUDA 12 one) reads cudaDeviceProp shifted - silently, and slowly
             int rt = 0;
@@ -12931,6 +12946,13 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+#if defined(STRATA_GPU_METAL)
+        // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS
+        // locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(0);
+#endif
         return 0;
     }
 
