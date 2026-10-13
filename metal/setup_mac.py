@@ -49,8 +49,8 @@ MAC_MODELS = {
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
     "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
-    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": False, "family": "unsloth", "shards": 6},
-    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": False, "family": "unsloth", "shards": 6},
+    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "shards": 6},
+    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "shards": 6},
 }
 # the Unsloth files at setup.py's pinned revision: name -> (bytes, SHA-256), the Hub's LFS pointers (UD-Q4_K_XL's
 # are setup.py's UNSLOTH_SHARDS)
@@ -87,6 +87,11 @@ IQ3_S_FROM_GB = 110
 # measured on a 32 GB M4 Mac mini, one token per step (MTP is slower there: its layer's memory is worth more as cache)
 STREAM_MEASURED = {"Q2_0": "~14 tok/s", "IQ3_XXS": "~10 tok/s"}
 STREAM_COPY_GAIN = "decoding about 15%, prompts about 25%"   # without the experts' copy, on the 32 GB M4 (IQ3_XXS)
+# A streaming Mac with this much memory keeps most of the experts in its arena (the 128 GB M5 Max: 80% of UD-Q5_K_XL's):
+# there the draft layer pays, and a longer window pays more because every window costs a fixed hand-shake per layer
+# (UD-Q5_K_XL, story: 28 tok/s without MTP, 41.8 at --spec 2, 50.6 at --spec 3). Smaller Macs stream without it.
+STREAM_MTP_FROM_GB = 96
+STREAM_SPEC = 3
 # beside the mapped file: the prompt kernels' buffers (chunks of 2,048 rows), the KV cache, the draft layer, the
 # Q8_0 copies of the hyper-connection matrices and the macOS desktop
 OVERHEAD_GB = 8.0
@@ -269,17 +274,26 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False) -> list[str]:
+def stream_mtp(stream: bool, ram_gb: float) -> bool:
+    """Whether the config carries the MTP draft layer: always when the model is resident; when it streams, only on a
+    Mac with STREAM_MTP_FROM_GB or more (a 32 GB M4 is faster without it)."""
+    return (not stream) or ram_gb >= STREAM_MTP_FROM_GB
+
+
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
-    read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4)."""
+    read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
+    Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
+    mtp = stream_mtp(stream, ram_gb)
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
         args += ["--native-dense-gguf", str(shards[0])]
     args += [
             "--expert-profile", str(ROOT / "data" / "expert-profile.bin"), "--expert-cache", "64",
-            "--prefill", "auto", "--spec", "2"]
-    args += ["--suffix-draft", "0"] if stream else ["--mtp", str(rt)]
+            "--prefill", "auto", "--spec", str(STREAM_SPEC if stream and mtp else 2)]
+    args += ["--suffix-draft", "0"] if stream else []
+    args += ["--mtp", str(rt)] if mtp else []
     return args + ["--max-context", str(ctx),
                    "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
 
@@ -547,18 +561,23 @@ def main(argv=None) -> int:
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
     stream = streams(model, info["ram_gb"])
-    if stream:
+    use_mtp = stream_mtp(stream, info["ram_gb"])
+    if stream and not use_mtp:
         S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "
              "./setup.sh --setup on a Mac with more memory adds it")
-        experts_file(shards[0])
-    elif not (mtp / "mtp-q2_0.gguf").exists():
+    elif stream:
+        S.ok(f"the experts will stream from the SSD; the MTP draft layer stays on, with --spec {STREAM_SPEC} "
+             "(a longer window pays when every window has a fixed cost per layer)")
+    if stream and info["ram_gb"] < STREAM_MTP_FROM_GB:
+        experts_file(shards[0])           # a small Mac: its misses are many; a big Mac's arena holds most experts
+    if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
         S.say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of")
         S.say("  MTP tensors are downloaded.")
         S.run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
               env={**env, "STRATA_SOURCE": S.model_source()})
         S.run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
                "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-    if not stream:
+    if use_mtp:
         rt.mkdir(parents=True, exist_ok=True)          # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
         S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
@@ -566,7 +585,7 @@ def main(argv=None) -> int:
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if vision == "yes":
         cfg["args"] += ["--vision"]

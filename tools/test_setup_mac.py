@@ -90,6 +90,17 @@ class Config(unittest.TestCase):
         st = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768, stream=True)
         self.assertNotIn("--mtp", st)                             # streaming: one token per step, no draft layer
         self.assertEqual(st[st.index("--suffix-draft") + 1], "0")
+        self.assertEqual(st[st.index("--spec") + 1], "2")
+        # a big Mac that streams (UD-Q5/Q6 on 128 GB) keeps the draft layer, with a longer window
+        big = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 65536, stream=True,
+                            ram_gb=128)
+        self.assertEqual(big[big.index("--mtp") + 1], str(Path("/d/mtp/rt")))
+        self.assertEqual(big[big.index("--spec") + 1], "3")
+        self.assertEqual(big[big.index("--suffix-draft") + 1], "0")
+        small = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768, stream=True,
+                              ram_gb=32)
+        self.assertNotIn("--mtp", small)
+        self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
