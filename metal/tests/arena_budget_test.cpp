@@ -24,12 +24,12 @@ int main() {
     ArenaMem m5r = m5;
     m5r.ple_mapped = 50.7 * kGB;
     check(arena_budget(m5r) <= b5 - 48.0 * kGB, "M5 Max, table in RAM: the arena gives up the table's 50.7 GB", arena_budget(m5r));
-    // the M4 Mac mini, 32 GB: 15% = 5.16 GB kept
+    // the M4 Mac mini, 32 GB: the 7 GB floor (15% would be 5.16 GB)
     ArenaMem m4{34.4 * kGB, 26.8 * kGB, 3.3 * kGB, 17.8 * kGB};
-    check(std::fabs(arena_keep(m4) - 5.16 * kGB) < 1e6, "M4 32 GB: macOS keeps 15% (5.16 GB)", arena_keep(m4));
-    check(std::fabs(arena_budget(m4) - (17.8 - 5.16 - 0.5) * kGB) < 1e6, "M4 32 GB: available - 5.16 - 0.5", arena_budget(m4));
+    check(std::fabs(arena_keep(m4) - 7.0 * kGB) < 1e6, "M4 32 GB: macOS keeps the 7 GB floor", arena_keep(m4));
+    check(std::fabs(arena_budget(m4) - (17.8 - 7.0 - 0.5) * kGB) < 1e6, "M4 32 GB: available - 7 - 0.5", arena_budget(m4));
     ArenaMem m16{17.2 * kGB, 11 * kGB, 3 * kGB, 9 * kGB};
-    check(std::fabs(arena_keep(m16) - 5.0 * kGB) < 1e6, "a 16 GB Mac: the 5 GB floor", arena_keep(m16));
+    check(std::fabs(arena_keep(m16) - 7.0 * kGB) < 1e6, "a 16 GB Mac: the 7 GB floor", arena_keep(m16));
     // the overrides
     ArenaMem o = m4;
     o.keep_gb = 12.0;

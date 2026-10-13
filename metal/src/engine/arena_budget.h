@@ -3,11 +3,12 @@
 //
 // The arena is anonymous memory the GPU keeps resident: macOS cannot page it out or drop it like file cache.  It must
 // leave room for macOS and the desktop, and for the other big memory the engine itself uses while it runs:
-//   keep      macOS and the desktop: max(5 GB, 15% of the RAM) - STRATA_METAL_KEEP_FREE_GB sets it.  The M5 Max
+//   keep      macOS and the desktop: max(7 GB, 15% of the RAM) - STRATA_METAL_KEEP_FREE_GB sets it.  The M5 Max
 //             (128 GB) froze with an 89 GB arena and 7 GB kept beside a 50 GB n-gram table; with 15% it keeps 20.6 GB.
 //             The 32 GB M4 (IQ3_XXS after a 6K prompt, 5 interleaved runs, memory_pressure every 3 s, vm_stat
 //             swapouts): 7 GB kept + 2 GB reserve 5.93 tok/s (arena ~8.5 GB, least free 50%), 7 + 0.5 6.59 (~10 GB,
-//             49%), 5 + 0.5 7.47 (~12 GB, 43%); no swap-out in any run.
+//             49%), 5 + 0.5 7.47 (~12 GB, 43%); no swap-out in any run.  But a 34-minute server soak with 5 GB kept
+//             swapped out 93 MB while its 11.7 GB arena filled (none after): 7 GB again.
 //   ple       the n-gram table: mapped whole in RAM (--ple-io ram) it is all of it; read row by row (the default,
 //             F_NOCACHE: no file cache) only its bounded row cache, 1M rows of at most 192 bytes: 0.5 GB reserved.
 //   GPU       the Metal working set less what is already allocated, less 1 GB.
@@ -32,7 +33,7 @@ struct ArenaMem {
 constexpr double kGB = 1e9;
 
 inline double arena_keep(const ArenaMem& m) {
-    return m.keep_gb >= 0 ? m.keep_gb * kGB : std::max(5.0 * kGB, 0.15 * m.phys);
+    return m.keep_gb >= 0 ? m.keep_gb * kGB : std::max(7.0 * kGB, 0.15 * m.phys);
 }
 
 inline double arena_ple_reserve(const ArenaMem& m) { return m.ple_mapped > 0 ? m.ple_mapped : 0.5 * kGB; }
