@@ -63,6 +63,56 @@ following decode rates:
 | 0.25 | 117 | 124 |
 | 0.10 | 112 | 118 |
 
+## Measured in Strata (2026-10-13)
+
+The numbers above are the fork author's, on his RTX 5090 and 128 GB. These were measured here, on the ready-made GPTQ
+pack (`--family nvfp4 --model NVFP4`).
+
+Quality, the quant yardstick (`tools/quant_quality.py`, 4,995 teacher-forced positions of code, docs, English, other
+languages and an agent transcript, against Unsloth's Q8_0; RTX 3060 box):
+
+| | same top token as Q8_0 | mean KL | KL p99 |
+| --- | ---: | ---: | ---: |
+| NVFP4 GPTQ, experts on the CPU | 92.09% | 0.070 | 1.12 |
+| NVFP4 GPTQ, 1,500 experts on the GPU | 91.79% | 0.069 | 1.07 |
+| the same with `STRATA_ROUTE_TAIL_SKIP=7` | 88.59% | 0.118 | 1.76 |
+| NVFP4 GPTQ with the GSQ-RCO IQ4_NL n-gram table instead of the FP8 one | 92.15% | 0.069 | 1.07 |
+| for comparison, the same tool: Unsloth UD-Q5_K_XL | 94.55% | 0.038 | 0.64 |
+| Unsloth UD-Q4_K_XL | 93.09% | 0.056 | - |
+| Unsloth UD-IQ4_XS | 88.91% | 0.101 | 1.60 |
+| GSQ-RCO IQ3_S | 87.69% | 0.144 | 1.98 |
+
+The route tail skip moves the answers by more than the quantization itself, so it is off by default for NVFP4
+experts. `STRATA_ROUTE_TAIL_SKIP=7` turns it on: +7-25% decode on the RTX 3060, +47-55% on the RTX 5070 (64 GB).
+
+Decode experts (`nvfp4_decode_bench`, 64 distinct experts per call, the share of the card's DRAM bandwidth):
+
+| tokens per expert | RTX 5070 | RTX 3060 | Tesla P100 |
+| --- | ---: | ---: | ---: |
+| 1 | 0.294 ms (89%) | 0.554 ms (89%) | 0.910 ms |
+| 2 | 0.298 ms (88%) | 0.596 ms | 1.247 ms |
+| 4 | 0.335 ms (79%) | 0.766 ms | 1.954 ms |
+
+Each weight is decoded once for all the tokens of a verify window (before the port's kernel work: 2.26 ms on the 3060
+at 4 tokens), bit for bit the same results.
+
+Prompt experts on the RTX 5070 (`mmq_expert_bench`, one launch of 16 experts with 625 rows each, gate/up + down): w4a8
+1.52 ms, w4a4x2 (`STRATA_PREFILL_NVFP4=w4a4x2`) 1.13 ms, w4a4x2 with down too (`STRATA_PREFILL_X2_MIN_K=640`)
+0.995 ms, UD-IQ4_XS's experts 1.20 ms. First-token KL against the exact FP16 path (24 prompts, 1.5-8K tokens): w4a8
+0.0068, w4a4x2 0.0056, w4a4x2 with down 0.0044. On a 64 GB PC the prompt waits for the experts read from the SSD,
+so the modes give the same prompt speed there; w4a8 stays the default until a 96 GB+ RTX 50 PC measures the others.
+On RTX 20-40 the NVFP4 prompt products are 1.35-1.6x slower than IQ3_S / IQ4_NL ones at 32K: NVFP4's 16-value scales
+are applied in FP32 after every int8 step, which only Blackwell's FP4 tensor cores avoid.
+
+Below its RAM need (68 GB of experts plus room) setup runs the pack in the RAM-budget mode (`--resident-budget-gib`,
+the RAM less 24 GB), as for Unsloth's files. Mapped experts (`--mmap-experts`) on a 64 GB Windows PC filled the RAM.
+
+Images: the packs keep Qwen's vision tower unquantized, so the original's image encoder reads pictures for them
+(`--vision`; strata-vision opens the dense GGUF for the vocabulary). Checked on an RTX 5070 and an RTX 3060 against
+IQ3_XXS's answers on the same picture (a number in the picture read, two shapes with their colours and sides). The
+encoder on the GPU takes ~1.1 GiB of VRAM: on the 3060 at 8K context the cache held 1,293 experts with images against
+1,734 without.
+
 ## Where the global scales go
 
 Each scale multiplies its own projection's FP32 output, as llama.cpp applies `.scale`:
