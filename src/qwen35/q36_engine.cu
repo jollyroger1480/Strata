@@ -498,6 +498,62 @@ constexpr int kArgBlocks = 128;   // (the row stride of k_argmax's partials)
 
 unsigned grid1(int64_t n, int b = kThreads) { return (unsigned) ((n + b - 1) / b); }
 
+/// out[t][o] = W[o] . x[t] in FP32 for a prompt chunk's small F32 projections (the router, the GDN alpha / beta,
+/// the shared expert's gate: n_out <= 256): a (16 TM) x 64 output tile per block, K in steps of 16 through shared
+/// memory, TM x 4 outputs per thread (TM = 4 for the router, 1 for the 32-wide alpha / beta: more blocks).  hipBLAS
+/// picked 8 x 8 / 16 x 16 tiles for these shapes (~10% of a prompt).  K % 4 == 0.
+template <int TM>
+__global__ void __launch_bounds__(256) k_sgemm_nt(const float* __restrict__ W, const float* __restrict__ x,
+                                                  float* __restrict__ out, int K, int n_out, int T, int ldo, int kz) {
+    constexpr int BM = 16 * TM, BN = 64, BK = 16;
+    const int kb = blockIdx.z * kz, ke = min(K, kb + kz);   // split-K: this block's K range, its own partial
+    out += (size_t) blockIdx.z * T * ldo;
+    __shared__ float As[BK][BM + 4], Bs[BK][BN + 4];
+    const int tid = threadIdx.x;
+    const int m0 = blockIdx.y * BM, n0 = blockIdx.x * BN;
+    const int tm = (tid / 16) * TM, tn = (tid % 16) * 4;
+    const int lr = tid / 4, lk = (tid % 4) * 4;   // this thread's loads: row lr of each tile, k lk .. lk + 3
+    float acc[TM][4] = {};
+    for (int k0 = kb; k0 < ke; k0 += BK) {
+        if (lr < BM) {
+            float4 a = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (m0 + lr < T && k0 + lk < ke) a = *reinterpret_cast<const float4*>(x + (size_t) (m0 + lr) * K + k0 + lk);
+            As[lk][lr] = a.x; As[lk + 1][lr] = a.y; As[lk + 2][lr] = a.z; As[lk + 3][lr] = a.w;
+        }
+        float4 b = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (n0 + lr < n_out && k0 + lk < ke) b = *reinterpret_cast<const float4*>(W + (size_t) (n0 + lr) * K + k0 + lk);
+        Bs[lk][lr] = b.x; Bs[lk + 1][lr] = b.y; Bs[lk + 2][lr] = b.z; Bs[lk + 3][lr] = b.w;
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; ++k) {
+            float ar[TM];
+#pragma unroll
+            for (int i = 0; i < TM; ++i) ar[i] = As[k][tm + i];
+            const float4 bv = *reinterpret_cast<const float4*>(&Bs[k][tn]);
+            const float br[4] = {bv.x, bv.y, bv.z, bv.w};
+#pragma unroll
+            for (int i = 0; i < TM; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) acc[i][j] = fmaf(ar[i], br[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < TM; ++i)
+#pragma unroll
+        for (int j = 0; j < 4; ++j)
+            if (m0 + tm + i < T && n0 + tn + j < n_out) out[(size_t) (m0 + tm + i) * ldo + n0 + tn + j] = acc[i][j];
+}
+
+/// out[i] = the sum of the split-K partials part[z][i] in order (deterministic), n values each.
+__global__ void k_sum_splits(const float* part, float* out, int64_t n, int splits) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float a = 0.f;
+    for (int z = 0; z < splits; ++z) a += part[(size_t) z * n + i];
+    out[i] = a;
+}
+
 /// x f32 -> FP16 bits (the prompt GEMMs' activations).
 __global__ void k_to_f16(const float* x, __half* y, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -962,6 +1018,8 @@ struct Engine {
     strata::prefill::Gemm gemm;
     cublasHandle_t blas = nullptr;
     float* att_s = nullptr;            // the prompt attention's scores / probabilities, kAttScoreFloats floats
+    static constexpr int kSplitK = 16;
+    float* sk_part = nullptr;          // the split-K partials of the F32 projections: [kSplitK][tmax][<= 257]
     __half* att_p16 = nullptr;         // the probabilities in FP16 (kAttScoreFloats halves)
     __half *k16 = nullptr, *v16 = nullptr, *q16 = nullptr;   // the prompt attention's FP16 operands
     static constexpr size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB
@@ -1051,6 +1109,7 @@ struct Engine {
             std::exit(1);
         }
         att_s = dalloc(kAttScoreFloats);
+        sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
         att_p16 = dalloc_t<__half>(kAttScoreFloats);
         k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
@@ -1173,6 +1232,22 @@ struct Engine {
     void f32mm(const float* W, const float* xin, float* out, int n_in, int n_out, int T) {
         if (T <= kGemmT) {
             k_gemv_f32<<<dim3(rows8(n_out), T), kThreads, 0, st>>>(W, xin, out, n_in, n_out);
+            return;
+        }
+        static const bool blas_f32 = std::getenv("STRATA_Q36_BLAS_F32") != nullptr;   // the hipBLAS / cuBLAS SGEMM (A/B)
+        if (!blas_f32 && n_in % 4 == 0) {
+            // K split so that about 128 blocks run (the partials summed in a fixed order: deterministic); TM = 4 rows per
+            // thread for the 256-wide router, 1 for the narrow ones (alpha / beta 32, the gate 1)
+            const int tm = n_out > 64 ? 4 : 1;
+            const int gx = (n_out + 63) / 64, gy = (T + 16 * tm - 1) / (16 * tm);
+            const int want = std::max(1, std::min(kSplitK, 128 / std::max(1, gx * gy)));
+            const int kz = (n_in / want + 15) / 16 * 16;
+            const int splits = (n_in + kz - 1) / kz;
+            float* dst = splits > 1 ? sk_part : out;
+            if (tm == 4) k_sgemm_nt<4><<<dim3(gx, gy, splits), 256, 0, st>>>(W, xin, dst, n_in, n_out, T, n_out, kz);
+            else k_sgemm_nt<1><<<dim3(gx, gy, splits), 256, 0, st>>>(W, xin, dst, n_in, n_out, T, n_out, kz);
+            if (splits > 1)
+                k_sum_splits<<<grid1((int64_t) T * n_out), kThreads, 0, st>>>(sk_part, out, (int64_t) T * n_out, splits);
             return;
         }
         const float one = 1.0f, zero = 0.0f;
