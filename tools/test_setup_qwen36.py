@@ -66,6 +66,13 @@ class Qwen36Entries(unittest.TestCase):
         for m, d in setup.MODELS.items():
             self.assertNotIn("qwen36", d.get("families", ()))
 
+    def test_size_recommendation(self):
+        fam = setup.OWN_PATH_FAMILIES["qwen36"]
+        self.assertEqual(setup.own_path_size(fam, 24.0), "UD-Q4_K_XL")   # none fits: the smallest
+        self.assertEqual(setup.own_path_size(fam, 32.0), "UD-Q4_K_XL")
+        self.assertEqual(setup.own_path_size(fam, 46.0), "UD-Q6_K_XL")
+        self.assertEqual(setup.own_path_size(fam, 64.0), "Q8_0")
+
     def test_context_recommendation(self):
         fam = setup.OWN_PATH_FAMILIES["qwen36"]
         self.assertEqual(setup.own_path_context(fam, 12.0), 32768)
@@ -135,6 +142,20 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(self.cfg["model_name"], "qwen3.6-35b-a3b-ud-q4_k_xl")
         self.assertEqual(Path(self.cfg["exe"]).parent, self.root / "engine")
         self.assertIn(("config", "strata-qwen36-ud-q4_k_xl.json"), self.calls)
+
+    def test_default_size_follows_the_ram(self):
+        rc, out = self.install(ram=64.0)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Recommended for 64 GB of RAM: Q8_0", out)
+        self.assertTrue(self.cfg["args"][self.cfg["args"].index("--native") + 1].endswith("Qwen3.6-35B-A3B-Q8_0.gguf"))
+        rc, out = self.install(ram=46.0)
+        self.assertTrue(self.cfg["args"][self.cfg["args"].index("--native") + 1].endswith("UD-Q6_K_XL.gguf"))
+
+    def test_a_bigger_size_than_the_ram_is_asked_not_refused(self):
+        with mock.patch.object(setup, "confirm_risk", lambda *a, **k: None):
+            rc, out = self.install(ram=32.0, model="Q8_0")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("installing Q8_0 with 32 GB of RAM, as you chose", out)
 
     def test_an_engine_without_the_family_is_refused_before_the_download(self):
         self.families = {"qwen4exp"}

@@ -377,10 +377,12 @@ OWN_PATH_FAMILIES = {
                "hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "file": "Qwen3.6-35B-A3B-{q}.gguf", "tag": "qwen36-",
                "mmproj_hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "mmproj": "mmproj-F16.gguf",
                "name": "qwen3.6-35b-a3b", "license": "Apache 2.0: https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
-               # RAM floors from the iGPU baselines (llama.cpp: 21 / 30 / 38 GB in use, plus the OS)
+               # RAM: the engine keeps a copy of every expert in RAM when they do not all fit in VRAM (the hybrid mode),
+               # so the file's size plus room for the OS and the rest (measured: UD-Q4_K_XL on a 46 GB PC with a 12 GB
+               # card, 18.75 GiB of experts pinned)
                "models": {"UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
-                          "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic)", "ram_gb": 48},
-                          "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 48}},
+                          "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic), closer to the full model", "ram_gb": 44},
+                          "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 52}},
                "sha256": QWEN36_FILES,
                # the engine's KV cache per context token: 10 attention layers + the MTP block, 2 KV heads x 256, K and
                # V in fp32 (strata-q36)
@@ -5003,6 +5005,12 @@ def own_path_context(fam: dict, vram_gb: float) -> int:
     return 32768 if vram_gb <= 16.5 else 65536 if vram_gb <= 24.5 else 131072
 
 
+def own_path_size(fam: dict, ram: float) -> str:
+    """The recommended size: the largest file whose RAM need this PC has (the smallest when none fits)."""
+    fits = [m for m, d in fam["models"].items() if ram >= d["ram_gb"]]
+    return max(fits, key=lambda m: fam["sha256"][fam["file"].format(q=m)][0]) if fits else next(iter(fam["models"]))
+
+
 def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
     """Steps 2-7 for a family with its own engine path (OWN_PATH_FAMILIES: Qwen3.6-35B-A3B): the size, the context, the
     engine, the GGUF (pinned revision, size and SHA-256), the tokenizer from the GGUF, the config and the start
@@ -5025,7 +5033,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         size = fam["sha256"][fam["file"].format(q=m)][0]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
-    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], "1", a.yes)) - 1]
+    rec = own_path_size(fam, ram)
+    if not a.model:
+        say(f"  Recommended for {ram:.0f} GB of RAM: {rec} (the largest that fits; any size can be chosen)")
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
+                                     str(names.index(rec) + 1), a.yes)) - 1]
     if ram < fam["models"][model]["ram_gb"]:
         confirm_risk(f"{model} needs about {fam['models'][model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB: the "
                      "OS may page and it may not start", bool(a.model), a.yes,
