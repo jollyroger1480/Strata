@@ -45,6 +45,7 @@ inline Kv strs(const std::string& k, std::vector<std::string> v) {
     r.sarr = std::move(v);
     return r;
 }
+inline Kv str_array(const std::string& k, std::vector<std::string> v) { return strs(k, std::move(v)); }
 
 struct Tensor {
     std::string name;

@@ -87,6 +87,10 @@
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/family_layout.hpp"
+#if defined(STRATA_HAVE_QWEN35)
+#include "strata/qwen35/engine.hpp"
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -1793,6 +1797,15 @@ int main(int argc, char** argv) {
             std::printf("strata %s\n", STRATA_VERSION);
             return 0;
         }
+        // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
+        if (std::strcmp(argv[i], "--families") == 0) {
+#if defined(STRATA_HAVE_QWEN35)
+            std::printf("qwen4exp qwen35moe\n");
+#else
+            std::printf("qwen4exp\n");
+#endif
+            return 0;
+        }
     }
 #if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
     // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
@@ -1840,6 +1853,23 @@ int main(int argc, char** argv) {
 #endif
         break;
     }
+#if defined(STRATA_HAVE_QWEN35)
+    // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) runs on its own engine path
+    // (src/qwen35), decided here from the file's header before any of this engine's state exists; every other file
+    // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
+        bool qwen35 = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+        } catch (const std::exception&) {
+            // not readable here: the normal path below reports it
+        }
+        if (qwen35) return strata::qwen35::run(argc, argv);
+        break;
+    }
+#endif
     Options o;
     bool have_tokens = false;
     bool have_logits_stride = false;
@@ -2539,6 +2569,16 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
+            // a model family Strata recognises but has no engine path for yet (Qwen3.6-35B-A3B) is refused here,
+            // with a message that says so, before anything else about the file is judged
+            {
+                const strata::GgufFile meta(o.native_shards.front());
+                const std::string why = strata::model_family_not_supported(strata::model_family(meta));
+                if (strata::model_family(meta) != strata::ModelFamily::Unknown && !why.empty()) {
+                    std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), why.c_str());
+                    return 2;
+                }
+            }
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
             if (o.ple_gguf.empty() && !o.no_ple) {
@@ -2865,21 +2905,26 @@ int main(int argc, char** argv) {
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
         if (!o.native_preset.empty()) {
-            // the model file is the authority on its own geometry; the kernels' compiled shape is checked against
-            // it before any weight moves, naming the key that differs
+            // The geometry is the model file's (core::geometry_from_gguf: every "<arch>.*" shape key), checked
+            // against the shapes this engine's kernels are built for.  The expert count and top-k are run-time
+            // sizes: a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10.
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                std::string gerr = strata::read_geometry(model_gguf, g);
-                if (gerr.empty()) gerr = strata::geometry_unsupported(g);
-                if (!gerr.empty()) {
-                    std::fprintf(stderr, "strata generate: %s: %s\n", o.native_shards.front().c_str(), gerr.c_str());
+                std::string gerr;
+                if (!strata::core::geometry_from_gguf(model_gguf, g, K, gerr)) {
+                    std::fprintf(stderr, "strata generate: %s\n", gerr.c_str());
                     return 1;
                 }
-                K = g.n_expert_used;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                const std::string mismatch = strata::core::compiled_geometry_mismatch(g);
+                if (!mismatch.empty()) {
+                    std::fprintf(stderr, "strata generate: %s: %s\n", o.native_preset.c_str(), mismatch.c_str());
+                    return 1;
+                }
+                const std::string p = std::string(strata::model_family_arch(g.family)) + ".";
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's geometry from %s: %s\n",

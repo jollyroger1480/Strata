@@ -68,6 +68,7 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
 }
 
 
@@ -422,6 +423,39 @@ FAMILIES = {
               "mmproj_sha256": (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+# Qwen3.6-35B-A3B (GGUF architecture qwen35moe), Unsloth's GGUFs with the MTP block: a family with an engine path of its
+# own (src/qwen35; `strata` switches to it from the file's architecture).  No pack, no expert profile, no separate MTP
+# draft layer: the engine reads the GGUF as it is, keeps every expert it can in VRAM and computes the rest on the CPU
+# (the hybrid mode), and drafts with the file's own MTP block.  Not in FAMILIES (whose entries are Flash-Next files with
+# packs): OWN_PATH_FAMILIES, offered in the same menu and installed by install_own_path.  NVIDIA (CUDA) and AMD (HIP)
+# only: the Intel Arc (SYCL) engine refuses it.
+QWEN36_FILES = {
+    "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf": (22853663008, "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"),
+    "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf": (32611711264, "35fce994cd36104a7dc1bd8a4bdf13778145664c00fdef6773aebc9246e5019c"),
+    "Qwen3.6-35B-A3B-Q8_0.gguf": (37801097504, "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"),
+    "mmproj-F16.gguf": (899283584, "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"),
+}
+OWN_PATH_FAMILIES = {
+    "qwen36": {"title": "Qwen3.6-35B-A3B", "by": "Qwen; GGUFs with the MTP layer by Unsloth", "arch": "qwen35moe",
+               "about": "35B mixture of experts with 3B active (256 experts, top-8): a smaller cousin of "
+                        "Qwen3.8-Flash-Next with the same tokenizer",
+               "hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "file": "Qwen3.6-35B-A3B-{q}.gguf", "tag": "qwen36-",
+               "mmproj_hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "mmproj": "mmproj-F16.gguf",
+               "name": "qwen3.6-35b-a3b", "license": "Apache 2.0: https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+               # RAM: the engine keeps a copy of every expert in RAM when they do not all fit in VRAM (the hybrid mode),
+               # so the file's size plus room for the OS and the rest (measured: UD-Q4_K_XL on a 46 GB PC with a 12 GB
+               # card, 18.75 GiB of experts pinned)
+               "models": {"UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
+                          "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic), closer to the full model", "ram_gb": 44},
+                          "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 52}},
+               "sha256": QWEN36_FILES,
+               # the engine's KV cache per context token: 10 attention layers + the MTP block, 2 KV heads x 256, K and
+               # V in fp32 (strata-q36)
+               "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
+               "mtp": 2,                     # drafts per step (greedy requests): measured best on the R9700
+               "vision": False},             # the image encoder for this family is not wired up yet
+}
+PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
 ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection.gguf"
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
@@ -4253,10 +4287,25 @@ def previous_config(elsewhere_first: list, settings: dict):
     return next((c for c in sorted(cands, key=lambda p: p.stat().st_mtime, reverse=True) if readable_config(c)), None)
 
 
+def own_path_config(cfg: dict) -> bool:
+    """A config for a family with its own engine path (Qwen3.6): its --mtp is a draft count, not a draft layer."""
+    return cfg.get("arch") in {d["arch"] for d in OWN_PATH_FAMILIES.values()}
+
+
 def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
+    own = next((f for f, d in OWN_PATH_FAMILIES.items() if tag.startswith(d["tag"])), None)
+    if own is not None:                                # Qwen3.6: its own sizes; no KV / images / projection settings
+        d = OWN_PATH_FAMILIES[own]
+        size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
+        a = cfg.get("args", [])
+        ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
+        return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
+                "vision": "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
+                "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
+                "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
     model = (tag[len(FAMILIES[family]["tag"]):] if tag.startswith(FAMILIES[family]["tag"]) else tag).upper()
     if model not in MODELS:                            # (sizes have no dash except UD-Q4_K_XL: the old rule)
@@ -4281,10 +4330,12 @@ def choices_from_config(cfg_path: Path) -> dict:
 def calibration_targets(have: list, model: str | None, family: str | None) -> list:
     """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
     if not (model or family):
-        return list(have)
+        return [c for c in have if choices_from_config(c)["family"] not in OWN_PATH_FAMILIES]
     out = []
     for c in have:
         ch = choices_from_config(c)
+        if ch["family"] in OWN_PATH_FAMILIES:          # the tuning measures Flash-Next's engine settings
+            continue
         if (not model or ch["model"] == model) and (not family or ch["family"] == family):
             out.append(c)
     return out
@@ -4514,7 +4565,8 @@ def update_install(have: list, a) -> int:
     mtp_done: set = set()
     for cfg_path in have:
         cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
-        refresh_shared_draft_vocab(cfg, mtp_done)
+        if not own_path_config(cfg):
+            refresh_shared_draft_vocab(cfg, mtp_done)
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
@@ -4575,7 +4627,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
             else f"{k.replace('_', ' ')} {v}" for k, v in keep.items()))
     cfg_path.touch()                                     # the most recently used model
-    if "--mtp" in cfg["args"][:-1]:
+    if "--mtp" in cfg["args"][:-1] and not own_path_config(cfg):
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
@@ -5082,10 +5134,243 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def engine_step(a, gpu, hip, amd, cuda_tk, vision):
+    """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
+    BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
+    llama = get_llama_cpp()
+    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
+    if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
+        eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
+        if eng is None:
+            fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
+                 "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
+                 "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
+        gpu = hip_card(eng, gpu, amd)
+        a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
+    else:
+        eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
+                                                                                    else {}))
+    if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
+        pip_cuda_libs(cuda_tk)
+        if vision != "none" and not (eng / VEXE).exists():
+            warn("the ready-made engine has no image encoder: compiling it")
+            eng = None
+        else:
+            vision = prebuilt_vision(json.loads((eng / "BUILD.json").read_text(encoding="utf-8")), gpu, vision)
+    if eng is None:
+        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
+    meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
+        lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
+    else:
+        lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
+    return llama, eng, meta, lib_dirs, gpu, vision
+
+
+def engine_families(eng: Path) -> set:
+    """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only)."""
+    try:
+        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {"qwen4exp"}
+    names = set(text.split())
+    return names if "qwen4exp" in names else {"qwen4exp"}
+
+
+def own_path_context(fam: dict, vram_gb: float) -> int:
+    """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
+    experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
+    return 32768 if vram_gb <= 16.5 else 65536 if vram_gb <= 24.5 else 131072
+
+
+def own_path_size(fam: dict, ram: float) -> str:
+    """The recommended size: the largest file whose RAM need this PC has (the smallest when none fits)."""
+    fits = [m for m, d in fam["models"].items() if ram >= d["ram_gb"]]
+    return max(fits, key=lambda m: fam["sha256"][fam["file"].format(q=m)][0]) if fits else next(iter(fam["models"]))
+
+
+def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
+    """Steps 2-7 for a family with its own engine path (OWN_PATH_FAMILIES: Qwen3.6-35B-A3B): the size, the context, the
+    engine, the GGUF (pinned revision, size and SHA-256), the tokenizer from the GGUF, the config and the start
+    script.  The engine places the experts itself (every one in VRAM when they fit, else the most-used ones there and
+    the rest on the CPU), so there is no pack, profile or RAM budget to choose."""
+    fam = OWN_PATH_FAMILIES[family]
+    say()
+    say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
+    ok(f"model: {fam['title']}")
+    if fam.get("license"):
+        say(f"  Its license: {fam['license']}")
+    if multi:
+        warn(f"{fam['title']} runs on one GPU so far: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
+    names = list(fam["models"])
+    if a.model and a.model not in names:
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
+    say()
+    for i, m in enumerate(names, 1):
+        d = fam["models"][m]
+        size = fam["sha256"][fam["file"].format(q=m)][0]
+        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
+    rec = own_path_size(fam, ram)
+    if not a.model:
+        say(f"  Recommended for {ram:.0f} GB of RAM: {rec} (the largest that fits; any size can be chosen)")
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
+                                     str(names.index(rec) + 1), a.yes)) - 1]
+    if ram < fam["models"][model]["ram_gb"]:
+        confirm_risk(f"{model} needs about {fam['models'][model]['ram_gb']} GB of RAM; this PC has {ram:.0f} GB: the "
+                     "OS may page and it may not start", bool(a.model), a.yes,
+                     f"{model} needs about {fam['models'][model]['ram_gb']} GB of RAM",
+                     f"choose a smaller size, or --model {model} --yes to install it anyway", "  Install it anyway?")
+        warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
+    ok(f"size: {model}")
+    tag = fam["tag"] + model
+    rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0))
+    if a.context:
+        ctx = a.context
+    else:
+        ctxs = [c for c in CONTEXTS if c <= 262144]   # the model's trained length; no rope scaling on this path yet
+        say()
+        say("  Context length = how much text the model can see at once. Its cache takes "
+            f"{fam['kv_bytes_per_token'] * 32768 / 2**30:.1f} GB of VRAM per 32K tokens, room the experts would use:")
+        for i, c in enumerate(ctxs, 1):
+            say(f"  {i}) {c // 1024}K tokens" + ("   (recommended for your GPU)" if c == rec_ctx else ""))
+        ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(rec_ctx) + 1),
+                           a.yes)) - 1]
+    if ctx > 262144:
+        warn(f"{ctx // 1024}K is past {fam['title']}'s trained 262,144 positions and this engine path has no rope "
+             "scaling yet: kept as you chose, but answers past 256K are untested")
+    ok(f"context: {ctx} tokens")
+    if a.vision not in (None, "no", "none"):
+        warn(f"images are not available with {fam['title']} yet: off")
+    if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
+        warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
+             "does not use them")
+    folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
+    gguf = folder / fam["file"].format(q=model)
+    size = fam["sha256"][gguf.name][0]
+    part = gguf.with_name(gguf.name + ".part")
+    left = 0 if gguf.exists() and done(gguf) else (size - (part.stat().st_size if part.is_file() else 0)) / 1e9
+    if left and free_gb(folder) < left + 1:
+        fail(f"not enough free disk space in {folder}: need ~{left + 1:.0f} GB", "use --models-dir on a bigger drive")
+
+    step(3, "Python packages")
+    pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES,
+                "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
+
+    step(4, "the Strata engine")
+    llama, eng, meta, lib_dirs, gpu, _ = engine_step(a, gpu, hip, amd, cuda_tk, "none")
+    if fam["arch"] not in engine_families(eng):
+        fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
+             "update Strata, or compile the engine with --build, and run setup again")
+    ok(f"engine: {eng / EXE}")
+
+    step(5, f"downloading {fam['title']} {model}")
+    if gguf.exists() and done(gguf):
+        ok(f"{gguf.name} already downloaded")
+    else:
+        if a.gguf_dir:
+            fail(f"{gguf} is missing", f"put {gguf.name} in {folder}, or drop --gguf-dir to download it")
+        download(fam["hf"] + gguf.name, gguf)
+    verify_sha256(gguf, *fam["sha256"][gguf.name])
+    ok(f"model file: {gguf}")
+
+    step(6, "preparing the model for Strata")
+    data, _ = data_folder(a.data_dir)
+    pack = data / "packs" / tag.lower()            # only the tokenizer: the engine reads the GGUF itself
+    if not (pack / "tokenizer" / "vocab.json").exists():
+        run([sys.executable, str(ROOT / "tools" / "strata_tokenizer.py"), "--gguf", str(gguf), "--out", str(pack)],
+            env=dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py")))
+    ok(f"tokenizer: {pack / 'tokenizer'}")
+
+    step(7, "writing the start script")
+    args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
+        vram = gpu.get("vram_gb", 0.0)
+        if vram > 0:
+            args += ["--expert-vram", f"{max(vram - 3.0 - a.vram_reserve_mib / 1024, 0):.1f}"]
+        ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
+    cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
+           "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
+           "log": str(ROOT / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+    if cuda_tk == 12:
+        cfg["cuda"] = 12
+    if hip:
+        cfg["backend"] = "hip"
+    if gpu.get("count", 1) > 1 or a.gpu is not None:
+        cfg["gpu"] = gpu["index"]
+        cfg["gpus_asked"] = True
+    if a.host:
+        cfg["host"] = a.host
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if a.browser is not None:
+        cfg["open_browser"] = a.browser
+    cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    ok(f"start script: {script.name}")
+    say()
+    say("All set.")
+    say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
+    say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
+    say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
+    if a.no_start:
+        return 0
+    return start(cfg_path, port)
+
+
+def preview_family(a) -> int:
+    """--family qwen36: a family setup knows but the engine does not run yet (PREVIEW_FAMILIES).  Downloads the chosen
+    size (pinned revision, size and SHA-256 checked) and, with --vision, the image encoder - and says plainly that
+    Strata cannot start it yet.  Nothing is configured: no engine, no pack, no start script."""
+    fam = PREVIEW_FAMILIES[a.family]
+    names = list(fam["models"])
+    say()
+    say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
+    warn(f"this Strata version does not run {fam['title']} yet (support is in development): setup downloads its "
+         "files, and the engine refuses them with a message until a version that runs it")
+    if a.model and a.model not in names:
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
+    ram = ram_gb()
+    for i, m in enumerate(names, 1):
+        d = fam["models"][m]
+        size = fam["sha256"][fam["file"].format(q=m)][0]
+        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
+    if a.check:
+        return 0
+    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], "1", a.yes)) - 1]
+    say(f"  Its license: {fam['license']}")
+    want = [fam["file"].format(q=model)]
+    if a.vision in ("yes", "gpu", "cpu"):
+        want.append(fam["mmproj"])
+    folder = Path(a.models_dir) / (fam["tag"] + model)
+    files = [folder / w for w in want]
+    left = sum(fam["sha256"][f.name][0] - (f.with_name(f.name + ".part").stat().st_size
+                                           if f.with_name(f.name + ".part").is_file() else 0)
+               for f in files if not (f.exists() and done(f))) / 1e9
+    if left and free_gb(folder) < left + 1:
+        fail(f"not enough free disk space in {folder}: need ~{left + 1:.0f} GB", "use --models-dir on a bigger drive")
+    step(5, f"downloading {fam['title']} {model}")
+    for f in files:
+        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else fam["hf"]) + f.name
+        download(url, f, "vision encoder" if f.name == fam["mmproj"] else None)
+        verify_sha256(f, *fam["sha256"][f.name])
+    ok(f"{fam['title']} {model}: {folder}")
+    say()
+    say(f"{fam['title']} is downloaded, but this Strata version cannot run it yet (its engine path is in "
+        "development); nothing was configured. Run setup again without --family qwen36 to install a model it runs.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5 (qwen36 = Qwen3.6-35B-A3B: download only, the "
+                         "engine does not run it yet)")
+    ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
+                                                                       for m in f["models"])])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -5187,6 +5472,9 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
+        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
+                                                              if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -5491,8 +5779,14 @@ def main() -> int:
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
-        family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)],
-                              str(fams.index(rec_fam) + 1), a.yes)) - 1]
+        for j, f in enumerate(OWN_PATH_FAMILIES, len(fams) + 1):   # families with an engine path of their own
+            d = OWN_PATH_FAMILIES[f]
+            say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]")
+        allf = fams + list(OWN_PATH_FAMILIES)
+        family = allf[int(ask("Which model?", [str(i) for i in range(1, len(allf) + 1)],
+                              str(allf.index(rec_fam) + 1), a.yes)) - 1]
+    if family in OWN_PATH_FAMILIES:                    # Qwen3.6: its own engine path, its own steps 2-7
+        return install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     fam = FAMILIES[family]
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
@@ -5789,38 +6083,13 @@ def main() -> int:
 
     # ---- 4. the engine
     step(4, "the Strata engine")
-    llama = get_llama_cpp()
-    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
-    if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
-        eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
-        if eng is None:
-            fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
-                 "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
-                 "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
-        gpu = hip_card(eng, gpu, amd)
-        a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
-    else:
-        eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
-                                                                                    else {}))
-    if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
-        pip_cuda_libs(cuda_tk)
-        if vision != "none" and not (eng / VEXE).exists():
-            warn("the ready-made engine has no image encoder: compiling it")
-            eng = None
-        else:
-            vision = prebuilt_vision(json.loads((eng / "BUILD.json").read_text(encoding="utf-8")), gpu, vision)
-    if eng is None:
-        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
-    meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
     if ready and meta.get("source") != "local" and \
             tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit()) < MODELS[model]["engine"]:
         # a ready-made engine from before NVFP4 cannot read these experts: one compiled from this source can
         warn(f"the ready-made engine {meta.get('version')} has no NVFP4 experts yet: compiling the engine from this source")
         eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
         meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
-    if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
-        lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
-    else:
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
     engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
