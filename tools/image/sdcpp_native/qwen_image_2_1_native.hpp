@@ -34,6 +34,9 @@ int qi21_qkv_post(void* stream, const float* q, const float* k, const float* v, 
                   const float* pe, void* qo, void* qlo, int q_f16, int q_tstride, void* ko, void* vo, int kv_tstride,
                   int kv_off, int T, int H, float eps);
 int qi21_swiglu(void* stream, const float* gu, float* out, int T, int F);
+int qi21_tanh(void* stream, const float* in, float* out, int n);
+int qi21_res_ln_mod2(void* stream, float* x, const float* h, const float* tg, float* out, const float* m, int T, int C,
+                     float eps);
 int qi21_attn_causal(void* stream, const float* q, int q_tstride, const void* k, const void* v, int kv_tstride,
                      float* out, int H, int Lq, int Lk, int causal);
 int qi21_attn_wmma(void* stream, const void* q, const void* qlo, int q_tstride, const void* k, const void* v,
@@ -53,6 +56,8 @@ namespace Qwen {
         bool said_why  = false;
         bool qsplit    = false;
         bool exact_attn = false;
+        bool fast_ln    = true;
+        bool fuse_qkv   = true;
 
         // weights (our own copy: the stock runner's params are never loaded, they load lazily on first use)
         ggml_context* wctx               = nullptr;
@@ -64,7 +69,7 @@ namespace Qwen {
         ggml_backend_buffer_t abuf = nullptr;
         int64_t t_cap = 0, l_cap = 0;
         ggml_tensor *x, *h, *q, *k, *v, *att, *gu, *mlp, *q16, *kw, *vw, *pe_img, *pe_txt, *latent, *outp, *timein,
-            *mod, *scale_out, *ctx_in, *pk, *pv;
+            *mod, *gates, *scale_out, *ctx_in, *pk, *pv;
 
         // the prefix cache: per layer K/V of the text tokens (fp16, head-major), for one condition
         uint64_t prefix_key = 0;
@@ -79,6 +84,8 @@ namespace Qwen {
             timing = getenv("STRATA_QI_TIMING") != nullptr;
             qsplit     = getenv("STRATA_QI_QSPLIT") != nullptr;      // measured: no accuracy gain, +7% step time
             exact_attn = getenv("STRATA_QI_EXACT_ATTN") != nullptr;
+            fuse_qkv   = getenv("STRATA_QI_NO_QKV_FUSE") == nullptr;
+            fast_ln    = getenv("STRATA_QI_FAST_LN") != nullptr;    // measured: no gain on the 3060 (2.10 vs 2.10 s/step)
             gbuf.resize(64 << 20);
         }
 
@@ -117,12 +124,43 @@ namespace Qwen {
             if (g == nullptr) return false;
             const int64_t n = gguf_get_n_tensors(g);
             wctx = ggml_init({(size_t) (n + 8) * ggml_tensor_overhead(), nullptr, true});
-            std::vector<std::pair<ggml_tensor*, size_t>> plan;
+            struct Piece { ggml_tensor* t; size_t file_off, dst_off; };
+            std::vector<Piece> plan;
             std::map<ggml_tensor*, ggml_type> widened;
             const size_t base = gguf_get_data_offset(g);
+            // q, k and v of a block in one tensor when they have the same type (one GEMM, one activation quantize):
+            // rows stay rows, so the three weights are simply laid one after the other
+            auto qkv_name = [](int b, const char* w) {
+                return "model.diffusion_model.transformer_blocks." + std::to_string(b) + ".attn.to_" + w + ".weight";
+            };
+            std::map<std::string, std::pair<ggml_tensor*, size_t>> fused_part;   // q/k/v name -> (fused, offset)
+            if (fuse_qkv) {
+                for (int b = 0; b < config.num_layers; ++b) {
+                    ggml_tensor* tq = ggml_get_tensor(meta, qkv_name(b, "q").c_str());
+                    ggml_tensor* tk = ggml_get_tensor(meta, qkv_name(b, "k").c_str());
+                    ggml_tensor* tv = ggml_get_tensor(meta, qkv_name(b, "v").c_str());
+                    if (!tq || !tk || !tv || tq->type != tk->type || tq->type != tv->type || tq->ne[0] != tk->ne[0] ||
+                        tq->ne[1] != tk->ne[1] || tq->ne[1] != tv->ne[1])
+                        continue;
+                    ggml_tensor* f = ggml_new_tensor_2d(wctx, tq->type, tq->ne[0], 3 * tq->ne[1]);
+                    const std::string fname = "model.diffusion_model.transformer_blocks." + std::to_string(b) +
+                                              ".attn.qkv.weight";
+                    ggml_set_name(f, fname.c_str());
+                    W[fname] = f;
+                    const size_t nb = ggml_nbytes(tq);
+                    fused_part[qkv_name(b, "q")] = {f, 0};
+                    fused_part[qkv_name(b, "k")] = {f, nb};
+                    fused_part[qkv_name(b, "v")] = {f, 2 * nb};
+                }
+            }
             for (int64_t i = 0; i < n; ++i) {
                 const char* name = gguf_get_tensor_name(g, i);
                 if (strncmp(name, "model.diffusion_model.", 22) != 0) continue;
+                auto fp = fused_part.find(name);
+                if (fp != fused_part.end()) {
+                    plan.push_back({fp->second.first, base + gguf_get_tensor_offset(g, i), fp->second.second});
+                    continue;
+                }
                 ggml_tensor* src = ggml_get_tensor(meta, name);
                 // a 1-D norm weight in BF16 / F16 is kept as F32 (elementwise ops on it then work on every backend)
                 const bool widen = ggml_n_dims(src) == 1 && src->type != GGML_TYPE_F32;
@@ -130,7 +168,7 @@ namespace Qwen {
                 if (widen) widened[t] = src->type;
                 ggml_set_name(t, name);
                 W[name] = t;
-                plan.push_back({t, base + gguf_get_tensor_offset(g, i)});
+                plan.push_back({t, base + gguf_get_tensor_offset(g, i), 0});
             }
             wbuf = ggml_backend_alloc_ctx_tensors(wctx, runtime_backend);
             if (wbuf == nullptr) {
@@ -141,11 +179,12 @@ namespace Qwen {
             FILE* f = fopen(dit_path.c_str(), "rb");
             std::vector<char> stage(64 << 20);
             bool ok = f != nullptr;
-            for (auto& [t, off] : plan) {
+            for (auto& [t, off, dst_off] : plan) {
                 if (!ok) break;
                 auto wi = widened.find(t);
-                const size_t nb = wi == widened.end() ? ggml_nbytes(t)
-                                                      : ggml_row_size(wi->second, t->ne[0]);
+                const bool part = std::string(ggml_get_name(t)).find(".attn.qkv.") != std::string::npos;
+                const size_t nb = part ? ggml_nbytes(t) / 3
+                                       : wi == widened.end() ? ggml_nbytes(t) : ggml_row_size(wi->second, t->ne[0]);
 #ifdef _WIN32
                 ok = _fseeki64(f, (long long) off, SEEK_SET) == 0;
 #else
@@ -164,7 +203,7 @@ namespace Qwen {
                 for (size_t done = 0; ok && done < nb;) {
                     const size_t c = std::min(stage.size(), nb - done);
                     ok = fread(stage.data(), 1, c, f) == c;
-                    if (ok) ggml_backend_tensor_set(t, stage.data(), done, c);
+                    if (ok) ggml_backend_tensor_set(t, stage.data(), dst_off + done, c);
                     done += c;
                 }
             }
@@ -174,7 +213,10 @@ namespace Qwen {
             if (!ok) return false;
             for (int i = 0; i < config.num_layers; ++i) {
                 const std::string b = "transformer_blocks." + std::to_string(i) + ".";
-                for (const char* s : {"attn.to_q.weight", "attn.to_k.weight", "attn.to_v.weight", "attn.to_out.0.weight",
+                if (w(b + "attn.qkv.weight") == nullptr &&
+                    (!w(b + "attn.to_q.weight") || !w(b + "attn.to_k.weight") || !w(b + "attn.to_v.weight")))
+                    return false;
+                for (const char* s : {"attn.to_out.0.weight",
                                       "attn.norm_q.weight", "attn.norm_k.weight", "img_mlp.gate_up.weight",
                                       "img_mlp.out.weight"}) {
                     if (w(b + s) == nullptr) return false;
@@ -190,7 +232,7 @@ namespace Qwen {
             }
             LOG_INFO("Qwen Image 2.1 native: %zu tensors, %.2f GB on %s%s", W.size(),
                      ggml_backend_buffer_get_size(wbuf) / 1e9, ggml_backend_name(runtime_backend),
-                     wmma_attn ? " (WMMA attention)" : "");
+                     wmma_attn ? " (Strata attention)" : "");
             return true;
         }
 
@@ -220,6 +262,7 @@ namespace Qwen {
             outp   = ggml_new_tensor_2d(actx, GGML_TYPE_F32, config.out_channels, t_cap);
             timein = ggml_new_tensor_1d(actx, GGML_TYPE_F32, 2);
             mod    = ggml_new_tensor_2d(actx, GGML_TYPE_F32, 4 * C, 2);
+            gates  = ggml_new_tensor_2d(actx, GGML_TYPE_F32, 4 * C, 2);     // tanh(mod), the gate rows used
             scale_out = ggml_new_tensor_1d(actx, GGML_TYPE_F32, C);
             ctx_in = ggml_new_tensor_2d(actx, GGML_TYPE_F32, config.context_dim, std::max<int64_t>(l_cap, 1));
             pk     = ggml_new_tensor_3d(actx, GGML_TYPE_F16, D * H, std::max<int64_t>(l_cap, 1), config.num_layers);
@@ -279,6 +322,13 @@ namespace Qwen {
             void* s       = qi21_stream(runtime_backend);
             const float* m = (const float*) mod->data + mrow * 4 * C;
             const float *m0 = m, *m1 = m + C, *m2 = m + 2 * C, *m3 = m + 3 * C;
+            const float* tgr = (const float*) gates->data + mrow * 4 * C;   // tanh of the same row
+            const float *t1 = tgr + C, *t3 = tgr + 3 * C;
+            auto res_ln = [&](float* xx, const float* hh, const float* graw, const float* tgate, float* out,
+                              const float* mm) {
+                return fast_ln ? qi21_res_ln_mod2(s, xx, hh, tgate, out, mm, (int) n, (int) C, 1e-6f)
+                               : qi21_res_ln_mod(s, xx, hh, graw, out, mm, (int) n, (int) C, 1e-6f);
+            };
             const bool prefix = mrow == 1;
             const int64_t kvt = prefix ? n : L + n;       // keys per head in the work K/V
             const bool use_wmma = !prefix && wmma_attn && !exact_attn;
@@ -288,18 +338,29 @@ namespace Qwen {
             const size_t qlo_off = (size_t) H * n * D * sizeof(ggml_fp16_t);
             float* X = (float*) x->data;
             float* Hh = (float*) h->data;
-            int rc = qi21_res_ln_mod(s, X, nullptr, nullptr, Hh, m0, (int) n, (int) C, 1e-6f);
+            int rc = res_ln(X, nullptr, nullptr, nullptr, Hh, m0);
             for (int i = 0; i < config.num_layers && rc == 0; ++i) {
                 const std::string b = "transformer_blocks." + std::to_string(i) + ".";
+                ggml_tensor* wqkv = w(b + "attn.qkv.weight");
+                const float *qs = (const float*) q->data, *ks = (const float*) k->data, *vs = (const float*) v->data;
+                int ldq = (int) C;
                 {
                     G g = begin();
-                    gemm(g, w(b + "attn.to_q.weight"), h, q, n);
-                    gemm(g, w(b + "attn.to_k.weight"), h, k, n);
-                    gemm(g, w(b + "attn.to_v.weight"), h, v, n);
+                    if (wqkv != nullptr) {                 // [3C x n] into gu (free here), q | k | v per token
+                        gemm(g, wqkv, h, gu, n);
+                        qs = (const float*) gu->data;
+                        ks = qs + C;
+                        vs = qs + 2 * C;
+                        ldq = (int) (3 * C);
+                    } else {
+                        gemm(g, w(b + "attn.to_q.weight"), h, q, n);
+                        gemm(g, w(b + "attn.to_k.weight"), h, k, n);
+                        gemm(g, w(b + "attn.to_v.weight"), h, v, n);
+                    }
                     run(g, {});
                 }
                 const int64_t off = prefix ? 0 : L;
-                rc = qi21_qkv_post(s, (const float*) q->data, (const float*) k->data, (const float*) v->data, (int) C,
+                rc = qi21_qkv_post(s, qs, ks, vs, ldq,
                                    (const float*) w(b + "attn.norm_q.weight")->data,
                                    (const float*) w(b + "attn.norm_k.weight")->data, (const float*) pe->data, q16->data,
                                    use_wmma && qsplit ? (char*) q16->data + qlo_off : nullptr, use_wmma ? 1 : 0, (int) n, kw->data, vw->data, (int) kvt, (int) off, (int) n, (int) H,
@@ -360,7 +421,7 @@ namespace Qwen {
                     gemm(g, w(b + "attn.to_out.0.weight"), att, h, n);
                     run(g, {});
                 }
-                rc = qi21_res_ln_mod(s, X, Hh, m1, Hh, m2, (int) n, (int) C, 1e-6f);
+                rc = res_ln(X, Hh, m1, t1, Hh, m2);
                 if (rc) break;
                 {
                     G g = begin();
@@ -375,7 +436,7 @@ namespace Qwen {
                     run(g, {});
                 }
                 const bool last = i + 1 == config.num_layers;
-                rc = qi21_res_ln_mod(s, X, Hh, m3, last ? nullptr : Hh, m0, (int) n, (int) C, 1e-6f);
+                rc = res_ln(X, Hh, m3, t3, last ? nullptr : Hh, m0);
             }
             if (rc) LOG_WARN("Qwen Image 2.1 native: a kernel failed (%d)", rc);
             return rc == 0;
@@ -459,6 +520,11 @@ namespace Qwen {
                 bind(md, mod);
                 bind(sc, scale_out);
                 run(g, {md, sc});
+            }
+            if (qi21_tanh(qi21_stream(runtime_backend), (const float*) mod->data, (float*) gates->data,
+                          (int) (8 * C)) != 0) {
+                fail("the gate kernel failed");
+                return QwenImage21Runner::compute(n_threads, inputs);
             }
             // the text prefix: once per condition
             uint64_t key = extra != nullptr ? extra->prefix_id : 0;
