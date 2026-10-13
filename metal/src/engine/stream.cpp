@@ -692,6 +692,24 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
             const uint64_t sz = cls_[(size_t) cls_of(s)].pages * PAGE;
             if (h + sz > lo && h < end) { region_slots_.push_back(s); first = std::min(first, (uint8_t*) h); }
         }
+        {   // a class left with fewer slots than a prompt chunk's layer can use (NE) would stop with "no free slot": a small
+            // arena (a Mac with little free memory at start) gets the prompt's buffers as their own allocation instead
+            std::vector<int> stolen(cls_.size(), 0);
+            for (int s : region_slots_) ++stolen[(size_t) cls_of(s)];
+            bool tight = false;
+            for (size_t i = 0; i < cls_.size(); ++i) tight = tight || (cls_[i].n > 0 && cls_[i].n - stolen[i] < NE);
+            if (tight) {
+                const uint64_t sz = (bytes + PAGE - 1) / PAGE * PAGE;
+                void* m = mmap(nullptr, (size_t) sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+                if (m == MAP_FAILED) return nullptr;
+                region_slots_.clear();
+                region_ = (uint8_t*) m;
+                region_bytes_ = 0;   // fresh zero pages; nothing in the arena to empty
+                std::fprintf(stderr, "strata metal stream: the arena is small: the prompt's %.2f GB of buffers are their own "
+                                     "allocation, not a region of its slots\n", bytes / 1e9);
+                return region_;
+            }
+        }
         region_ = lo;
         region_bytes_ = (uint64_t) (end - lo);
         std::fprintf(stderr, "strata metal stream: %.2f GB of the arena (%zu slots) hold a prompt's buffers while it runs\n",
