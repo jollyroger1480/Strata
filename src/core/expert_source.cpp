@@ -1033,6 +1033,8 @@ void FileExpertSource::close() {
     paths_.clear();
     for (void* h : direct_) close_direct(h);
     direct_.clear();
+    for (void* h : pdirect_) close_direct(h);
+    pdirect_.clear();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         // the buffers' last copies end before they are freed (#1237)
@@ -1631,6 +1633,28 @@ bool FileExpertSource::open_direct(std::string& why) {
 #endif
 }
 
+bool FileExpertSource::open_prompt_direct(std::string& why) {
+#if defined(__linux__)
+    if (base_ == nullptr || paths_.empty()) { why = "no expert files open"; return false; }
+    if (!direct_.empty()) { why = "the file tier reads unbuffered already"; return false; }
+    if (!pdirect_.empty()) return true;
+    for (const std::string& path : paths_) {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+        if (fd < 0) {
+            why = "cannot open " + path + " with O_DIRECT (" + std::strerror(errno) + ")";
+            for (void* d : pdirect_) close_direct(d);
+            pdirect_.clear();
+            return false;
+        }
+        pdirect_.push_back((void*) (intptr_t) fd);
+    }
+    return true;
+#else
+    why = "Linux only (NTFS serves unbuffered reads of a mapped file one at a time)";
+    return false;
+#endif
+}
+
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
 #if defined(_WIN32) || defined(__linux__)
     if (base_ == nullptr || paths_.empty() || !direct_.empty()) {
@@ -2041,7 +2065,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
                 continue;
             }
         }
-        sc.req.push_back({(int) (intptr_t) direct_[(size_t) x.file], x.a0, x.size, total});
+        sc.req.push_back({(int) (intptr_t) (direct_.empty() ? pdirect_ : direct_)[(size_t) x.file], x.a0, x.size, total});
         total += x.size;
         last_file = x.file;
         x.req = sc.req.size() - 1;
@@ -2499,7 +2523,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
 // copy_blob made one ~2 MB request each - and NTFS serves the unbuffered reads of a mapped file one at a time, so the
 // request size is what sets the rate (see read_direct).  The blobs the RAM copy holds are copied as before.
 bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
-    if (direct_.empty() || n <= 1) return ExpertSource::copy_blobs(layers, experts, dst, n);
+    if ((direct_.empty() && pdirect_.empty()) || n <= 1) return ExpertSource::copy_blobs(layers, experts, dst, n);
     thread_local std::vector<Fill> fills;
     fills.clear();
     uint64_t bytes = 0;
