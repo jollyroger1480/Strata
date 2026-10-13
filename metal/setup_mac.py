@@ -18,6 +18,7 @@ Everything shared - the model table, the downloader, the config and run-script w
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -97,6 +98,14 @@ OVERHEAD_GB = 8.0
 # the share of the unified memory Metal lets one process keep resident (recommendedMaxWorkingSetSize): 107.5 of 128 GB
 # measured on the M5 Max; 3/4 is the conservative rule for the other sizes
 GPU_SHARE = 0.75
+# what a Mac of BIG_MAC_GB or more leaves to macOS, its file cache and the user's other programs when the pack stays RESIDENT
+# (the engine's resident_cap in arena_budget.h, the same rule).  A resident pack is mapped file pages: clean, so macOS can
+# drop them, never compress them.  Measured on the 128 GB M5 Max, UD-Q4_K_XL resident (wired 91.7 GB, 67%) with a 40 GB file
+# write and a 16 GB program beside it: no swap-out, nothing compressed.  (The streaming arena is anonymous memory and gets a
+# tighter cap in the engine: 40% left, from the same measurements.)
+RESIDENT_LEAVE_SHARE = 0.30
+BIG_MAC_GB = 64.0
+GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
 CONTEXTS = [8192, 32768, 65536, 131072]
 MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
@@ -155,7 +164,12 @@ def mac_problems(info: dict) -> list[str]:
 
 
 def gpu_budget_gb(ram_gb: float) -> float:
-    return ram_gb * GPU_SHARE
+    """The most a resident pack may hold, in GB: Metal's working set, and on a big Mac the RAM less what macOS and the file
+    cache keep (the engine's resident_cap: min of the two)."""
+    ws = ram_gb * GPU_SHARE * GIB_GB
+    if ram_gb >= BIG_MAC_GB:
+        return min(ws, ram_gb * GIB_GB * (1.0 - RESIDENT_LEAVE_SHARE))
+    return ws
 
 
 def model_need_gb(model: str) -> float:
@@ -398,12 +412,62 @@ def mac_configs() -> list[Path]:
     return out
 
 
+REPACK_LOCK = ".repack.lock"       # metal_repack.py: <out>.repack.lock holds the repack's pid while it runs
+PREPARE_LOCK = ".preparing.lock"   # setup: beside the repacked file, holds setup's pid from the repack to the end of the pack
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True            # it exists, it is somebody else's
+    except OSError:
+        return False
+    return True
+
+
+def repack_running(folder: Path) -> list[int]:
+    """Pids of repacks (metal_repack.py) or setup's own model preparation (repack + pack) still running for the files in
+    `folder`.  A stale lock (its process gone) is removed.  The repack and the pack move 100+ GB through the disk and one
+    holds up to 20 GB of memory: an engine with a 70-90 GB footprint beside them is what froze the 128 GB M5 Max twice
+    (watchdog panics, 2026-10-13)."""
+    pids = []
+    if not folder.is_dir():
+        return pids
+    for lock in [*folder.glob("*" + REPACK_LOCK), folder / PREPARE_LOCK]:
+        try:
+            pid = int(lock.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if pid != os.getpid() and _pid_alive(pid):
+            pids.append(pid)
+        elif pid != os.getpid():
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+    return pids
+
+
+def engine_pids(run=subprocess.run) -> list[int]:
+    """Pids of the running Metal engines (`strata`, the executable setup builds)."""
+    try:
+        out = run(["pgrep", "-x", "strata"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
+
+
 def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
     """serve/server.py with this config (setup.py's start without the NVIDIA / AMD card checks)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         S.fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run ./setup.sh --setup to repair it")
+    busy = [p for g in cfg["args"] if g.endswith(".gguf") for p in repack_running(Path(g).parent)]
+    if busy:       # never start an engine while a repack (or the pack after it) is writing: wait would hide a stuck one
+        S.fail(f"a model repack is still running here (pid {busy[0]}): the engine is not started beside it",
+               "wait for it to finish (or stop it), then start again")
     cfg_path.touch()
     if "--mtp" in cfg["args"][:-1]:
         S.refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
@@ -543,6 +607,22 @@ def main(argv=None) -> int:
     S.step(6, "preparing the model for Strata")
     pack = S.find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    # The repack and the pack move 100+ GB through the disk and the pack's python holds up to 20 GB: no engine may run beside
+    # them (an engine of 70-90 GB with a repack froze the 128 GB M5 Max twice).  A lock beside the GPU's file tells the engine
+    # and start() to wait; a running engine stops setup here.
+    lock_dir = data / "metal" if len(files) > 2 else files[0].parent
+    native0 = data / "metal" / f"{tag.lower()}-metal.gguf"
+    work = (len(files) > 2 and not (native0.exists() and S.done(native0))) or \
+        not ((pack / "native_experts.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())
+    prep_lock = lock_dir / PREPARE_LOCK
+    if work:
+        running = engine_pids()
+        if running:
+            S.fail(f"a Strata engine is running (pid {running[0]}): preparing a model beside it can freeze this Mac",
+                   "stop the server (close its window), then run ./setup.sh --setup again")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        prep_lock.write_text(str(os.getpid()))
+        atexit.register(lambda: prep_lock.unlink() if prep_lock.exists() else None)
     if len(files) > 2:
         # many shards: the experts and dense tensors into one GGUF the GPU maps (or streams), the n-gram table read
         # from its own shard (every tensor checked byte for byte: --verify)
@@ -562,6 +642,7 @@ def main(argv=None) -> int:
         S.run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
                *fam.get("pack_args", [])], env=env)   # Unsloth: --compat-bf16 (the host's copies; the GPU reads the file)
     S.ok(f"model prepared: {pack}")
+    prep_lock.unlink(missing_ok=True)
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
     stream = streams(model, info["ram_gb"])

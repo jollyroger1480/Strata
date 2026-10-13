@@ -29,7 +29,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
+#include <filesystem>
 #include <functional>
+#include <signal.h>
+#include <unistd.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -379,6 +383,28 @@ private:
     mtl::Buffer dout_, dprob_, posv_, dmap_;
 };
 
+namespace {
+// A repack (metal_repack.py: <file>.repack.lock) or setup's model preparation (.preparing.lock) beside the GPU's file holds a lock
+// with its pid.  The repack and the pack move 100+ GB through the disk and one holds up to 20 GB of memory: an engine of 70-90 GB
+// beside them is what froze the 128 GB M5 Max twice (watchdog panics, 2026-10-13).  Returns the pid of a live one, else 0.
+// STRATA_METAL_IGNORE_REPACK=1 starts anyway (your choice).
+long repack_pid_running(const std::string& model_file) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::path(model_file).parent_path().empty() ? fs::path(".") : fs::path(model_file).parent_path();
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        const std::string n = e.path().filename().string();
+        const bool lock = n == ".preparing.lock" || (n.size() > 12 && n.compare(n.size() - 12, 12, ".repack.lock") == 0);
+        if (!lock) continue;
+        std::FILE* f = std::fopen(e.path().string().c_str(), "r");
+        long pid = 0;
+        if (f) { if (std::fscanf(f, "%ld", &pid) != 1) pid = 0; std::fclose(f); }
+        if (pid > 0 && pid != (long) getpid() && (kill((pid_t) pid, 0) == 0 || errno == EPERM)) return pid;
+    }
+    return 0;
+}
+}  // namespace
+
 bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1,
                   int max_t, int64_t max_cells, std::string& err) {
     ss_ = &ss;
@@ -390,6 +416,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     }
     eps_ = 1e-6f;
     const double t0 = now_ms();
+    if (const long rp = repack_pid_running(shard1); rp > 0 && !(std::getenv("STRATA_METAL_IGNORE_REPACK") && std::string(std::getenv("STRATA_METAL_IGNORE_REPACK")) == "1")) {
+        err = "metal window: a model repack or setup's preparation is running here (pid " + std::to_string(rp) + "): the engine is not started "
+              "beside it (it froze a 128 GB Mac twice); wait for it to finish, or set STRATA_METAL_IGNORE_REPACK=1";
+        return false;
+    }
     if (!f_.open(shard1, err)) return false;
     cx_ = std::make_unique<mtl::Context>();
     stream_ = ExpertStream::wanted(f_, *cx_);
@@ -1068,6 +1099,21 @@ double Window::run_ds(Cached& c) {
 
 namespace {
 Window* g_stream_window = nullptr;
+// What the process holds now, all of it (task_info TASK_VM_INFO): phys_footprint is its anonymous + wired + compressed memory
+// (not the clean file pages it only maps), resident_size is the RSS (those pages too).  Bytes; 0 when the call fails.
+struct ProcMem {
+    double footprint = 0, rss = 0;
+};
+ProcMem proc_mem() {
+    task_vm_info_data_t ti;
+    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+    ProcMem r;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &cnt) == KERN_SUCCESS) {
+        r.footprint = (double) ti.phys_footprint;
+        r.rss = (double) ti.resident_size;
+    }
+    return r;
+}
 void stream_atexit() {
     if (g_stream_window) g_stream_window->stream_report(stderr);
 }
@@ -1104,11 +1150,19 @@ bool Window::stream_arena(std::string& err) {
     am.phys = (double) phys;
     am.working_set = (double) cx_->recommended_working_set();
     am.allocated = used;
+    const ProcMem pm0 = proc_mem();   // everything the process holds, not only the Metal buffers (the old 67% rule missed it)
+    am.proc_footprint = pm0.footprint;
+    {   // the file cache macOS keeps before it compresses anonymous memory (a 4-byte count of pages, read into a zeroed 8)
+        unsigned long long pages = 0;
+        size_t pl = sizeof pages;
+        if (sysctlbyname("vm.vm_page_filecache_min", &pages, &pl, nullptr, 0) == 0) am.filecache_min = (double) pages * (double) vm_page_size;
+    }
     am.available = avail_now();
     if (ss_ && ss_->ple.table && ss_->ple.table->mode() == strata::kernels::PleIo::Mmap)
         am.ple_mapped = (double) ss_->ple.table->rows() * 192.0;   // a row is at most 192 bytes (Q8_0 + its scale)
     if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
     if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
+    if (const char* e = std::getenv("STRATA_METAL_LEAVE_SHARE")) am.leave_share = std::atof(e);   // for measuring; the default is kLeaveShare
     const double keep = arena_keep(am);
     const double avail = am.available;
     double budget = arena_budget(am);
@@ -1121,9 +1175,21 @@ bool Window::stream_arena(std::string& err) {
     std::string prof;
     if (const char* e = std::getenv("STRATA_METAL_EXPERT_PROFILE")) prof = e;
     else prof = std::string(STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
-    std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena; RAM %.1f GB (%.1f GB available, %.1f GB kept "
-                         "for macOS), GPU working set %.1f GB\n", used / gb, phys / gb, avail / gb, keep / gb,
-                 cx_->recommended_working_set() / gb);
+    std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena (the process holds %.2f GB, %.2f GB resident); "
+                         "RAM %.1f GB (%.1f GB available, %.1f GB kept for macOS), GPU working set %.1f GB\n", used / gb,
+                 pm0.footprint / gb, pm0.rss / gb, phys / gb, avail / gb, keep / gb, cx_->recommended_working_set() / gb);
+    {   // the planned total: arena + the Metal buffers (or the process's own count when it is more) + the n-gram table's
+        // reserve, against the cap (arena_budget.h: footprint_cap)
+        const FootprintPlan fp = footprint_plan(am, budget);
+        std::fprintf(stderr, "strata metal stream: planned resident footprint %.1f GB = arena %.1f + %.1f held before it + %.1f "
+                             "reserved for the n-gram table; cap %.1f GB = the lesser of the GPU working set %.1f GB and the RAM "
+                             "%.1f GB less %.1f GB left to macOS and its file cache%s\n",
+                     fp.total / gb, fp.arena / gb, fp.base / gb, fp.ple / gb, fp.cap / gb, cx_->recommended_working_set() / gb,
+                     phys / gb, (am.phys - fp.cap) / gb,
+                     am.arena_gb >= 0 && fp.over() ? " - STRATA_METAL_ARENA_GB is above the cap: kept as set (your choice), but "
+                                                     "a Mac that runs short of memory can freeze (watchdog panics seen at 90+ GB "
+                                                     "resident of 128)" : "");
+    }
     const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
     const bool pg_on = !(epg && std::string(epg) == "0");
     bool minimal = false;   // the arena's least layout (the min slots) is not shrunk further: it goes ahead, filled in steps
@@ -1140,6 +1206,14 @@ bool Window::stream_arena(std::string& err) {
         budget = (double) st_->shrink_to();
     }
     if (pg_on && !prompt_gemm_init(err)) return false;
+    {   // what the process really holds now, against the plan and the cap (a number that disagrees is a bug in the count)
+        const ProcMem pm1 = proc_mem();
+        const double cap = footprint_cap(am);
+        std::fprintf(stderr, "strata metal stream: resident footprint after the fill: the process holds %.1f GB (%.1f GB resident), "
+                             "planned %.1f GB, cap %.1f GB%s\n", pm1.footprint / gb, pm1.rss / gb,
+                     footprint_plan(am, (double) st_->arena_used_bytes()).total / gb, cap / gb,
+                     pm1.footprint > cap ? " - OVER THE CAP" : "");
+    }
     g_stream_window = this;
     std::atexit(stream_atexit);
     return true;

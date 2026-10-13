@@ -193,5 +193,61 @@ class HandOver(unittest.TestCase):
         self.assertIn("83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8", sh)
 
 
+class RepackGuard(unittest.TestCase):
+    """No engine beside a repack: the locks, and the resident rule that matches the engine's arena_budget.h."""
+
+    def test_resident_rule_matches_the_engine(self):
+        # the resident cap: Metal's working set (3/4), and on a Mac of 64 GB or more the RAM less 30%
+        self.assertAlmostEqual(M.gpu_budget_gb(128), 128 * 1.073741824 * 0.70, places=3)    # 96.2 GB, as arena_budget.h
+        self.assertAlmostEqual(M.gpu_budget_gb(96), 96 * 1.073741824 * 0.70, places=3)
+        self.assertAlmostEqual(M.gpu_budget_gb(32), 32 * 1.073741824 * 0.75, places=3)      # a small Mac: the working set
+        self.assertFalse(M.streams("UD-Q4_K_XL", 128))          # 82.6 + 8 GB: resident (measured: nothing compressed)
+        self.assertTrue(M.streams("UD-Q5_K_XL", 128))
+        self.assertTrue(M.streams("UD-Q4_K_XL", 96))
+
+    @unittest.skipIf(sys.platform == "win32", "os.kill(pid, 0) is a probe on macOS and Linux only")
+    def test_a_live_lock_is_seen_a_stale_one_is_dropped(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertEqual(M.repack_running(d), [])
+            (d / "m-metal.gguf.repack.lock").write_text(str(os.getppid()))          # a live process that is not us
+            self.assertEqual(M.repack_running(d), [os.getppid()])
+            (d / "m-metal.gguf.repack.lock").write_text("999999999")                # no such process
+            self.assertEqual(M.repack_running(d), [])
+            self.assertFalse((d / "m-metal.gguf.repack.lock").exists())             # the stale lock was removed
+            (d / M.PREPARE_LOCK).write_text(str(os.getppid()))
+            self.assertEqual(M.repack_running(d), [os.getppid()])
+            (d / M.PREPARE_LOCK).write_text(str(os.getpid()))                       # our own setup's lock does not stop us
+            self.assertEqual(M.repack_running(d), [])
+
+    @unittest.skipIf(sys.platform == "win32", "os.kill(pid, 0) is a probe on macOS and Linux only")
+    def test_start_refuses_while_a_repack_runs(self):
+        import json
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            gguf, exe = d / "m-metal.gguf", d / "strata"
+            gguf.write_bytes(b"x")
+            exe.write_bytes(b"x")
+            cfg = d / "strata-x.json"
+            cfg.write_text(json.dumps({"exe": str(exe), "args": ["--native", str(gguf)], "port": 8080}))
+            (d / "m-metal.gguf.repack.lock").write_text(str(os.getppid()))
+            with mock.patch.object(M.subprocess, "call", side_effect=AssertionError("started")), \
+                    mock.patch.object(M.S, "fail", side_effect=SystemExit("refused")) as fail:
+                with self.assertRaises(SystemExit):
+                    M.start(cfg, None, False)
+            self.assertIn("repack is still running", fail.call_args[0][0])
+
+    def test_the_repack_writes_in_bounded_pieces(self):
+        src = (ROOT / "metal" / "tools" / "metal_repack.py").read_text(encoding="utf-8")
+        self.assertIn("SYNC_EVERY = 1 << 30", src)                  # flushed every GiB
+        self.assertIn("nocache(o)", src)                            # F_NOCACHE on the output
+        self.assertIn("buffering=0", src)                           # write() is a write
+        self.assertNotIn("mmap", src)                               # no dirty mapping of the output
+
+
 if __name__ == "__main__":
     unittest.main()

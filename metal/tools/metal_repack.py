@@ -15,6 +15,7 @@ on a 16 KiB boundary (general.alignment = 16384: Apple Silicon's page). Prints t
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import os
 import re
@@ -23,12 +24,43 @@ import sys
 from pathlib import Path
 
 ALIGN = 16384
+SYNC_EVERY = 1 << 30      # the output is flushed to the disk every GiB: at most this much (plus a chunk) is ever dirty
+CHUNK = 64 << 20
+LOCK_SUFFIX = ".repack.lock"   # <out>.repack.lock holds the repack's pid while it runs (setup_mac.py and the engine look)
 # GGML type -> (bytes per block, values per block)
 TYPE_SIZE = {0: (4, 1), 1: (2, 1), 30: (2, 1), 2: (18, 32), 3: (20, 32), 6: (22, 32), 7: (24, 32), 8: (34, 32),
              10: (84, 256), 11: (110, 256), 12: (144, 256), 13: (176, 256), 14: (210, 256), 16: (66, 256),
              17: (74, 256), 18: (98, 256), 19: (50, 256), 20: (18, 32), 21: (110, 256), 22: (82, 256), 23: (136, 256),
              42: (18, 64)}
 PLE = "per_layer_token_embd.weight"
+
+
+def nocache(f) -> None:
+    """Writes through this file skip the page cache (macOS F_NOCACHE; measured with mincore on a 4 GB write: 100% of the file cached
+    without it, 0% with it).  A repack writes 100+ GB: through the cache that is 100+ GB of dirty pages competing with everything
+    else for memory (the 128 GB M5 Max keeps a 37 GB file-cache floor and compresses other programs' memory beyond it).  READS are
+    not helped on this macOS (a cold 4 GB read was 98% cached afterwards with F_NOCACHE set); those pages are clean and evictable,
+    the harm of the old tool was the unbounded dirty output."""
+    try:
+        import fcntl
+        fcntl.fcntl(f.fileno(), getattr(fcntl, "F_NOCACHE", 48), 1)
+    except (ImportError, OSError, ValueError):
+        pass
+
+
+def drop_cache(f) -> None:
+    """Where F_NOCACHE does not exist (Linux, the BSDs): ask the kernel to drop this file's cached pages."""
+    if hasattr(os, "posix_fadvise"):
+        try:
+            os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+        except OSError:
+            pass
+
+
+def write_all(o, buf) -> None:
+    mv = memoryview(buf)
+    while len(mv):
+        mv = mv[o.write(mv):]
 
 
 class Reader:
@@ -68,6 +100,7 @@ class Reader:
             t["bytes"] = ne // q * b
             t["src"] = self
             t["abs"] = self.data + t["off"]
+        nocache(self.f)                                 # the header is read; the tensors' bytes are read once, uncached
 
     def _str(self) -> str:
         n = struct.unpack("<Q", self.f.read(8))[0]
@@ -95,7 +128,7 @@ def tensor_hash(f, pos: int, n: int) -> str:
     h = hashlib.sha256()
     f.seek(pos)
     while n:
-        buf = f.read(min(n, 64 << 20))
+        buf = f.read(min(n, CHUNK))
         if not buf:
             break
         h.update(buf)
@@ -107,7 +140,8 @@ def verify(out: Path, data0: int, order: list) -> list[str]:
     """The names of the tensors whose bytes in `out` differ from their source shard's (SHA-256 each)."""
     bad = []
     with open(out, "rb") as o:
-        r = Reader(out)                                 # the output's own table, as a reader sees it
+        nocache(o)
+        r = Reader(out)                                # the output's own table, as a reader sees it
         table = {t["name"]: t for t in r.tensors}
         for i, t in enumerate(order):
             mine = table.get(t["name"])
@@ -158,25 +192,39 @@ def main() -> int:
     data0 = (len(head) + ALIGN - 1) // ALIGN * ALIGN
     total = data0 + off
     tmp = a.out.with_name(a.out.name + ".part")
-    with open(tmp, "wb") as o:
-        o.write(head)
-        o.write(b"\0" * (data0 - len(head)))
+    lock = a.out.with_name(a.out.name + LOCK_SUFFIX)
+    lock.write_text(str(os.getpid()))
+    atexit.register(lambda: lock.unlink() if lock.exists() else None)
+    # unbuffered writes (a write() is a write), uncached, flushed every SYNC_EVERY bytes: the dirty pages stay a chunk or two,
+    # wherever the other programs' memory stands (the old buffered, cached write left 2+ GB dirty and filled the RAM)
+    with open(tmp, "wb", buffering=0) as o:
+        nocache(o)
+        write_all(o, head)
+        write_all(o, b"\0" * (data0 - len(head)))
         done = 0
+        since = 0
         for t in order:
             o.seek(data0 + t["new"])
             src = t["src"].f
             src.seek(t["abs"])
             left = t["bytes"]
             while left:
-                buf = src.read(min(left, 64 << 20))
+                buf = src.read(min(left, CHUNK))
                 if not buf:
                     sys.exit(f"{t['src'].path}: short read in {t['name']}")
-                o.write(buf)
+                write_all(o, buf)
                 left -= len(buf)
+                since += len(buf)
+                if since >= SYNC_EVERY:
+                    os.fsync(o.fileno())
+                    drop_cache(o)
+                    drop_cache(src)
+                    since = 0
             done += t["bytes"]
             if t is order[-1] or t["name"].endswith("ffn_down_exps.weight"):
                 print(f"\r  {done / 2**30:6.1f} / {sum(x['bytes'] for x in order) / 2**30:.1f} GiB", end="", flush=True)
         o.truncate(total)
+        os.fsync(o.fileno())
     print()
     if a.verify:
         bad = verify(tmp, data0, order)

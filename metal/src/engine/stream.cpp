@@ -2,6 +2,9 @@
 #include "stream.h"
 
 #include "ref_quant.h"
+#include "arena_budget.h"
+
+#include <sys/sysctl.h>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -32,12 +35,16 @@ bool ExpertStream::wanted(const gguf::File& f, const mtl::Context& cx) {
     if (e && std::string(e) == "1") return true;
     if (e && std::string(e) == "0") return false;
     // auto: stream when the mapped weights (experts and dense) and ~12 GiB beside them (the prompt buffers, KV, the
-    // draft layer, macOS) do not fit the GPU working set.  M5 Max (115.4 GB): GSQ packs, IQ3_S and UD-Q4_K_XL stay
-    // resident, UD-Q5/Q6_K_XL stream; M4 32 GB (26.8 GB): every pack streams.
+    // draft layer, macOS) do not fit the resident footprint cap: the GPU working set, or on a big Mac the RAM less the
+    // 30% macOS and its file cache keep (arena_budget.h: footprint_cap).  M5 Max (115.4 GB working set, 96.2 GB cap):
+    // GSQ packs, IQ3_S and UD-Q4_K_XL stay resident, UD-Q5/Q6_K_XL stream; M4 32 GB (26.8 GB): every pack streams.
     uint64_t all = 0;
     for (const auto& kv : f.tensors)
         if (kv.first != "per_layer_token_embd.weight") all += kv.second.bytes;
-    return (double) all + 12.0 * (1ull << 30) > (double) cx.recommended_working_set();
+    uint64_t phys = 0;
+    size_t len = sizeof phys;
+    sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
+    return !resident_fits((double) phys, (double) cx.recommended_working_set(), (double) all, 12.0 * (1ull << 30));
 }
 
 ExpertStream::~ExpertStream() {
@@ -523,6 +530,7 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     if (stopped)
         std::fprintf(stderr, "strata metal stream: the arena's fill stopped after %.2f GB: macOS's free memory reached what it "
                              "keeps; %.2f GB of the arena (%zu slots) stay unused\n", filled / 1e9, retired_bytes / 1e9, nretired);
+    arena_live_ = arena_bytes_ - retired_bytes;
     fill_s_ = (now_ms() - t0) / 1e3;
     fill_bytes_ = bytes_read_.load();
     uint64_t pairs = 0;
@@ -531,6 +539,31 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
                          "profile's top (%zu ranked) in %.1f s (%.2f GB/s); %d I/O threads, read-ahead top %d; %zu buffers\n",
                  (arena_bytes_ - retired_bytes) / 1e9, (unsigned long long) (pairs - nretired), cls_.size(), done, from_profile, fill_s_,
                  fill_bytes_ / 1e9 / std::max(1e-9, fill_s_), nio_, prefetch_ ? pre_k_ : 0, chunks_.size());
+    // Wire the filled arena (mlock).  Unwired, the arena is ordinary anonymous memory whenever the GPU is not running a command buffer
+    // (the GPU's own wiring ends a few seconds after the last one; a Metal residency set did not hold it either, measured), and
+    // macOS compresses it when anything else wants memory: a 20 GB file written beside the idle engine took tens of GB of the arena
+    // into the compressor in seconds and froze the 128 GB M5 Max (watchdog panic, 2026-10-13).  Wired, a file write can only
+    // shrink the file cache.  STRATA_METAL_WIRE_ARENA=0/1; the default is on for a Mac of 64 GB or more (the M4 32 GB was measured
+    // unwired).  Not when the fill stopped early for lack of memory (the unused slots would be wired too).
+    {
+        uint64_t phys = 0;
+        size_t plen = sizeof phys;
+        sysctlbyname("hw.memsize", &phys, &plen, nullptr, 0);
+        const char* we = std::getenv("STRATA_METAL_WIRE_ARENA");
+        const bool want = we && *we ? std::atoi(we) != 0 : (double) phys >= kBigMac;
+        if (want && !stopped) {
+            const double tp = now_ms();
+            uint64_t pinned = 0;
+            int failed = 0;
+            for (const auto& c : chunks_) {
+                if (mlock(c.ptr, c.bytes) == 0) pinned += c.bytes;
+                else ++failed;
+            }
+            std::fprintf(stderr, "strata metal stream: %.1f GB of the arena wired (mlock) in %.0f ms%s; macOS cannot compress it while "
+                                 "the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)\n", pinned / 1e9, now_ms() - tp,
+                         failed ? "; SOME CHUNKS COULD NOT BE WIRED" : "");
+        }
+    }
     (void) err;
     return true;
 }
