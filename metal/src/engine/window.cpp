@@ -1945,7 +1945,15 @@ bool Window::prompt_gemm_init(std::string& err) {
     if (pg_) return true;
     if (stream_ && !st_->ready()) return stream_arena(err);   // it makes the prompt buffers after the arena
     const char* ec = std::getenv("STRATA_METAL_PROMPT_CHUNK");
-    const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? 1024 : 2048)) / 64 * 64;
+    // Streaming: every chunk makes one pass over the layer's experts that are not in the arena, so a longer chunk
+    // streams each expert fewer times. M5 Max, UD-Q5, warm: 1024 -> 700 tok/s at 4K, 2048 -> 920, 4096 -> 1,100 (32K the
+    // same). The longer chunk's buffers (4.3 GB) come out of the arena only while a prompt runs, so it is the default on a
+    // big Mac; a small one keeps 1024 (the buffers would cost it cache).
+    uint64_t phys = 0;
+    size_t plen = sizeof phys;
+    sysctlbyname("hw.memsize", &phys, &plen, nullptr, 0);
+    const int stream_chunk = phys >= (96ull << 30) ? 4096 : 1024;
+    const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? stream_chunk : 2048)) / 64 * 64;
     auto pg = std::make_unique<PromptGemm>();
     PromptGemm& p = *pg;
     p.MT = C;
