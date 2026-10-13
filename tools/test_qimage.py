@@ -128,6 +128,7 @@ class Build(unittest.TestCase):
             cb.assert_not_called()
             self.assertEqual((exe, libs), (Path(d) / QI.SD_EXE, [d]))
             with mock.patch.object(setup, "cmake_build") as cb, mock.patch.object(setup, "get_sd_cpp"), \
+                    mock.patch.object(setup, "apply_native_runner"), \
                     mock.patch.object(setup, "find_nvcc", return_value=(None, None)):
                 with self.assertRaises(SystemExit):     # another arch: compiled again (here: no nvcc, so it stops)
                     quiet(setup.build_image_engine, "cuda", {"arch": 89})
@@ -160,6 +161,41 @@ class Config(unittest.TestCase):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
         for flag in ("--images", "--image-quant", "--image-backend", "--image-gpu-policy"):
             self.assertRegex(src, re.escape(f'ap.add_argument("{flag}"'))
+
+
+class Native(unittest.TestCase):
+    """I2: the native DiT runner's patch for the pinned stable-diffusion.cpp, and its config switch."""
+
+    def test_stamp_and_config(self):
+        self.assertIn("native", QI.build_stamp("cuda", 86))
+        self.assertIn("native", QI.build_stamp("hip", "gfx1103"))
+        self.assertNotIn("native", QI.build_stamp("vulkan", None))
+        c = QI.image_config("hip", "Q8_0", Path("/e/sd-cli"), Path("/m"), native=True)
+        self.assertIs(c["native"], True)
+        self.assertNotIn("native", QI.image_config("vulkan", "Q8_0", Path("/e/sd-cli"), Path("/m")))
+
+    def test_apply_is_idempotent(self):
+        sys.path.insert(0, str(QI.NATIVE_DIR))
+        import apply as A
+        with tempfile.TemporaryDirectory() as d:
+            sd = Path(d)
+            (sd / "ggml" / "src" / "ggml-cuda").mkdir(parents=True)
+            (sd / "src" / "model" / "diffusion").mkdir(parents=True)
+            (sd / "src" / "pipeline").mkdir(parents=True)
+            (sd / "src" / "pipeline" / "model_builders.cpp").write_text(
+                "#include <x>\n" + A.INCLUDE_OLD + "int a;\n" + A.BUILDER_OLD + "            }\n", encoding="utf-8")
+            (sd / "CMakeLists.txt").write_text("x\n" + A.CMAKE_OLD + "y\n", encoding="utf-8")
+            A.apply(sd)
+            first = [(sd / f).read_text(encoding="utf-8") for f in ("src/pipeline/model_builders.cpp", "CMakeLists.txt")]
+            A.apply(sd)
+            again = [(sd / f).read_text(encoding="utf-8") for f in ("src/pipeline/model_builders.cpp", "CMakeLists.txt")]
+            self.assertEqual(first, again)
+            self.assertIn("QwenImage21NativeRunner", first[0])
+            self.assertEqual(first[1].count("SD_QI_NATIVE"), 1)
+            self.assertTrue((sd / "ggml/src/ggml-cuda/qi21-native.cu").is_file())
+            (sd / "CMakeLists.txt").write_text("something else\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):        # another sd.cpp: refused, not half-patched
+                A.apply(sd)
 
 
 if __name__ == "__main__":

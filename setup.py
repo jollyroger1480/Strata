@@ -3034,6 +3034,16 @@ def vulkan_sdk() -> Path | None:
     return sdk
 
 
+def apply_native_runner(src: Path) -> None:
+    """I2: tools/image/sdcpp_native's runner into the stable-diffusion.cpp source (idempotent)."""
+    import importlib.util
+    QI = _qimage()
+    spec = importlib.util.spec_from_file_location("strata_sdcpp_native_apply", QI.NATIVE_DIR / "apply.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.apply(src)
+
+
 def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
     """Compile sd-cli for `backend` into engine-image/ (again only when the pins or the backend changed) -> (its path,
     the library folders it runs with)."""
@@ -3048,6 +3058,8 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
         ok(f"image generator already built ({backend})")
         return exe, lib_dirs
     src = get_sd_cpp()
+    if backend in QI.NATIVE_BACKENDS:                 # Strata's DiT runner (inert unless the config asks for it)
+        apply_native_runner(src)
     vcvars, lib_dirs = None, []
     if backend == "cuda":
         nvcc, cuda_v = find_nvcc()
@@ -3130,7 +3142,7 @@ def setup_images(a, gpu: dict, hip: bool, models_dir: Path) -> dict | None:
         download(QI.file_url(name, hf_endpoint()), dst, f"image model: {Path(path).name}")
         verify_sha256(dst, size, sha)
     cfg = QI.image_config(backend, quant, exe, models_dir, uma=QI.is_apu(gpu), lib_dirs=lib_dirs,
-                          policy=a.image_gpu_policy or "auto")
+                          policy=a.image_gpu_policy or "auto", native=getattr(a, "image_native", None) == "on")
     ok(f"image generation: {quant} on {backend}, GPU policy {cfg['gpu_policy']}")
     return cfg
 
@@ -5569,6 +5581,9 @@ def main() -> int:
     ap.add_argument("--image-backend", choices=["cuda", "hip", "vulkan", "cpu"],
                     help="where images are made (default: cuda on NVIDIA, hip on an AMD card, vulkan on an APU/iGPU "
                          "and Intel)")
+    ap.add_argument("--image-native", choices=["on", "off"],
+                    help="EXPERIMENTAL (I2): Strata's own DiT runner inside stable-diffusion.cpp on CUDA / HIP "
+                         "(faster denoise; off by default)")
     ap.add_argument("--image-gpu-policy", choices=["auto", "keep", "shrink", "unload"],
                     help="what the text model does during an image job (default auto: stays loaded when both fit, "
                          "else gives VRAM back or is unloaded and its conversation restored afterwards)")

@@ -86,6 +86,13 @@ class Command(unittest.TestCase):
         self.assertNotIn("--sigmas", cmd)          # Turbo's sigmas are an 8-step schedule
         self.assertEqual(cmd[cmd.index("-b") + 1], "3")
 
+    def test_native_switch(self):
+        cfg = {"exe": "sd-cli", "diffusion_model": "d", "vae": "v", "llm": "l", "native": True}
+        job = {"prompt": "p", "width": 512, "height": 512, "n": 1, "steps": 8, "seed": 1}
+        self.assertEqual(images_api.sd_cli_args(cfg, job, "x")[-2:], ["--model-args", "qwen_image_2_1_native=1"])
+        cfg["native"] = False
+        self.assertNotIn("--model-args", images_api.sd_cli_args(cfg, job, "x"))
+
     def test_env(self):
         env = images_api.image_env({"backend": "cuda", "gpu": 1, "env": {"X": 2}}, {"PATH": "p"})
         self.assertEqual((env["CUDA_VISIBLE_DEVICES"], env["CUDA_DEVICE_ORDER"], env["X"]), ("1", "PCI_BUS_ID", "2"))

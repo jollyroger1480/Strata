@@ -51,6 +51,8 @@ def main(argv=None) -> int:
     ap.add_argument("--config", help="a run config (strata-<model>.json) to write the \"images\" section into")
     ap.add_argument("--gpu-policy", choices=["auto", "keep", "shrink", "unload"], default="auto")
     ap.add_argument("--gpu", type=int, help="the GPU's number for the image job (default: the backend's first)")
+    ap.add_argument("--native", choices=["on", "off"], default="off",
+                    help="EXPERIMENTAL: Strata's own DiT runner on CUDA / HIP (the config's \"native\")")
     ap.add_argument("--build-only", action="store_true", help="compile sd-cli only")
     ap.add_argument("--print", action="store_true", help="print the images section instead of writing it")
     ap.add_argument("--yes", action="store_true")
@@ -83,7 +85,7 @@ def main(argv=None) -> int:
         S.download(QI.file_url(name, S.hf_endpoint()), dst, f"image model: {Path(path).name}")
         S.verify_sha256(dst, size, sha)
     section = QI.image_config(backend, quant, exe, models, uma=QI.is_apu(gpu), gpu=a.gpu, lib_dirs=lib_dirs,
-                              policy=a.gpu_policy)
+                              policy=a.gpu_policy, native=a.native == "on")
     if a.print or not a.config:
         print(json.dumps({"images": section}, indent=1))
         return 0
