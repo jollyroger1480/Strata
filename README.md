@@ -91,6 +91,12 @@ you how to connect your apps. AI tools can also install, start and stop Strata t
 [Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
 **Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
 
+**Mac (Apple Silicon, M1 to M5, macOS 15 or newer):** install Apple's Command Line Tools once
+(`xcode-select --install` in Terminal; Xcode itself is not needed). Then open Terminal in the Strata folder and run
+**`./setup.sh`**. It builds the Mac engine on your Mac (about 7 minutes), asks the same questions, downloads the model
+and starts it. Next time, `./setup.sh` starts it right away. Which size fits your Mac and how fast it is:
+[docs/MAC.md](docs/MAC.md).
+
 The steps are the same for NVIDIA and AMD. The installer finds your card and sets up the right engine for it. It
 asks you a few questions:
 
@@ -166,6 +172,26 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
   messages start in seconds.
 
 More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
+
+### Optional: more speed on one card when the whole model fits in RAM
+
+Two opt-in settings (by RubenTorney, #1904 and #1905). They help when you run one graphics card and your RAM holds
+every expert (Strata's arena mode, for example Q2_0 or IQ3_XXS on a 64 GB PC). Open your config,
+`strata-<model>.json` in the Strata data folder ([where](docs/INSTALL.md#where-things-are-stored)), and add:
+
+- **Faster decode:** `"--adapt-async", "1"` to the `"args"` list. The expert cache then updates on a helper thread
+  instead of pausing the answer. Measured on an RTX 5070 (Windows, Q2_0): +4-5% decode, +7-10% on code and long
+  documents. Answers can differ slightly from the default (they stay the same from run to run).
+- **Faster prompt reading on Windows:** `"STRATA_PIN_BY_NEED": "1"` in the `"env"` block. Windows can lock only about
+  half the RAM for the graphics card; this locks the experts the card actually needs first. Measured on the RTX 5070:
+  +4.4% prompt reading.
+
+```json
+"args": [ ..., "--adapt-async", "1" ],
+"env": { "STRATA_PIN_BY_NEED": "1" }
+```
+
+Restart Strata (`START-HERE.bat` or `./setup.sh`) after the change. To undo, remove the two entries.
 
 ## Something went wrong?
 
