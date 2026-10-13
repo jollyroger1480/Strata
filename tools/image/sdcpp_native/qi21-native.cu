@@ -13,6 +13,7 @@
 #include "ggml-backend-impl.h"
 
 #include <cstdint>
+#include <cstdlib>
 
 namespace {
 
@@ -96,6 +97,51 @@ __global__ void __launch_bounds__(QI_D) k_qkv_post(const float* __restrict__ q, 
     vo[((size_t) hh * kv_tstride + kv_off + t) * QI_D + d] = __float2half(v[src]);
 }
 
+// warp per head: grid (T, H/8), block 256; lane holds dims 4*lane..+3 (two RoPE pairs), no shared memory
+template <typename QT>
+__device__ __forceinline__ void qi_store4(QT* dst, float a, float b, float c, float d);
+template <>
+__device__ __forceinline__ void qi_store4<float>(float* dst, float a, float b, float c, float d) {
+    *reinterpret_cast<float4*>(dst) = make_float4(a, b, c, d);
+}
+template <>
+__device__ __forceinline__ void qi_store4<half>(half* dst, float a, float b, float c, float d) {
+    half2 lo = __floats2half2_rn(a, b), hi2 = __floats2half2_rn(c, d);
+    uint2 u;
+    u.x = *reinterpret_cast<uint32_t*>(&lo);
+    u.y = *reinterpret_cast<uint32_t*>(&hi2);
+    *reinterpret_cast<uint2*>(dst) = u;
+}
+
+template <typename QT>
+__global__ void __launch_bounds__(256) k_qkv_post_w(const float* __restrict__ q, const float* __restrict__ k,
+                                                   const float* __restrict__ v, int ld, const float* __restrict__ wq,
+                                                   const float* __restrict__ wk, const float* __restrict__ pe,
+                                                   QT* __restrict__ qo, int q_tstride, half* __restrict__ ko,
+                                                   half* __restrict__ vo, int kv_tstride, int kv_off, float eps) {
+    const int t = blockIdx.x, lane = threadIdx.x & 31, hh = blockIdx.y * 8 + (threadIdx.x >> 5);
+    const int d = lane * 4;
+    const size_t src = (size_t) t * ld + hh * QI_D + d;
+    const float4 p0 = *reinterpret_cast<const float4*>(pe + ((size_t) t * (QI_D / 2) + lane * 2) * 4);
+    const float4 p1 = *reinterpret_cast<const float4*>(pe + ((size_t) t * (QI_D / 2) + lane * 2 + 1) * 4);
+    for (int which = 0; which < 2; ++which) {
+        const float4 x = *reinterpret_cast<const float4*>((which == 0 ? q : k) + src);
+        float ss = x.x * x.x + x.y * x.y + x.z * x.z + x.w * x.w;
+        for (int off = 16; off > 0; off >>= 1) ss += __shfl_xor_sync(0xffffffff, ss, off, 32);
+        const float inv = rsqrtf(ss / QI_D + eps);
+        const float4 w = *reinterpret_cast<const float4*>((which == 0 ? wq : wk) + d);
+        const float y0 = x.x * inv * w.x, y1 = x.y * inv * w.y, y2 = x.z * inv * w.z, y3 = x.w * inv * w.w;
+        const float r0 = p0.x * y0 + p0.y * y1, r1 = p0.z * y0 + p0.w * y1;
+        const float r2 = p1.x * y2 + p1.y * y3, r3 = p1.z * y2 + p1.w * y3;
+        if (which == 0)
+            qi_store4<QT>(qo + ((size_t) hh * q_tstride + t) * QI_D + d, r0, r1, r2, r3);
+        else
+            qi_store4<half>(ko + ((size_t) hh * kv_tstride + kv_off + t) * QI_D + d, r0, r1, r2, r3);
+    }
+    const float4 vv = *reinterpret_cast<const float4*>(v + src);
+    qi_store4<half>(vo + ((size_t) hh * kv_tstride + kv_off + t) * QI_D + d, vv.x, vv.y, vv.z, vv.w);
+}
+
 __global__ void k_swiglu(const float* __restrict__ gu, float* __restrict__ out, int F, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -145,14 +191,33 @@ __global__ void __launch_bounds__(QI_D) k_attn_causal(const float* __restrict__ 
 }
 
 #if defined(GGML_USE_HIP)
-typedef _Float16 qi_h16 __attribute__((ext_vector_type(16)));
+// WMMA fragments: gfx11 (RDNA3) lanes hold 16 k-values of their row/column (lanes 16..31 duplicate 0..15) and C row
+// 2i + (lane >> 4); gfx12 (RDNA4) lanes hold 8 k-values at offset 8 * (lane >> 4) and C row 8 * (lane >> 4) + i.
+#if defined(RDNA4)
+#define QI_KL 8
+#define QI_KOFF(hi) ((hi) * 8)
+#define QI_ROW(i, hi) ((hi) * 8 + (i))
+#define QI_WMMA __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12
+#else
+#define QI_KL 16
+#define QI_KOFF(hi) 0
+#define QI_ROW(i, hi) (2 * (i) + (hi))
+#define QI_WMMA __builtin_amdgcn_wmma_f32_16x16x16_f16_w32
+#endif
+typedef _Float16 qi_h16 __attribute__((ext_vector_type(QI_KL)));
 typedef float qi_f8 __attribute__((ext_vector_type(8)));
 constexpr int FA_BQ = 128, FA_BKV = 64, FA_NW = 8, FA_KLD = QI_D + 8, FA_VLD = FA_BKV + 8, FA_PLD = FA_BKV + 8;
 
-__device__ __forceinline__ qi_h16 qi_ld16(const _Float16* p) {
+// a lane's fragment of the 16 k-values starting at p (this lane's half on gfx12)
+__device__ __forceinline__ qi_h16 qi_ld16(const _Float16* p, int hi) {
+#if QI_KL == 8
+    return __builtin_bit_cast(qi_h16, *reinterpret_cast<const uint4*>(p + QI_KOFF(hi)));
+#else
+    (void) hi;
     const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
     const uint32_t w[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
     return __builtin_bit_cast(qi_h16, w);
+#endif
 }
 
 // gfx11 WMMA flash attention: q fp16 head-major [H][q_tstride][128], k/v fp16 head-major [H][kv_tstride][128]
@@ -163,7 +228,7 @@ __global__ void __launch_bounds__(FA_NW * 32) k_attn_wmma(const _Float16* __rest
                                                          const _Float16* __restrict__ K, const _Float16* __restrict__ V,
                                                          int kv_tstride, float* __restrict__ O, int H, int nq, int nkv,
                                                          float scale_log2) {
-#if defined(RDNA3)
+#if defined(RDNA3) || defined(RDNA4)
     __shared__ __align__(16) _Float16 sK[FA_BKV][FA_KLD];
     __shared__ __align__(16) _Float16 sVt[QI_D][FA_VLD];
     __shared__ __align__(16) _Float16 sP[FA_NW][16][FA_PLD];
@@ -175,10 +240,10 @@ __global__ void __launch_bounds__(FA_NW * 32) k_attn_wmma(const _Float16* __rest
     qi_h16 qa[QI_D / 16], ql[LO ? QI_D / 16 : 1];
     {
         const int qr = min(q0 + l16, nq - 1);
-        for (int c = 0; c < QI_D / 16; ++c) qa[c] = qi_ld16(Qh + (size_t) qr * QI_D + c * 16);
+        for (int c = 0; c < QI_D / 16; ++c) qa[c] = qi_ld16(Qh + (size_t) qr * QI_D + c * 16, hi);
         if (LO) {
             const _Float16* Ql = Qlo + (size_t) head * q_tstride * QI_D;
-            for (int c = 0; c < QI_D / 16; ++c) ql[c] = qi_ld16(Ql + (size_t) qr * QI_D + c * 16);
+            for (int c = 0; c < QI_D / 16; ++c) ql[c] = qi_ld16(Ql + (size_t) qr * QI_D + c * 16, hi);
         }
     }
     qi_f8 o[QI_D / 16];
@@ -211,9 +276,9 @@ __global__ void __launch_bounds__(FA_NW * 32) k_attn_wmma(const _Float16* __rest
         for (int t = 0; t < FA_BKV / 16; ++t) {
             s[t] = qi_f8{};
             for (int c = 0; c < QI_D / 16; ++c) {
-                const qi_h16 kb = qi_ld16(&sK[t * 16 + l16][c * 16]);
-                s[t] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(qa[c], kb, s[t]);
-                if (LO) s[t] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(ql[LO ? c : 0], kb, s[t]);
+                const qi_h16 kb = qi_ld16(&sK[t * 16 + l16][c * 16], hi);
+                s[t] = QI_WMMA(qa[c], kb, s[t]);
+                if (LO) s[t] = QI_WMMA(ql[LO ? c : 0], kb, s[t]);
             }
         }
         float alpha[8];
@@ -240,18 +305,18 @@ __global__ void __launch_bounds__(FA_NW * 32) k_attn_wmma(const _Float16* __rest
         for (int c = 0; c < QI_D / 16; ++c)
             for (int i = 0; i < 8; ++i) o[c][i] *= alpha[i];
         for (int t = 0; t < FA_BKV / 16; ++t)
-            for (int i = 0; i < 8; ++i) sP[wave][2 * i + hi][t * 16 + l16] = (_Float16) s[t][i];
+            for (int i = 0; i < 8; ++i) sP[wave][QI_ROW(i, hi)][t * 16 + l16] = (_Float16) s[t][i];
         __builtin_amdgcn_s_waitcnt(0);
         __builtin_amdgcn_wave_barrier();
         for (int kc = 0; kc < FA_BKV / 16; ++kc) {
-            const qi_h16 pa = qi_ld16(&sP[wave][l16][kc * 16]);
+            const qi_h16 pa = qi_ld16(&sP[wave][l16][kc * 16], hi);
             for (int c = 0; c < QI_D / 16; ++c)
-                o[c] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(pa, qi_ld16(&sVt[c * 16 + l16][kc * 16]), o[c]);
+                o[c] = QI_WMMA(pa, qi_ld16(&sVt[c * 16 + l16][kc * 16], hi), o[c]);
         }
     }
     for (int c = 0; c < QI_D / 16; ++c)
         for (int i = 0; i < 8; ++i) {
-            const int row = q0 + 2 * i + hi;
+            const int row = q0 + QI_ROW(i, hi);
             if (row < nq) O[(size_t) row * H * QI_D + head * QI_D + c * 16 + l16] = o[c][i] / l[i];
         }
 #else
@@ -270,11 +335,15 @@ void* qi21_stream(ggml_backend_t backend) {
     return static_cast<ggml_backend_cuda_context*>(backend->context)->stream();
 }
 
-// 1 when this backend's GPU runs qi21_attn_wmma (an RDNA3 / gfx11 card in a HIP build)
+// 1 when this backend's GPU runs qi21_attn_wmma (an RDNA3 / gfx11 or RDNA4 / gfx12 card in a HIP build;
+// STRATA_QI_GFX12_ATTN=0 keeps ggml's attention on gfx12, where this kernel is not measured yet)
 int qi21_has_wmma_attn(ggml_backend_t backend) {
 #if defined(GGML_USE_HIP)
     const int dev = static_cast<ggml_backend_cuda_context*>(backend->context)->device;
-    return GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[dev].cc) ? 1 : 0;
+    const int cc = ggml_cuda_info().devices[dev].cc;
+    if (GGML_CUDA_CC_IS_RDNA3(cc)) return 1;
+    const char* g12 = getenv("STRATA_QI_GFX12_ATTN");
+    return GGML_CUDA_CC_IS_RDNA4(cc) && g12 != nullptr && g12[0] == '1' ? 1 : 0;
 #else
     (void) backend;
     return 0;
@@ -296,6 +365,18 @@ int qi21_res_ln_mod(void* stream, float* x, const float* h, const float* g, floa
 int qi21_qkv_post(void* stream, const float* q, const float* k, const float* v, int ld, const float* wq, const float* wk,
                   const float* pe, void* qo, void* qlo, int q_f16, int q_tstride, void* ko, void* vo, int kv_tstride,
                   int kv_off, int T, int H, float eps) {
+    if (qlo == nullptr && H % 8 == 0 && ld % 4 == 0 && getenv("STRATA_QI_OLD_QKV") == nullptr) {
+        const dim3 gw(T, H / 8);
+        if (q_f16)
+            k_qkv_post_w<half><<<gw, 256, 0, qi_s(stream)>>>(q, k, v, ld, wq, wk, pe, static_cast<half*>(qo), q_tstride,
+                                                              static_cast<half*>(ko), static_cast<half*>(vo), kv_tstride,
+                                                              kv_off, eps);
+        else
+            k_qkv_post_w<float><<<gw, 256, 0, qi_s(stream)>>>(q, k, v, ld, wq, wk, pe, static_cast<float*>(qo),
+                                                               q_tstride, static_cast<half*>(ko), static_cast<half*>(vo),
+                                                               kv_tstride, kv_off, eps);
+        return cudaGetLastError() == cudaSuccess ? 0 : 2;
+    }
     const dim3 grid(T, H);
     if (q_f16)
         k_qkv_post<half><<<grid, QI_D, 0, qi_s(stream)>>>(q, k, v, ld, wq, wk, pe, static_cast<half*>(qo),
