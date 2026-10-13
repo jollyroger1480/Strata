@@ -815,6 +815,9 @@ MtpProf g_mp;
 // STRATA_VERIFY_NODES=1 also lists the draft graphs' nodes (kernel names on HIP; counts on CUDA)
 void mtp_list_nodes(cudaGraph_t graph, const char* what) {
     if (std::getenv("STRATA_VERIFY_NODES") == nullptr || graph == nullptr) return;
+#if defined(STRATA_GPU_METAL)
+    (void) what;    // Metal has no graph nodes to list
+#else
 #if defined(STRATA_USE_HIP)
     using NodeT = hipGraphNode_t;
     using NodeTypeT = hipGraphNodeType;
@@ -856,6 +859,7 @@ void mtp_list_nodes(cudaGraph_t graph, const char* what) {
     std::fprintf(stderr, "strata mtp: the %s graph has %zu nodes:", what, nn);
     for (auto& k : kinds) std::fprintf(stderr, "\n %4d x %.110s", k.second, k.first.c_str());
     std::fprintf(stderr, "\n");
+#endif
 }
 }  // namespace
 
