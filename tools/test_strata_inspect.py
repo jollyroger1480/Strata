@@ -42,13 +42,13 @@ class Verdict(unittest.TestCase):
         fp["arch"] = "qwen3moe"
         self.assertEqual(SI.verdict(fp, self.table)[0], "no")
 
-    def test_qwen36_is_recognised_not_run_yet(self):
+    def test_qwen36_runs_on_its_own_path(self):
         fp = self.fp("qwen/Q2_0")
         fp["arch"] = "qwen35moe"
         kind, sentence = SI.verdict(fp, self.table)
-        self.assertEqual(kind, "no")
+        self.assertEqual(kind, "family")
         self.assertIn("Qwen3.6-35B-A3B", sentence)
-        self.assertIn("does not run it yet", sentence)
+        self.assertIn("--family qwen36", sentence)
 
     def test_expert_type_without_kernel(self):
         fp = self.fp("qwen/IQ3_S")

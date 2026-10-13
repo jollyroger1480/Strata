@@ -88,6 +88,9 @@
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#if defined(STRATA_HAVE_QWEN35)
+#include "strata/qwen35/engine.hpp"
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -1791,6 +1794,15 @@ int main(int argc, char** argv) {
             std::printf("strata %s\n", STRATA_VERSION);
             return 0;
         }
+        // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
+        if (std::strcmp(argv[i], "--families") == 0) {
+#if defined(STRATA_HAVE_QWEN35)
+            std::printf("qwen4exp qwen35moe\n");
+#else
+            std::printf("qwen4exp\n");
+#endif
+            return 0;
+        }
     }
 #if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
     // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
@@ -1838,6 +1850,23 @@ int main(int argc, char** argv) {
 #endif
         break;
     }
+#if defined(STRATA_HAVE_QWEN35)
+    // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) runs on its own engine path
+    // (src/qwen35), decided here from the file's header before any of this engine's state exists; every other file
+    // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
+        bool qwen35 = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+        } catch (const std::exception&) {
+            // not readable here: the normal path below reports it
+        }
+        if (qwen35) return strata::qwen35::run(argc, argv);
+        break;
+    }
+#endif
     Options o;
     bool have_tokens = false;
     bool have_logits_stride = false;

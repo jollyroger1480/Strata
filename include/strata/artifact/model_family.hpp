@@ -48,8 +48,9 @@ inline const char* model_family_title(ModelFamily f) {
     }
 }
 
-/// Whether this engine has a path for the family.  Qwen3.6 is recognised (reader, geometry, layout, setup) but
-/// has no engine path yet: phase T1 of NEW-MODELS-PLAN.md adds it.
+/// Whether Flash-Next's engine path runs the family.  Qwen3.6 has an engine path of its own (src/qwen35), which the
+/// CUDA and HIP builds of `strata` switch to at the top of main(); the Intel Arc (SYCL) build has none yet, so there
+/// (and on Flash-Next's path) the family is refused with `model_family_not_supported`.
 inline bool model_family_runs(ModelFamily f) { return f == ModelFamily::Qwen4Exp; }
 
 /// The refusal for a recognised family the engine does not run (empty when it runs it).
@@ -57,8 +58,8 @@ inline std::string model_family_not_supported(ModelFamily f) {
     if (model_family_runs(f)) return {};
     if (f == ModelFamily::Unknown) return "this is not a model family Strata knows";
     return std::string(model_family_title(f)) + " (architecture '" + model_family_arch(f) +
-           "') is recognised, but this engine does not run it yet - support for it is in development. "
-           "Use a Qwen3.8-Flash-Next model file (setup.py installs one)";
+           "') runs on the NVIDIA (CUDA) and AMD (HIP) builds of Strata; this build does not run it yet (the Intel "
+           "Arc / SYCL port is in development). Use a CUDA or HIP build, or a Qwen3.8-Flash-Next model file";
 }
 
 }  // namespace strata
