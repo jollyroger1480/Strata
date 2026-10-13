@@ -14,6 +14,7 @@
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "arena_budget.h"
 #include "stream.h"
 #include "../../tests/coop_probe.h"
 
@@ -1061,7 +1062,9 @@ void stream_atexit() {
 }  // namespace
 
 // The arena, once the rest is allocated (the MTP layer loads after init): what the GPU working set and the RAM leave
-// with STRATA_METAL_KEEP_FREE_GB (default 7) kept for macOS; STRATA_METAL_ARENA_GB sets it.
+// with STRATA_METAL_KEEP_FREE_GB kept for macOS (default: 7 GB, or 15% of the RAM when that is more - the M5 Max
+// froze with an 89 GB arena and 7 GB left beside a 50 GB n-gram table read through the file cache);
+// STRATA_METAL_ARENA_GB sets it.
 bool Window::stream_arena(std::string& err) {
     uint64_t phys = 0;
     size_t len = sizeof phys;
@@ -1073,18 +1076,26 @@ bool Window::stream_arena(std::string& err) {
                              "Metal window)\n", g / 1e9);
     }
     const double used = (double) cx_->allocated();
-    const char* ek = std::getenv("STRATA_METAL_KEEP_FREE_GB");
-    const double keep = (ek ? std::atof(ek) : 7.0) * gb;
     // what macOS could give now: free + inactive + speculative + purgeable pages (the file cache is given back)
-    double avail = (double) phys - used;
-    {
+    auto avail_now = [&]() -> double {
         vm_statistics64_data_t vs;
         mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
         if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS)
-            avail = (double) (vs.free_count + vs.inactive_count + vs.speculative_count + vs.purgeable_count) * (double) vm_page_size;
-    }
-    double budget = std::min((double) cx_->recommended_working_set() - used - 1.0 * gb, avail - keep);
-    if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) budget = std::atof(e) * gb;
+            return (double) (vs.free_count + vs.inactive_count + vs.speculative_count + vs.purgeable_count) * (double) vm_page_size;
+        return (double) phys - (double) cx_->allocated();
+    };
+    ArenaMem am;   // arena_budget.h: the rule, testable
+    am.phys = (double) phys;
+    am.working_set = (double) cx_->recommended_working_set();
+    am.allocated = used;
+    am.available = avail_now();
+    if (ss_ && ss_->ple.table && ss_->ple.table->mode() == strata::kernels::PleIo::Mmap)
+        am.ple_mapped = (double) ss_->ple.table->rows() * 192.0;   // a row is at most 192 bytes (Q8_0 + its scale)
+    if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
+    if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
+    const double keep = arena_keep(am);
+    const double avail = am.available;
+    double budget = arena_budget(am);
     if (budget < 2 * gb) {
         std::fprintf(stderr, "strata metal stream: only %.1f GB left for the expert arena (the GPU working set %.1f GB, RAM %.1f GB, "
                              "%.1f GB allocated): expect a low hit rate\n", budget / gb, cx_->recommended_working_set() / gb,
@@ -1099,7 +1110,16 @@ bool Window::stream_arena(std::string& err) {
                  cx_->recommended_working_set() / gb);
     const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
     const bool pg_on = !(epg && std::string(epg) == "0");
-    if (!st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err)) return false;
+    for (int tries = 0;; ++tries) {
+        const double planned = budget;
+        if (st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err,
+                            [&]() -> uint64_t { return (uint64_t) arena_shrink(am, planned, avail_now()); }))
+            break;
+        if (st_->shrink_to() == 0 || tries == 4) return false;
+        std::fprintf(stderr, "strata metal stream: less memory is free than when the arena was planned: %.1f -> %.1f GB\n",
+                     budget / gb, st_->shrink_to() / gb);
+        budget = (double) st_->shrink_to();
+    }
     if (pg_on && !prompt_gemm_init(err)) return false;
     g_stream_window = this;
     std::atexit(stream_atexit);

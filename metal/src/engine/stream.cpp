@@ -291,8 +291,11 @@ void ExpertStream::promote_slot(int s) {
     for (auto it = mine.rbegin(); it != mine.rend(); ++it) urgent_q_.push_front(*it);
 }
 
-bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err) {
+bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err,
+                              const std::function<uint64_t()>& recheck) {
     const double t0 = now_ms();
+    shrink_to_ = 0;
+    for (auto& k : cls_) k.n = 0;   // a second try (after a shrink) lays the arena out again
     // the ranking: the profile's pairs, then every pair it misses, layer-interleaved
     std::vector<std::pair<int, int>> rank;
     std::vector<uint8_t> seen((size_t) NL * NE, 0);
@@ -338,7 +341,16 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         base += k.n;
     }
     // the slots placed in chunks of at most maxBufferLength (and 8 GB), up to 4 (the kernels' buffers 0, 7, 8, 9)
-    const uint64_t cmax = std::min<uint64_t>(cx.max_buffer_length(), 8ull << 30) / PAGE * PAGE;
+    // (8 GB each unless the arena needs bigger ones to fit 4: the M4 refused one 20.6 GB buffer, the M5 Max takes an
+    // 89 GB arena for UD-Q5_K_XL in 4 of ~23 GB; STRATA_METAL_ARENA_CHUNK_GB sets it)
+    uint64_t total = 0, biggest = 0;
+    for (const auto& k : cls_) {
+        total += (uint64_t) k.n * k.pages * PAGE;
+        biggest = std::max<uint64_t>(biggest, k.pages * PAGE);
+    }
+    uint64_t want = std::max<uint64_t>(8ull << 30, total / 4 + 4 * biggest);
+    if (const char* e = std::getenv("STRATA_METAL_ARENA_CHUNK_GB")) want = (uint64_t) (std::atof(e) * (1ull << 30));
+    const uint64_t cmax = std::min<uint64_t>(cx.max_buffer_length(), want) / PAGE * PAGE;
     code_.assign((size_t) base, 0);
     host_.assign((size_t) base, nullptr);
     std::vector<uint64_t> csize;
@@ -356,6 +368,16 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         }
     if (!csize.empty()) csize.back() = cur;
     if (csize.size() > 4) { err = "metal stream: the arena needs more than 4 buffers (lower STRATA_METAL_ARENA_GB)"; return false; }
+    if (recheck) {   // the memory macOS can give, asked again just before the arena is committed
+        uint64_t total = 0;
+        for (uint64_t b : csize) total += b;
+        const uint64_t allowed = recheck();
+        if (allowed + (64ull << 20) < total) {
+            shrink_to_ = allowed;
+            err = "metal stream: less memory than planned is free now: the arena shrinks";
+            return false;
+        }
+    }
     for (uint64_t b : csize) {   // anonymous memory wrapped no-copy: a prompt's buffers can alias a region of it
         void* m = mmap(nullptr, (size_t) b, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
         if (m == MAP_FAILED) { err = "metal stream: cannot map the arena"; return false; }

@@ -19,6 +19,7 @@
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 
+#include <functional>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -45,7 +46,11 @@ public:
                     std::string& err);
     // The arena: `budget` bytes of slots, filled from the profile's ranking (or layer-interleaved if none).
     // min_slots: each size class at least this many slots (576 with prompt chunks, else 64)
-    bool make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err);
+    // recheck (optional): just before the arena is committed, the bytes it may have now (arena_shrink); when that is
+    // less than the arena laid out, nothing is allocated, shrink_to() says how much, and the caller tries again
+    bool make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err,
+                    const std::function<uint64_t()>& recheck = {});
+    uint64_t shrink_to() const { return shrink_to_; }
     bool ready() const { return !chunks_.empty(); }
     // the arena's buffers (at most 4, each within the device's maxBufferLength): chunk(i) for i >= count is chunk 0
     const mtl::Buffer& chunk(int i) const { return chunks_[(size_t) i < chunks_.size() ? (size_t) i : 0]; }
@@ -65,6 +70,7 @@ public:
     void reset_stats();
 
 private:
+    uint64_t shrink_to_ = 0;
     struct Lay { uint64_t g, gs, u, us, d, ds; int cls; };
     struct Slot { int16_t layer = -1; int16_t e = -1; int prev = -1, next = -1; bool pre = false; int left = 0; uint64_t pin = 0; std::atomic<int> state{0}; };  // 0 idle, 1 queued, 2 reading
     struct Cls { uint64_t pages = 0; int n = 0; int base = 0; int head = -1, tail = -1; };  // slot range [base, base+n)
