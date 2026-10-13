@@ -13,12 +13,12 @@ namespace strata::kernels {
 namespace {
 bool is_iq(int t) {
     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
-           t == 12 || t == 13 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8;
+           t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8;   // 14: Q6_K (Unsloth's Q5/Q6 gate/up)
 }
 // values per block of the types the grouped expert kernels take (0 = none): STRATA_GU_FMTS / STRATA_D_FMTS
 int gu_qk(int t) {
     switch (t) {
-        case 16: case 17: case 18: case 21: case 22: case 23: case 29: case 12: case 13: return 256;
+        case 16: case 17: case 18: case 21: case 22: case 23: case 29: case 12: case 13: case 14: return 256;
         case 42: return 64;
         case 6: case 2: case 3: case 8: return 32;
         default: return 0;
