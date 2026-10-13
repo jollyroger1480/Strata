@@ -116,6 +116,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - The arena's size matters most. With the model file, a 7.5 GB arena gave 5.5 tok/s, 10.5 GB gave 6.7 and 12 GB gave 7.5. The read-ahead depth, the I/O threads and the eviction order each moved decode by less than 3%.
 - The Q2_0 copy is not measured yet. The numbers in the table above are with the model file.
 - With the default arena (12.1-12.2 GB here), the experts' copy gives 8.35-8.48 tok/s decode and 82.5-82.8 tok/s on the prompt. Nothing was swapped out. macOS's memory pressure stayed "normal", except for one 2-second "warn" sample while the arena fills; keeping 7 GB for macOS shows the same sample.
+- Those runs and the server run below kept 5 GB for macOS. The default is now 7 GB with the stepped fill: after the 6K document, 7.3 and 6.7 tok/s decode (arenas 9.3 and 7.6 GB, as much as was free), the same tokens, the memory pressure "normal" throughout and nothing swapped out.
 
 **Why `--spec 2`:** measured with MTP on the same two prompts.
 
