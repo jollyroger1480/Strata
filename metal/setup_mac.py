@@ -80,9 +80,8 @@ def model_shard_names(model: str) -> list[str]:
 
 def shard_sha(name: str):
     return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
-# IQ3_S, the best quality, is recommended from this much memory (Apple sells 96 and 128 GB: from 128); below it the
-# faster IQ3_XXS is, where it fits
-IQ3_S_FROM_GB = 110
+# The recommended sizes (owner's decision): IQ3_S is the default where it stays resident, UD-Q4_K_XL the higher-quality one
+RECOMMENDED = ("IQ3_S", "UD-Q4_K_XL")   # the owner's recommended sizes (UD-IQ4_XS is not offered on Mac yet)
 # a pack that does not fit Metal's share streams its experts from the SSD (the engine decides by itself, f-mac-ssd):
 # measured on a 32 GB M4 Mac mini, one token per step (MTP is slower there: its layer's memory is worth more as cache)
 STREAM_MEASURED = {"Q2_0": "~14 tok/s", "IQ3_XXS": "~10 tok/s"}
@@ -169,10 +168,15 @@ def streams(model: str, ram_gb: float) -> bool:
 
 
 def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
-    """The recommended pack and the notes that go with it: IQ3_S from IQ3_S_FROM_GB, else the best pack that stays
-    resident (IQ3_XXS, Q2_0); nothing fits: Q2_0 streamed from the SSD (the fastest there)."""
-    if ram_gb >= IQ3_S_FROM_GB and not streams("IQ3_S", ram_gb):
-        return "IQ3_S", []
+    """The default pack and the notes that go with it. IQ3_S and UD-Q4_K_XL are the recommended sizes (RECOMMENDED):
+    the default is IQ3_S when it stays resident, with UD-Q4_K_XL named as the higher-quality choice where it fits too;
+    below that the largest pack that stays resident (IQ3_XXS, Q2_0); nothing fits: Q2_0 streamed from the SSD."""
+    if not streams("IQ3_S", ram_gb):
+        notes = []
+        if not streams("UD-Q4_K_XL", ram_gb):
+            notes.append("UD-Q4_K_XL (recommended too) also fits this Mac: higher quality than IQ3_S (92.8% top-1 against "
+                         "Q8_0 where IQ3_S has 87.9%), about 20% slower on a story; choose it with --model UD-Q4_K_XL")
+        return "IQ3_S", notes
     for m in ("IQ3_XXS", "Q2_0"):
         if not streams(m, ram_gb):
             return m, []
@@ -475,7 +479,7 @@ def main(argv=None) -> int:
         for i, m in enumerate(names, 1):
             S.say(f"  {i}) {m:8} {MAC_ABOUT[m]}  (maps {MAC_MODELS[m]['shard1_gb']:.0f} GB"
                   + ("" if MAC_MODELS[m]["tested"] else ", not measured on a Mac") + ")"
-                  + ("   <- recommended" if m == rec else ""))
+                  + ("  (recommended)" if m in RECOMMENDED else "") + ("   <- default" if m == rec else ""))
         model = names[int(S.ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
                                 str(names.index(rec) + 1), a.yes)) - 1]
     for n in model_note(model, info["ram_gb"]):

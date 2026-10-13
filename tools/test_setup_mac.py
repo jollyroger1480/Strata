@@ -58,9 +58,16 @@ class MacCheck(unittest.TestCase):
 
 class Recommendation(unittest.TestCase):
     def test_by_memory(self):
-        self.assertEqual(M.recommend_model(128)[0], "IQ3_S")
-        self.assertEqual(M.recommend_model(96)[0], "IQ3_XXS")
-        self.assertEqual(M.recommend_model(64)[0], "Q2_0")
+        # IQ3_S and UD-Q4_K_XL are the recommended sizes; IQ3_S is the default wherever it stays resident
+        self.assertEqual(M.RECOMMENDED, ("IQ3_S", "UD-Q4_K_XL"))
+        rec, notes = M.recommend_model(128)
+        self.assertEqual(rec, "IQ3_S")
+        self.assertTrue(any("UD-Q4_K_XL" in n and "higher quality" in n for n in notes))   # named next to it
+        rec96, notes96 = M.recommend_model(96)
+        self.assertEqual(rec96, "IQ3_S")
+        self.assertFalse(notes96)                       # UD-Q4_K_XL does not fit 96 GB resident: no note
+        self.assertEqual(M.recommend_model(64)[0], "Q2_0")      # no recommended size fits: the largest that does
+        self.assertEqual(M.recommend_model(80)[0], "IQ3_XXS")
         rec, notes = M.recommend_model(32)
         self.assertEqual(rec, "Q2_0")
         self.assertTrue(notes and "stream" in notes[0] and "~14 tok/s" in notes[0])
