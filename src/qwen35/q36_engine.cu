@@ -53,6 +53,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -757,6 +758,8 @@ struct Model {
     strata::core::ModelGeometry g;
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
+    // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
+    std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
     // attention + MoE layer, shared_head_norm, the main head
     bool has_mtp = false;
@@ -882,6 +885,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             CK(cudaMalloc(&pd, nb));
             CK(cudaMemcpy(pd, packed.data(), nb, cudaMemcpyHostToDevice));
             K::native_q8_0_packed_register(d, pd, w.n_in, w.n_out);
+            m.packed.emplace_back(d, pd, (size_t) nb);
             bytes += nb;
         }
         return w;
@@ -1533,7 +1537,32 @@ struct Engine {
         const int b = i % 2;
         const Layer& L = layer_at(stream_seq[(size_t) i]);
         CK(cudaStreamWaitEvent(cst, ev_used[b], 0));
-        CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) m->g.n_expert, cudaMemcpyHostToDevice, cst));
+        // the experts with a VRAM slot come from it (device to device, at VRAM speed), only the others over PCIe; runs
+        // of consecutive experts from the same source in one copy each.  STRATA_Q36_STREAM_ALL=1: the whole layer from
+        // host memory (the first version: PCIe-bound)
+        static const bool all = std::getenv("STRATA_Q36_STREAM_ALL") != nullptr;
+        const int ne = (int) m->g.n_expert;
+        const Hy& H = hy[(size_t) stream_seq[(size_t) i]];
+        if (all || L.n_slots <= 0) {
+            CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) ne, cudaMemcpyHostToDevice, cst));
+        } else {
+            for (int x = 0; x < ne;) {
+                const bool dev = H.slot_of[(size_t) x] >= 0;
+                int y = x + 1;
+                if (dev)   // consecutive slots holding consecutive experts
+                    while (y < ne && H.slot_of[(size_t) y] == H.slot_of[(size_t) y - 1] + 1) ++y;
+                else
+                    while (y < ne && H.slot_of[(size_t) y] < 0) ++y;
+                const size_t n = (size_t) (y - x) * L.stride;
+                if (dev)
+                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
+                                       n, cudaMemcpyDeviceToDevice, cst));
+                else
+                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n,
+                                       cudaMemcpyHostToDevice, cst));
+                x = y;
+            }
+        }
         CK(cudaEventRecord(ev_copy[b], cst));
     }
     const uint8_t* stream_take(int li) {
@@ -1675,6 +1704,13 @@ struct Engine {
             for (double& v : H.score) v *= 0.5;
         }
         CK(cudaStreamSynchronize(st));   // slot_of's host copy is pageable: the upload is done before it changes
+    }
+
+    void reset_graphs() {
+        for (cudaGraphExec_t* g : {&g1, &gm1})
+            if (*g) { CK(cudaGraphExecDestroy(*g)); *g = nullptr; }
+        for (auto& g : gv)
+            if (g) { CK(cudaGraphExecDestroy(g)); g = nullptr; }
     }
 
     template <class F> void graph_run(cudaGraphExec_t& gx, F body) {
@@ -1861,7 +1897,28 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     const size_t reserve = (size_t) 768 << 20;
     const size_t budget = vram_gib >= 0 ? (size_t) (vram_gib * (double) (1ull << 30))
                                         : (fr > reserve ? fr - reserve : 0);
-    if (slots <= 0 && total <= budget && total + ((size_t) 256 << 20) <= fr) {
+    // every expert fits once the packed Q8_0 decode copies are given back (a file a few GiB larger than the card's
+    // room, UD-Q6_K_XL on 32 GB): drop them - the decode reads the GGUF layout then, bitwise the same outputs, a little
+    // slower - rather than run the hybrid mode with its CPU share and streamed prompt layers.  STRATA_Q36_KEEP_PACKED=1
+    // keeps them (and the hybrid mode).
+    size_t packed_bytes = 0;
+    for (const auto& pk : m.packed) packed_bytes += std::get<2>(pk);
+    if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 && total <= budget + packed_bytes &&
+        std::getenv("STRATA_Q36_KEEP_PACKED") == nullptr) {
+        CK(cudaDeviceSynchronize());
+        for (const auto& pk : m.packed) {
+            K::native_q8_0_packed_unregister(std::get<0>(pk));
+            CK(cudaFree(std::get<1>(pk)));
+        }
+        m.packed.clear();
+        E.reset_graphs();
+        CK(cudaMemGetInfo(&fr, &tot));
+        std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
+                     "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
+                     (double) packed_bytes / (1 << 30));
+    }
+    const size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+    if (slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
         std::vector<uint8_t> blob;
         for (Layer* L : all) {
             CK(cudaMalloc(&L->blobs, L->stride * (size_t) ne + kMmqTail));
@@ -1890,7 +1947,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
     if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
     const size_t staging = E.use_mmq ? 2 * (max_layer + kMmqTail) : 0;
-    size_t slot_bytes = budget > staging ? budget - staging : 0;
+    size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
     const int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
