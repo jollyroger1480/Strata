@@ -20,8 +20,10 @@ with 32 GB, where the experts stream from the SSD. Other chips and memory sizes 
 | Pack | The file the GPU maps | Needs about (with the prompt buffers, KV cache, draft layer) | Recommended from |
 |---|---|---|---|
 | Q2_0 | 37.6 GB | 46 GB | 64 GB |
-| IQ3_XXS | 47.0 GB | 55 GB | 96 GB |
-| IQ3_S (the best quality) | 54.8 GB | 63 GB | 110 GB (the 128 GB Macs) |
+| IQ3_XXS | 47.0 GB | 55 GB | 74 GB (where IQ3_S does not fit) |
+| IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
+| UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
+| UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
@@ -85,6 +87,27 @@ The first prompt after the Mac starts is slower, while macOS reads the model fil
 prompt, cold).
 
 **For comparison**, llama.cpp on the same Mac with Q2_0: 56.6 tok/s decode on the story, and 887 / 809 tok/s on 4K / 32K prompts.
+
+### Unsloth's UD-Q4/Q5/Q6_K_XL on the M5 Max
+
+IQ3_S and UD-Q4_K_XL are the recommended sizes. Setup offers IQ3_S as the default and names UD-Q4_K_XL as the
+higher-quality choice where it fits. Decode is tokens per second over 200 tokens (greedy, MTP); prompts are the warm rate
+of the second request on (the first request after the start pays a few seconds of first-use cost).
+
+| | IQ3_S | UD-Q4_K_XL | UD-Q5_K_XL (streamed) | UD-Q6_K_XL (streamed) |
+|---|---|---|---|---|
+| Quality against Q8_0 (top-1 / KL) | 87.9% / 0.142 | 92.8% / 0.055 | not measured | not measured |
+| Decode, short question, no MTP / MTP | 75.4 / 101.9 | 60.7 / 94.0 | - | - |
+| Decode, story, no MTP / MTP | 74.8 / 94.7 | 59.7 / 73.7 | 28 / 50.6 (`--spec 3`) | - / 49.6-50.8 (`--spec 3`) |
+| Prompt 4K / 32K | ~1,180 / ~1,290 | ~1,150 / ~1,290 | ~740 / ~700 | ~690 / ~685 |
+| llama.cpp Metal, decode (story / code) | 51.1 / 44.1 | 48.4 / 47.3 | 45.1 / 43.2 | does not run (Insufficient Memory) |
+| llama.cpp Metal, prompt 4K / 32K | 791 / 730 | 821 / 739 | 729 / 693 | - |
+
+- **UD-Q5 and UD-Q6 cannot stay resident:** their repacked file (103.9 and 114.8 GB) is bigger than the largest buffer Metal gives (86.6 GB), so the experts stream from the SSD into an arena of about 80-86 GB (80% of Q5's experts, 74% of Q6's). 98% of the lookups hit it.
+- **The cost is a fixed hand-shake per layer** (the engine reads the router's choice and makes sure the experts are in the arena), not the SSD. A window of 2 tokens costs 38 ms against ~17 resident, so a longer window pays: Q5 story 28 tok/s without MTP, 41.8 with `--spec 2`, 50.6 with `--spec 3`, 46 with `--spec 4`. Setup writes `--spec 3` and keeps the MTP draft layer for a streaming Mac with 96 GB or more.
+- **The arena is limited to 67% of the RAM together with the engine's other buffers.** Wired memory above that made macOS swap: with UD-Q6, a 90 GB arena swapped 29,000 pages in 8 seconds and the Mac later froze, an 84 GB arena ran clean. The "keep 15% free" rule alone did not catch it, because macOS counts file cache as available.
+- **The experts' copy** (`<model>.experts`, 98 GB for Q5) did not pay on the M5 Max: decode 50.3 against 50.2 tok/s without it, 4K prompt 741 against 685 (noisy). Setup does not write it on a Mac with 96 GB or more.
+- Prompt chunks of 2048 instead of 1024 gave +27% on the 4K and 32K prompts in one pair of runs (`STRATA_METAL_PROMPT_CHUNK=2048`); not made the default.
 
 ### M4 Mac mini, 32 GB, experts streamed from the SSD
 
@@ -153,7 +176,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next is measured, and Unsloth's UD-Q4_K_XL (in memory on the M5 Max: 60.6 / 60.0 tok/s without MTP, 93.9 / 74.0 with it, prompts 1,374 / 1,288 tok/s at 4K / 32K; llama.cpp Metal 48.4 / 47.3 and 821 / 739). Setup repacks Unsloth's shards into one file for the GPU. Setup offers UD-Q5_K_XL and UD-Q6_K_XL, but they are not measured yet. The Swift and Coder releases are not set up on Mac yet.
+- **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **Engine only from source.** There is no ready-made Mac engine in the release zips.
 
 ## Switches (for testing; all off unless set, the defaults are above)
