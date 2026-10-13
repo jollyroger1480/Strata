@@ -273,15 +273,17 @@ MODELS = {
                   "vision": True},
     # MODEL-UPDATE Phase 4: NVFP4 experts, ready-made packs (NVFP4_REPOS).  63.3 GiB (68.0 GB) of experts in the
     # pack's experts.bin; the low-RAM mode reads them from there on a PC whose RAM does not hold them.  NVIDIA only
-    # (the HIP and SYCL engines have no NVFP4 kernels).  Images: not set up for these packs yet.
+    # (the HIP and SYCL engines have no NVFP4 kernels).  Images: both packs keep Qwen's vision tower unquantized, so the
+    # original's image encoder (ISTA's mmproj, the same file as for every Flash-Next model) reads pictures for them;
+    # checked end to end on an RTX 5070 and an RTX 3060 against IQ3_XXS's answers on the same picture.
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
                        "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
-              "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_GPTQ_REPO,
+              "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
               "engine": NVFP4_ENGINE,
               "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's): https://huggingface.co/Qwen/Qwen3.8-Flash-Next"},
     "NVFP4-NVIDIA": {"about": "NVIDIA's own NVFP4 checkpoint (plain rounding), converted by sergqwer; the same size "
                               "and speed as NVFP4", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
-                     "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_NVIDIA_REPO,
+                     "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_NVIDIA_REPO,
                      "engine": NVFP4_ENGINE,
                      "license": "NVIDIA Open Model License (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
                                 "License) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
@@ -357,7 +359,9 @@ FAMILIES = {
     # as the engine reads them (no GGUF to pack), each size has its own repository ("repo" in MODELS)
     "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "by": "NVFP4 packs by sergqwer (strata-nvfp4)",
               "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, ~80 GB of RAM to keep every expert in RAM",
-              "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True, "vision": False},
+              "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True,
+              "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"), "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+              "mmproj_sha256": (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -5706,13 +5710,15 @@ def main() -> int:
             verify_sha256(s, *fam["sha256"][s.name])
     ok("model files present")
     mmproj = Path(a.models_dir) / fam.get("mmproj", MMPROJ)
-    if not mmproj.exists() and not ready:
+    if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
         mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         else:
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+        if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too
+            verify_sha256(mmproj, *fam["mmproj_sha256"])
         ok(f"vision encoder: {mmproj}")
         if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
@@ -5967,7 +5973,8 @@ def main() -> int:
     if vision != "none":
         old_cfg = ROOT / f"strata-{tag.lower()}.json"
         vt = vision_tokens(a.vision_tokens, vision, old_cfg if old_cfg.is_file() else adopted)
-        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(shards[0]),
+        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj),     # the text model, opened vocab-only:
+                         "model": str(ready_paths(model, models_dir)["dense"] if ready else shards[0]),
                          "gpu": vision == "gpu", "max_tokens": vt}
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)

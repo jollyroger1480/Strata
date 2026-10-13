@@ -104,7 +104,7 @@ class Family(unittest.TestCase):
         for m in names:
             d = setup.MODELS[m]
             self.assertTrue(d["nvidia_only"])
-            self.assertFalse(d["vision"])
+            self.assertTrue(d["vision"])
             self.assertIn("License", d["license"])
             self.assertEqual(d["engine"], setup.NVFP4_ENGINE)
 
@@ -137,9 +137,18 @@ class MockedInstall(unittest.TestCase):
         self.assertTrue(self.flag(a, "--embd-gguf").endswith("/token-embd-bf16.gguf"))
         self.assertNotIn("--mmap-experts", a)              # 128 GB: every expert in RAM
         self.assertNotIn("--resident-experts", a)
-        self.assertNotIn("vision", cfg)
+        self.assertNotIn("vision", cfg)                    # --yes: images default off, as for every model
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-nvfp4-nvfp4")
         self.assertIn("Qwen Community License", out)
+
+    def test_images_use_the_dense_gguf_and_the_pinned_encoder(self):
+        code, out, cfg, _ = self.run_install("128GB-1x24GB", extra_argv=["--vision", "gpu"])
+        self.assertEqual(code, 0, out[-2000:])
+        v = cfg["vision"]
+        self.assertTrue(v["model"].endswith("/qwen-nvfp4-gptq-dense.gguf"))
+        self.assertTrue(v["mmproj"].endswith("/mmproj-Qwen3.8-Flash-Next-BF16.gguf"))
+        self.assertTrue(v["gpu"])
+        self.assertIn("--vision", cfg["args"])
 
     def test_nvidia_size_and_its_license(self):
         code, out, cfg, _ = self.run_install("128GB-1x24GB", "NVFP4-NVIDIA")
