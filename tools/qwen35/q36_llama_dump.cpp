@@ -88,8 +88,12 @@ int main(int argc, char** argv) {
     cap.n_embd = llama_model_n_embd(mdl);
     cap.n_layer = llama_model_n_layer(mdl);
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 4096;
-    cp.n_batch = cp.n_ubatch = 4096;
+    // STRATA_DUMP_CTX: a smaller context / batch (the parity sequences are a few hundred tokens) for a file whose
+    // weights leave no VRAM for the 4096-token compute buffers (UD-Q6_K_XL on a 32 GB card)
+    const char* cx = std::getenv("STRATA_DUMP_CTX");
+    const int nctx = cx ? std::atoi(cx) : 4096;
+    cp.n_ctx = nctx;
+    cp.n_batch = cp.n_ubatch = nctx;
     cp.op_offload = ngl > 0;   // --ngl 0 is the CPU backend: no prompt matmuls offloaded to a GPU either
     cp.cb_eval = on_tensor;
     cp.cb_eval_user_data = &cap;

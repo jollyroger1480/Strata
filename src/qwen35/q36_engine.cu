@@ -801,8 +801,18 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     if (t.type == 0) std::memcpy(h.data(), src, h.size() * 4);
     else if (t.type == 30)
         for (size_t i = 0; i < h.size(); ++i) h[i] = bf16_to_f32((uint16_t) (src[2 * i] | (src[2 * i + 1] << 8)));
-    else {
-        std::fprintf(stderr, "strata-q36: %s is %s, expected F32 or BF16\n", t.name.c_str(), t.type_name());
+    else if (t.type == 1)   // F16
+        for (size_t i = 0; i < h.size(); ++i)
+            h[i] = __half2float(__ushort_as_half((unsigned short) (src[2 * i] | (src[2 * i + 1] << 8))));
+    else if (t.type == 8 && h.size() % 32 == 0) {
+        // Q8_0 (the Q8_0 file stores ssm_alpha / ssm_beta so): blocks of an fp16 scale and 32 int8, widened here
+        for (size_t b = 0; b < h.size() / 32; ++b) {
+            const uint8_t* q = src + b * 34;
+            const float d = __half2float(__ushort_as_half((unsigned short) (q[0] | (q[1] << 8))));
+            for (int j = 0; j < 32; ++j) h[b * 32 + j] = d * (float) (int8_t) q[2 + j];
+        }
+    } else {
+        std::fprintf(stderr, "strata-q36: %s is %s, expected F32, BF16, F16 or Q8_0\n", t.name.c_str(), t.type_name());
         std::exit(1);
     }
     float* d = nullptr;
