@@ -75,6 +75,22 @@ int main() {
         CHECK(pick_with_headroom(same, 0.0) == 0);
         CHECK(pick_with_headroom({}, 0.1) == 0);
     }
+    // #2007: the miss scale per link
+    {
+        // the case 0.1.41's scale was made for: CUDA1 on a physical x1 link beside an x16 one
+        const std::vector<double> x1 = link_miss_scale({24.0, 1.6});
+        CHECK(x1[0] == 1.0 && x1[1] > 14.9 && x1[1] < 15.1);
+        // two equal cards on gen3 x16 (2x Tesla T10, P100s): the fitted formula, whatever the link speed
+        const std::vector<double> eq = link_miss_scale({12.0, 12.0});
+        CHECK(eq[0] == 1.0 && eq[1] == 1.0);
+        // a moderate gap (x8 beside x16, or the probe's noise): no scale
+        const std::vector<double> mod = link_miss_scale({11.4, 5.9});
+        CHECK(mod[0] == 1.0 && mod[1] == 1.0);
+        // a 4x gap and more scales by the ratio, capped at 64; unprobed stages stay 1
+        const std::vector<double> big = link_miss_scale({26.0, 6.0, 0.2, -1.0});
+        CHECK(big[0] == 1.0 && big[1] > 4.3 && big[1] < 4.4 && big[2] == 64.0 && big[3] == 1.0);
+        CHECK(link_miss_scale({-1.0, -1.0})[1] == 1.0);
+    }
     if (failed == 0) std::printf("split_rules_test: ok\n");
     return failed ? 1 : 0;
 }

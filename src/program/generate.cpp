@@ -3761,17 +3761,22 @@ int main(int argc, char** argv) {
         }
         // The per-stage link, measured here (the stage-setup probes are skipped when --pcie-frac is given, and the
         // search needs the reading either way).
-        std::vector<double> link_scale((size_t) ns, 1.0);
+        std::vector<double> link_gbps((size_t) ns, -1.0);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
             const strata::core::OnDevice on(dev);
             std::string bursts;
-            const double bw = native_pack ? probe_pcie_h2d_gbps(&bursts) : -1.0;
-            // Never below 1.0: a link at or above the 20 GB/s reference keeps the fitted cost exactly (a x16
-            // gen4/5 reads 26-28 and must not credit misses below the formula the sweep's K was fitted with).
-            if (bw > 0.0) link_scale[(size_t) i] = std::clamp(20.0 / bw, 1.0, 64.0);
+            link_gbps[(size_t) i] = native_pack ? probe_pcie_h2d_gbps(&bursts) : -1.0;
+        }
+        // #2007: relative to the fastest stage's link and only from a 4x gap on (split_rules::link_miss_scale): a
+        // symmetric rig, or a moderate gap, keeps the fitted formula.  STRATA_SPLIT_LINK_ABS=1: 0.1.41's 20 GB/s rule.
+        static const bool link_abs = [] { const char* v = std::getenv("STRATA_SPLIT_LINK_ABS"); return v && v[0] == '1'; }();
+        std::vector<double> link_scale = strata::program::split_rules::link_miss_scale(link_gbps);
+        for (int i = 0; i < ns; ++i) {
+            const double bw = link_gbps[(size_t) i];
+            if (link_abs) link_scale[(size_t) i] = bw > 0.0 ? std::clamp(20.0 / bw, 1.0, 64.0) : 1.0;
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d link %.1f GB/s -> miss cost x%.2f\n",
-                         dev, bw, link_scale[(size_t) i]);
+                         i == 0 ? 0 : stages[(size_t) i - 1]->dev, bw, link_scale[(size_t) i]);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
         // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.

@@ -74,6 +74,29 @@ inline size_t pick_with_headroom(const std::vector<Placement>& c, double tol) {
     return pick;
 }
 
+// ---- #2007: the miss cost of a stage on a narrower link.  0.1.41 scaled each stage's miss term by 20 GB/s / its probed
+// link (clamped to 1..64), for 2x 4090 D with CUDA1 on a physical x1 link (1.6 GB/s: x12, auto K 22 -> 38, prompt
+// ~350 -> ~1400 tok/s).  The same scale moved 2x Tesla T10 from K=23 to K=14: prompt -23%, decode -15% (xiake-1).
+// So the scale is now relative to the stage with the fastest link (a symmetric rig keeps the fitted formula, whatever
+// its link speed) and applies only from kLinkScaleMin on (a narrow riser or a chipset x1/x4 slot against an x16 one);
+// below that the probe's noise and the formula's fit are the larger effects.
+
+constexpr double kLinkScaleMin = 4.0;
+
+/// Per stage: the factor on its miss term, from the probed H2D GB/s of each stage (<= 0: not probed -> 1.0).
+inline std::vector<double> link_miss_scale(const std::vector<double>& gbps, double min_ratio = kLinkScaleMin) {
+    double fastest = 0.0;
+    for (const double b : gbps) fastest = b > fastest ? b : fastest;
+    std::vector<double> s(gbps.size(), 1.0);
+    if (fastest <= 0.0) return s;
+    for (size_t i = 0; i < gbps.size(); ++i) {
+        if (gbps[i] <= 0.0) continue;
+        const double r = fastest / gbps[i];
+        s[i] = r >= min_ratio ? (r > 64.0 ? 64.0 : r) : 1.0;
+    }
+    return s;
+}
+
 /// The smallest spare room over the stages of `cuts`: room[i] - session(lb, le) - need(lb, le), where `need_prefix[l]`
 /// is the bytes of every expert of layers [0, l) (n_layers + 1 entries).
 template <class Session>
