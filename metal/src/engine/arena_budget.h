@@ -39,6 +39,12 @@ struct ArenaMem {
 
 constexpr double kGB = 1e9;
 
+// The GPU keeps the whole arena (and the engine's other buffers) resident through a residency set, i.e. wired. Measured on the
+// M5 Max (137.4 GB), UD-Q6_K_XL: 84 GB of arena + 7.5 GB allocated (91.5 GB, 67%) ran with no swap-out; 90 GB + 7.5 GB (97.5 GB)
+// made macOS swap 29,000 pages in 8 s with a "warn" pressure level and the Mac went on to freeze; UD-Q5 with 90 GB + 5.7 GB ran,
+// near the edge. So arena + allocated stay under this share of the RAM, whatever the free-memory count says.
+constexpr double kWiredShare = 0.67;
+
 /// Bytes macOS can give without compressing or swapping: free + purgeable + the clean file cache (inactive and
 /// speculative pages, at most the file-backed ones).
 inline double arena_avail(double free_b, double purgeable_b, double inactive_b, double speculative_b, double file_b) {
@@ -56,7 +62,8 @@ inline double arena_budget(const ArenaMem& m) {
     if (m.arena_gb >= 0) return m.arena_gb * kGB;
     const double gpu = m.working_set - m.allocated - 1.0 * kGB;
     const double ram = m.available - arena_keep(m) - arena_ple_reserve(m);
-    return std::max(1.0 * kGB, std::min(gpu, ram));
+    const double wired = kWiredShare * m.phys - m.allocated;
+    return std::max(1.0 * kGB, std::min(std::min(gpu, ram), wired));
 }
 
 /// Just before the arena is filled: the bytes it may still have when macOS can now give `available_now` (it shrinks,

@@ -43,7 +43,11 @@ int main() {
     check(std::fabs(arena_budget(tiny) - 1.0 * kGB) < 1e6, "a 16 GB Mac with nothing left: 1 GB (low hit rate)", arena_budget(tiny));
     ArenaMem gpu = m5;
     gpu.available = 200 * kGB;
-    check(std::fabs(arena_budget(gpu) - (115.4 - 7.0 - 1.0) * kGB) < 1e6, "the working set bounds it", arena_budget(gpu));
+    check(std::fabs(arena_budget(gpu) - (0.67 * 137.4 - 7.0) * kGB) < 1e6, "plenty free: the wired share (67% of the RAM) bounds it", arena_budget(gpu));
+    ArenaMem q6 = m5;   // UD-Q6_K_XL after a reboot: 7.5 GB allocated, 125 GB "available" (cache): 84 GB ran, 90 GB swapped
+    q6.allocated = 7.5 * kGB;
+    q6.available = 125 * kGB;
+    check(arena_budget(q6) <= 84.7 * kGB && arena_budget(q6) > 84.0 * kGB, "M5 Max, UD-Q6 with 125 GB available: 84.6 GB, not 104", arena_budget(q6));
     // memory taken between planning and committing: it shrinks, never grows
     const double s1 = arena_shrink(m5, b5, 60.0 * kGB);
     check(s1 < b5 && std::fabs(s1 - (60.0 - 20.61 - 0.5) * kGB) < 0.1 * kGB, "less free when committing: it shrinks", s1);
