@@ -61,6 +61,11 @@ constexpr double kGB = 1e9;
 //   35% left (89 GB): clear with the write alone (compressor 0.28M pages, 316 pages swapped), not with more beside it;
 //   40% left (cap 82.5 GB, footprint 77 GB): 40 GB write + 16 GB program, swapouts 0, compressor 0.3M pages, decode and
 //     prompt speed equal to the 80 GB arena's (51 tok/s story, 1,020 tok/s for 15K).
+// And the arena is wired (mlock, stream.cpp) once it is filled: unwired it is pageable whenever the GPU is idle (the GPU's own wiring
+// ends seconds after its last command buffer; a Metal residency set did not hold it either), and a 20 GB file written beside the
+// idle engine took tens of GB of the arena into the compressor and froze the Mac (a third watchdog panic, in a control run of this
+// work: wired 2.4 GB, file cache 50 GB, compressor 1.9M pages, 45M compressions).  Wired, the same write (full speed, 20 GB in 2.5 s)
+// raised the compressor by 0.7M pages (the ~11 GB of the engine that is not arena), swapped out 408 pages and changed nothing else.
 // A pack that stays RESIDENT is different: its bytes are clean file pages (macOS drops them, never compresses them) and they
 // count as file cache, not against the floor.  UD-Q4_K_XL resident on the M5 Max (wired 91.7 GB, 67%), 40 GB write + 16 GB
 // program beside it: swapouts 0, compressor 5,500 pages, 63 tok/s.  So two caps:

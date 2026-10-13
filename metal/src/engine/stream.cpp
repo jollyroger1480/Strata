@@ -539,6 +539,31 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
                          "profile's top (%zu ranked) in %.1f s (%.2f GB/s); %d I/O threads, read-ahead top %d; %zu buffers\n",
                  (arena_bytes_ - retired_bytes) / 1e9, (unsigned long long) (pairs - nretired), cls_.size(), done, from_profile, fill_s_,
                  fill_bytes_ / 1e9 / std::max(1e-9, fill_s_), nio_, prefetch_ ? pre_k_ : 0, chunks_.size());
+    // Wire the filled arena (mlock).  Unwired, the arena is ordinary anonymous memory whenever the GPU is not running a command buffer
+    // (the GPU's own wiring ends a few seconds after the last one; a Metal residency set did not hold it either, measured), and
+    // macOS compresses it when anything else wants memory: a 20 GB file written beside the idle engine took tens of GB of the arena
+    // into the compressor in seconds and froze the 128 GB M5 Max (watchdog panic, 2026-10-13).  Wired, a file write can only
+    // shrink the file cache.  STRATA_METAL_WIRE_ARENA=0/1; the default is on for a Mac of 64 GB or more (the M4 32 GB was measured
+    // unwired).  Not when the fill stopped early for lack of memory (the unused slots would be wired too).
+    {
+        uint64_t phys = 0;
+        size_t plen = sizeof phys;
+        sysctlbyname("hw.memsize", &phys, &plen, nullptr, 0);
+        const char* we = std::getenv("STRATA_METAL_WIRE_ARENA");
+        const bool want = we && *we ? std::atoi(we) != 0 : (double) phys >= kBigMac;
+        if (want && !stopped) {
+            const double tp = now_ms();
+            uint64_t pinned = 0;
+            int failed = 0;
+            for (const auto& c : chunks_) {
+                if (mlock(c.ptr, c.bytes) == 0) pinned += c.bytes;
+                else ++failed;
+            }
+            std::fprintf(stderr, "strata metal stream: %.1f GB of the arena wired (mlock) in %.0f ms%s; macOS cannot compress it while "
+                                 "the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)\n", pinned / 1e9, now_ms() - tp,
+                         failed ? "; SOME CHUNKS COULD NOT BE WIRED" : "");
+        }
+    }
     (void) err;
     return true;
 }
