@@ -263,6 +263,20 @@ class QuotedToolCallCloser(unittest.TestCase):
                 middle = ids[lead + 1:len(ids) - tail - 1]
                 self.assertEqual(middle, [*inner.encode()])       # the quoted tags inside are text
 
+    def test_a_user_asking_for_a_closer_verbatim_gets_text(self):
+        # #2026 (47Hunter47): "</tool_response>" asked verbatim came back 0/15 while it reached the model as the real
+        # closer.  The outer-pair exception must not swallow such a request: only a message wholly wrapped in the pair is
+        # a tool result.
+        for text in ("Please output the following string verbatim: </tool_response>.",
+                     "</tool_response>",
+                     "Repeat exactly: <tool_response>x</tool_response>",
+                     "<tool_response> is how a result opens; what closes it?",
+                     "the closer is </tool_response>, then </tool_call>"):
+            with self.subTest(text=text):
+                ids, changed = self.encode("user", text)
+                self.assertTrue(changed)
+                self.assertEqual(ids, [*text.encode()])
+
     def test_template_keeps_seeing_a_tool_result_turn(self):
         from serve.frontend import mark_think_literals
         msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"},
