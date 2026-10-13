@@ -46,6 +46,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -601,12 +602,16 @@ __global__ void k_to_f16(const float* x, __half* y, int64_t n) {
 /// q/k heads (block < qk_heads) per token - fused_gdn_conv_l2's arithmetic, token after token.  History [channel][3].
 __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv, const float* w, float* h, int C,
                                                   int qk_heads, float eps, int T, bool write,
-                                                  float* const* hist_tab = nullptr, const int32_t* slot_rows = nullptr) {
+                                                  float* const* hist_tab = nullptr, const int32_t* slot_rows = nullptr,
+                                                  const int32_t* grow0 = nullptr, const int32_t* gcnt = nullptr) {
     __shared__ float part[4];
-    if (hist_tab) {   // batch rows (T = 1 each, grid y = row): row r's history is session slot_rows[r]'s
-        hist = hist_tab[slot_rows[blockIdx.y]];
-        qkv += (size_t) blockIdx.y * C;
-        h += (size_t) blockIdx.y * C;
+    if (hist_tab) {   // batch rows, grid y = group: group g's history is session slot_rows[g]'s; its rows are
+                      // grow0[g] .. + gcnt[g] - 1 (one row at row g when there are no group arrays)
+        const int g = blockIdx.y, r0 = grow0 ? grow0[g] : g;
+        hist = hist_tab[slot_rows[g]];
+        if (gcnt) T = gcnt[g];
+        qkv += (size_t) r0 * C;
+        h += (size_t) r0 * C;
     }
     const int c = blockIdx.x * 128 + threadIdx.x;
     float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
@@ -642,11 +647,13 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
 __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, int C, const float* gate,
                                                  const float* beta, const float* z, const float* gamma, float eps,
                                                  float* y, int h_k, int h_v, int T, bool write,
-                                                 float* const* state_tab = nullptr, const int32_t* slot_rows = nullptr) {
+                                                 float* const* state_tab = nullptr, const int32_t* slot_rows = nullptr,
+                                                 const int32_t* grow0 = nullptr, const int32_t* gcnt = nullptr) {
     constexpr int S = 128, RG = 4, RPG = 32;
-    if (state_tab) {   // batch rows (T = 1 each, grid y = row): row r's state is session slot_rows[r]'s
-        const int r = blockIdx.y;
-        state = state_tab[slot_rows[r]];
+    if (state_tab) {   // batch rows, grid y = group (see k_conv_seq)
+        const int g = blockIdx.y, r = grow0 ? grow0[g] : g;
+        state = state_tab[slot_rows[g]];
+        if (gcnt) T = gcnt[g];
         h += (size_t) r * C;
         gate += (size_t) r * h_v;
         beta += (size_t) r * h_v;
@@ -1129,9 +1136,12 @@ struct Engine {
     // device tables for batch rows: per state index (layer, then the MTP block) the session pointers
     float **d_conv_tab = nullptr, **d_S_tab = nullptr, **d_kc_tab = nullptr, **d_vc_tab = nullptr;
     int32_t *d_rcell = nullptr, *d_rslot = nullptr, *d_rdelta = nullptr;   // [kVerify] the rows' cell / session / rotary offset
+    // the GDN layers run a slot's rows in sequence: per group (a slot) its session, its first row and its row count
+    int32_t *d_gslot = nullptr, *d_grow0 = nullptr, *d_gcnt = nullptr;
+    int rows_G = 0;                                                        // groups of the rows being run
     int32_t* hrow = nullptr;                                                // pinned staging for the rows
-    cudaGraphExec_t gb[kVerify + 1] = {};                                   // a batch window of nb rows
     bool rows_mode = false;                                                 // layer(): the rows are sessions' (not consecutive cells)
+    bool bmtp = false;                                                      // --batch-mtp: batch windows verify MTP proposals
     int64_t rows_pmax = 0;                                                  // (eager) the highest cell of the rows
     // pictures (--vision): the request's rows replace the embeddings of its <|image_pad|> cells; M-RoPE
     bool vision = false;
@@ -1365,6 +1375,25 @@ struct Engine {
         }
         sess.resize((size_t) n_sess);
         gsets.resize((size_t) n_sess);
+        {   // the sessions' caches: said before they fail (a slot's K / V at the context, fp32, for the attention layers and
+            // the MTP block, and its recurrent state)
+            size_t n_attn = m->has_mtp ? 1 : 0, n_gdn = 0;
+            for (const Layer& L : m->layers) (L.attn ? n_attn : n_gdn) += 1;
+            const size_t per = (size_t) (g.n_head_kv * g.head_dim * 2 * 4) * (size_t) ctx * n_attn +
+                               (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
+            size_t fr0 = 0, tot0 = 0;
+            CK(cudaMemGetInfo(&fr0, &tot0));
+            if (n_sess > 1)
+                std::fprintf(stderr, "strata-q36: %d sessions (--batch): %.2f GiB of VRAM each at a context of %d (%.2f GiB in "
+                             "all), %.2f GiB free before them\n", n_sess, (double) per / (1 << 30), ctx,
+                             (double) per * n_sess / (1 << 30), (double) fr0 / (1 << 30));
+            if (n_sess > 1 && per * (size_t) n_sess + ((size_t) 1 << 30) > fr0) {
+                std::fprintf(stderr, "strata-q36: not enough VRAM for %d slots at a context of %d (%.2f GiB each, %.2f GiB "
+                             "free): use fewer slots (\"parallel\" / --batch) or a shorter --max-context\n", n_sess, ctx,
+                             (double) per / (1 << 30), (double) fr0 / (1 << 30));
+                std::exit(1);
+            }
+        }
         for (Sess& ss : sess) alloc_session(ss);
         if (n_sess > 1) {   // the batch rows' tables: per state index the session pointers, on the device
             const size_t ns = sess[0].conv.size();
@@ -1386,7 +1415,10 @@ struct Engine {
             d_rcell = dalloc_t<int32_t>(kVerify);
             d_rslot = dalloc_t<int32_t>(kVerify);
             d_rdelta = dalloc_t<int32_t>(kVerify);
-            CK(cudaHostAlloc((void**) &hrow, 64 * sizeof(int32_t), cudaHostAllocDefault));
+            d_gslot = dalloc_t<int32_t>(kVerify);
+            d_grow0 = dalloc_t<int32_t>(kVerify);
+            d_gcnt = dalloc_t<int32_t>(kVerify);
+            CK(cudaHostAlloc((void**) &hrow, 128 * sizeof(int32_t), cudaHostAllocDefault));
         }
         if (vision) {
             d_mtab = dalloc_t<int32_t>((size_t) ctx * 3);
@@ -1502,11 +1534,12 @@ struct Engine {
                 f32mm(L.beta, h, be_b, N, HV, T);
                 k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(al_b, L.dt, L.ssm_a, be_b, HV, T);
             }
-            if (rows_mode) {   // batch rows: each row one token of its own session (grid y = row)
-                k_conv_seq<<<dim3(C / 128, T), 128, 0, st>>>(nullptr, qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, 1, true,
-                                                             d_conv_tab + li * n_sess, d_rslot);
-                k_gdn_seq<<<dim3(HV, T), dim3(128, 4), 0, st>>>(nullptr, hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y,
-                                                                HK, HV, 1, true, d_S_tab + li * n_sess, d_rslot);
+            if (rows_mode) {   // batch rows: a slot's rows (one, or a verify window's two) in sequence on its own state
+                k_conv_seq<<<dim3(C / 128, rows_G), 128, 0, st>>>(nullptr, qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, 1,
+                                                                  !verify, d_conv_tab + li * n_sess, d_gslot, d_grow0, d_gcnt);
+                k_gdn_seq<<<dim3(HV, rows_G), dim3(128, 4), 0, st>>>(nullptr, hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps,
+                                                                     gdn_y, HK, HV, 1, !verify, d_S_tab + li * n_sess,
+                                                                     d_gslot, d_grow0, d_gcnt);
             } else {
                 // one token, a window or a chunk: the same kernels (every token in one launch each), so a decode step and a
                 // verify window compute bitwise the same rows and the MTP's greedy text is the plain greedy text.  (Strata's
@@ -1927,8 +1960,9 @@ struct Engine {
             for (auto& g : gset.gv)
                 if (g) { CK(cudaGraphExecDestroy(g)); g = nullptr; }
         }
-        for (auto& g : gb)
-            if (g) { CK(cudaGraphExecDestroy(g)); g = nullptr; }
+        for (auto& kv : row_graphs)
+            if (kv.second) CK(cudaGraphExecDestroy(kv.second));
+        row_graphs.clear();
     }
 
     template <class F> void graph_run(cudaGraphExec_t& gx, F body) {
@@ -2060,43 +2094,150 @@ struct Engine {
     // ---- batch rows: one decode window for the next token of several sessions
     struct Row { int slot; int32_t tok; };
     long long win_count = 0;
-    /// One window over the rows (each the next token of its own session, at that session's position): the greedy picks
-    /// end up in rows_pick, every row's logits in `logits`.  The sessions' positions advance.
+    std::map<int, cudaGraphExec_t> row_graphs;   // by (rows, groups, kind): graphs of the batch windows
+    /// A slot's rows of one window: `n` consecutive cells from the session's position (1: the next token; 2: also an MTP
+    /// proposal the window verifies).
+    struct Group { int slot; int n; int32_t tok[2]; };
     int32_t rows_pick[kVerify] = {};
-    void step_rows(const Row* rows, int nb) {
+    int rows_G_last = 0;   // groups of the window run last (commit_rows takes their keep counts)
+
+    void run_graph_key(int key, const std::function<void()>& body) {
+        if (!use_graph) { body(); return; }
+        graph_run(row_graphs[key], body);
+    }
+
+    /// One window over the groups' rows.  `verify`: a verify window - the GDN state is read, not written (commit_rows writes
+    /// it for the kept rows) and the sessions' positions stay.  The greedy picks end up in rows_pick (one per row), every
+    /// row's logits in `logits`.  Without verify the sessions' positions advance by their rows.
+    void run_rows(const Group* gr, int G, bool verify) {
         sess[(size_t) cur].pos = pos;
         CK(cudaStreamSynchronize(st));   // the pinned staging is free again
         int64_t pmax = 0;
-        for (int r = 0; r < nb; ++r) {
-            const Sess& ss = sess[(size_t) rows[r].slot];
-            hrow[r] = rows[r].tok;
-            hrow[8 + r] = (int32_t) ss.pos;
-            hrow[16 + r] = rows[r].slot;
-            hrow[24 + r] = ss.rdelta;
-            pmax = std::max<int64_t>(pmax, ss.pos);
+        int T = 0;
+        for (int g = 0; g < G; ++g) {
+            const Sess& ss = sess[(size_t) gr[g].slot];
+            hrow[40 + g] = gr[g].slot;
+            hrow[48 + g] = T;
+            hrow[56 + g] = gr[g].n;
+            for (int j = 0; j < gr[g].n; ++j) {
+                hrow[T] = gr[g].tok[j];
+                hrow[8 + T] = (int32_t) (ss.pos + j);
+                hrow[16 + T] = gr[g].slot;
+                hrow[24 + T] = ss.rdelta;
+                ++T;
+            }
+            pmax = std::max<int64_t>(pmax, ss.pos + gr[g].n - 1);
         }
-        CK(cudaMemcpyAsync(tok, hrow, (size_t) nb * 4, cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(d_rcell, hrow + 8, (size_t) nb * 4, cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(d_rslot, hrow + 16, (size_t) nb * 4, cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(d_rdelta, hrow + 24, (size_t) nb * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(tok, hrow, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rcell, hrow + 8, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rslot, hrow + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rdelta, hrow + 24, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_gslot, hrow + 40, (size_t) G * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_grow0, hrow + 48, (size_t) G * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_gcnt, hrow + 56, (size_t) G * 4, cudaMemcpyHostToDevice, st));
         mtab_now = nullptr;
         map_on = false;
         rows_mode = true;
+        rows_G = G;
         rows_deferred = true;
-        graph_run(gb[nb], [&] { forward(nb, pmax, nb, use_graph, false); });
+        run_graph_key((verify ? 1000 : 0) + G * 10 + (T - G), [&] { forward(T, pmax, T, use_graph, verify); });
         rows_deferred = false;
         rows_mode = false;
-        CK(cudaMemcpyAsync(hrow + 32, pick, (size_t) nb * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaMemcpyAsync(hrow + 32, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
-        for (int r = 0; r < nb; ++r) {
-            rows_pick[r] = hrow[32 + r];
-            ++sess[(size_t) rows[r].slot].pos;
-        }
+        for (int r = 0; r < T; ++r) rows_pick[r] = hrow[32 + r];
+        if (!verify)
+            for (int g = 0; g < G; ++g) sess[(size_t) gr[g].slot].pos += gr[g].n;
         pos = sess[(size_t) cur].pos;
+        rows_G_last = G;
         if (m->hybrid) {
-            count_rows(nb);
+            count_rows(T);
             if (++win_count % kRebalanceEvery == 0) rebalance(8);
         }
+    }
+    /// One window for the next token of each of the rows' sessions (no proposals): the greedy picks in rows_pick.
+    void step_rows(const Row* rows, int nb) {
+        Group gr[kVerify];
+        for (int r = 0; r < nb; ++r) gr[r] = {rows[r].slot, 1, {rows[r].tok, 0}};
+        run_rows(gr, nb, false);
+    }
+    /// After run_rows(.., verify = true): the GDN state of group g takes its first keep[g] rows (the conv history and the
+    /// recurrence run again over the rows' kept inputs, as commit() does) and the session advances by keep[g].
+    void commit_rows(const Group* gr, const int* keep, int G) {
+        const auto& g = m->g;
+        const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, C = (int) g.ssm_conv_channels;
+        sess[(size_t) cur].pos = pos;
+        for (int i = 0; i < G; ++i) hrow[56 + i] = keep[i];   // (hrow's slot / first-row words are the window's, unchanged)
+        CK(cudaMemcpyAsync(d_gcnt, hrow + 56, (size_t) G * 4, cudaMemcpyHostToDevice, st));
+        rows_mode = true;
+        rows_G = G;
+        run_graph_key(2000 + G, [&] {
+            for (size_t l = 0; l < m->layers.size(); ++l) {
+                const Layer& L = m->layers[l];
+                if (L.attn) continue;
+                k_conv_seq<<<dim3(C / 128, G), 128, 0, st>>>(nullptr, v_qkv[l], L.conv, hc, C, 2 * HK, m->eps, 1, true,
+                                                             d_conv_tab + l * n_sess, d_gslot, d_grow0, d_gcnt);
+                k_gdn_seq<<<dim3(HV, G), dim3(128, 4), 0, st>>>(nullptr, v_hc[l], C, v_alpha[l], v_beta[l], z, L.ssm_norm,
+                                                                m->eps, nullptr, HK, HV, 1, true, d_S_tab + l * n_sess,
+                                                                d_gslot, d_grow0, d_gcnt);
+            }
+        });
+        rows_mode = false;
+        CK(cudaStreamSynchronize(st));
+        for (int i = 0; i < G; ++i) sess[(size_t) gr[i].slot].pos += keep[i];
+        pos = sess[(size_t) cur].pos;
+    }
+
+    /// The MTP block over rows of several sessions: row r reads token tok at cell `cell` of session `slot` and the seed
+    /// hidden at `seed` (device, n_embd floats); its draft - the block's greedy pick after that row - ends up in
+    /// mtp_pick[r], and the block's K / V cells are written.
+    struct MtpRow { int slot; int32_t tok; int64_t cell; const float* seed; };
+    int32_t mtp_pick[kVerify] = {};
+    float* logits_mr = nullptr;
+    int32_t* pick_mr = nullptr;
+    void mtp_rows(const MtpRow* rows, int T) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd;
+        if (!logits_mr) {
+            logits_mr = dalloc((size_t) kVerify * g.n_vocab);
+            pick_mr = dalloc_t<int32_t>(kVerify);
+        }
+        sess[(size_t) cur].pos = pos;
+        CK(cudaStreamSynchronize(st));
+        int64_t pmax = 0;
+        for (int r = 0; r < T; ++r) {
+            hrow[r] = rows[r].tok;
+            hrow[8 + r] = (int32_t) rows[r].cell;
+            hrow[16 + r] = rows[r].slot;
+            hrow[24 + r] = sess[(size_t) rows[r].slot].rdelta;
+            pmax = std::max<int64_t>(pmax, rows[r].cell);
+            CK(cudaMemcpyAsync(mtp_seed() + (size_t) r * N, rows[r].seed, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+        }
+        CK(cudaMemcpyAsync(tok_m, hrow, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rcell, hrow + 8, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rslot, hrow + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_rdelta, hrow + 24, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        mtab_now = nullptr;
+        map_on = false;
+        rows_mode = true;
+        rows_G = T;
+        rows_deferred = true;
+        run_graph_key(3000 + T, [&] {
+            K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+            k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);                 // [e | ...]
+            k_rms_ld<<<T, kThreads, 0, st>>>(mtp_seed(), N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);   // [... | h]
+            mm(m->eh_proj, mtp_cat, x, T);
+            k_rms<<<T, kThreads, 0, st>>>(x, m->mtp.attn_norm, h, N, m->eps);
+            layer(m->mtp, m->layers.size(), T, pmax, pos0_m, use_graph, false, m->mtp_shnorm, hmtp);
+            mm(m->head, hmtp, logits_mr, T);
+            k_argmax<<<dim3(kArgBlocks, T), kThreads, 0, st>>>(logits_mr, (int) g.n_vocab, pick_mr, amv, ami, false);
+            k_argmax<<<dim3(1, T), kThreads, 0, st>>>(logits_mr, kArgBlocks, pick_mr, amv, ami, true);
+        });
+        rows_deferred = false;
+        rows_mode = false;
+        CK(cudaMemcpyAsync(hrow + 32, pick_mr, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        for (int r = 0; r < T; ++r) mtp_pick[r] = hrow[32 + r];
     }
     /// Row r's logits of the last step_rows, on the host.
     void host_logits_row(int r, std::vector<float>& out) {
@@ -2604,6 +2745,9 @@ struct Slot {
     std::mt19937_64 rng;
     std::vector<int32_t> hist;
     Clock::time_point t0;
+    int32_t draft = 0;            // --batch-mtp: the MTP block's proposal for the token after `x`
+    bool draft_ready = false;
+    long long offered = 0, accepted = 0;
 };
 
 /// The engine protocol (serve/server.py).  One request at a time on the control lines: GEN / GENI (alone: speculative
@@ -2640,18 +2784,171 @@ struct Serve {
         }
     }
 
+    /// One decode window with MTP proposals (--batch-mtp): every active slot's next token, and for up to kVerify - S of the
+    /// slots (the greedy ones, in turn) also the proposal its MTP block made: the window verifies both at once.  A slot whose
+    /// proposal the main model confirms moves two tokens in the window.  The proposals for the next window come right after
+    /// it, from the hidden states the window just produced (the first one of a slot from the state its prompt left).
+    int mtp_turn = 0;
+    void window_mtp() {
+        poll_control();
+        const int N = (int) E.m->g.n_embd;
+        std::vector<int> act;
+        for (int b = 0; b < E.n_sess; ++b)
+            if (slots[(size_t) b].active) act.push_back(b);
+        const int S = (int) act.size();
+        if (S == 0) return;
+        // who verifies a proposal this window: the greedy slots in turn, as many as fit beside one row per slot
+        const int room = Engine::kVerify - S;
+        std::vector<char> cand((size_t) S, 0);
+        int nc = 0;
+        for (int k = 0; k < S && nc < room; ++k) {
+            const int i = (mtp_turn + k) % S;
+            if (!slots[(size_t) act[(size_t) i]].smp.needs_logits()) { cand[(size_t) i] = 1; ++nc; }
+        }
+        ++mtp_turn;
+        // a candidate without a proposal gets its first one from the state its last row left
+        std::vector<Engine::MtpRow> first;
+        std::vector<int> first_of;
+        for (int i = 0; i < S; ++i) {
+            Slot& sl = slots[(size_t) act[(size_t) i]];
+            if (cand[(size_t) i] && !sl.draft_ready) {
+                Engine::Sess& ss = E.sess[(size_t) act[(size_t) i]];
+                first.push_back({act[(size_t) i], sl.x, ss.pos, ss.hlast});
+                first_of.push_back(i);
+            }
+        }
+        if (!first.empty()) {
+            E.mtp_rows(first.data(), (int) first.size());
+            for (size_t k = 0; k < first.size(); ++k) {
+                Slot& sl = slots[(size_t) act[(size_t) first_of[k]]];
+                sl.draft = E.mtp_pick[k];
+                sl.draft_ready = true;
+            }
+        }
+        std::vector<Engine::Group> gr((size_t) S);
+        std::vector<int> row0((size_t) S);
+        int T = 0;
+        for (int i = 0; i < S; ++i) {
+            const Slot& sl = slots[(size_t) act[(size_t) i]];
+            gr[(size_t) i] = {act[(size_t) i], cand[(size_t) i] ? 2 : 1, {sl.x, sl.draft}};
+            row0[(size_t) i] = T;
+            T += gr[(size_t) i].n;
+        }
+        E.run_rows(gr.data(), S, true);
+        // the picks: emit, decide how many rows each slot keeps
+        std::vector<int> keep((size_t) S, 1);
+        std::vector<int32_t> last((size_t) S, 0);
+        std::vector<char> alive((size_t) S, 0);
+        for (int i = 0; i < S; ++i) {
+            const int b = act[(size_t) i];
+            Slot& sl = slots[(size_t) b];
+            Engine::Sess& ss = E.sess[(size_t) b];
+            const int n = gr[(size_t) i].n, r0 = row0[(size_t) i];
+            int y0 = E.rows_pick[r0];
+            if (sl.smp.needs_logits()) {
+                E.host_logits_row(r0, lg);
+                y0 = sample(lg, sl.smp, sl.hist, sl.rng);
+            }
+            bool two = n == 2 && y0 == sl.draft && !is_eos(y0) && !sl.stop && sl.produced + 2 <= sl.max_new &&
+                       ss.pos + 3 <= E.ctx;   // (ss.pos: the position of the slot's next token: the window did not move it)
+            if (n == 2) { ++sl.offered; if (two) ++sl.accepted; }
+            const int rows_kept = two ? 2 : 1;
+            keep[(size_t) i] = rows_kept;
+            const int32_t fed[2] = {sl.x, sl.draft};
+            bool done = false;
+            int y = y0;
+            for (int j = 0; j < rows_kept; ++j) {
+                if (j == 1) y = E.rows_pick[r0 + 1];
+                ss.live.push_back(fed[j]);
+                std::printf("BT %d %d\n", b, y);
+                ++sl.produced;
+                sl.hist.push_back(y);
+                const char* fin = is_eos(y) ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
+                                  : ss.pos + j + 2 > E.ctx ? "length" : nullptr;
+                if (fin) {
+                    std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms_since(sl.t0));
+                    if (sl.offered > 0)
+                        std::fprintf(stderr, "strata batch: slot %d: %lld of %lld MTP proposals accepted\n", b, sl.accepted,
+                                     sl.offered);
+                    sl.active = false;
+                    ss.active = false;
+                    --n_active;
+                    done = true;
+                    break;
+                }
+            }
+            last[(size_t) i] = y;
+            alive[(size_t) i] = !done;
+            if (!done) sl.x = y;
+        }
+        E.commit_rows(gr.data(), keep.data(), S);
+        // the hidden state after each slot's last kept row (the seed of a later first proposal), and the next proposals
+        std::vector<Engine::MtpRow> nx;
+        std::vector<int> nx_of, nx_last;
+        for (int i = 0; i < S; ++i) {
+            const int b = act[(size_t) i];
+            Engine::Sess& ss = E.sess[(size_t) b];
+            const int r0 = row0[(size_t) i];
+            CK(cudaMemcpyAsync(ss.hlast, E.hmain + (size_t) (r0 + keep[(size_t) i] - 1) * N, (size_t) N * 4,
+                               cudaMemcpyDeviceToDevice, E.st));
+            Slot& sl = slots[(size_t) b];
+            sl.draft_ready = false;
+            if (!alive[(size_t) i] || !cand[(size_t) i]) continue;
+            const int64_t p_new = ss.pos;   // commit_rows moved it: the cell of the token the next window feeds
+            if (keep[(size_t) i] == 2) {
+                nx.push_back({b, sl.draft, p_new - 1, E.hmain + (size_t) r0 * N});
+                nx.push_back({b, last[(size_t) i], p_new, E.hmain + (size_t) (r0 + 1) * N});
+                nx_last.push_back((int) nx.size() - 1);
+            } else {
+                nx.push_back({b, last[(size_t) i], p_new, E.hmain + (size_t) r0 * N});
+                nx_last.push_back((int) nx.size() - 1);
+            }
+            nx_of.push_back(i);
+        }
+        std::fflush(stdout);
+        if (!nx.empty()) {
+            // (more rows than the window holds: the proposals come in two calls)
+            for (size_t at = 0, k = 0; at < nx.size();) {
+                size_t take = std::min<size_t>(nx.size() - at, Engine::kVerify);
+                while (take > 0 && at + take < nx.size() && nx[at + take].slot == nx[at + take - 1].slot) --take;   // a slot's rows together
+                E.mtp_rows(nx.data() + at, (int) take);
+                for (; k < nx_last.size() && (size_t) nx_last[k] < at + take; ++k) {
+                    Slot& sl = slots[(size_t) act[(size_t) nx_of[k]]];
+                    sl.draft = E.mtp_pick[(size_t) nx_last[k] - at];
+                    sl.draft_ready = true;
+                }
+                at += take;
+            }
+        }
+    }
+
     /// One decode window over every active slot: one token each.
     void window() {
         poll_control();
+        if (E.bmtp && E.mtp_d > 0) {   // proposals need a row to spare and a slot that decodes greedily
+            int act = 0, greedy = 0;
+            for (const Slot& sl : slots)
+                if (sl.active) { ++act; greedy += !sl.smp.needs_logits(); }
+            if (greedy > 0 && Engine::kVerify - act > 0) { window_mtp(); return; }
+        }
+        window_plain();
+    }
+
+    /// One token of every active slot, no proposals.
+    void window_plain() {
         std::vector<Engine::Row> rows;
         for (int b = 0; b < E.n_sess; ++b)
             if (slots[(size_t) b].active) rows.push_back({b, slots[(size_t) b].x});
         if (rows.empty()) return;
         E.step_rows(rows.data(), (int) rows.size());
+        const size_t Nb = (size_t) E.m->g.n_embd * 4;
         for (size_t r = 0; r < rows.size(); ++r) {
             const int b = rows[r].slot;
             Slot& sl = slots[(size_t) b];
             Engine::Sess& ss = E.sess[(size_t) b];
+            if (E.bmtp)   // (the hidden state a later first proposal starts from)
+                CK(cudaMemcpyAsync(ss.hlast, E.hmain + r * (size_t) E.m->g.n_embd, Nb, cudaMemcpyDeviceToDevice, E.st));
+            sl.draft_ready = false;
             ss.live.push_back(sl.x);
             int y;
             if (sl.smp.needs_logits()) {
@@ -2999,7 +3296,7 @@ int strata::qwen35::run(int argc, char** argv) {
     double expert_vram = -1.0;
     bool warm = true;
     int expert_slots = 0, batch = 0;
-    bool serve_mode = false, graph = true, vision = false;
+    bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3034,6 +3331,7 @@ int strata::qwen35::run(int argc, char** argv) {
         }
         else if (a == "--vision") vision = true;                                  // pictures (GENI): the encoder is strata-vision's
         else if (a == "--batch" || a == "--slots") batch = std::atoi(next().c_str());   // sessions decoding together
+        else if (a == "--batch-mtp") batch_mtp = true;                                  // ... each verifying an MTP proposal
         else if (a == "--expert-vram") expert_vram = std::atof(next().c_str());   // GiB for the routed experts
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
@@ -3110,6 +3408,8 @@ int strata::qwen35::run(int argc, char** argv) {
     } report{E};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
+    E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
+    if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
     if (warm) E.warmup();
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
