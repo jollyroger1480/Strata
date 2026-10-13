@@ -36,10 +36,11 @@ PLE = "per_layer_token_embd.weight"
 
 
 def nocache(f) -> None:
-    """Reads and writes through this file skip the page cache (macOS F_NOCACHE).  A repack moves 100+ GB: through the cache it
-    fills every free page with source and dirty output pages, which on the 128 GB M5 Max (the kernel keeps a 37 GB file-cache
-    floor) pushed the other programs' memory into the compressor and, with an engine running, ended in a watchdog panic
-    (2026-10-13)."""
+    """Writes through this file skip the page cache (macOS F_NOCACHE; measured with mincore on a 4 GB write: 100% of the file cached
+    without it, 0% with it).  A repack writes 100+ GB: through the cache that is 100+ GB of dirty pages competing with everything
+    else for memory (the 128 GB M5 Max keeps a 37 GB file-cache floor and compresses other programs' memory beyond it).  READS are
+    not helped on this macOS (a cold 4 GB read was 98% cached afterwards with F_NOCACHE set); those pages are clean and evictable,
+    the harm of the old tool was the unbounded dirty output."""
     try:
         import fcntl
         fcntl.fcntl(f.fileno(), getattr(fcntl, "F_NOCACHE", 48), 1)
