@@ -822,7 +822,10 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     };
     auto L = [](int64_t l, const char* s) { return "blk." + std::to_string(l) + "." + s; };
     m.layers.resize((size_t) g.n_layers);
-    m.has_mtp = want_mtp && g.n_mtp_layers > 0;
+    // the MTP block whenever the file has one, with or without drafts (--mtp): the VRAM it takes is then the same
+    // either way, so the hybrid mode's slot tables - and with them the greedy text - do not depend on --mtp
+    (void) want_mtp;
+    m.has_mtp = g.n_mtp_layers > 0;
     for (int64_t l = 0; l < g.n_layers + (m.has_mtp ? 1 : 0); ++l) {
         const bool is_mtp = l == g.n_layers;
         Layer& y = is_mtp ? m.mtp : m.layers[(size_t) l];
@@ -1000,7 +1003,26 @@ struct Engine {
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
     double hy_cpu_ms = 0;
-    int decode_since = 0;
+    // decode / verify rows: their routing is counted once the rows are kept (commit), so a verify window's rejected
+    // drafts never move the slots; the slots follow the counts at every kRebalanceEvery-th position exactly (a
+    // window never steps over one), so plain and speculative decoding see the same slot tables at every position
+    static constexpr int kRebalanceEvery = 32;
+    bool rows_deferred = false;          // set while a decode step or a verify window runs
+    std::vector<std::vector<int32_t>> row_ids;   // [main layer][row * top_k + k] of the last such call
+    void count_rows(int n) {
+        const int Kp = (int) m->top_k;
+        for (size_t li = 0; li < row_ids.size() && li < hy.size(); ++li)
+            if (!row_ids[li].empty())
+                for (int e = 0; e < n * Kp; ++e) hy[li].score[(size_t) row_ids[li][(size_t) e]] += 1.0;
+    }
+    void after_rows(int n) {   // a decode step / verify window kept n rows: count them, rebalance at the boundary
+        if (!m->hybrid) return;
+        count_rows(n);
+        if (pos % kRebalanceEvery == 0) {
+            CK(cudaStreamSynchronize(st));
+            rebalance(8);
+        }
+    }
 
     void init(const Model& model, int ctx_, int tmax_) {
         m = &model;
@@ -1477,9 +1499,14 @@ struct Engine {
         std::vector<char> quantized((size_t) T, 0);
         int n_miss = 0;
         std::map<int, size_t> open;   // expert -> its job with room
+        const bool defer = rows_deferred && li < m->layers.size();
+        if (defer) {
+            if (row_ids.size() < m->layers.size()) row_ids.resize(m->layers.size());
+            row_ids[li].assign(h_ids, h_ids + n_ent);
+        }
         for (int e = 0; e < n_ent; ++e) {
             const int x = h_ids[e];
-            H.score[(size_t) x] += 1.0;
+            if (!defer) H.score[(size_t) x] += 1.0;
             h_miss[e] = H.slot_of[(size_t) x] < 0;
             if (!h_miss[e]) continue;
             ++n_miss;
@@ -1518,7 +1545,7 @@ struct Engine {
     /// over all layers, between forwards (the copies are on the engine's stream).
     void rebalance(int max_swaps) {
         static const bool off = std::getenv("STRATA_Q36_FIXED_SLOTS") != nullptr;   // the slots as placed (tests)
-        if (!m->hybrid || off) return;
+        if (!m->hybrid || off || warming) return;
         const int64_t ne = m->g.n_expert;
         int left = max_swaps;
         for (size_t li = 0; li < hy.size() && left > 0; ++li) {
@@ -1589,14 +1616,12 @@ struct Engine {
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, hpin, 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+            rows_deferred = true;
             graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
+            rows_deferred = false;
             CK(cudaMemcpyAsync(hlast, hmain, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += 1;
-            if (m->hybrid && ++decode_since >= 32) {
-                decode_since = 0;
-                CK(cudaStreamSynchronize(st));
-                rebalance(8);
-            }
+            after_rows(1);
             on_chunk(1);
             return;
         }
@@ -1607,7 +1632,7 @@ struct Engine {
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             forward(T, pos, i + T == n ? 1 : 0, false, false);
-            if (m->has_mtp) {
+            if (m->has_mtp && mtp_d > 0) {
                 // seeds: h_{q-1} for each row q: hlast, then this chunk's rows 0 .. T - 2 (in `y`, free here)
                 CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
                 if (T > 1)
@@ -1633,6 +1658,7 @@ struct Engine {
     /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
         const int N = (int) m->g.n_embd;
+        if (m->hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
         CK(cudaStreamSynchronize(st));
         // rows of the first MTP call: (hmain row i, fix[i]) at positions pos - fix.size() + i, then (hlast, x) at pos
@@ -1646,11 +1672,13 @@ struct Engine {
         if (!fix.empty())
             CK(cudaMemcpyAsync(seeds, hmain, fix.size() * (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         CK(cudaMemcpyAsync(seeds + fix.size() * (size_t) N, hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
-        forward_mtp(T0, pos - (int64_t) fix.size(), seeds, true, false);
+        forward_mtp(T0, pos - (int64_t) fix.size(), seeds, D > 0, false);
         drafts.assign((size_t) D, 0);
-        CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
-        CK(cudaStreamSynchronize(st));
-        drafts[0] = hpin[2];
+        if (D > 0) {
+            CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            drafts[0] = hpin[2];
+        }
         int last_row = T0 - 1;   // the row of the previous MTP call whose output seeds the next draft
         for (int d = 1; d < D; ++d) {   // chained: (the block's own output, the last draft) at the next position
             hpin[0] = drafts[(size_t) d - 1];
@@ -1671,7 +1699,9 @@ struct Engine {
         hpin[1] = (int32_t) pos;
         CK(cudaMemcpyAsync(tok, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+        rows_deferred = true;
         graph_run(gv[T], [&] { forward(T, pos, T, use_graph, true); });
+        rows_deferred = false;
         CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         int a = 0;
@@ -1680,13 +1710,36 @@ struct Engine {
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         pos += a + 1;
-        decode_since += a + 1;
-        if (m->hybrid && decode_since >= 32) {
-            decode_since = 0;
-            CK(cudaStreamSynchronize(st));
-            rebalance(8);
-        }
+        after_rows(a + 1);
         return a;
+    }
+
+    /// The first prompt after load ran at about half speed (pp4096 rep 0: ~1770 tok/s against ~3290): the GPU's code
+    /// objects, the BLAS handles' kernels and the decode graph are made on first use.  A throw-away prompt of one
+    /// chunk, a decode step and (with drafts) a speculative step at load do that before the first request; then the
+    /// state, the cache position and the hybrid counters are as after load.
+    bool warming = false;
+    void warmup() {
+        const auto t0 = Clock::now();
+        warming = true;
+        const int32_t filler = 198;   // a newline: any token works
+        std::vector<int32_t> toks((size_t) tmax, filler);
+        process(toks.data(), (int64_t) toks.size(), [](int64_t) {});
+        if (tmax > kGemmT + 1) process(toks.data(), kGemmT + 1, [](int64_t) {});   // the smallest GEMM chunk too
+        process(&filler, 1, [](int64_t) {});
+        if (mtp_d > 0) {
+            std::vector<int32_t> fix, drafts;
+            int32_t picks[16];
+            spec_step(filler, fix, mtp_d, drafts, picks);
+        }
+        CK(cudaStreamSynchronize(st));
+        warming = false;
+        for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
+        hy_cpu = hy_gpu = hy_swaps = 0;
+        hy_cpu_ms = 0;
+        reset();
+        std::fprintf(stderr, "strata-q36: warmed up in %.1f s (one prompt chunk, a decode step%s)\n",
+                     ms_since(t0) / 1000.0, mtp_d > 0 ? ", a speculative step" : "");
     }
 
     int greedy() {
@@ -2047,6 +2100,7 @@ int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full;
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
+    bool warm = true;
     int expert_slots = 0;
     bool serve_mode = false, graph = true;
     for (int i = 1; i < argc; ++i) {
@@ -2072,6 +2126,7 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--bench-pp") bench_pp = std::atoi(next().c_str());
         else if (a == "--bench-tg") bench_tg = std::atoi(next().c_str());
         else if (a == "--no-graph") graph = false;
+        else if (a == "--no-warmup") warm = false;
         else if (a == "--mtp") {
             // a number of drafts; Flash-Next's "--mtp <draft layer dir>" means nothing for this family
             const std::string v = next();
@@ -2148,6 +2203,7 @@ int strata::qwen35::run(int argc, char** argv) {
     } report{E};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
+    if (warm) E.warmup();
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
