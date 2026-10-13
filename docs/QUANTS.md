@@ -136,7 +136,9 @@ the rest read from an NVMe SSD at 2.1 GB/s): 14-20 tokens/s and a 4K prompt at 1
 llama.cpp on the same PC and file 14.8-16.5 / 117-123. `STRATA_PROMPT_DIRECT=1` (Linux, opt-in) reads the prompt
 path's experts unbuffered while decode keeps the file cache: the same output (6 of 6 prompts identical with fixed
 flags), the 4K prompt 152 -> 315 tokens/s, a 20K prompt 217 -> 500, decode +2-15% (5 interleaved pairs, page cache
-dropped before each run). Reading everything unbuffered (`STRATA_UNBUFFERED_LOAD=1`) doubled the prompt too but cost
+dropped before each run). On a second PC with more file-cache room (the R9700 box held to 64 GB) it was mixed: a 6K
+document's prompt +8%, a 4K prompt -15% and the answer after the document -38%, because the buffered reads had left
+the document's experts in the file cache. So it stays opt-in. Reading everything unbuffered (`STRATA_UNBUFFERED_LOAD=1`) doubled the prompt too but cost
 decode 9-13%; a larger or smaller RAM budget, more fetch threads, a deeper read-ahead or a wider look-ahead did not
 help.
 
