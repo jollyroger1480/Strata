@@ -359,7 +359,7 @@ void ExpertStream::promote_slot(int s) {
 }
 
 bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::string& profile, int min_slots, std::string& err,
-                              const std::function<uint64_t()>& recheck) {
+                              const std::function<uint64_t()>& recheck, const std::function<bool(uint64_t)>& grow) {
     const double t0 = now_ms();
     shrink_to_ = 0;
     for (auto& k : cls_) k.n = 0;   // a second try (after a shrink) lays the arena out again
@@ -458,6 +458,7 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     smap_ = cx.alloc((size_t) NL * NE * 4);
     std::memset(smap_.ptr, 0xFF, (size_t) NL * NE * 4);
     slots_ = std::vector<Slot>((size_t) base);
+    retired_.assign((size_t) base, 0);
     where_.assign((size_t) NL * NE, -1);
     for (auto& k : cls_) {
         for (int s = k.base; s < k.base + k.n; ++s) {
@@ -468,35 +469,67 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         k.tail = k.n ? k.base + k.n - 1 : -1;
     }
     for (int i = 0; i < nio_; ++i) io_.emplace_back([this] { io_main(); });
-    // the fill: the ranked pairs, in file order, on the I/O threads; the best-ranked ends at the LRU front
-    std::vector<std::pair<int, int>> order = fill;
-    std::sort(order.begin(), order.end(), [&](const auto& a, const auto& b) {
-        return lay_[(size_t) a.first].g + (uint64_t) a.second * lay_[(size_t) a.first].gs <
-               lay_[(size_t) b.first].g + (uint64_t) b.second * lay_[(size_t) b.first].gs;
-    });
+    // the fill: the ranked pairs in steps (best first; each step in file order) on the I/O threads; before each step
+    // grow() asks whether macOS still has the memory for it (arena_grow); the best-ranked ends at the LRU front
+    uint64_t step = 1536ull << 20;
+    if (const char* e = std::getenv("STRATA_METAL_ARENA_STEP_GB")) step = std::max<uint64_t>(64ull << 20, (uint64_t) (std::atof(e) * 1e9));
     std::vector<int> next_free(cls_.size());
     for (size_t c = 0; c < cls_.size(); ++c) next_free[c] = cls_[c].base;
-    {
-        std::lock_guard<std::mutex> g(mu_);
-        for (const auto& p : order) {
-            const int c = lay_[(size_t) p.first].cls;
-            submit(next_free[(size_t) c]++, p.first, p.second, true);
+    size_t done = 0;
+    bool stopped = false;
+    uint64_t filled = 0;
+    while (done < fill.size()) {
+        size_t j = done;
+        uint64_t sb = 0;
+        while (j < fill.size() && (sb < step || j == done)) sb += cls_[(size_t) lay_[(size_t) fill[j++].first].cls].pages * PAGE;
+        if (grow && !grow(sb)) { stopped = true; break; }
+        std::vector<std::pair<int, int>> order(fill.begin() + (long) done, fill.begin() + (long) j);
+        std::sort(order.begin(), order.end(), [&](const auto& a, const auto& b) {
+            return lay_[(size_t) a.first].g + (uint64_t) a.second * lay_[(size_t) a.first].gs <
+                   lay_[(size_t) b.first].g + (uint64_t) b.second * lay_[(size_t) b.first].gs;
+        });
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            for (const auto& p : order) {
+                const int c = lay_[(size_t) p.first].cls;
+                submit(next_free[(size_t) c]++, p.first, p.second, true);
+            }
         }
+        cv_.notify_all();
+        {
+            std::unique_lock<std::mutex> g(mu_);
+            done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        }
+        filled += sb;
+        done = j;
     }
-    cv_.notify_all();
+    uint64_t retired_bytes = 0;
+    size_t nretired = 0;
     {
         std::unique_lock<std::mutex> g(mu_);
-        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        if (stopped)   // the slots not filled stay unused (their pages never touched), all but min_slots of each class
+            for (size_t c = 0; c < cls_.size(); ++c) {
+                const Cls& k = cls_[c];
+                for (int s = std::max(next_free[c], k.base + std::min(min_slots, k.n)); s < k.base + k.n; ++s) {
+                    lru_unlink(s);
+                    retired_[(size_t) s] = 1;
+                    retired_bytes += k.pages * PAGE;
+                    ++nretired;
+                }
+            }
         // the LRU order = the rank order (best at the front)
-        for (auto it = fill.rbegin(); it != fill.rend(); ++it) lru_front(where_[(size_t) (it->first * NE + it->second)]);
+        for (size_t i = done; i-- > 0;) lru_front(where_[(size_t) (fill[i].first * NE + fill[i].second)]);
     }
+    if (stopped)
+        std::fprintf(stderr, "strata metal stream: the arena's fill stopped after %.2f GB: macOS's free memory reached what it "
+                             "keeps; %.2f GB of the arena (%zu slots) stay unused\n", filled / 1e9, retired_bytes / 1e9, nretired);
     fill_s_ = (now_ms() - t0) / 1e3;
     fill_bytes_ = bytes_read_.load();
     uint64_t pairs = 0;
     for (const auto& k : cls_) pairs += (uint64_t) k.n;
     std::fprintf(stderr, "strata metal stream: expert arena %.2f GB, %llu slots in %zu size classes, %zu experts read from the "
                          "profile's top (%zu ranked) in %.1f s (%.2f GB/s); %d I/O threads, read-ahead top %d; %zu buffers\n",
-                 arena_bytes_ / 1e9, (unsigned long long) pairs, cls_.size(), fill.size(), from_profile, fill_s_,
+                 (arena_bytes_ - retired_bytes) / 1e9, (unsigned long long) (pairs - nretired), cls_.size(), done, from_profile, fill_s_,
                  fill_bytes_ / 1e9 / std::max(1e-9, fill_s_), nio_, prefetch_ ? pre_k_ : 0, chunks_.size());
     (void) err;
     return true;
@@ -693,7 +726,7 @@ void ExpertStream::hold_region(bool hold) {
     } else {
         for (int s : region_slots_) {
             slots_[(size_t) s].state = 0;
-            lru_back(s);
+            if (!retired_[(size_t) s]) lru_back(s);   // a retired slot's memory serves the prompt only
         }
     }
 }

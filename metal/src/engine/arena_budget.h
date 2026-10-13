@@ -14,6 +14,13 @@
 //   GPU       the Metal working set less what is already allocated, less 1 GB.
 // STRATA_METAL_ARENA_GB sets the arena outright.  The arena is placed just before it is filled, and the memory macOS
 // can give is asked again then: when it has dropped (another program), the arena shrinks (arena_shrink).
+// "Available" (arena_avail) counts free and purgeable pages and the file cache macOS drops without writing anything:
+// inactive pages, but no more of them than there are file-backed pages.  Inactive anonymous memory (other programs')
+// is left out: macOS frees it only by compressing or swapping it (the soak's 93 MB swapped out while an arena planned
+// with every inactive page filled).  Free + purgeable alone is too little: at the engine's start the model file's own
+// pages fill the cache (6.4 GB free + purgeable on the 32 GB M4 against 15 GB a minute later).  The arena is filled in steps (STRATA_METAL_ARENA_STEP_GB, default 1.5): before each step the free
+// memory is asked again, and the fill stops - the rest of the arena's slots unused - when a step would take macOS
+// below what it keeps (arena_grow).
 #pragma once
 
 #include <algorithm>
@@ -24,13 +31,19 @@ struct ArenaMem {
     double phys = 0;          // bytes of RAM
     double working_set = 0;   // the Metal device's recommended working set
     double allocated = 0;     // already allocated by the engine (Metal buffers)
-    double available = 0;     // what macOS can give now: free + inactive + speculative + purgeable pages
+    double available = 0;     // what macOS can give now without paging anything out (arena_avail)
     double ple_mapped = 0;    // the n-gram table's bytes when it is mapped whole in RAM, else 0
     double keep_gb = -1;      // STRATA_METAL_KEEP_FREE_GB (< 0: unset)
     double arena_gb = -1;     // STRATA_METAL_ARENA_GB (< 0: unset)
 };
 
 constexpr double kGB = 1e9;
+
+/// Bytes macOS can give without compressing or swapping: free + purgeable + the clean file cache (inactive and
+/// speculative pages, at most the file-backed ones).
+inline double arena_avail(double free_b, double purgeable_b, double inactive_b, double speculative_b, double file_b) {
+    return free_b + purgeable_b + std::min(inactive_b + speculative_b, file_b);
+}
 
 inline double arena_keep(const ArenaMem& m) {
     return m.keep_gb >= 0 ? m.keep_gb * kGB : std::max(7.0 * kGB, 0.15 * m.phys);
@@ -53,6 +66,30 @@ inline double arena_shrink(const ArenaMem& m, double planned, double available_n
     ArenaMem now = m;
     now.available = available_now;
     return std::min(planned, arena_budget(now));
+}
+
+/// The stepped fill: may the next `step` bytes of the arena be filled while macOS has `available_now` free + purgeable?
+/// (the explicit STRATA_METAL_ARENA_GB always fills)
+inline bool arena_grow(const ArenaMem& m, double available_now, double step) {
+    if (m.arena_gb >= 0) return true;
+    return available_now - step >= arena_keep(m) + arena_ple_reserve(m);
+}
+
+/// The fill as a plan, for the test: the pairs' bytes in rank order, steps of `step` bytes, `avail(filled)` the free
+/// memory once `filled` bytes are in.  Returns how many pairs are filled.
+template <class Avail>
+inline size_t arena_fill_plan(const ArenaMem& m, const double* cost, size_t n, double step, Avail avail) {
+    size_t i = 0;
+    double filled = 0;
+    while (i < n) {
+        double s = 0;
+        size_t j = i;
+        while (j < n && (s < step || j == i)) s += cost[j++];
+        if (!arena_grow(m, avail(filled), s)) break;
+        filled += s;
+        i = j;
+    }
+    return i;
 }
 
 }  // namespace strata::metal_engine

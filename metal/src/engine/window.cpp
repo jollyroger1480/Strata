@@ -1076,12 +1076,16 @@ bool Window::stream_arena(std::string& err) {
                              "Metal window)\n", g / 1e9);
     }
     const double used = (double) cx_->allocated();
-    // what macOS could give now: free + inactive + speculative + purgeable pages (the file cache is given back)
+    // what macOS gives now without paging anything out (arena_avail: free, purgeable, the clean file cache; not other
+    // programs' inactive memory, freed only by compressing or swapping it)
     auto avail_now = [&]() -> double {
         vm_statistics64_data_t vs;
         mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
-        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS)
-            return (double) (vs.free_count + vs.inactive_count + vs.speculative_count + vs.purgeable_count) * (double) vm_page_size;
+        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS) {
+            const double pg = (double) vm_page_size;
+            return arena_avail(vs.free_count * pg, vs.purgeable_count * pg, vs.inactive_count * pg, vs.speculative_count * pg,
+                               vs.external_page_count * pg);
+        }
         return (double) phys - (double) cx_->allocated();
     };
     ArenaMem am;   // arena_budget.h: the rule, testable
@@ -1110,12 +1114,15 @@ bool Window::stream_arena(std::string& err) {
                  cx_->recommended_working_set() / gb);
     const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
     const bool pg_on = !(epg && std::string(epg) == "0");
+    bool minimal = false;   // the arena's least layout (the min slots) is not shrunk further: it goes ahead, filled in steps
     for (int tries = 0;; ++tries) {
         const double planned = budget;
-        if (st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err,
-                            [&]() -> uint64_t { return (uint64_t) arena_shrink(am, planned, avail_now()); }))
+        std::function<uint64_t()> recheck = [&]() -> uint64_t { return (uint64_t) arena_shrink(am, planned, avail_now()); };
+        if (st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err, minimal ? std::function<uint64_t()>() : recheck,
+                            [&](uint64_t step) { return arena_grow(am, avail_now(), (double) step); }))
             break;
         if (st_->shrink_to() == 0 || tries == 4) return false;
+        if ((double) st_->shrink_to() + 64.0 * (1 << 20) >= budget) minimal = true;   // no smaller layout than this one
         std::fprintf(stderr, "strata metal stream: less memory is free than when the arena was planned: %.1f -> %.1f GB\n",
                      budget / gb, st_->shrink_to() / gb);
         budget = (double) st_->shrink_to();
