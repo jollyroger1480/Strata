@@ -3,12 +3,13 @@
 //
 // The arena is anonymous memory the GPU keeps resident: macOS cannot page it out or drop it like file cache.  It must
 // leave room for macOS and the desktop, and for the other big memory the engine itself uses while it runs:
-//   keep      macOS and the desktop: max(7 GB, 15% of the RAM) - STRATA_METAL_KEEP_FREE_GB sets it.  The M5 Max
+//   keep      macOS and the desktop: max(5 GB, 15% of the RAM) - STRATA_METAL_KEEP_FREE_GB sets it.  The M5 Max
 //             (128 GB) froze with an 89 GB arena and 7 GB kept beside a 50 GB n-gram table; with 15% it keeps 20.6 GB.
-//             On the 32 GB M4, 7 GB kept left macOS 55% of its memory free all run (memory_pressure) and decodes
-//             7.8 tok/s; 12 GB kept cut the arena from 9.4 to 4.4 GB and decode to 4.8 tok/s (Q2_0, 200 tokens).
-//   ple       the n-gram table: mapped whole in RAM (--ple-io ram) it is all of it; read row by row (the default)
-//             its row cache and the OS's read-ahead, 2 GB.
+//             The 32 GB M4 (IQ3_XXS after a 6K prompt, 5 interleaved runs, memory_pressure every 3 s, vm_stat
+//             swapouts): 7 GB kept + 2 GB reserve 5.93 tok/s (arena ~8.5 GB, least free 50%), 7 + 0.5 6.59 (~10 GB,
+//             49%), 5 + 0.5 7.47 (~12 GB, 43%); no swap-out in any run.
+//   ple       the n-gram table: mapped whole in RAM (--ple-io ram) it is all of it; read row by row (the default,
+//             F_NOCACHE: no file cache) only its bounded row cache, 1M rows of at most 192 bytes: 0.5 GB reserved.
 //   GPU       the Metal working set less what is already allocated, less 1 GB.
 // STRATA_METAL_ARENA_GB sets the arena outright.  The arena is placed just before it is filled, and the memory macOS
 // can give is asked again then: when it has dropped (another program), the arena shrinks (arena_shrink).
@@ -31,10 +32,10 @@ struct ArenaMem {
 constexpr double kGB = 1e9;
 
 inline double arena_keep(const ArenaMem& m) {
-    return m.keep_gb >= 0 ? m.keep_gb * kGB : std::max(7.0 * kGB, 0.15 * m.phys);
+    return m.keep_gb >= 0 ? m.keep_gb * kGB : std::max(5.0 * kGB, 0.15 * m.phys);
 }
 
-inline double arena_ple_reserve(const ArenaMem& m) { return m.ple_mapped > 0 ? m.ple_mapped : 2.0 * kGB; }
+inline double arena_ple_reserve(const ArenaMem& m) { return m.ple_mapped > 0 ? m.ple_mapped : 0.5 * kGB; }
 
 /// The arena's bytes (at least 1 GB: a smaller arena still runs, at a low hit rate).
 inline double arena_budget(const ArenaMem& m) {
