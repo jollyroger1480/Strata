@@ -2250,8 +2250,23 @@ def recommended_size(family: str, names: list, ram: float) -> str:
     return "UD-IQ4_XS" if family == "unsloth" and "UD-IQ4_XS" in names else names[0]
 
 
-def size_tag(family: str, m: str) -> str:
-    return " (recommended)" if m in RECOMMENDED_SIZES.get(family, ()) else ""
+def size_tag(family: str, m: str, installed: str | None = None) -> str:
+    rec, have = m in RECOMMENDED_SIZES.get(family, ()), m == installed
+    return " (recommended, installed)" if rec and have else " (recommended)" if rec else " (installed)" if have else ""
+
+
+def installed_size(family: str, names: list, have: list) -> str | None:
+    """0.1.44.1: the size of this family that is already installed (the most recently used config first), or None.  Setup
+    run again (SETUP.bat, --setup) pre-selects it: the 0.1.44 recommendation (IQ3_S, about 15% slower than IQ3_XXS and
+    7 GB more RAM) is for a first install, and Enter must not move an installed model to another size."""
+    for c in have:
+        try:
+            ch = choices_from_config(c)
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            continue
+        if ch.get("family") == family and ch.get("model") in names:
+            return ch["model"]
+    return None
 
 
 def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool) -> dict:
@@ -4401,6 +4416,10 @@ SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", 
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"})   # the "env" entries setup writes
+# 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
+# user's own (STRATA_ROUTE_TAIL_SKIP=0 to turn the tail skip off, STRATA_MMQ_KQ=1 ...): a setup run again keeps them there
+# (0.1.44 dropped them with the rest of SETUP_ENV).
+SETUP_ENV_UNSLOTH = frozenset({"STRATA_MMQ_KQ", "STRATA_HC_Q8", "STRATA_ROUTE_TAIL_SKIP"})
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
@@ -4415,7 +4434,8 @@ def carry_over(old: dict, cfg: dict) -> list[str]:
         if k not in SETUP_KEYS and k not in cfg:
             cfg[k] = v
             kept.append(k)
-    env = {k: v for k, v in (old.get("env") or {}).items() if k not in SETUP_ENV and k not in (cfg.get("env") or {})} \
+    mine = SETUP_ENV if "-unsloth-" in str(cfg.get("model_name") or "") else SETUP_ENV - SETUP_ENV_UNSLOTH
+    env = {k: v for k, v in (old.get("env") or {}).items() if k not in mine and k not in (cfg.get("env") or {})} \
         if isinstance(old.get("env"), dict) else {}
     if env:
         cfg["env"] = {**(cfg.get("env") or {}), **env}
@@ -6140,20 +6160,21 @@ def main() -> int:
              + (f" (or {a.model}: " + ", ".join(f"--family {f} --model {a.model}" for f in elsewhere_fams) + ")"
                 if elsewhere_fams else "")
              + (f".\n       {SUPPORTED_GGUFS}" if a.gguf_dir else ""))
+    installed = installed_size(family, names, have)
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("budget"):
             keeps = (f"~{resident_budget_gib(m, ram)} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
                      else "all")
-            say(f"  {i}) {m}{size_tag(family, m)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
+            say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
                 f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
         if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
-        say(f"  {i}) {m:8s}{size_tag(family, m)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = str(names.index(recommended_size(family, names, ram)) + 1)
+        say(f"  {i}) {m:8s}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
+    rec = str(names.index(installed or recommended_size(family, names, ram)) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
     in_budget = bool(MODELS[model].get("budget")) and unsloth_budget(model, ram, gpu, a.resident_budget_gib)
