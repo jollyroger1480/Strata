@@ -21,11 +21,16 @@ def strata(a):
     out = open(a.out, "a")
     for n in [int(x) for x in a.ns.split(",")]:
         for rnd in range(a.rounds):
-            reqs = [{"ids": prompts[ORDER[i]], "n": a.n, "slot": i} for i in range(n)]
-            r = eng.batch(reqs)
-            tot = sum(len(t) for t in r["tokens"])
-            row = {"engine": "strata", "n": n, "round": rnd, "tokens": tot, "wall": r["wall"], "tok_s": tot / r["wall"],
-                   "tail_tok_s": r["tail_tok_s"]}
+            if n == 1 and not eng.info.get("batch_slots"):   # an engine without slots: the request alone (GEN)
+                toks, done, ttft, wall = eng.solo(prompts[ORDER[0]], a.n)
+                row = {"engine": "strata", "n": 1, "round": rnd, "tokens": len(toks), "wall": wall,
+                       "tok_s": len(toks) / wall, "tail_tok_s": len(toks) / max(1e-9, wall - (ttft or 0))}
+            else:
+                reqs = [{"ids": prompts[ORDER[i]], "n": a.n, "slot": i} for i in range(n)]
+                r = eng.batch(reqs)
+                tot = sum(len(t) for t in r["tokens"])
+                row = {"engine": "strata", "n": n, "round": rnd, "tokens": tot, "wall": r["wall"], "tok_s": tot / r["wall"],
+                       "tail_tok_s": r["tail_tok_s"]}
             print(json.dumps(row), flush=True)
             out.write(json.dumps(row) + "\n")
             out.flush()

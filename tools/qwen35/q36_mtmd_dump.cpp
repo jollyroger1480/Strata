@@ -6,7 +6,7 @@
 // Built against a llama.cpp checkout with its mtmd library (not part of Strata's build):
 //   g++ -O2 -std=c++17 q36_mtmd_dump.cpp -I<llama>/include -I<llama>/ggml/include -I<llama>/tools/mtmd -L<llama>/build/bin
 //       -lllama -lmtmd -lggml -lggml-base -Wl,-rpath,<llama>/build/bin -o q36_mtmd_dump
-// Usage: q36_mtmd_dump --model GGUF --mmproj F --image F --prompt TEXT [--n 32] [--ngl 99] [--max-tokens N] [--mm-cpu 1]
+// Usage: q36_mtmd_dump --model GGUF --mmproj F --image F [--image F2 ...] --prompt TEXT [--n 32] [--ngl 99] [--max-tokens N] [--mm-cpu 1]
 //                      [--dump-full-logits F] [--force ID,ID,...]
 //   TEXT holds one <__media__> marker where the picture goes (the chat template's user turn); it is tokenized with
 //   special tokens parsed and no BOS.  --force feeds that continuation instead of the greedy ids (teacher forcing).
@@ -33,13 +33,14 @@ static std::vector<int> parse_ids(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-    std::string model, mmproj, image, prompt, dump_full, force;
+    std::string model, mmproj, prompt, dump_full, force;
+    std::vector<std::string> images;
     int n_gen = 32, ngl = 99, max_tokens = 0, mm_cpu = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string a = argv[i], v = argv[i + 1];
         if (a == "--model") model = v;
         else if (a == "--mmproj") mmproj = v;
-        else if (a == "--image") image = v;
+        else if (a == "--image") images.push_back(v);   // repeat for several pictures (one <__media__> each)
         else if (a == "--prompt") prompt = v;
         else if (a == "--n") n_gen = std::atoi(v.c_str());
         else if (a == "--ngl") ngl = std::atoi(v.c_str());
@@ -68,12 +69,17 @@ int main(int argc, char** argv) {
     if (max_tokens > 0) mcp.image_max_tokens = max_tokens;
     mtmd_context* mctx = mtmd_init_from_file(mmproj.c_str(), mdl, mcp);
     if (!mctx) { std::fprintf(stderr, "cannot load %s\n", mmproj.c_str()); return 1; }
-    mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(mctx, image.c_str(), false, mtmd_helper_init_opt_default());
-    if (!bw.bitmap) { std::fprintf(stderr, "cannot read %s\n", image.c_str()); return 1; }
+    std::vector<mtmd_helper_bitmap_wrapper> bws;
+    std::vector<const mtmd_bitmap*> bms;
+    for (const std::string& image : images) {
+        mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(mctx, image.c_str(), false, mtmd_helper_init_opt_default());
+        if (!bw.bitmap) { std::fprintf(stderr, "cannot read %s\n", image.c_str()); return 1; }
+        bws.push_back(bw);
+        bms.push_back(bw.bitmap);
+    }
     mtmd_input_chunks* chunks = mtmd_input_chunks_init();
     mtmd_input_text txt{prompt.c_str(), prompt.size(), false, true};
-    const mtmd_bitmap* bms[1] = {bw.bitmap};
-    if (mtmd_tokenize(mctx, chunks, &txt, bms, 1) != 0) { std::fprintf(stderr, "tokenize failed\n"); return 1; }
+    if (mtmd_tokenize(mctx, chunks, &txt, bms.data(), bms.size()) != 0) { std::fprintf(stderr, "tokenize failed\n"); return 1; }
     const size_t nc = mtmd_input_chunks_size(chunks);
     llama_pos n_past = 0;
     for (size_t c = 0; c < nc; ++c) {
@@ -123,7 +129,7 @@ int main(int argc, char** argv) {
     std::printf("\n");
     if (ff) std::fclose(ff);
     mtmd_input_chunks_free(chunks);
-    mtmd_bitmap_free(bw.bitmap);
+    for (auto& bw : bws) mtmd_bitmap_free(bw.bitmap);
     mtmd_free(mctx);
     llama_free(ctx);
     llama_model_free(mdl);

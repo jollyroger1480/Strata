@@ -23,6 +23,9 @@ QUESTIONS = {
 }
 TEMPLATE = "<|im_start|>user\n<__media__>{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 PAD = 248056
+TEMPLATE_PAIR = ("<|im_start|>user\nPicture 1: <__media__>\nPicture 2: <__media__>\n{q}<|im_end|>\n<|im_start|>assistant\n"
+                 "<think>\n\n</think>\n\n")
+PAIR_QUESTIONS = ["What text is written in each of the two pictures? One short line for each."]
 
 
 def run(cmd, lock, log, env=None):
@@ -73,7 +76,7 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--mmproj", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--pic", action="append", required=True)
+    ap.add_argument("--pic", action="append", required=True, help="a picture, or a+b for one request with two pictures")
     ap.add_argument("--lock", default="")
     ap.add_argument("--n", type=int, default=24)
     ap.add_argument("--q36-args", default="--vision --max-context 4096")
@@ -81,24 +84,34 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows = []
-    for pic in a.pic:
-        name = os.path.basename(pic)
-        # the encoder's file (strata-vision, CPU)
-        run([sys.executable, a.venc, a.vision, a.mmproj, a.model, pic], "", os.path.join(a.out, name + ".venc.log"))
-        emb = pic + ".sve"
-        for qi, q in enumerate(QUESTIONS.get(name, ["Describe this image."])):
+    for pic_spec in a.pic:
+        pics = pic_spec.split("+")            # "a.png+b.png": one request with two pictures (one <__media__> each)
+        name = "+".join(os.path.basename(p) for p in pics)
+        # the encoder's file (strata-vision, CPU): one record per picture, in prompt order
+        run([sys.executable, a.venc, a.vision, a.mmproj, a.model, *pics], "", os.path.join(a.out, name + ".venc.log"))
+        emb = os.path.join(a.out, name + ".sve")
+        with open(emb, "wb") as f:
+            for p in pics:
+                f.write(open(p + ".sve", "rb").read())
+        questions = QUESTIONS.get(name, ["Describe this image."] if len(pics) == 1 else PAIR_QUESTIONS)
+        for qi, q in enumerate(questions):
             tag = "%s.q%d" % (name, qi)
-            prompt = TEMPLATE.format(q=q)
+            prompt = TEMPLATE.format(q=q) if len(pics) == 1 else TEMPLATE_PAIR.format(q=q)
             ref_log = os.path.join(a.out, tag + ".llama.log")
             logit_f = os.path.join(a.out, tag + ".llama.logits")
-            out = run([a.dump, "--model", a.model, "--mmproj", a.mmproj, "--image", pic, "--prompt", prompt, "--n", str(a.n),
+            out = run([a.dump, "--model", a.model, "--mmproj", a.mmproj, *sum([["--image", p] for p in pics], []),
+                       "--prompt", prompt, "--n", str(a.n),
                        "--dump-full-logits", logit_f, "--mm-cpu", "1", "--max-tokens", "1024"], a.lock, ref_log)
             chunks, gen, first = parse_dump(out)
             ids = []
             for kind, v in chunks:
                 ids += v if kind == "text" else [PAD] * v
-            hdr = struct.unpack("<5i", open(emb, "rb").read(20))
-            assert hdr[1] == sum(v for k, v in chunks if k == "image"), "the encoders disagree on the token count %s vs %s" % (hdr, chunks)
+            tot_rows, off, data = 0, 0, open(emb, "rb").read()
+            while off < len(data):                 # the records' row counts
+                h = struct.unpack("<5i", data[off:off + 20])
+                tot_rows += h[1]
+                off += 20 + 4 * h[1] * h[4]
+            assert tot_rows == sum(v for k, v in chunks if k == "image"), "the encoders disagree on the token count %d vs %s" % (tot_rows, chunks)
             q_logit_f = os.path.join(a.out, tag + ".q36.logits")
             qout = run([a.q36, "--model", a.model, "--tokens", ",".join(map(str, ids)), "--emb", emb, "--n", str(a.n),
                         "--force", ",".join(map(str, gen[:-1])), "--dump-full-logits", q_logit_f, *shlex.split(a.q36_args)],

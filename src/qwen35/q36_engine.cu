@@ -2285,7 +2285,13 @@ struct Engine {
     /// tokens of the rows the block must redo first (the drafts the last window accepted, seeded by hmain rows
     /// 0 .. fix.size() - 1 of that window).  Drafts d1 .. dD, then the window [x, d1 .. dD] through the main model;
     /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
-    int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
+    /// `max_a`: at most that many drafts are taken (the answer has room for max_a + 1 more tokens, the last of which is
+    /// not fed, as in plain decoding); and no draft past an end-of-answer token is taken (that token is the next one the
+    /// caller emits).  So the state ends exactly where plain decoding would leave it.
+    /// `cancel`: a stop asked for before the state moves keeps only x (the caller then emits no draft: every token emitted but
+    /// the last is in the state, so a conversation that continues from the held tokens loses and repeats nothing).
+    int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
+                  int max_a = 1 << 20, const std::atomic<bool>* cancel = nullptr) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
@@ -2336,6 +2342,10 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         int a = 0;
         while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+        a = std::min(a, max_a);
+        if (cancel != nullptr && cancel->load()) a = 0;
+        for (int i = 0; i < a; ++i)
+            if (drafts[(size_t) i] == 248044 || drafts[(size_t) i] == 248046) { a = i; break; }   // (<|endoftext|>, <|im_end|>)
         for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
@@ -2765,8 +2775,13 @@ struct Serve {
     std::vector<Slot> slots;
     int n_active = 0;
     std::vector<float> lg;
+    // decode windows of the other slots between two chunks of a prompt read: STRATA_Q36_READ_WINDOWS (default 1; a chunk
+    // takes ~0.15 s at 512 tokens, a window ~0.012 s: more windows give the decoding slots more of the time a read takes)
+    int read_windows = 1;
 
-    explicit Serve(Engine& e) : E(e), slots((size_t) e.n_sess) {}
+    explicit Serve(Engine& e) : E(e), slots((size_t) e.n_sess) {
+        if (const char* v = std::getenv("STRATA_Q36_READ_WINDOWS")) read_windows = std::max(0, std::min(64, std::atoi(v)));
+    }
 
     /// BSTOP / BYIELD lines among the queued ones: applied now (a window is a moment away at most).
     void poll_control() {
@@ -3122,8 +3137,13 @@ struct Serve {
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) fresh, ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
-            if (n_active > 0 && done < fresh) window();   // the slots decoding go on between a read's chunks (the
-            else poll_control();                          // last chunk's logits must stay for the first token)
+            if (n_active > 0 && done < fresh) {
+                poll_control();
+                // the slots decoding go on between a read's chunks (the last chunk's
+                for (int w = 0; w < read_windows && n_active > 0; ++w) window();   // logits must stay for the first token)
+            } else {
+                poll_control();
+            }
             if (stop.load() && done < fresh) { cancelled = true; return false; }
             return true;
         });
@@ -3186,10 +3206,12 @@ struct Serve {
             }
             std::printf("BADM %d %d\n", slot, cont ? 1 : 0);
             std::fflush(stdout);
+            std::fprintf(stderr, "strata batch: slot %d takes a prompt of %zu tokens = %zu reused + %lld read in %.0f ms (%.1f "
+                         "tok/s)%s\n", slot, ids.size(), reuse, (long long) fresh, prompt_ms,
+                         prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, cont ? "" : ", done at once");
             return;
         }
-        bool done = false;
-        while (!done) {
+        for (;;) {
             if (smp.needs_logits()) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
@@ -3207,15 +3229,21 @@ struct Serve {
             if (!emit(nx)) break;
             if (n_active > 0) window();
             if (spec && n_active == 0 && E.pos + E.mtp_d + 1 <= E.ctx) {
-                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
+                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, (int) std::min<long long>(max_new - produced - 1, 1 << 20), &stop);
                 offered += E.mtp_d;
                 accepted += a;
+                // the state now holds x and the accepted drafts - spec_step took none past an end-of-answer token or past
+                // the room max_new leaves, so the state ends where plain decoding leaves it (the last token emitted is not
+                // fed) and a later request that continues this conversation neither misses nor reads a token twice
                 ss.live.push_back(nx);
+                for (int i = 0; i < a; ++i) ss.live.push_back(drafts[(size_t) i]);
                 fix.assign(drafts.begin(), drafts.begin() + a);
-                for (int i = 0; i < a; ++i) {
-                    ss.live.push_back(drafts[(size_t) i]);
-                    if (!emit(drafts[(size_t) i])) { done = true; break; }
+                for (int i = 0; i < a; ++i) {   // (all of them: they are in the state; a stop is seen at the next token)
+                    std::printf("T %d\n", drafts[(size_t) i]);
+                    ++produced;
+                    hist.push_back(drafts[(size_t) i]);
                 }
+                std::fflush(stdout);
                 nx = picks[a];
                 continue;
             }
@@ -3231,6 +3259,10 @@ struct Serve {
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
         std::fflush(stdout);
+        std::fprintf(stderr, "strata serve: session %d: prompt %zu tokens = %zu reused + %lld read in %.0f ms (%.1f tok/s), "
+                     "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld (%s)\n", s, ids.size(), reuse,
+                     (long long) fresh, prompt_ms, prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, produced,
+                     decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0, accepted, offered, finish);
     }
 
     int run() {

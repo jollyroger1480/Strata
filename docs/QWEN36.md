@@ -20,7 +20,7 @@ and `--vision-tokens N` work as there. A card under 16 GB is recommended the CPU
 
 | Encoder | Time per picture (640x400 = 260 tokens / 800x450 = 350 tokens) | VRAM |
 | --- | --- | --- |
-| GPU, RTX 3060 | 0.10 s / 0.15 s | 1.18 GiB at up to 1,024 tokens (1.34 GiB at 2,048) |
+| GPU, RTX 3060 | 0.10 s / 0.15 s | 1,179 MiB at up to 1,024 tokens (1,337 MiB at 2,048), CUDA context included |
 | CPU, 32 threads (R9700 box) | 0.9 s / 1.1 s | none |
 | CPU, 10 threads (3060 box) | 1.6 s / 2.1 s | none |
 
@@ -105,3 +105,16 @@ solo run there too, with and without `--batch-mtp`.
 - A slot that stopped being alone goes back to the solo path only through the server's own hand-over; the MTP block's cache has holes for
   the tokens a slot decoded in batch windows (the drafts of a later solo stretch are a little worse; the text is not affected).
 - Intel Arc (SYCL) does not run this family.
+
+## Testing
+
+The gates are in `tools/qwen35/` and talk to the engine through its serve protocol (no server needed); run them under the box's GPU lock:
+
+- `q36_solo_gate.py` + `q36_cmp_gate.py`: the 10 parity prompts x 128 greedy tokens through `GEN`, compared with another build's.
+- `q36_batch_gate.py --slots N --waves --long 2500`: every slot's tokens equal its solo tokens, slots reused, a long prompt read beside
+  decoding slots. `q36_proto_edge.py`: `max_new` 1, `BSTOP`, a busy slot, `STOP` during a prompt read, held-state reuse, sampled requests,
+  the context's end. `q36_interleave_probe.py`: what the decoding slots see while a long prompt is read.
+- `q36_vision_cmp.py` (with `q36_mtmd_dump.cpp` built against llama.cpp): the picture comparison above; `q36_vision_proto.py`: pictures through
+  `GENI` / `BGENI` (solo, in a batch, the conversation cache); `q36_vision_serve.py` and `q36_serve_par.py` / `q36_serve_handoff.py`:
+  the same through the server.
+- `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
