@@ -500,7 +500,7 @@ class IQ4XS(Base):
         """The first menu lists the Unsloth family without [experimental]; its size menu lists the five files by size,
         UD-IQ4_XS first (the default on 64 GB, Enter), none marked EXPERIMENTAL; --model names are unchanged."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "no"], version="0.1.38", model=False,
-                                   family=False, answers={"Which model": "4"}, m=X)
+                                   family=False, answers={"Which model": "4"}, m=M)
         self.assertEqual(code, 0, out)
         fam_line = next(ln for ln in out.splitlines() if ln.startswith("  4) "))
         self.assertIn("Qwen3.8-Flash-Next (Unsloth)", fam_line)
@@ -512,11 +512,11 @@ class IQ4XS(Base):
         for i, (line, m) in enumerate(zip(size_lines, (X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0")), 1):
             self.assertTrue(line.startswith(f"  {i}) {m} "), line)
             self.assertNotIn("EXPERIMENTAL", line)
-        self.assertTrue(any("Which size" in q and "[1]" in q for q in self.asked), self.asked)
-        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
-        code, out, cfg = self.main(["--context", "8192"], version="0.1.38", model=False, m=X)   # --yes: same default
+        self.assertTrue(any("Which size" in q and "[2]" in q for q in self.asked), self.asked)
+        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
+        code, out, cfg = self.main(["--context", "8192"], version="0.1.38", model=False, m=M)   # --yes: same default
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
+        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
         for m, name in ((M, "qwen3.8-flash-next-unsloth-ud-q4_k_xl"), (X, "qwen3.8-flash-next-unsloth-ud-iq4_xs")):
             code, out, cfg = self.main(["--context", "8192"], version="0.1.38", m=m)        # --model by name
             self.assertEqual((code, cfg["model_name"]), (0, name), out)
@@ -773,12 +773,21 @@ class Resident(Base):
             line = next(ln for ln in out.splitlines() if ln.strip().startswith(m + " "))
             self.assertIn(verdict, line)
 
-    def test_default_is_the_largest_that_fits(self):
-        for ram, best in ((63.7, X), (95.8, M), (127.8, Q6), (191.0, Q8)):
+    def test_default_is_ud_q4_k_xl_where_it_fits(self):
+        """0.1.44 (owner): UD-Q4_K_XL and UD-IQ4_XS are the recommended sizes; the default is UD-Q4_K_XL when the RAM fits
+        it (any PC from 48 GB), else UD-IQ4_XS.  A larger file stays a choice, never the default."""
+        for ram in (63.7, 95.8, 127.8, 191.0):
             with self.subTest(ram):
-                code, out, cfg = self.main(["--context", "8192"], ram=ram, version="0.1.44", model=False, m=best)
+                code, out, cfg = self.main(["--context", "8192"], ram=ram, version="0.1.44", model=False, m=M)
                 self.assertEqual(code, 0, out)
-                self.assertEqual(cfg["model_name"], f"qwen3.8-flash-next-unsloth-{best.lower()}")
+                self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
+
+    def test_the_menu_marks_both_recommended_sizes(self):
+        names = [m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())]
+        self.assertEqual([m for m in names if setup.size_tag("unsloth", m)], ["UD-IQ4_XS", "UD-Q4_K_XL"])
+        self.assertEqual(setup.recommended_size("unsloth", names, 63.7), "UD-Q4_K_XL")
+        self.assertEqual(setup.recommended_size("unsloth", names, 191.0), "UD-Q4_K_XL")
+        self.assertEqual(setup.recommended_size("unsloth", names, 40.0), "UD-IQ4_XS")   # nothing fits: the 4-bit i-quant
 
     def test_two_gpus_split_with_every_expert_in_ram(self):
         """Where the experts fit, two cards are the GGUF models' layer split (no budget question, no #498 note)."""

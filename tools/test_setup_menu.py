@@ -78,6 +78,32 @@ class UnslothSizes(unittest.TestCase):
             self.assertIn(m, about)
 
 
+class RecommendedSizes(unittest.TestCase):
+    """0.1.44 (owner): IQ3_S, UD-Q4_K_XL and UD-IQ4_XS are the recommended sizes; recommend, never force."""
+
+    def names(self, family):
+        return [m for m in setup.MODELS if family in setup.MODELS[m].get("families", ("qwen", "swift"))]
+
+    def test_qwen_and_swift_default_to_iq3_s_when_it_fits(self):
+        for fam in ("qwen", "swift"):
+            n = self.names(fam)
+            self.assertIn("IQ3_S", n)
+            self.assertEqual(setup.recommended_size(fam, n, 63.7), "IQ3_S")
+            self.assertEqual(setup.recommended_size(fam, n, 191.0), "IQ3_S")      # not the largest: IQ3_S stays the pick
+            self.assertEqual([m for m in n if setup.size_tag(fam, m)], ["IQ3_S"])  # the others are choices, unmarked
+
+    def test_without_the_ram_the_largest_that_fits_and_iq3_s_stays_marked(self):
+        n = self.names("qwen")
+        self.assertEqual(setup.recommended_size("qwen", n, 61.0), "IQ3_XXS")      # IQ3_S needs 62 GB
+        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ2_XS")
+        self.assertEqual(setup.size_tag("qwen", "IQ3_S"), " (recommended)")
+
+    def test_coder_has_nothing_marked(self):
+        n = self.names("coder")
+        self.assertEqual([setup.size_tag("coder", m) for m in n], [""] * len(n))
+        self.assertEqual(setup.recommended_size("coder", n, 64.0), n[0])
+
+
 class EnginePlaceholders(unittest.TestCase):
     def test_every_engine_minimum_is_this_release(self):
         self.assertEqual(setup.NVFP4_ENGINE, (0, 1, 44))

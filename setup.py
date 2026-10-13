@@ -2236,6 +2236,26 @@ STRIX_HALO_FAMILY, STRIX_HALO_MODEL = "unsloth", "UD-IQ4_XS"    # the model docs
 STRIX_HALO_MIN_GB = 80         # UD-IQ4_XS keeps all of its experts in memory from ~80 GB (its menu line says so)
 
 
+RECOMMENDED_SIZES = {"qwen": ("IQ3_S",), "swift": ("IQ3_S",), "unsloth": ("UD-Q4_K_XL", "UD-IQ4_XS")}   # owner's pick, 0.1.44
+
+
+def recommended_size(family: str, names: list, ram: float) -> str:
+    """The size the menu pre-selects (and --yes takes): the family's recommended size when this PC's RAM fits it
+    (UD-Q4_K_XL before UD-IQ4_XS), else the largest size that fits, else the first.  Recommend, never force: every
+    other size stays a choice."""
+    for m in RECOMMENDED_SIZES.get(family, ()):
+        if m in names and ram >= MODELS[m]["ram_gb"]:
+            return m
+    fitting = [m for m in names if ram >= MODELS[m]["ram_gb"]]
+    if fitting:
+        return max(fitting, key=lambda m: MODELS[m]["download_gb"])
+    return "UD-IQ4_XS" if family == "unsloth" and "UD-IQ4_XS" in names else names[0]
+
+
+def size_tag(family: str, m: str) -> str:
+    return " (recommended)" if m in RECOMMENDED_SIZES.get(family, ()) else ""
+
+
 def menu_families(hip: bool) -> list:
     """The families the model menu lists, in menu order.  The NVFP4 packs run on NVIDIA cards only (the AMD and Intel
     engines have no NVFP4 kernels), so on those the menu does not offer them; `--family nvfp4` still says why not."""
@@ -6045,20 +6065,14 @@ def main() -> int:
         if d.get("budget"):
             keeps = (f"~{resident_budget_gib(m, ram)} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
                      else "all")
-            say(f"  {i}) {m} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
+            say(f"  {i}) {m}{size_tag(family, m)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
                 f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
         if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
-        say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
-    if family == "unsloth":                            # MODEL-UPDATE: the largest file whose experts all fit in RAM
-        in_ram = [m for m in names if MODELS[m].get("budget") and not MODELS[m].get("experimental")
-                  and not unsloth_budget(m, ram, gpu, a.resident_budget_gib)]
-        best = max(in_ram, key=lambda m: MODELS[m]["arena_gb"]) if in_ram else \
-            ("UD-IQ4_XS" if "UD-IQ4_XS" in names else names[0])
-        rec = str(names.index(best) + 1)
+        say(f"  {i}) {m:8s}{size_tag(family, m)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
+    rec = str(names.index(recommended_size(family, names, ram)) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
     in_budget = bool(MODELS[model].get("budget")) and unsloth_budget(model, ram, gpu, a.resident_budget_gib)
