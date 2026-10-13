@@ -1742,7 +1742,9 @@ the pairs in which the switched arm won). They are here so you can try them on y
   on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
   until that layer's copies have landed, instead of the whole window waiting for the round (about 10 ms every fourth window on
   an A4000, PCIe 3.0 x16). One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`,
-  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`. On by default on CUDA on Linux since 0.1.43, opt-in on Windows and HIP;
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`. A layer split (two or more GPUs) never runs it, in any version: the startup log says
+  `off: not on a layer split` (0.1.43 printed that line only when the variable was set, and ran without the overlap on a split just the
+  same, so 0.1.43.1's opt-in default changes nothing there; measured on 2x A4000, #2281). On by default on CUDA on Linux since 0.1.43, opt-in on Windows and HIP;
   opt-in on every backend since #2010, after an RTX 5090 Laptop lost 21% decode with it. What it is worth per box: an RTX A4000 (6
   interleaved pairs each, decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%),
   IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%), IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time) and a Tesla P100
