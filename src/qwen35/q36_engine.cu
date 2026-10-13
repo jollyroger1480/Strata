@@ -1036,7 +1036,7 @@ struct Engine {
     float* sk_part = nullptr;          // the split-K partials of the F32 projections: [kSplitK][tmax][<= 257]
     __half* att_p16 = nullptr;         // the probabilities in FP16 (kAttScoreFloats halves)
     __half *k16 = nullptr, *v16 = nullptr, *q16 = nullptr;   // the prompt attention's FP16 operands
-    static constexpr size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB
+    size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
     bool use_mmq = false;
     std::unique_ptr<MMQ::Context> mctx;
@@ -1060,6 +1060,14 @@ struct Engine {
     };
     std::vector<Hy> hy;
     int hybrid_t = 32;
+    bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
+    bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
+    /// state index li's layer runs hybrid (its experts not all in VRAM)
+    bool lhy(size_t li) const {
+        if (!m->hybrid) return false;
+        const Layer& L = li < m->layers.size() ? m->layers[li] : m->mtp;
+        return L.n_slots < (int) m->g.n_expert;
+    }
 #if defined(STRATA_Q36_CPU_POOL)
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
@@ -1407,7 +1415,9 @@ struct Engine {
         K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
-        const bool hy_rows = m->hybrid && T <= hybrid_t;
+        // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
+        // (its prompt pass too: no staging buffers then)
+        const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
         if (hy_rows) {
             moe_hybrid_gpu(L, li, T);
         } else if (T > kGemmT && use_mmq) {
@@ -1420,12 +1430,12 @@ struct Engine {
             k_route_scan<<<1, 32, 0, st>>>(rcnt, ne, rbounds, rcur, rmax);
             k_route_scatter<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, Kp, rcur, ent_dst, ent_tok, rinv);
             CK(cudaMemcpyAsync(hpin + 10, rmax, 4, cudaMemcpyDeviceToHost, st));
-            if (m->hybrid) CK(cudaMemcpyAsync(h_cnt + li * g.n_expert, rcnt, (size_t) ne * 4, cudaMemcpyDeviceToHost, st));
+            if (lhy(li)) CK(cudaMemcpyAsync(h_cnt + li * g.n_expert, rcnt, (size_t) ne * 4, cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
-            if (m->hybrid)
+            if (lhy(li))
                 for (int x = 0; x < ne; ++x) hy[li].score[(size_t) x] += h_cnt[li * g.n_expert + x];
             const int64_t maxr = hpin[10];
-            const uint8_t* wbase = m->hybrid ? stream_take(li) : L.blobs;
+            const uint8_t* wbase = lhy(li) ? stream_take((int) li) : L.blobs;
             MMQ::quantize(h, ent_tok, mq_x, L.L.gu_type, N, N, n_ent, st);
             MMQ::Product gu;
             gu.w = wbase; gu.type = L.L.gu_type; gu.w_rows = 2 * FF; gu.w_cols = N; gu.expert_bytes = L.stride;
@@ -1439,7 +1449,7 @@ struct Engine {
             dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = ident;
             dn.total_rows = n_ent; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
             mctx->run(dn, st);
-            if (m->hybrid) stream_done();
+            if (lhy(li)) stream_done();
             prow = rinv;
         } else {
             k_group<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, L.blobs, L.stride, grp_ptr, grp_start,
@@ -1472,9 +1482,10 @@ struct Engine {
     void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (m->hybrid && T > hybrid_t && use_mmq) {
-            std::vector<int> seq(m->layers.size());
-            for (size_t l = 0; l < seq.size(); ++l) seq[l] = (int) l;
+        if (main_hybrid && T > hybrid_t && use_mmq) {
+            std::vector<int> seq;
+            for (size_t l = 0; l < m->layers.size(); ++l)
+                if (lhy(l)) seq.push_back((int) l);
             stream_begin(seq);
         }
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
@@ -1500,7 +1511,7 @@ struct Engine {
     void forward_mtp(int T, int64_t p0, const float* seeds, bool draft, bool graph_mode) {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (m->hybrid && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
+        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
         k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
         k_rms_ld<<<T, kThreads, 0, st>>>(seeds, N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);      // [... | h]
@@ -1708,6 +1719,15 @@ struct Engine {
         CK(cudaStreamSynchronize(st));   // slot_of's host copy is pageable: the upload is done before it changes
     }
 
+    void shrink_att(size_t floats) {
+        CK(cudaDeviceSynchronize());
+        CK(cudaFree(att_s));
+        CK(cudaFree(att_p16));
+        kAttScoreFloats = floats;
+        att_s = dalloc(kAttScoreFloats);
+        att_p16 = dalloc_t<__half>(kAttScoreFloats);
+        CK(cudaDeviceSynchronize());
+    }
     void reset_graphs() {
         for (cudaGraphExec_t* g : {&g1, &gm1})
             if (*g) { CK(cudaGraphExecDestroy(*g)); *g = nullptr; }
@@ -1781,7 +1801,7 @@ struct Engine {
     /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
         const int N = (int) m->g.n_embd;
-        if (m->hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
+        if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
         CK(cudaStreamSynchronize(st));
         // rows of the first MTP call: (hmain row i, fix[i]) at positions pos - fix.size() + i, then (hlast, x) at pos
@@ -1810,7 +1830,8 @@ struct Engine {
             CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(seeds, hmtp + (size_t) last_row * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             last_row = 0;
-            graph_run(gm1, [&] { forward_mtp(1, pos + d, seeds, true, use_graph); });
+            if (mtp_graph) graph_run(gm1, [&] { forward_mtp(1, pos + d, seeds, true, use_graph); });
+            else forward_mtp(1, pos + d, seeds, true, false);
             CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
             drafts[(size_t) d] = hpin[2];
@@ -1905,7 +1926,12 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     // keeps them (and the hybrid mode).
     size_t packed_bytes = 0;
     for (const auto& pk : m.packed) packed_bytes += std::get<2>(pk);
-    if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 && total <= budget + packed_bytes &&
+    size_t main_need = 0;   // the main layers' experts (the MTP block's can go to the CPU, see below)
+    for (Layer& L : m.layers) main_need += L.stride * (size_t) ne + kMmqTail;
+    const size_t slack = ((size_t) 512 << 20) + (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // reserve + scores
+    const bool mtp_cpu_ok = m.has_mtp && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr;
+    if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 &&
+        (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack)) &&
         std::getenv("STRATA_Q36_KEEP_PACKED") == nullptr) {
         CK(cudaDeviceSynchronize());
         for (const auto& pk : m.packed) {
@@ -1919,7 +1945,32 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                      "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
                      (double) packed_bytes / (1 << 30));
     }
-    const size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+    size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+    // the MAIN layers' experts fit, the MTP block's not all (UD-Q6_K_XL on 32 GB): the main layers all in VRAM - the
+    // text is the all-in-VRAM text, the decode graph stays - and the MTP block's experts on slots + the CPU pool (its
+    // drafts only).  When that needs it: the attention scores buffer at 64 MB instead of 256 MB (more, smaller
+    // slices in a long prompt) and the reserve at 256 MiB instead of 768 (said in the log; --expert-vram sets the
+    // budget instead).  STRATA_Q36_NO_MTP_CPU=1: the plain hybrid mode for every layer.
+    size_t total_main = 0;
+    for (Layer& L : m.layers) total_main += L.stride * (size_t) ne + kMmqTail;
+    bool mtp_only = false;
+    if (slots <= 0 && vram_gib < 0 && m.has_mtp && total > budget2 && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr) {
+        const size_t att_save = (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // att_s (4 B) + att_p16 (2 B)
+        const size_t small_reserve = (size_t) 256 << 20;
+        const size_t room = fr + att_save > small_reserve ? fr + att_save - small_reserve : 0;
+        if (total_main + ((size_t) 64 << 20) <= budget2) {
+            mtp_only = true;
+        } else if (total_main + ((size_t) 64 << 20) <= room) {
+            E.shrink_att((size_t) 16 << 20);
+            CK(cudaMemGetInfo(&fr, &tot));
+            budget2 = fr > small_reserve ? fr - small_reserve : 0;
+            mtp_only = total_main + ((size_t) 64 << 20) <= budget2;
+            std::fprintf(stderr, "strata-q36: the experts nearly fit: the attention scores buffer at 64 MB and the VRAM "
+                         "reserve at 256 MiB (instead of 768) so that every main layer's experts fit; a driver or "
+                         "another program needing more VRAM later can make it fail - --expert-vram GiB sets the experts' "
+                         "budget instead\n");
+        }
+    }
     if (slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
         std::vector<uint8_t> blob;
         for (Layer* L : all) {
@@ -1945,17 +1996,24 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
 #else
     namespace C = strata::kernels::cpu;
     m.hybrid = true;
-    E.use_graph = false;   // the host takes part in every layer
+    E.main_hybrid = !mtp_only;
+    if (E.main_hybrid) E.use_graph = false;   // the host takes part in every layer
+    E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
     if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
-    const size_t staging = E.use_mmq ? 2 * (max_layer + kMmqTail) : 0;
+    const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
-    const int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
+    int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
+    if (mtp_only) {   // the main layers all, the MTP block what is left
+        const size_t left = budget2 > total_main ? budget2 - total_main : 0;
+        S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
+    }
     // host memory: every expert, pinned where the driver allows it (the prompt's stream and the slot copies)
     size_t host = 0;
-    for (Layer* L : all) host += L->stride * (size_t) ne + kMmqTail;
+    for (Layer* L : all)
+        if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
     bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
     if (!pinned) {
@@ -1970,6 +2028,17 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.hy.resize(all.size());
     for (size_t li = 0; li < all.size(); ++li) {
         Layer& L = *all[li];
+        if (mtp_only && &L != &m.mtp) {   // a main layer: every expert in VRAM, as in the all-in-VRAM placement
+            CK(cudaMalloc(&L.blobs, L.stride * (size_t) ne + kMmqTail));
+            CK(cudaMemset(L.blobs, 0, L.stride * (size_t) ne + kMmqTail));
+            std::vector<uint8_t> blob(L.L.bytes, 0);
+            for (int64_t e = 0; e < ne; ++e) {
+                expert_blob(L, e, blob.data());
+                CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
+            }
+            L.n_slots = (int) ne;
+            continue;
+        }
         L.hblobs = arena + off;
         off += L.stride * (size_t) ne + kMmqTail;
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
@@ -2018,6 +2087,11 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
     CK(cudaDeviceSynchronize());
+    if (mtp_only)
+        std::fprintf(stderr, "strata-q36: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
+                     "%lld in VRAM, the rest on the CPU pool (its drafts only)\n", (double) total_main / (1 << 30), S,
+                     (long long) ne);
+    else
     std::fprintf(stderr, "strata-q36: hybrid experts: %d of %lld per layer in VRAM (%.2f GiB), all %.2f GiB in %s host "
                  "memory, the rest of a batch of <= %d rows on %d CPU threads, bigger prompt chunks streamed (%.2f GiB "
                  "staging); %.1f s\n", S, (long long) ne, (double) S * per_slot / (1 << 30), (double) host / (1 << 30),
@@ -2324,11 +2398,18 @@ int strata::qwen35::run(int argc, char** argv) {
         size_t fr = 0, tot = 0, experts = 0;
         CK(cudaMemGetInfo(&fr, &tot));
         for (const Layer& L : m.layers) experts += L.stride * (size_t) m.g.n_expert;
-        if (m.has_mtp) experts += m.mtp.stride * (size_t) m.g.n_expert;
-        const double want = (double) experts + 3.0 * (1ull << 30);   // the engine's buffers at 2048, roughly
+        // (the MTP block's experts can go to the CPU, the packed Q8_0 copies can be given back: see place_experts)
+        size_t packed = 0;
+        for (const auto& pk : m.packed) packed += std::get<2>(pk);
+        fr += packed;
+        // the engine's buffers at 512 (~1.1 GiB on gfx1201 at 8K, less the scores buffer's shrink) + the small reserve
+        const double want = (double) experts + 1.1 * (1ull << 30);
         const bool fits = expert_slots <= 0 && (expert_vram < 0 ? want <= (double) fr
                                                                : (double) experts <= expert_vram * (double) (1ull << 30));
         chunk = fits ? 512 : 2048;
+        if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
+            std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
+                         fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);
     }
     E.init(m, ctx, chunk);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
