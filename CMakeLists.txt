@@ -1052,6 +1052,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(kv_stream_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_stream_parity COMMAND kv_stream_parity)
 
+  # #2403: the verify window's KV calls on a streamed layer and on a ring (steps appends with the host copy, batched
+  # resolve + attention, plain launches and graph replays), q4_0 / int8 / K8V4 (GPU, synthetic, no model).
+  add_executable(kv_window_parity src/kernels/kv_window_parity.cpp)
+  target_include_directories(kv_window_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(kv_window_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME kv_window_parity COMMAND kv_window_parity)
+
   # PR #120: the hybrid K8V4 KV (INT8 K + rotated Q4_0 V) vs host references (GPU, synthetic, no model).
   add_executable(kv_hybrid_parity src/kernels/kv_hybrid_parity.cpp)
   target_include_directories(kv_hybrid_parity PRIVATE ${_strata_gpu_include_directories})
