@@ -313,6 +313,14 @@ was 3.27% slower overall. This is opt-in, not a general coding-speed recommendat
 [report, per-run data and standalone score/ID check](../bench/results/2026-10-11-gfx1100-qsa-scores/README.md)
 give the settings, exact-parity checks and limits. `STRATA_SCORES_THREAD_TRACE=1` prints an engagement line.
 
+## Deep contexts: the prompt's top-k selection (0.1.45, #1749)
+
+Past ~135K cells (and from ~90K cells on a prompt read) the prompt's top-k selection runs the wide kernel, as on CUDA, instead of the four-pass
+reference radix that every deep context on HIP paid; the same ids (`qsa_select_bench` compares them with the reference). On an R9700 the
+selection of a 256-query batch is 0.29 -> 0.21 ms at 98K, 1.16 -> 0.49 ms at 262K and 22.0 -> 0.93 ms at 524K; a fresh prompt reads 1.3% faster at
+230K tokens and 34% faster at 500K (716 -> 962 tok/s; 1,284 tok/s with the exact scorer above, 79% in all), with the same answer tokens.
+`STRATA_TOPK_OLD=1` runs the original kernel, `STRATA_TOPK_STREAM=0` the register kernel in the 90K-135K band.
+
 ## Linux: verify timeouts while the kernel reclaims host memory (experimental workarounds)
 
 A `verify: timed out at layer N` or "no progress for 60 s" message does not by itself mean a kernel or handshake bug. Two
