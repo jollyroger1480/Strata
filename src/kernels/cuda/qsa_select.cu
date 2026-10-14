@@ -947,19 +947,24 @@ __global__ void __launch_bounds__(256, 1) block_scores_thread_kernel(const float
     }
 }
 
-bool scores_gfx1100_device() {
+// The exact scorer runs on gfx1100 (the PR's own card) when STRATA_SCORES_THREAD=1, and on gfx12 (RDNA4) unless STRATA_SCORES_THREAD=0:
+// there it is bitwise equal to the warp scorer on an R9700 (qsa_scores_gfx1100_parity --full, 35 cases; exact_pp residual dumps at 70K and
+// 131K tokens) and 3.6-4.4x faster in the scorer stage, +8% (131K) to +15% (230K) on a prompt read.  Other wave32 parts have no measurement.
+// Returns 0 (not offered), 1 (gfx1100: only on request), 2 (gfx12: the default).
+int scores_thread_arch() {
     int device = -1;
-    if (cudaGetDevice(&device) != cudaSuccess) { cudaGetLastError(); return false; }
+    if (cudaGetDevice(&device) != cudaSuccess) { cudaGetLastError(); return 0; }
     static thread_local int cached_device = -1;
-    static thread_local bool supported = false;
+    static thread_local int arch = 0;
     if (device != cached_device) {
         cudaDeviceProp properties{};
-        supported = cudaGetDeviceProperties(&properties, device) == cudaSuccess &&
-                    gfx_arch_is(properties.gcnArchName, "gfx1100");
+        arch = 0;
+        if (cudaGetDeviceProperties(&properties, device) == cudaSuccess)
+            arch = gfx_arch_is_gfx12(properties.gcnArchName) ? 2 : gfx_arch_is(properties.gcnArchName, "gfx1100") ? 1 : 0;
         cached_device = device;
         cudaGetLastError();
     }
-    return supported;
+    return arch;
 }
 #endif
 
@@ -1207,16 +1212,18 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     }
     const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
 #if defined(__HIPCC__)
-    static const bool thread_scores = [] {
+    // STRATA_SCORES_THREAD: 1 = on (gfx1100, gfx12), 0 = off, unset = on for gfx12 only (gfx1100: off, nothing measured here)
+    static const int thread_env = [] {
         const char* value = std::getenv("STRATA_SCORES_THREAD");
-        return value != nullptr && std::atoi(value) == 1;   // experiment: off by default
+        return value == nullptr ? -1 : (std::atoi(value) == 1 ? 1 : 0);
     }();
     // The bound is the ACTUAL live extent. A reserved 256K context never enables this by itself.
-    if (thread_scores && active_blocks >= 16385 && active_blocks <= max_blocks && nq >= 64 &&
-        scores_gfx1100_device()) {
+    if (thread_env != 0 && active_blocks >= 16385 && active_blocks <= max_blocks && nq >= 64 &&
+        (scores_thread_arch() == 2 || (thread_env == 1 && scores_thread_arch() == 1))) {
         static thread_local bool logged = false;
-        if (!logged && std::getenv("STRATA_SCORES_THREAD_TRACE")) {
-            std::fprintf(stderr, "qsa exact thread: gfx1100 nq=%lld active_blocks=%lld capacity=%lld\n",
+        if (!logged && (thread_env == -1 || std::getenv("STRATA_SCORES_THREAD_TRACE"))) {
+            std::fprintf(stderr, "qsa exact thread: the prompt's block scorer runs as the four-lanes-per-query kernel (nq=%lld active_blocks=%lld "
+                                 "capacity=%lld; the same scores bit for bit; STRATA_SCORES_THREAD=0 turns it off)\n",
                          (long long)nq, (long long)active_blocks, (long long)max_blocks);
             logged = true;
         }

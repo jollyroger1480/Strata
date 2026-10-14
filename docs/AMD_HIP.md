@@ -299,10 +299,13 @@ only when its version matches the installed library; otherwise it prefills on pl
 prompt), so keep the table and the library paired. Not worth trying (measured flat): `--kv-resident` changes, a prefill
 chunk above 32768, `--spec` above 4.
 
-## gfx1100: optional exact long-prompt QSA scorer
+## Exact long-prompt QSA scorer (gfx1100 opt-in, gfx12 default)
 
 `STRATA_SCORES_THREAD=1` at engine startup enables a HIP port of #1825's score kernel on gfx1100, for batches of
-at least 64 queries with at least 16,385 live index blocks. The default, short-prompt and decode paths keep the
+at least 64 queries with at least 16,385 live index blocks. On gfx12 (RDNA4) it is on by default for those batches and
+`STRATA_SCORES_THREAD=0` turns it off (0.1.45): on an R9700 `qsa_scores_gfx1100_parity --full` compares 223,664,777 scores and
+11,895,800 ids bitwise equal to the warp scorer, the scorer stage with 256 queries is 3.6x faster at 131K and 4.0x at 240K, and a
+fresh prompt of 131K tokens reads 8.7% faster (4 of 4 pairs) and one of 230K tokens 16.4% faster (3 of 3), with the same answer tokens and byte-identical `exact_pp` residual dumps at 70K and 131K tokens (prompts under 65K cells never reach the bound). The default, short-prompt and decode paths keep the
 existing scorer. On one RX 7900 XTX / 7950X3D / ROCm 10.0.0, three paired runs of a tuned 0.1.40.3 engine reduced
 fresh one-token request time by 10.45% at 130,978 prompt tokens and 22.64% at 239,906; one same-binary current-main
 pair measured 12.85% and 21.71%. Cached follow-ups did not show a repeatable large gain, and a two-task coding pilot

@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) { std::puts("SKIP no GPU"); return 77; }
     cudaDeviceProp properties{}; ck(cudaGetDeviceProperties(&properties, 0));
-    if (!k::gfx_arch_is(properties.gcnArchName, "gfx1100")) { std::puts("SKIP requires gfx1100"); return 77; }
+    if (!k::gfx_arch_is(properties.gcnArchName, "gfx1100") && !k::gfx_arch_is_gfx12(properties.gcnArchName)) { std::puts("SKIP requires gfx1100 or gfx12"); return 77; }
     require(std::getenv("STRATA_SCORES_THREAD") && std::strcmp(std::getenv("STRATA_SCORES_THREAD"), "1") == 0,
             "run with STRATA_SCORES_THREAD=1 so the candidate branch is tested");
     const bool full = argc > 1 && std::strcmp(argv[1], "--full") == 0;
