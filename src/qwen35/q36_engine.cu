@@ -756,11 +756,22 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) sv[r] = base[r * row_stride];
-    for (int t = 0; t < T; ++t) {
+    // the next token's inputs are loaded while this one is computed (the loads were the head of every iteration)
+    float nsk = 0.0f, nsq = 0.0f, nvv = 0.0f, ngate = 0.0f, nbeta = 0.0f;
+    auto load = [&](int t) {
         const float* ht = h + (size_t) t * C;
-        if (tid < S) { sk[tid] = ht[h_k * S + qh * S + tid]; sq[tid] = ht[qh * S + tid]; }
+        if (tid < S) { nsk = ht[h_k * S + qh * S + tid]; nsq = ht[qh * S + tid]; }
+        nvv = ht[2 * h_k * S + head * S + col];
+        ngate = gate[(size_t) t * h_v + head];
+        nbeta = beta[(size_t) t * h_v + head];
+    };
+    if (T > 0) load(0);
+    for (int t = 0; t < T; ++t) {
+        if (tid < S) { sk[tid] = nsk; sq[tid] = nsq; }
+        const float vcur = nvv, gcur = ngate, bcur = nbeta;
+        if (t + 1 < T) load(t + 1);
         __syncthreads();
-        const float g = __expf(gate[(size_t) t * h_v + head]);
+        const float g = __expf(gcur);
         float kv = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[rg * RPG + r], kv);
@@ -769,7 +780,7 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
         float kv_col = 0.0f;
 #pragma unroll
         for (int i = 0; i < RG; ++i) kv_col += red_kv[i][cl];
-        const float delta = (ht[2 * h_k * S + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+        const float delta = (vcur - g * kv_col) * bcur;
         float o = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) {
