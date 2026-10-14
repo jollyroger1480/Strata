@@ -503,6 +503,17 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   reappeared as `wait copy`, the experts' PCIe transfer, which bounds that prompt. Per-run lines and the tuner's
   summary: [bench/results/2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md). Decode does not use these GEMMs and is unchanged. See [Tuning
   table](#tuning-table) for making a table for another rocBLAS build.
+- **QSA block scores on the FP32 tiled scorer (`STRATA_SELECT_SIMT=1`, opt-in, as on CUDA below sm_80):** without
+  matrix cores the prompt path's QSA selection scores every (query, KV block) pair on the warp kernel, the one prompt
+  term that grows with the context. The switch runs the FP32 tiled scorer instead (FP32 in another summation order:
+  not bitwise the warp kernel, so off by default), tiled 32/128/16/8 on gfx103x. `qsa_select_bench`, 256 queries:
+  2.69 -> 0.587 ms at 128K (the original 32/64/32/4 tiling: 0.695), 0.67 -> 0.169 ms at 32K; FP64 gate passed,
+  selections identical 256/256. Every tiling gives the same bytes (each score is one fmaf chain over k in order), and
+  the fastest tiling was the same with 60 and 72 of the card's 80 CUs (`HSA_CU_MASK`). On the 2x RX 6900 XT split
+  (0.1.40.3, IQ3_S, `--kv int8 --kv-resident 32768`, two cold starts per arm, ABBA) a 128K-token prompt reads 1,735 ->
+  1,861 and 1,727 -> 1,858 tok/s (+7.4%), 32K +0.8%; decode is not affected (the text changes with the scores' order,
+  so its speed is not compared). Measurements:
+  [bench/results/2026-10-07-rdna2-qsa-select-simt](../bench/results/2026-10-07-rdna2-qsa-select-simt/README.md).
 - **Windows** (the report above): setup's ready-made Windows engine 0.1.39 runs the RX 6800 beside a 780M iGPU
   (HIP numbers the RX 6800 1; setup points the engine at it), and `tools/hip/build_windows.bat` with
   `STRATA_HIP_ARCHS=gfx1030` builds a working engine from the `gfx103X-all` 10.2.0a20260930 wheels.
