@@ -733,8 +733,7 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
             if (!said) {
                 said = true;
                 std::fprintf(stderr, "strata: %sattention.compress_ratios is all zeros (a converter's placeholder): "
-                                     "using the compiled pooling block of %lld cells (#2396)
-",
+                                     "using the compiled pooling block of %lld cells (#2396)\n",
                              p.c_str(), (long long) g.idx_block);
             }
             return {};
