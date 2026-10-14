@@ -103,13 +103,23 @@ The text is the same with and without it (every slot equal to its solo tokens).
 **What a slot costs.** Each slot keeps its own cache in VRAM: 1.5 GB at a context of 32K (fp32 keys and values of the 10 attention layers
 and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
-expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** on every card that has room for the sessions: up to 3-4 where every expert still
-fits (3 on a 32 GB card at 32K), and on a card that does not (12 and 16 GB) up to the count that leaves 5.5 GB of the card for the weights
-and the expert cache; there it says the price in the same breath, asks "How many requests at once?" (Enter keeps one at a time), and any
-number you give is kept. It pays on a card that does not hold every expert too: on the RTX 3060 12 GB, `--batch 4` leaves 37 of 256 experts per layer in VRAM instead of 54, so a request alone decodes
-64.7 tok/s instead of 68.3 (-5%, 3 interleaved runs each, medians of the 10 parity prompts), and four requests at once ran 99 tok/s together
-against 64 for one (table above; each of them slower: ~25 tok/s). The engine says what the sessions take before it
-allocates them and refuses (with the numbers) a count that cannot fit.
+expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** where the sessions do not eat the experts' room: up to 3-4 where every expert still fits (3 on a 32 GB card at
+32K), and on a card that does not (the hybrid mode) the count whose sessions take at most 35% of the room the experts would have, so it
+depends on the context you chose (12 GB: 4 slots at 8K, none at 32K; 16 GB: 2 slots at 32K). It says the price in the same breath, asks
+"How many requests at once?" (Enter keeps one at a time), and any number you give is kept. Measured on the hybrid cards (UD-Q4_K_XL, medians of 5
+interleaved pairs, `--mtp 2` as setup writes it; "together" = total tokens per second of N simultaneous requests, against ONE request at a time
+with the draft layer):
+
+| card, context | slots | one request alone, vs 1 slot | N together, vs one at a time |
+| --- | ---: | ---: | ---: |
+| RTX 3060 12 GB, 8K | 2 / 4 / 8 | -3.5% / -4.3% / -12% | 0.99x / 1.15x / 1.10x |
+| RTX A4000 16 GB, 32K | 2 / 4 | -10.6% / -29.9% | 1.03x / 0.76x |
+| Tesla P100 16 GB, 32K | 2 / 4 | -9% / -25% | (see notes-145-q36.md) |
+
+Without the draft layer (`--mtp 0`) the same slots give 1.26-1.64x together (3060 at 8K: 4 slots 1.64x for -5.5% alone), but a single request
+with drafts is already about 1.6x as fast as one without, so on a small card the main gain is that a second user starts at once; the
+speed gain is small. On a card that holds every expert (R9700 32 GB, 8K prompts) 4 slots run 1.45x one-at-a-time-with-drafts (1.59x with
+`--batch-mtp`). The engine says what the sessions take before it allocates them and refuses (with the numbers) a count that cannot fit.
 
 In the hybrid mode the text of a request can differ a little between running alone and running beside others: the experts that sit on the
 GPU or on the CPU change with the routing of all the requests, and the two compute with different rounding. With the slot tables fixed (`STRATA_Q36_FIXED_SLOTS=1`, a test setting) every slot equals its

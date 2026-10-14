@@ -5602,8 +5602,10 @@ def own_path_parallel_slot_gb(fam: dict, ctx: int) -> float:
     return ctx * fam["kv_bytes_per_token"] / 1e9 + fam["state_gb"]
 
 
-PARALLEL_SMALL_ROOM_GB = 5.5    # a card that does not hold every expert: what the dense weights, the buffers and a useful
-                                # expert cache need beside the slots' sessions (a 12 GB card held 4 slots at 32K with this much)
+PARALLEL_SMALL_SHARE = 0.35     # a card that does not hold every expert: the slots' sessions may take this share of the room the
+                                # experts would have (VRAM less ~4.5 GB for the dense weights and buffers).  Measured (Q4_K_XL):
+                                # RTX 3060 12 GB, 8K context, 4 slots (23% of that room): a request alone -4%; A4000 / P100
+                                # 16 GB, 32K, 2 slots (27%): -11% / -9%, 4 slots (54%): -27% and no gain together.
 
 
 def own_path_parallel_fits_all(fam: dict, model: str, vram_gb: float, ctx: int, n: int) -> bool:
@@ -5629,7 +5631,8 @@ def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int)
         return 0       # a card that holds every expert for one session only: more sessions would push experts to the CPU
                        # (measured on a 32 GB R9700 at 128K: 4 slots left 15 of 256 experts per layer, decode 81 tok/s
                        # against ~180): not offered there, a number asked for is kept
-    return max([n for n in (2, 3, 4) if n * slot + PARALLEL_SMALL_ROOM_GB <= vram_gb], default=0)
+    room = max(vram_gb - 4.5, 0.0)
+    return max([n for n in (2, 3, 4) if n * slot <= PARALLEL_SMALL_SHARE * room], default=0)
 
 
 def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ctx: int) -> list:
@@ -5646,11 +5649,12 @@ def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ct
         if own_path_parallel_fits_all(fam, model, vram_gb, ctx, rec):
             return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
                     f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
-        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after the "
-                f"other. The price on this card, which does not hold every expert: each session takes ~{slot:.1f} GB of VRAM "
-                "from the expert cache, so a request alone runs about 5% slower and each of the requests running together "
-                "is slower than one alone; together they are faster (measured on an RTX 3060 12 GB: 4 requests 99 tok/s "
-                "against 64 for one, 1.5x). Worth it for several users or agents at once, not for one chat "
+        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together, so a second user or agent "
+                "starts at once instead of waiting for the first. The price on this card, which does not hold every expert: "
+                f"each session takes ~{slot:.1f} GB of VRAM from the expert cache, so a request alone runs about 4-11% "
+                "slower, and next to one-at-a-time WITH the draft layer the requests together are only 1.0-1.15x faster "
+                "(measured, Q4_K_XL: RTX 3060 12 GB at 8K context, 4 requests: 1.15x, alone -4%; A4000 / P100 16 GB at "
+                "32K, 2 requests: 1.0x, alone -9 to -11%). Worth it for several users at once, not for one chat "
                 "(docs/QWEN36.md)."]
     lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "
              f"{a_parallel * slot:.1f} GB in all)"]

@@ -238,19 +238,22 @@ class InstallOwnPath(unittest.TestCase):
         self.assertNotIn("parallel", self.cfg)
         self.assertIn("--parallel 3", out)
         # a 12 GB card runs the hybrid mode: parallel is offered there too, with its price said (never forced)
-        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 4)
+        # (measured: 12 GB at 8K, 4 slots: a request alone -4%; 16 GB at 32K, 2 slots -9 to -11%, 4 slots no gain together)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 8192), 4)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 0)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 16.0, 32768), 2)
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 131072), 0)
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 8.0, 32768), 0)
         # a card that holds every expert for ONE session only is not offered more: 4 slots on a 32 GB R9700 at 128K left
         # 15 of 256 experts per layer in VRAM and decode ran 81 tok/s against ~180
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 31.9, 131072), 0)
-        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no")
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192)
         self.assertNotIn("parallel", self.cfg)
         self.assertIn("--parallel 4", out)
         self.assertIn("does not hold every expert", out)
-        self.assertIn("about 5% slower", out)
-        self.assertIn("1.5x", out)
-        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", parallel=6)
+        self.assertIn("a request alone runs about 4-11% slower", out)
+        self.assertIn("WITH the draft layer", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, parallel=6)
         self.assertEqual(self.cfg["parallel"], 6)
         self.assertIn("recommended for this card: 4", out)
         self.assertIn("kept as you chose", out)
@@ -258,7 +261,7 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(self.cfg["parallel"], 4)
         self.assertIn("recommended for this card: one at a time", out)
         self.assertIn("kept as you chose", out)
-        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", parallel=1)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, parallel=1)
         self.assertEqual(self.cfg["parallel"], 1)
         rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, vision="no", parallel=12)
         self.assertIn("at most 8", out)
@@ -276,7 +279,7 @@ class InstallOwnPath(unittest.TestCase):
         for answers, want in ((["1"], None), (["3"], 3)):
             self.cfg = {}
             with mock.patch.object(setup, "ask", ask):
-                rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", yes=False)
+                rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, yes=False)
             self.assertEqual(rc, 0, out)
             self.assertEqual(self.cfg.get("parallel"), want)
             self.assertIn("--parallel 4", out)                  # the offer and its price are said before the question
