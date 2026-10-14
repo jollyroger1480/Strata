@@ -1911,6 +1911,26 @@ def unsloth_images_default(model, family, ram, gpu=None) -> bool:
     return g.get("vram_gb", 0.0) >= UNSLOTH_IMAGES_MIN_VRAM_GB
 
 
+IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
+                                        # encoder's ~1.1-1.4 GB is ~850 expert slots lost, 3-5% of decode and prompt on P100 / A4000
+                                        # 16 GB (Linux, IQ3_S / IQ3_XXS), and 35-60% on an RTX 4080 SUPER under Windows as reported)
+
+
+def flash_vision_encoder(asked: str, gpu: dict) -> str:
+    """#2406: which encoder a Flash-Next images answer gets on NVIDIA.  "yes" (the question's y, or --vision yes) means the
+    GPU encoder on a card of 24 GB and more and the CPU encoder below that: a picture then takes a few seconds, the text
+    keeps the ~1 GB of VRAM for experts.  --vision gpu is always kept (with a note on a small card); --vision cpu is kept."""
+    vram = float((gpu or {}).get("vram_gb") or 0.0)
+    small = 0 < vram < IMAGES_GPU_ENCODER_MIN_VRAM_GB
+    if asked == "gpu" and small:
+        warn(f"the GPU image encoder keeps ~1.4 GB of VRAM that a {vram:.0f} GB card would use for experts (measured 3-5% "
+             "of decode on 16 GB cards, more on some Windows PCs, #2406): kept as you chose; --vision cpu reads pictures "
+             "on the CPU instead (a few seconds each)")
+    if asked == "yes":
+        return "cpu" if small else "gpu"
+    return asked
+
+
 UMA_EXPERTS = 24576            # the Flash-Next model's experts (48 layers x 512): the most an expert cache can hold
 
 
@@ -6495,14 +6515,22 @@ def main() -> int:
         vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
                             else "cpu")
     elif a.vision:
-        vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
+        vision = flash_vision_encoder(a.vision, gpu) if a.vision != "no" else "none"
+        vision = "none" if vision in ("no", "none") else vision
     else:
+        small = 0 < float(gpu.get("vram_gb") or 0.0) < IMAGES_GPU_ENCODER_MIN_VRAM_GB
         say()
         say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
-        say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
+        if small:
+            say("  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken")
+            say("  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU")
+            say("  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and")
+            say("  more on some PCs. --vision gpu if you want pictures in under a second.")
+        else:
+            say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         # MODEL-UPDATE: on by default for Unsloth's files on a card with room for the encoder (16 GB and more)
         default = "y" if unsloth_images_default(model, family, ram, gpu) else "n"
-        vision = "gpu" if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
+        vision = flash_vision_encoder("yes", gpu) if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if vision != "none" and MODELS[model].get("vision_untested"):
         warn(f"images with {model} are untested: users report them working, but we have not run this file with "
