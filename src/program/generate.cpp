@@ -4073,11 +4073,15 @@ int main(int argc, char** argv) {
         }
         // #2007: relative to the fastest stage's link and only from a 4x gap on (split_rules::link_miss_scale): a
         // symmetric rig, or a moderate gap, keeps the fitted formula.  STRATA_SPLIT_LINK_ABS=1: 0.1.41's 20 GB/s rule.
+        // STRATA_SPLIT_UNIFORM=1: no per-link scaling at all (the pre-0.1.41 uniform miss cost), for A/B on links
+        // where any scaling moves auto off the balanced placement.
         static const bool link_abs = [] { const char* v = std::getenv("STRATA_SPLIT_LINK_ABS"); return v && v[0] == '1'; }();
+        static const bool split_uniform = [] { const char* v = std::getenv("STRATA_SPLIT_UNIFORM"); return v && v[0] == '1'; }();
         std::vector<double> link_scale = strata::program::split_rules::link_miss_scale(link_gbps);
         for (int i = 0; i < ns; ++i) {
             const double bw = link_gbps[(size_t) i];
-            if (link_abs) link_scale[(size_t) i] = bw > 0.0 ? std::clamp(20.0 / bw, 1.0, 64.0) : 1.0;
+            if (split_uniform) link_scale[(size_t) i] = 1.0;
+            else if (link_abs) link_scale[(size_t) i] = bw > 0.0 ? std::clamp(20.0 / bw, 1.0, 64.0) : 1.0;
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d link %.1f GB/s -> miss cost x%.2f\n",
                          i == 0 ? 0 : stages[(size_t) i - 1]->dev, bw, link_scale[(size_t) i]);
         }
