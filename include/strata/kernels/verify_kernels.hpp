@@ -60,6 +60,10 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
 /// kernel costs ~2.4 us on a gfx1201 graph whatever it does.  n <= 128 * k for any k (a strided loop).
 void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, int64_t n,
                                void* stream);
+/// wait_flag_ge, also writing the GPU's clock (ns, gpu_stamp's) as the kernel starts into *t_in and as it returns
+/// into *t_out (either may be null): the verify window's PCIe-share balance, at no extra launch.
+void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
+                          void* stream);
 /// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).  Inside a PDL
 /// stretch (pdl.hpp) the stamp passes the early launch on, so a profiled window keeps the chain it measures.
 void gpu_stamp(unsigned long long* buf, int i, void* stream);
