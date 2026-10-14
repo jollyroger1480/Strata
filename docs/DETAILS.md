@@ -1578,6 +1578,18 @@ WebP). Chat apps with image upload work the same way.
 experts fit in VRAM and the CPU computes a few more per token: 2-8% slower. For text, turning images on changes
 nothing else (the output is bit-identical when the VRAM is the same).
 
+**On a 16 GB card (0.1.45, #2406).** The encoder's room is ~850 expert slots of a 16 GB card's ~4,500, and where most experts are
+computed on the CPU that moves the hit rate. Measured on Linux with the config setup writes (IQ3_S on a Tesla P100, IQ3_XXS on an RTX
+A4000, 65K context, KV 8-bit, 5 rounds of fresh engine starts, medians): GPU encoder vs CPU encoder, chat decode 31.1 vs 32.6 tok/s
+(P100, +4.8%) and 46.0 vs 48.4 (A4000, +5.2%), 4K prompt 315.5 vs 316.0 and 1,022 vs 1,053 tok/s, 16K prompt unchanged / +0.8%;
+expert slots 3,819 vs 4,522 (P100), 4,686 vs 5,435 (A4000). The "elastic" encoder (`"vision": {"elastic": true}` with
+`"vram_elastic": true`; it frees the encoder after 120 s idle, but turns `--kv-grow` off) gave the CPU encoder's text speed (32.5, 47.7
+tok/s) and 2.7 s per picture once loaded (first picture 4.5-5.8 s). A report on an RTX 4080 SUPER under Windows measured 35-44% of decode and
+36-62% of prompt speed with the GPU encoder (VRAM free 61 MiB); that size did not reproduce on the Linux cards, so it may come from
+Windows' VRAM management when the card is full (not measured by us). A picture on the CPU encoder takes 4-6 s (a 300-token picture) against 2.7 s on the P100's
+GPU encoder (1.7 s on the A4000). Since 0.1.45 setup gives "images: yes" the CPU encoder on an NVIDIA card under 24 GB (pictures read at up to
+300 tokens; `--vision-tokens 1024` for more detail); `--vision gpu` is kept with a note.
+
 A question about a picture (a 640x480 newspaper page = 300 image tokens, a 328-token prompt; the whole request, encoder
 on the GPU, measured through the API):
 
