@@ -81,6 +81,7 @@ def main():
     ap.add_argument("--n", type=int, default=24)
     ap.add_argument("--q36-args", default="--vision --max-context 4096")
     ap.add_argument("--floor", action="store_true", help="also llama.cpp CPU (ngl 0) vs HIP")
+    ap.add_argument("--dump-ngl", type=int, default=99, help="llama.cpp's offloaded layers (a quant larger than the card: fewer)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows = []
@@ -101,7 +102,7 @@ def main():
             logit_f = os.path.join(a.out, tag + ".llama.logits")
             out = run([a.dump, "--model", a.model, "--mmproj", a.mmproj, *sum([["--image", p] for p in pics], []),
                        "--prompt", prompt, "--n", str(a.n),
-                       "--dump-full-logits", logit_f, "--mm-cpu", "1", "--max-tokens", "1024"], a.lock, ref_log)
+                       "--dump-full-logits", logit_f, "--mm-cpu", "1", "--max-tokens", "1024", "--ngl", str(a.dump_ngl)], a.lock, ref_log)
             chunks, gen, first = parse_dump(out)
             ids = []
             for kind, v in chunks:
