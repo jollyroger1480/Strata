@@ -7,22 +7,19 @@
 //
 // **ONLY sm_75 IS EVER AFFECTED.**  The predicate below answers true for compute capability 7.5 and for nothing
 // else: cc 7.0/7.2 (Volta) keeps its own behaviour, and every cc >= 8 keeps the paths the engine was written
-// with.  `STRATA_TC_SM75` can only turn the Turing paths OFF (for an A/B or a bisect); it cannot turn them on
-// somewhere else, so a machine that is not a 2080 Ti cannot be moved onto them by an environment variable.
+// with.  A machine that is not a 2080 Ti cannot be moved onto them by an environment variable.
 // The kernels themselves are gated a second time, at compile time, by `__CUDA_ARCH__ == 750`.
+//
+// 0.1.45: the Turing paths are opt-in (nobody here has an sm_75 card to confirm them): STRATA_SM75_PERF=1
+// (sm75_series.hpp) turns them on, STRATA_TC_SM75=0 / 1 forces this one off / on (still only on a 7.5 card).
 #pragma once
 
-#include <cstdlib>
+#include "strata/core/sm75_series.hpp"
 
 namespace strata::core {
 
-/// The Turing paths are for compute capability 7.5 exactly.  `auto` (the default): on.  "0": off (the
-/// pre-patch behaviour).  Any other value, and any other device, is off.
 inline bool tc_sm75_enabled(int cc_major, int cc_minor) {
-    if (cc_major != 7 || cc_minor != 5) return false;   // 7.5 and only 7.5 - never another SM model
-    const char* e = std::getenv("STRATA_TC_SM75");
-    if (e != nullptr && e[0] == '0') return false;
-    return true;
+    return strata::sm75_switch("STRATA_TC_SM75", cc_major, cc_minor);   // 7.5 and only 7.5 - never another SM model
 }
 
 }  // namespace strata::core

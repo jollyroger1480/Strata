@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/sm75_series.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
@@ -3618,8 +3619,8 @@ int exp_mode() {
         // Turing (sm_75): mode 4 (native_expert_bench, real Q2_0 rows of Flash-Next, bitwise equal to mode 0 on an RTX
         // 2080 Ti: 10 experts x 1 entry 47.3 -> 41.4 us, 30 x 1 120.2 -> 100.2 us); the down projection keeps the CUDA
         // layout in windows of 4+ tokens (sm75_down_em below).  STRATA_SM75_EXP=0 keeps the CUDA layout.
-        const char* sm75 = std::getenv("STRATA_SM75_EXP");
-        const bool turing = major == 7 && minor == 5 && (sm75 == nullptr || std::atoi(sm75) != 0);
+        // (off unless STRATA_SM75_PERF=1; STRATA_SM75_EXP=0 / 1 forces it off / on)
+        const bool turing = strata::sm75_switch("STRATA_SM75_EXP", major, minor);
         per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 ? 8 : turing ? 4 : kExpModeDefault);
     }
     return per_dev[dev] - 1;
@@ -3636,7 +3637,7 @@ int sm75_down_em(int em0, int64_t cap_groups) {
     if (cudaGetDevice(&dev) != cudaSuccess) return em0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-    return major == 7 && minor == 5 ? 0 : em0;
+    return strata::is_sm75(major, minor) ? 0 : em0;
 }
 #else
 int sm75_down_em(int em0, int64_t) { return em0; }
