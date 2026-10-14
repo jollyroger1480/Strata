@@ -5577,8 +5577,10 @@ def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ct
     slot = own_path_parallel_slot_gb(fam, ctx)
     if a_parallel is None or a_parallel <= 1:
         if not rec:
-            return ["Several requests at once: left at one at a time - this card does not hold every expert beside more "
-                    "sessions, and the experts that run on the CPU make a batch read more of them (docs/BATCHING.md)."]
+            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card does not hold every "
+                    "expert beside more sessions. Measured there (RTX 3060 12 GB), 4 requests together ran about 1.5x the speed "
+                    "of one (99 against 64 tok/s) but each of them slower, and a request alone about 5% slower, as the "
+                    "slots take VRAM from the expert cache (docs/QWEN36.md)."]
         return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
                 f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
     lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "

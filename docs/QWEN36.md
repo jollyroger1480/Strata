@@ -72,6 +72,16 @@ answer, **R9700 32 GB, UD-Q4_K_XL, llama.cpp `llama-server -np N`** (5 interleav
 | 4 | 252.0 | 165.0 | 1.53 | 5/5 |
 | 8 | 325.4 | 208.1 | 1.56 | 5/5 |
 
+**RTX 3060 12 GB, UD-Q4_K_XL in the hybrid mode** (each engine with the slots it needs: `--batch N` takes room from the expert slots; llama.cpp
+`llama-server -np N -ncmoe 28 -t 8`, the best split of a sweep on this card; 5 interleaved pairs, medians; the box was shared with other
+jobs between runs, never during one):
+
+| Requests at once | Strata | llama.cpp | Ratio | Pairs faster |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 64.0 tok/s | 41.1 | 1.56 | 5/5 |
+| 2 | 85.1 | 52.5 | 1.62 | 5/5 |
+| 4 | 99.3 | 63.0 | 1.58 | 5/5 |
+
 Every slot's tokens equal the tokens of the same request alone (the base engine's), at 2, 4 and 8 slots, with a 2.5K-token prompt read beside
 decoding slots, with slots reused for later requests, with pictures and with sampling (same seed). Through the server: four concurrent chat
 requests give the texts of the same four one after the other.
@@ -94,9 +104,10 @@ The text is the same with and without it (every slot equal to its solo tokens).
 and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
 expert slots lose, and a batch reads more distinct experts from RAM. Setup therefore **recommends `--parallel` only where every expert still
-fits** (about 3 on a 32 GB card at 32K) and says why it leaves it at one otherwise; any number you give is kept. On the RTX 3060 12 GB with
-`--batch 4` the engine kept 22 of 256 experts per layer (the sessions, the picture encoder and the MTP block took the rest) and four
-requests at once ran 45 tok/s together against 42 one after the other: not worth it there. The engine says what the sessions take before it
+fits** (about 3 on a 32 GB card at 32K) and says why it leaves it at one otherwise; any number you give is kept. It still pays on a card
+that does not: on the RTX 3060 12 GB, `--batch 4` leaves 37 of 256 experts per layer in VRAM instead of 54, so a request alone decodes
+64.7 tok/s instead of 68.3 (-5%, 3 interleaved runs each, medians of the 10 parity prompts), and four requests at once ran 99 tok/s together
+against 64 for one (table above; each of them slower: ~25 tok/s). The engine says what the sessions take before it
 allocates them and refuses (with the numbers) a count that cannot fit.
 
 In the hybrid mode the text of a request can differ a little between running alone and running beside others: the experts that sit on the

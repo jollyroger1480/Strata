@@ -2285,13 +2285,11 @@ struct Engine {
     /// tokens of the rows the block must redo first (the drafts the last window accepted, seeded by hmain rows
     /// 0 .. fix.size() - 1 of that window).  Drafts d1 .. dD, then the window [x, d1 .. dD] through the main model;
     /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
-    /// `max_a`: at most that many drafts are taken (the answer has room for max_a + 1 more tokens, the last of which is
-    /// not fed, as in plain decoding); and no draft past an end-of-answer token is taken (that token is the next one the
-    /// caller emits).  So the state ends exactly where plain decoding would leave it.
-    /// `cancel`: a stop asked for before the state moves keeps only x (the caller then emits no draft: every token emitted but
-    /// the last is in the state, so a conversation that continues from the held tokens loses and repeats nothing).
+    /// `cancel`: a stop asked for before the state moves keeps only x (the caller then emits no draft), so that a request
+    /// stopped mid-answer leaves the state at the tokens it has shown: a conversation that continues from them (the server's
+    /// hand-over of a stopped request to a batch slot) reuses it instead of reading them again.
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
-                  int max_a = 1 << 20, const std::atomic<bool>* cancel = nullptr) {
+                  const std::atomic<bool>* cancel = nullptr) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
@@ -2342,10 +2340,7 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         int a = 0;
         while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
-        a = std::min(a, max_a);
         if (cancel != nullptr && cancel->load()) a = 0;
-        for (int i = 0; i < a; ++i)
-            if (drafts[(size_t) i] == 248044 || drafts[(size_t) i] == 248046) { a = i; break; }   // (<|endoftext|>, <|im_end|>)
         for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
@@ -3229,21 +3224,20 @@ struct Serve {
             if (!emit(nx)) break;
             if (n_active > 0) window();
             if (spec && n_active == 0 && E.pos + E.mtp_d + 1 <= E.ctx) {
-                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, (int) std::min<long long>(max_new - produced - 1, 1 << 20), &stop);
+                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, &stop);
                 offered += E.mtp_d;
                 accepted += a;
-                // the state now holds x and the accepted drafts - spec_step took none past an end-of-answer token or past
-                // the room max_new leaves, so the state ends where plain decoding leaves it (the last token emitted is not
-                // fed) and a later request that continues this conversation neither misses nor reads a token twice
+                // the state now holds x and every accepted draft, whether or not the answer ends inside them (an end of
+                // answer, max_new): the held tokens say so, so a later request that continues this conversation matches them
+                // (a prompt that has the same tokens next reuses the state, any other reads from the start) and never reads
+                // a token twice
                 ss.live.push_back(nx);
                 for (int i = 0; i < a; ++i) ss.live.push_back(drafts[(size_t) i]);
                 fix.assign(drafts.begin(), drafts.begin() + a);
-                for (int i = 0; i < a; ++i) {   // (all of them: they are in the state; a stop is seen at the next token)
-                    std::printf("T %d\n", drafts[(size_t) i]);
-                    ++produced;
-                    hist.push_back(drafts[(size_t) i]);
-                }
-                std::fflush(stdout);
+                bool ended = false;
+                for (int i = 0; i < a && !ended; ++i)
+                    if (!emit(drafts[(size_t) i])) ended = true;
+                if (ended) break;
                 nx = picks[a];
                 continue;
             }
