@@ -746,7 +746,9 @@ constexpr int kGdnColGroups = 4;
 __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float* h, int C, const float* gate,
                                                       const float* beta, float* o_raw, int h_k, int h_v, int T) {
     constexpr int S = 128, NC = S / kGdnColGroups, RG = 16, RPG = S / RG;
-    __shared__ float sk[S], sq[S];
+    // two barriers per token (was three): sk / sq are double-buffered, and the output sum of token t is done after token t + 1's first
+    // barrier, off the chain of the recurrence (red_o is read between that barrier and the next one, written after it)
+    __shared__ float sk[2][S], sq[2][S];
     __shared__ float red_kv[RG][NC];
     __shared__ float red_o[RG][NC];
     const int head = blockIdx.x, cl = threadIdx.x, rg = threadIdx.y, tid = rg * NC + cl;
@@ -768,14 +770,21 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
     };
     if (T > 0) load(0);
     for (int t = 0; t < T; ++t) {
-        if (tid < S) { sk[tid] = nsk; sq[tid] = nsq; }
+        const int par = t & 1;
+        if (tid < S) { sk[par][tid] = nsk; sq[par][tid] = nsq; }
         const float vcur = nvv, gcur = ngate, bcur = nbeta;
         if (t + 1 < T) load(t + 1);
         __syncthreads();
+        if (t > 0 && rg == 0) {   // token t - 1's output
+            float oc = 0.0f;
+#pragma unroll
+            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+            o_raw[(size_t) (t - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
+        }
         const float g = __expf(gcur);
         float kv = 0.0f;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[rg * RPG + r], kv);
+        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[par][rg * RPG + r], kv);
         red_kv[rg][cl] = kv;
         __syncthreads();
         float kv_col = 0.0f;
@@ -785,17 +794,17 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
         float o = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) {
-            sv[r] = fmaf(g, sv[r], sk[rg * RPG + r] * delta);
-            o = fmaf(sv[r], sq[rg * RPG + r], o);
+            sv[r] = fmaf(g, sv[r], sk[par][rg * RPG + r] * delta);
+            o = fmaf(sv[r], sq[par][rg * RPG + r], o);
         }
         red_o[rg][cl] = o;
-        __syncthreads();
-        if (rg == 0) {
-            float oc = 0.0f;
+    }
+    __syncthreads();
+    if (T > 0 && rg == 0) {   // the last token's output
+        float oc = 0.0f;
 #pragma unroll
-            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
-            o_raw[(size_t) t * h_v * S + head * S + col] = oc * rsqrtf((float) S);
-        }
+        for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+        o_raw[(size_t) (T - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
     }
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = sv[r];
