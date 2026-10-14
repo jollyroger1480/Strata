@@ -4421,9 +4421,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (!m.hand_worker) m.hand_worker = std::make_unique<HandWorker>();
                 next_run_ = m.hand_worker->submit(std::packaged_task<bool()>([this, tokens, c0, T, p0] {
                     const bool r = next_->run_impl(tokens + c0, T, p0, next_err_);
-                    int none = 0;   // keep the first fault for chain_cuda_error, then clear what a thread's end cleared
-                    if (const int e = (int) cudaPeekAtLastError(); e != 0) next_->cuda_err_.compare_exchange_strong(none, e);
-                    (void) cudaGetLastError();
+                    (void) cudaGetLastError();   // clear what a thread's end cleared (std::async)
                     return r;
                 }));
             } else
