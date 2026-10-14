@@ -261,7 +261,11 @@ class Source(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("STRATA_SOURCE", None)
         warnings = []
+        # setup.data_folder() is mocked: the real one moves the model files of this checkout and of the data folder in
+        # the user's settings.json into --data-dir, and saves that dir as the new data folder; with a temp dir that
+        # deletes the models on exit and leaves settings.json pointing at a deleted directory
         with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(setup, "data_folder", lambda requested: (Path(tmp), [])), \
                 mock.patch("subprocess.run", fake_run(M5)), \
                 mock.patch.object(setup, "warn", lambda *a, **k: warnings.append(" ".join(str(x) for x in a))), \
                 mock.patch.object(setup, "say", lambda *a, **k: None), \
