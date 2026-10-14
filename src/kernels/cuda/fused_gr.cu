@@ -2363,6 +2363,14 @@ struct PArgs {
 // start-up check finds that out by running every T with a short timeout) or another block aborted.  Then every block
 // leaves the kernel; the outputs are not written completely and bar[48] stays set until the host clears the words.
 __device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long ticks) {
+#if defined(__GFX11__) || defined(__GFX12__)
+    // gfx11 and gfx12 have no s_memrealtime (clang: "needs target feature s-memrealtime"), so no barrier clock: this read is not
+    // offered there (fused_gr_persist_init refuses it; an R9700 measured it neutral to 1% slower in #2226), and a launch that gets
+    // here anyway aborts at once instead of waiting for a barrier it cannot time.
+    (void) ticks;
+    if (threadIdx.x == 0) __hip_atomic_store(&bar[48], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    return false;
+#else
     __shared__ int s_abort;
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -2391,6 +2399,7 @@ __device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long tick
     __syncthreads();
     __threadfence();
     return s_abort == 0;
+#endif
 }
 // STRATA_HC_PERSIST=3 (a reference only, slow): every dot and sum accumulated in double
 __device__ __forceinline__ double dot8d(const uint4 w, const float* x) {
@@ -2621,6 +2630,11 @@ void fused_gr_persist_init() {
     if (prop.warpSize != 32) {
         std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: the kernel is written for 32-lane waves "
                              "(this card runs %d)\n", dev, prop.warpSize);
+        return;
+    }
+    if (strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName) || strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName)) {
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: gfx11 / gfx12 have no s_memrealtime for the barrier "
+                             "timeout (written and measured for gfx1030; an R9700 saw no gain from it, #2226)\n", dev);
         return;
     }
     const int mp = prop.multiProcessorCount;   // only for the confirmation line (WGPs on RDNA)
