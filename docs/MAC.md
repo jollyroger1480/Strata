@@ -201,6 +201,15 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2-3 GB) instead of giving them back to macOS |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 
+**Two opt-ins an M1 Max cannot run (measured on an M1 Max, macOS 26.6.2, Q2_0):** `STRATA_METAL_PROMPT_EXPERTS=v3` - the
+prompt's expert GEMMs with the M5's layout, `mm_gu3` - loses the threadgroup once a prompt spreads over more than 40
+threadgroups of it (35 pass, 40 fail; 190 tiles and the engine's tile both fail, one tile passes), so it is off there (the
+default is v2). `STRATA_METAL_ROUTE=1` - the router GEMV and `moe_route` fused into one dispatch - routes with stale
+logits and gives a different top-10 per run (two identical runs differ in ids, weights and plan; the logits themselves
+stay bitwise): the fusion hands the routing to the last threadgroup of the GEMV through a device counter, and this
+Metal's device atomics are relaxed-only, with no acquire to pair with the writers' fence. Both are off by default. The
+`no faster` measurement in the table is from the Macs above; on an M1 Max `ROUTE` is also wrong.
+
 ## How it works
 
 The code is in `metal/` (the engine's side in `metal/src/engine`, the kernels in `metal/kernels`). In short:
