@@ -283,6 +283,20 @@ Windows 11, Swift 1.5 IQ3_XXS at 128K):**
   It does not look again during a session, so where the E-cores' speed changes while the engine runs,
   `--pool-affinity p-cores` is the steady choice. Not measured: other CPUs, Linux, AMD cards.
 
+**Exact one-token expert rows (0.1.45, opt-in, `STRATA_CPU_IQ_ALL_EXACT1=1`, #1415 #1544):** below the #152 rule
+(a lone token in an expert's group) an AVX-2 CPU without AVX-512 runs ggml-cpu's `vec_dot` for the i-quant gate/up rows.
+With the switch, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS and IQ3_S take Strata's AVX-2 decode instead, with ggml's float order
+(the same per-lane integer sums, one fmadd per block, the format constant after `hsum_float_8`), so the output does not
+change, only the time (`iq_avx2_parity`: 0 of 5,120 outputs per format differ from ggml's; the identity gate with the
+switch on is 10/10 plus exact_pp 4K/20K identical on RTX 3060, 2x A4000 and R9700 boxes).  It is used only where
+ggml-cpu itself is the AVX2 build (not an ISA-floor build, not AVX-512) and not with `STRATA_IQ_MT_MIN=1`.  Per expert,
+gate/up, one thread: IQ3_S -32% on a Threadripper PRO 3975WX (Zen 2) and -11% on a Ryzen 5 5600X (Zen 3), IQ2_XXS -5..-6%,
+IQ3_XXS -5% (Zen 2) / +1% (Zen 3), IQ2_S 0% (Zen 2) / +7% (Zen 3, slower); on a Core Ultra 7 265 (VNNI, gather) IQ3_S -60%,
+IQ3_XXS -39%, IQ2_XXS -34%, IQ2_XS -24%, IQ2_S -3% on a P-core.  End to end, with the engine's decode timing: the CPU part of a
+window falls 5% on a Xeon E5-2643 v3 + RTX A4000 (22.2 -> 21.1 ms of a 46.9 ms window, decode +0.5% over 10 interleaved pairs,
++2.5% on the story and code prompts) and on a Core Ultra 7 265 + RTX 3060 (8.2 -> 7.8 ms of 39.5 ms, decode +0.4%), and does not
+move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case reached +3% end to end, so the switch stays off.
+
 **Switches added in 0.1.40 (all off unless noted; none changes the default output):**
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
