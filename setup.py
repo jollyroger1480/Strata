@@ -5605,13 +5605,18 @@ def own_path_parallel_fits_all(fam: dict, model: str, vram_gb: float, ctx: int, 
 def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int) -> int:
     """How many requests at once to recommend: 0 = none (the card cannot hold even two slots).  Where every routed expert
     still fits in VRAM with the slots' sessions, up to 4 (a batch reads each expert once for all its rows).  On a card
-    that does not hold every expert (the hybrid mode) it is recommended too, as an offer with its price said: measured on
+    that does not hold every expert even for one session (the hybrid mode already) it is recommended too, as an offer with
+    its price said: measured on
     an RTX 3060 12 GB, 4 requests together run ~1.5x as fast as one, a request alone ~5% slower, because the slots take
     VRAM from the expert cache; up to the count whose sessions leave PARALLEL_SMALL_ROOM_GB of the card."""
     slot = own_path_parallel_slot_gb(fam, ctx)
     best = max([n for n in (2, 3, 4) if own_path_parallel_fits_all(fam, model, vram_gb, ctx, n)], default=0)
     if best:
         return best
+    if own_path_parallel_fits_all(fam, model, vram_gb, ctx, 0):
+        return 0       # a card that holds every expert for one session only: more sessions would push experts to the CPU
+                       # (measured on a 32 GB R9700 at 128K: 4 slots left 15 of 256 experts per layer, decode 81 tok/s
+                       # against ~180): not offered there, a number asked for is kept
     return max([n for n in (2, 3, 4) if n * slot + PARALLEL_SMALL_ROOM_GB <= vram_gb], default=0)
 
 
@@ -5622,8 +5627,10 @@ def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ct
     slot = own_path_parallel_slot_gb(fam, ctx)
     if a_parallel is None or a_parallel <= 1:
         if not rec:
-            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card has no room for "
-                    f"more sessions (each takes ~{slot:.1f} GB of VRAM at this context)."]
+            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card cannot spare "
+                    f"the room: each session takes ~{slot:.1f} GB of VRAM at this context, and where the card holds every "
+                    "expert only for one session, more would move experts to the CPU and slow every request a lot (a "
+                    "smaller context leaves room for more; docs/QWEN36.md)."]
         if own_path_parallel_fits_all(fam, model, vram_gb, ctx, rec):
             return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
                     f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]

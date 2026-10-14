@@ -241,6 +241,9 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 4)
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 131072), 0)
         self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 8.0, 32768), 0)
+        # a card that holds every expert for ONE session only is not offered more: 4 slots on a 32 GB R9700 at 128K left
+        # 15 of 256 experts per layer in VRAM and decode ran 81 tok/s against ~180
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 31.9, 131072), 0)
         rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no")
         self.assertNotIn("parallel", self.cfg)
         self.assertIn("--parallel 4", out)
