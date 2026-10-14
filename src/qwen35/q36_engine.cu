@@ -26,6 +26,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
+#include "q36_kernels.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -77,6 +78,7 @@ double ms_since(Clock::time_point t) { return std::chrono::duration<double, std:
 
 constexpr int kThreads = 256;
 constexpr int kChunkCells = 256;   // attention split-K chunk
+constexpr int kConvTile = 16;     // tokens per block of the prompt conv (k_conv_seq tile mode)
 
 // ------------------------------------------------------------------------------------------------ small kernels
 __device__ __forceinline__ float silu(float v) { return v / (1.0f + expf(-v)); }
@@ -615,9 +617,32 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
     }
     const int c = blockIdx.x * 128 + threadIdx.x;
     float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
+    // TILE mode (a prompt chunk: grid y > 1, no batch tables): the tiles of kConvTile tokens run side by side.  A tile's history
+    // is the three inputs before its first token (exactly the values the sequential loop carries); tile 0 reads the old history,
+    // and, as the only writer, stores the new one: the last three of (old history, inputs).  The arithmetic per token is the same.
+    int t_first = 0, t_end = T;
+    const bool tiled = hist_tab == nullptr && gridDim.y > 1;
+    if (tiled) {
+        t_first = (int) blockIdx.y * kConvTile;
+        t_end = min(T, t_first + kConvTile);
+        if (t_first == 0 && write) {
+            const float o0 = v0, o1 = v1, o2 = v2;
+            const float old3[3] = {o0, o1, o2};
+            for (int k = 0; k < 3; ++k) {
+                const int idx = T - 3 + k;
+                hist[c * 3 + k] = idx >= 0 ? qkv[(size_t) idx * C + c] : old3[idx + 3];
+            }
+        }
+        if (t_first > 0) {
+            v0 = qkv[(size_t) (t_first - 3) * C + c];
+            v1 = qkv[(size_t) (t_first - 2) * C + c];
+            v2 = qkv[(size_t) (t_first - 1) * C + c];
+        }
+        if (t_first >= T) return;
+    }
     const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
     const bool qk = (int) blockIdx.x < qk_heads;
-    for (int t = 0; t < T; ++t) {
+    for (int t = t_first; t < t_end; ++t) {
         const float x = qkv[(size_t) t * C + c];
         const float sum = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
         v0 = v1;
@@ -635,7 +660,7 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
         }
         h[(size_t) t * C + c] = y;
     }
-    if (!write) return;   // a verify window: the history is commit()'s to move
+    if (!write || tiled) return;   // a verify window: the history is commit()'s to move; tiles: tile 0 stored it
     hist[c * 3] = v0;
     hist[c * 3 + 1] = v1;
     hist[c * 3 + 2] = v2;
@@ -721,7 +746,9 @@ constexpr int kGdnColGroups = 4;
 __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float* h, int C, const float* gate,
                                                       const float* beta, float* o_raw, int h_k, int h_v, int T) {
     constexpr int S = 128, NC = S / kGdnColGroups, RG = 16, RPG = S / RG;
-    __shared__ float sk[S], sq[S];
+    // two barriers per token (was three): sk / sq are double-buffered, and the output sum of token t is done after token t + 1's first
+    // barrier, off the chain of the recurrence (red_o is read between that barrier and the next one, written after it)
+    __shared__ float sk[2][S], sq[2][S];
     __shared__ float red_kv[RG][NC];
     __shared__ float red_o[RG][NC];
     const int head = blockIdx.x, cl = threadIdx.x, rg = threadIdx.y, tid = rg * NC + cl;
@@ -732,34 +759,52 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) sv[r] = base[r * row_stride];
-    for (int t = 0; t < T; ++t) {
+    // the next token's inputs are loaded while this one is computed (the loads were the head of every iteration)
+    float nsk = 0.0f, nsq = 0.0f, nvv = 0.0f, ngate = 0.0f, nbeta = 0.0f;
+    auto load = [&](int t) {
         const float* ht = h + (size_t) t * C;
-        if (tid < S) { sk[tid] = ht[h_k * S + qh * S + tid]; sq[tid] = ht[qh * S + tid]; }
+        if (tid < S) { nsk = ht[h_k * S + qh * S + tid]; nsq = ht[qh * S + tid]; }
+        nvv = ht[2 * h_k * S + head * S + col];
+        ngate = gate[(size_t) t * h_v + head];
+        nbeta = beta[(size_t) t * h_v + head];
+    };
+    if (T > 0) load(0);
+    for (int t = 0; t < T; ++t) {
+        const int par = t & 1;
+        if (tid < S) { sk[par][tid] = nsk; sq[par][tid] = nsq; }
+        const float vcur = nvv, gcur = ngate, bcur = nbeta;
+        if (t + 1 < T) load(t + 1);
         __syncthreads();
-        const float g = __expf(gate[(size_t) t * h_v + head]);
+        if (t > 0 && rg == 0) {   // token t - 1's output
+            float oc = 0.0f;
+#pragma unroll
+            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+            o_raw[(size_t) (t - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
+        }
+        const float g = __expf(gcur);
         float kv = 0.0f;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[rg * RPG + r], kv);
+        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[par][rg * RPG + r], kv);
         red_kv[rg][cl] = kv;
         __syncthreads();
         float kv_col = 0.0f;
 #pragma unroll
         for (int i = 0; i < RG; ++i) kv_col += red_kv[i][cl];
-        const float delta = (ht[2 * h_k * S + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+        const float delta = (vcur - g * kv_col) * bcur;
         float o = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) {
-            sv[r] = fmaf(g, sv[r], sk[rg * RPG + r] * delta);
-            o = fmaf(sv[r], sq[rg * RPG + r], o);
+            sv[r] = fmaf(g, sv[r], sk[par][rg * RPG + r] * delta);
+            o = fmaf(sv[r], sq[par][rg * RPG + r], o);
         }
         red_o[rg][cl] = o;
-        __syncthreads();
-        if (rg == 0) {
-            float oc = 0.0f;
+    }
+    __syncthreads();
+    if (T > 0 && rg == 0) {   // the last token's output
+        float oc = 0.0f;
 #pragma unroll
-            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
-            o_raw[(size_t) t * h_v * S + head * S + col] = oc * rsqrtf((float) S);
-        }
+        for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+        o_raw[(size_t) (T - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
     }
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = sv[r];
@@ -1527,8 +1572,297 @@ struct Engine {
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
     void quant(const float* xin, int n, int T, void* q) { K::native_quantize_q8_1(xin, q, n * T, 1, st); }
+    // ---- decode kernels of this engine (q36_kernels.cuh), each the old kernel's bits (STRATA_Q36_VERIFY=1 compares)
+    bool fast_k = std::getenv("STRATA_Q36_OLD_KERNELS") == nullptr;
+    bool verify_k = std::getenv("STRATA_Q36_VERIFY") != nullptr;
+    float* vbuf = nullptr;                       // verify scratch
+    long long v_calls = 0, v_bad = 0;
+    std::map<std::string, long long> v_by;   // mismatches per check
+    void verify_cmp(const char* what, const float* a, const float* b, size_t n, const std::string& tag = "") {
+        CK(cudaStreamSynchronize(st));
+        std::vector<float> ha(n), hb(n);
+        CK(cudaMemcpy(ha.data(), a, n * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(hb.data(), b, n * 4, cudaMemcpyDeviceToHost));
+        ++v_calls;
+        if (std::memcmp(ha.data(), hb.data(), n * 4) != 0) {
+            ++v_bad;
+            size_t i = 0;
+            while (i < n && std::memcmp(&ha[i], &hb[i], 4) == 0) ++i;
+            if (++v_by[what] <= 3)
+                std::fprintf(stderr, "strata-q36 VERIFY MISMATCH %s%s: first at %zu of %zu: new %g old %g (bits %08x %08x)\n", what,
+                             tag.c_str(), i, n, (double) ha[i], (double) hb[i], *(unsigned*) &ha[i], *(unsigned*) &hb[i]);
+        }
+    }
+    /// A Q8_0 matrix that is not on the packed decode kernel (the shared expert, attention k / v: fewer than 2048
+    /// rows) for T <= 8 columns: one warp per row (q36k::k_q8_rows) in place of the 4-warp block of
+    /// native_small_mmvq_kernel; the same bits.
+    bool q8_small(const Mat& w, const void* q, float* out, int T) {
+        if (!fast_k || w.type != 8 || T < 1 || T > 8 || w.n_in % 32 != 0) return false;
+        if (K::native_q8_0_packed_eligible(w.n_in, w.n_out) && K::native_q8_0_packed_enabled()) return false;
+        const int nb = w.n_in / 32;
+        if (nb > 64) return false;
+        const void* wp = w.d;
+        const half* dpl = nullptr;
+        const int NJ = nb <= 32 ? 1 : 2;
+#define Q36_Q8(NCV)                                                                                          \
+    case NCV:                                                                                                \
+        if (NJ == 1) q36k::launch_q8_rows<NCV, 1, false>(wp, dpl, q, out, nb, w.n_out, st);                  \
+        else q36k::launch_q8_rows<NCV, 2, false>(wp, dpl, q, out, nb, w.n_out, st);                          \
+        break;
+        switch (T) { Q36_Q8(1) Q36_Q8(2) Q36_Q8(3) Q36_Q8(4) Q36_Q8(5) Q36_Q8(6) Q36_Q8(7) Q36_Q8(8) }
+#undef Q36_Q8
+        if (verify_k) {
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * 16384 * 4));
+            const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
+            for (int c0 = 0; c0 < T; c0 += 8) {
+                const int nc = std::min(8, T - c0);
+                K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, vbuf + (size_t) c0 * w.n_out, w.n_in, w.n_out,
+                               nc, st);
+            }
+            verify_cmp("q8_small", out, vbuf, (size_t) T * w.n_out,
+                       " n_in " + std::to_string(w.n_in) + " n_out " + std::to_string(w.n_out) + " T " + std::to_string(T));
+        }
+        return true;
+    }
+    // ---- the q8_1 images produced by the norm kernels themselves (fast_k, T <= kGemmT): xq_ready = the layer's input h is
+    // already quantized in xq (k_moe_out_small of the layer before), xq_post = the MoE input h is (k_add_rms_q)
+    bool xq_ready = false, xq_post = false;
+    void* vq = nullptr;
+    void verify_q8(const char* what, const float* hsrc, int T, const std::string& tag) {
+        const int N = (int) m->g.n_embd;
+        const size_t qb = K::native_q8_1_bytes(N, 1);
+        if (!vq) CK(cudaMalloc(&vq, qb * 8));
+        K::native_quantize_q8_1(hsrc, vq, N * T, 1, st);
+        const long long before = v_bad;
+        verify_cmp(what, (const float*) xq, (const float*) vq, qb * (size_t) T / 4, tag);
+        if (v_bad != before && std::getenv("STRATA_Q36_VDEBUG") && v_by[what] <= 2) {   // a mismatching block, on the host
+            std::vector<uint8_t> a(qb * (size_t) T), b(qb * (size_t) T);
+            std::vector<float> hv((size_t) N * T);
+            CK(cudaMemcpy(a.data(), xq, a.size(), cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(b.data(), vq, b.size(), cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(hv.data(), hsrc, hv.size() * 4, cudaMemcpyDeviceToHost));
+            for (size_t o = 0; o < a.size(); o += 36)
+                if (std::memcmp(&a[o], &b[o], 36) != 0) {
+                    const size_t blk = o / 36;
+                    float v[32], t[32];
+                    for (int l = 0; l < 32; ++l) v[l] = t[l] = hv[blk * 32 + (size_t) l];
+                    for (int off = 16; off > 0; off >>= 1) {   // the xor butterfly, lane by lane
+                        float u[32];
+                        for (int l = 0; l < 32; ++l) u[l] = t[l] + t[l ^ off];
+                        std::memcpy(t, u, sizeof(u));
+                    }
+                    unsigned ds_a, ds_b;
+                    std::memcpy(&ds_a, &a[o], 4);
+                    std::memcpy(&ds_b, &b[o], 4);
+                    std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (half %04x)\n",
+                                 blk, ds_a, ds_b, std::memcmp(&a[o + 4], &b[o + 4], 32) == 0 ? "equal" : "DIFFER", (double) t[0],
+                                 (unsigned) __half_as_ushort(__float2half(t[0])));
+                    break;
+                }
+        }
+    }
+    void prep_in(int T) {
+        if (xq_ready && T <= kGemmT) {
+            xq_ready = false;
+            return;
+        }
+        xq_ready = false;
+        prep(h, (int) m->g.n_embd, T, xq);
+    }
+    void add_rms_post(const Layer& L, int T) {
+        const int N = (int) m->g.n_embd;
+        xq_post = false;
+        if (fast_k && T <= kGemmT) {
+            if (verify_k) {
+                if (!vx_) {
+                    CK(cudaMalloc((void**) &vx_, (size_t) 8 * 2048 * 4));
+                    CK(cudaMalloc((void**) &vh_, (size_t) 8 * 2048 * 4));
+                }
+                CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+                k_add_rms<<<T, kThreads, 0, st>>>(vx_, y, L.post_norm, vh_, N, m->eps);
+            }
+            q36k::k_add_rms_q<<<T, 256, 0, st>>>(x, y, L.post_norm, h, (q36k::QB*) xq, N, m->eps);
+            xq_post = true;
+            if (verify_k) {
+                verify_cmp("add_rms x", x, vx_, (size_t) T * N, " T " + std::to_string(T));
+                verify_cmp("add_rms h", h, vh_, (size_t) T * N, " T " + std::to_string(T));
+                verify_q8("add_rms q8", h, T, " T " + std::to_string(T));
+            }
+            return;
+        }
+        k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
+    }
+    /// The shared expert's gate + up + SwiGLU + q8_1 image (into q8) for T <= 4 rows in one launch (q36k::k_sh_gu), else false.
+    bool shared_gu(const Layer& L, int T) {
+        const int FS = (int) m->g.n_ff_shexp;
+        const Mat &a = L.sh_gate, &b = L.sh_up;
+        if (!fast_k || T < 1 || T > 4 || a.type != 8 || b.type != 8 || a.n_in != b.n_in || a.n_out != FS || b.n_out != FS ||
+            a.n_in % 32 != 0 || a.n_in / 32 > 64 || a.n_in / 32 <= 32 || FS % 32 != 0 ||
+            (K::native_q8_0_packed_eligible(a.n_in, a.n_out) && K::native_q8_0_packed_enabled()))
+            return false;
+        const int nb = a.n_in / 32;
+        const dim3 grid((unsigned) (FS / 32));
+        const bool pkd = false;
+        const uint8_t* wa = a.d;
+        const uint8_t* wb = b.d;
+        const half* da = nullptr;
+        const half* db = nullptr;
+#define Q36_SH(NCV)                                                                                          \
+    case NCV:                                                                                                \
+        if (pkd)                                                                                             \
+            q36k::k_sh_gu<NCV, 2, true><<<grid, 1024, 0, st>>>(wa, da, wb, db, (const q36k::QB*) xq,        \
+                                                               (q36k::QB*) q8, nb, FS);                      \
+        else                                                                                                 \
+            q36k::k_sh_gu<NCV, 2, false><<<grid, 1024, 0, st>>>(wa, nullptr, wb, nullptr, (const q36k::QB*) xq, \
+                                                                (q36k::QB*) q8, nb, FS);                     \
+        break;
+        switch (T) { Q36_SH(1) Q36_SH(2) Q36_SH(3) Q36_SH(4) }
+#undef Q36_SH
+        if (verify_k) {
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * 16384 * 4));
+            if (!vq) CK(cudaMalloc(&vq, K::native_q8_1_bytes(m->g.n_embd, 1) * 8));
+            float* vg = vbuf;
+            float* vu = vbuf + (size_t) 8 * FS;
+            mmq_ref(a, xq, vg, T);
+            mmq_ref(b, xq, vu, T);
+            K::native_swiglu_quantize_q8_1(vg, vu, vq, FS, T, st);
+            verify_cmp("shared_gu q8", (const float*) q8, (const float*) vq, K::native_q8_1_bytes(FS, 1) * (size_t) T / 4,
+                       " T " + std::to_string(T));
+        }
+        return true;
+    }
+    /// The old products (native MMVQ), for the checks.
+    void mmq_ref(const Mat& w, const void* q, float* out, int T) {
+        const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
+        for (int c0 = 0; c0 < T; c0 += 8) {
+            const int nc = std::min(8, T - c0);
+            K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, out + (size_t) c0 * w.n_out, w.n_in, w.n_out, nc, st);
+        }
+    }
+    void group_old(const Layer& L, const int32_t* slot_of, int T, unsigned long long* o_ptr, int32_t* o_start, int32_t* o_ng,
+                   int32_t* o_dst, int32_t* o_tok) {
+        const int Kp = (int) m->top_k, n_ent = T * Kp;
+        if (slot_of)
+            k_group_hy<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, slot_of, L.blobs, L.stride, o_ptr, o_start,
+                                               o_ng, o_dst, o_tok);
+        else
+            k_group<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, L.blobs, L.stride, o_ptr, o_start, o_ng, o_dst,
+                                            o_tok);
+    }
+    /// VERIFY: the old grouping of the current `ids` into scratch, compared with grp_ptr / grp_start / n_groups / ent_dst / ent_tok.
+    void group_verify(const Layer& L, const int32_t* slot_of, int T) {
+        if (!vgrp) CK(cudaMalloc((void**) &vgrp, 2048));
+        unsigned long long* o_ptr = (unsigned long long*) vgrp;
+        int32_t* o_start = (int32_t*) (o_ptr + 65);
+        int32_t* o_ng = o_start + 66;
+        int32_t* o_dst = o_ng + 2;
+        int32_t* o_tok = o_dst + 64;
+        group_old(L, slot_of, T, o_ptr, o_start, o_ng, o_dst, o_tok);
+        CK(cudaStreamSynchronize(st));
+        int nn = 0, no = 0;
+        CK(cudaMemcpy(&nn, n_groups, 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(&no, o_ng, 4, cudaMemcpyDeviceToHost));
+        ++v_calls;
+        bool bad = nn != no;
+        if (!bad) {
+            std::vector<unsigned long long> a((size_t) nn + 1), b((size_t) nn + 1);
+            std::vector<int32_t> sa((size_t) nn + 1), sb((size_t) nn + 1), da(64), db(64), ta(64), tb(64);
+            CK(cudaMemcpy(a.data(), grp_ptr, (size_t) nn * 8, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(b.data(), o_ptr, (size_t) nn * 8, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(sa.data(), grp_start, ((size_t) nn + 1) * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(sb.data(), o_start, ((size_t) nn + 1) * 4, cudaMemcpyDeviceToHost));
+            const int tot = sa[(size_t) nn];
+            CK(cudaMemcpy(da.data(), ent_dst, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(db.data(), o_dst, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(ta.data(), ent_tok, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(tb.data(), o_tok, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            bad = std::memcmp(a.data(), b.data(), (size_t) nn * 8) != 0 ||
+                  std::memcmp(sa.data(), sb.data(), ((size_t) nn + 1) * 4) != 0 ||
+                  std::memcmp(da.data(), db.data(), (size_t) tot * 4) != 0 ||
+                  std::memcmp(ta.data(), tb.data(), (size_t) tot * 4) != 0;
+        }
+        if (bad) {
+            ++v_bad;
+            if (v_bad <= 20) std::fprintf(stderr, "strata-q36 VERIFY MISMATCH group (T %d, groups %d vs %d)\n", T, nn, no);
+        }
+    }
+    bool grouped_by_route = false;   // route_group already filled the group arrays of this layer
+    /// The router's top-k and the grouping of the picks in one launch (T <= 8, 256 experts, 8 picks); the logits are in logits_r.
+    /// `slot_of`: the hybrid mode's slot table (null: every expert resident).  Returns false when the old kernels must run.
+    bool route_group(const Layer& L, const int32_t* slot_of, int T, int ld) {
+        const int Kp = (int) m->top_k;
+        grouped_by_route = false;
+        if (!fast_k || T > 8 || m->g.n_expert != 256 || Kp != 8) return false;
+        if (slot_of)
+            q36k::k_route_group<true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, L.blobs, L.stride, grp_ptr,
+                                                                 grp_start, n_groups, ent_dst, ent_tok);
+        else
+            q36k::k_route_group<false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, L.blobs, L.stride, grp_ptr,
+                                                                  grp_start, n_groups, ent_dst, ent_tok);
+        grouped_by_route = true;
+        if (verify_k) {
+            // the old top-k into scratch, the ids / weights compared, then the old grouping of the new ids
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * 16384 * 4));
+            int32_t* vid = (int32_t*) (vbuf + 8 * 8192);
+            float* vw = vbuf + 8 * 8192 + 64;
+            K::native_router_topk(logits_r, vid, vw, 256, Kp, T, st);
+            verify_cmp("route ids", (const float*) ids, (const float*) vid, (size_t) T * Kp, " T " + std::to_string(T));
+            verify_cmp("route weights", ewts, vw, (size_t) T * Kp, " T " + std::to_string(T));
+            group_verify(L, slot_of, T);
+        }
+        return true;
+    }
+    /// The routed entries of T rows grouped per expert (k_group; with slot_of the hybrid mode's k_group_hy).
+    void group_entries(const Layer& L, const int32_t* slot_of, int T) {
+        if (grouped_by_route) {   // route_group did it
+            grouped_by_route = false;
+            return;
+        }
+        const int Kp = (int) m->top_k, n_ent = T * Kp;
+        if (fast_k && n_ent <= 64) {
+            if (slot_of)
+                q36k::k_group_small<true><<<1, 64, 0, st>>>(ids, n_ent, Kp, slot_of, L.blobs, L.stride, grp_ptr, grp_start,
+                                                            n_groups, ent_dst, ent_tok);
+            else
+                q36k::k_group_small<false><<<1, 64, 0, st>>>(ids, n_ent, Kp, nullptr, L.blobs, L.stride, grp_ptr, grp_start,
+                                                             n_groups, ent_dst, ent_tok);
+            if (verify_k) group_verify(L, slot_of, T);
+            return;
+        }
+        group_old(L, slot_of, T, grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
+    }
+    void* vgrp = nullptr;
+    float *vx_ = nullptr, *vh_ = nullptr;
+    /// The MoE block's end (k_moe_out) for T rows.
+    void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout, int sgs = 1) {
+        const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
+        const bool small = fast_k && T <= 8 && N <= 2048 && N % 256 == 0 && Kp <= 15;
+        if (small && verify_k) {
+            if (!vx_) {
+                CK(cudaMalloc((void**) &vx_, (size_t) 8 * 2048 * 4));
+                CK(cudaMalloc((void**) &vh_, (size_t) 8 * 2048 * 4));
+            }
+            CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+            k_moe_out<<<T, kThreads, 0, st>>>(vx_, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, vh_, N, m->eps);
+        }
+        if (small) {
+            const bool mkq = wn != nullptr && hout == h;   // the next layer's input, quantized here
+            q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps,
+                                                      mkq ? (q36k::QB*) xq : nullptr);
+            xq_ready = mkq;
+            if (verify_k) {
+                if (mkq) verify_q8("moe_out q8", hout, T, " T " + std::to_string(T));
+                verify_cmp("moe_out x", x, vx_, (size_t) T * N, " T " + std::to_string(T));
+                if (wn) verify_cmp("moe_out h", hout, vh_, (size_t) T * N, " T " + std::to_string(T));
+            }
+            return;
+        }
+        xq_ready = false;
+        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps);
+    }
     /// y [T][n_out] = W x from x's q8_1 image, 8 columns per launch.
     void mmq(const Mat& w, const void* q, float* out, int T) {
+        if (q8_small(w, q, out, T)) return;
         const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
         for (int c0 = 0; c0 < T; c0 += 8) {
             const int nc = std::min(8, T - c0);
@@ -1552,7 +1886,7 @@ struct Engine {
             float* hc_b = verify ? v_hc[li] : hc;
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
-            prep(h, N, T, xq);
+            prep_in(T);
             apply(L.qkv, xq, qkv_b, T);
             apply(L.zg, xq, z, T);
             if (T <= kGemmT) {
@@ -1575,7 +1909,9 @@ struct Engine {
                 // fused single-token kernels are not used here: fused_gdn_conv_l2's 4-tap sum contracts into FMAs
                 // differently from k_conv_seq's, a 1-ulp difference in h that the Q8_1 activation rounding can turn into a
                 // flipped near-tie later; with them the KL is the same, 1.05x / 0.81x the floor, but MTP would not be exact.)
-                k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
+                // a prompt chunk: tiles of kConvTile tokens side by side (tile mode); else one block per head walks the tokens
+                const int tiles = (fast_k && T > kGemmT && !verify) ? (T + kConvTile - 1) / kConvTile : 1;
+                k_conv_seq<<<dim3(C / 128, tiles), 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
                 if (T > kGemmT && !verify) {   // a prompt chunk: the column-split delta rule, then the norm
                     k_gdn_seq_cols<<<dim3(HV, kGdnColGroups), dim3(128 / kGdnColGroups, 16), 0, st>>>(S[li], hc_b, C, al_b,
                                                                                                       be_b, gdn_y, HK, HV, T);
@@ -1587,7 +1923,7 @@ struct Engine {
             }
             mm(L.ssm_out, gdn_y, y, T);
         } else {
-            prep(h, N, T, xq);
+            prep_in(T);
             apply(L.wq, xq, qg, T);
             apply(L.wk, xq, kx, T);
             apply(L.wv, xq, vx, T);
@@ -1659,17 +1995,22 @@ struct Engine {
             }
             mm(L.wo, att, y, T);
         }
-        k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
+        add_rms_post(L, T);
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
-        if (one) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, 1);
+        // a decode batch of up to 8 rows takes the router and the shared expert's gate in one product too (rows of 257) when the fused
+        // router follows; the prompt chunks and the checks keep the separate products
+        const bool ext = one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k && T <= kGemmT && g.n_expert == 256 && Kp == 8);
+        if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
-        K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
-        const int64_t n_ent = (int64_t) T * Kp;
-        const int32_t* prow = nullptr;
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
+        const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
+        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T, ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
+            K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
+        const int64_t n_ent = (int64_t) T * Kp;
+        const int32_t* prow = nullptr;
         if (hy_rows) {
             moe_hybrid_gpu(L, li, T);
         } else if (T > kGemmT && use_mmq) {
@@ -1704,28 +2045,30 @@ struct Engine {
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {
-            k_group<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, L.blobs, L.stride, grp_ptr, grp_start,
-                                            n_groups, ent_dst, ent_tok);
-            quant(h, N, T, xq);   // the experts' and the shared expert's input
+            group_entries(L, nullptr, T);
+            if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
             K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                      std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
         }
         // the shared expert, scaled by sigmoid(w . h)
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
-        apply(L.sh_gate, xq, sg, T);
-        apply(L.sh_up, xq, su, T);
-        if (T <= kGemmT) {   // SwiGLU and its q8_1 image in one launch
-            K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+        if (T <= kGemmT) {
+            if (!shared_gu(L, T)) {
+                apply(L.sh_gate, xq, sg, T);
+                apply(L.sh_up, xq, su, T);
+                K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);   // SwiGLU and its q8_1 image in one launch
+            }
             mmq(L.sh_down, q8, sy, T);
         } else {
+            apply(L.sh_gate, xq, sg, T);
+            apply(L.sh_up, xq, su, T);
             k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
             mm(L.sh_down, shh, sy, T);
         }
-        if (!one) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
+        if (!ext) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
         if (hy_rows) moe_hybrid_cpu(li, T);   // the CPU pool's experts (while the GPU runs the rest), merged
         // the combine, the shared expert's gate, the residual add and the next norm in one launch
-        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, sy, one ? logits_r + g.n_expert : sgate, 1, wn, hout,
-                                          N, m->eps);
+        moe_end(T, prow, sy, ext ? logits_r + g.n_expert : sgate, wn, hout, ext ? (int) g.n_expert + 1 : 1);
     }
 
     /// The main model over T rows (device `tok`, positions p0 .. p0 + T - 1, also at *pos0): hmain gets every row's
@@ -1758,6 +2101,32 @@ struct Engine {
         k_argmax<<<dim3(1, n), kThreads, 0, st>>>(lg, kArgBlocks, pk, amv, ami, true);
     }
 
+    /// The draft head: the MTP block's pick over the first `draft_n` rows of the output matrix only (the lowest token ids are
+    /// the most frequent ones).  A draft only proposes: the verify window decides, so a token outside the subset is a
+    /// rejected draft and nothing else - the answer is the plain greedy answer whatever draft_n is.  0 = the whole vocabulary.
+    int draft_n = 0;
+    void head_draft(const float* hn) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd;
+        const Mat& hd = m->head;
+        if (!fast_k || draft_n <= 0 || draft_n >= g.n_vocab || draft_n % 8 != 0 || hd.type != 8 || hd.n_in != N || N / 32 != 64) {
+            head_rows(hn, 1, logits_m, pick_m);
+            return;
+        }
+        quant(hn, N, 1, q8);
+        const uint8_t* pk = nullptr;
+        for (const auto& p : m->packed)
+            if (std::get<0>(p) == hd.d) pk = std::get<1>(p);
+        if (pk) {
+            const half* dpl = reinterpret_cast<const half*>(pk + (size_t) hd.n_in * hd.n_out);
+            q36k::launch_q8_rows<1, 2, true>(pk, dpl, q8, logits_m, 64, draft_n, st);
+        } else {
+            q36k::launch_q8_rows<1, 2, false>(hd.d, nullptr, q8, logits_m, 64, draft_n, st);
+        }
+        k_argmax<<<dim3(kArgBlocks, 1), kThreads, 0, st>>>(logits_m, draft_n, pick_m, amv, ami, false);
+        k_argmax<<<dim3(1, 1), kThreads, 0, st>>>(logits_m, kArgBlocks, pick_m, amv, ami, true);
+    }
+
     /// The MTP block over T rows: row t reads token tok_m[t] at position p0 + t (also at *pos0_m) and the seed hidden
     /// seeds[t] (the main model's normed hidden of the position before, or the block's own for a chained draft);
     /// hmtp gets each row's normed output.  `draft`: logits of the last row and its pick (`pick_m`).
@@ -1772,7 +2141,7 @@ struct Engine {
         mm(m->eh_proj, mtp_cat, x, T);
         k_rms<<<T, kThreads, 0, st>>>(x, m->mtp.attn_norm, h, N, m->eps);
         layer(m->mtp, m->layers.size(), T, p0, pos0_m, graph_mode, false, m->mtp_shnorm, hmtp);
-        if (draft) head_rows(hmtp + (size_t) (T - 1) * N, 1, logits_m, pick_m);
+        if (draft) head_draft(hmtp + (size_t) (T - 1) * N);
     }
 
     /// After a verify window of T rows: the GDN state takes the first n_keep rows (conv history and recurrence run
@@ -1856,9 +2225,8 @@ struct Engine {
         CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaEventRecord(ev_route, st));
-        k_group_hy<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, hy[li].slot_of_d, L.blobs, L.stride,
-                                           grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
-        quant(h, N, T, xq);   // the experts' and the shared expert's input
+        group_entries(L, hy[li].slot_of_d, T);
+        if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
         K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                  std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
     }
@@ -3366,7 +3734,7 @@ int strata::qwen35::run(int argc, char** argv) {
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
     bool warm = true;
-    int expert_slots = 0, batch = 0;
+    int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -3400,6 +3768,7 @@ int strata::qwen35::run(int argc, char** argv) {
             else std::fprintf(stderr, "strata-q36: ignoring --mtp %s (this family's MTP is the GGUF's own block: --mtp N "
                                       "drafts)\n", v.c_str());
         }
+        else if (a == "--draft-vocab") draft_vocab = std::atoi(next().c_str());   // the MTP drafts pick among the first N token ids
         else if (a == "--vision") vision = true;                                  // pictures (GENI): the encoder is strata-vision's
         else if (a == "--batch" || a == "--slots") batch = std::atoi(next().c_str());   // sessions decoding together
         else if (a == "--batch-mtp") batch_mtp = true;                                  // ... each verifying an MTP proposal
@@ -3429,6 +3798,7 @@ int strata::qwen35::run(int argc, char** argv) {
     setenv("STRATA_MMQ_KQ", "1", 0);      // the K-quant MMQ prompt kernels (every expert of this family is a K-quant)
 #else
     if (std::getenv("STRATA_MMQ_KQ") == nullptr) _putenv_s("STRATA_MMQ_KQ", "1");
+    if (std::getenv("STRATA_Q8_PACKED") == nullptr) _putenv_s("STRATA_Q8_PACKED", "1");   // as on Linux (it was missing here)
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
@@ -3444,11 +3814,12 @@ int strata::qwen35::run(int argc, char** argv) {
     Engine E;
     E.use_graph = graph;
     if (chunk == 0) {
-        // auto: 512 with every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
+        // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
         size_t fr = 0, tot = 0, experts = 0;
         CK(cudaMemGetInfo(&fr, &tot));
         for (const Layer& L : m.layers) experts += L.stride * (size_t) m.g.n_expert;
+        const size_t fr_raw = fr;   // before the packed Q8_0 copies count as given back
         // (the MTP block's experts can go to the CPU, the packed Q8_0 copies can be given back: see place_experts)
         size_t packed = 0;
         for (const auto& pk : m.packed) packed += std::get<2>(pk);
@@ -3458,9 +3829,33 @@ int strata::qwen35::run(int argc, char** argv) {
         const bool fits = expert_slots <= 0 && (expert_vram < 0 ? want <= (double) fr
                                                                : (double) experts <= expert_vram * (double) (1ull << 30));
         chunk = fits ? 512 : 2048;
+        const double GiB = (double) (1ull << 30);
+        if (fits && expert_vram < 0) {
+            // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
+            // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
+            // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 50 KB per cell and session.
+            // With several slots a long prompt would hold the other slots' windows for a whole chunk: 1024 at most there.
+            // (measured on a 32 GB R9700 at 8192 cells, 512 chunk: 1.77 GiB of buffers + K / V; the free room after init must still hold
+            // every expert and the 0.77 GiB reserve, or place_experts gives the packed decode copies back - slower decode - or goes hybrid)
+            const int ns = std::max(1, batch);
+            const double kv_one = 45056.0, kv_shared = 5120.0;   // per cell: a session's K / V, and the fp16 copies the prompt attention keeps
+            const double sess_extra = std::max(0.0, (double) ctx * (kv_one * ns + kv_shared) - 8192.0 * (kv_one + kv_shared));
+            const int cap = ns > 1 ? 1024 : 4096;
+            for (int c : {4096, 2048, 1024})
+                if (c <= cap && (double) experts + 2.75 * GiB + (double) (c - 512) * 0.5 * 1048576.0 + sess_extra <= (double) fr_raw) {   // (no give-back of the packed decode copies for a bigger chunk)
+                    chunk = c;
+                    break;
+                }
+        } else if (!fits) {
+            // the hybrid mode: 2048 (a chunk streams every layer's experts over PCIe once); a small card, where the chunk's buffers
+            // would take the slots' room, falls back to less
+            const double fr_gib = (double) fr / GiB;
+            chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;
+        }
+        if (const char* cv = std::getenv("STRATA_Q36_CHUNK")) chunk = std::max(256, std::min(4096, std::atoi(cv)));   // force a chunk (512: the old default)
         if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
-            std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
-                         fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);
+            std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (raw %.2f, with %.2f packed), main experts %.2f GiB, chunk %d\n",
+                         fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
     }
     E.init(m, ctx, chunk, batch, vision);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
@@ -3470,6 +3865,10 @@ int strata::qwen35::run(int argc, char** argv) {
     struct Report {
         Engine& E;
         ~Report() {
+            if (E.verify_k) std::fprintf(stderr, "strata-q36 VERIFY: %lld comparisons, %lld mismatches\n", E.v_calls, E.v_bad);
+            if (E.verify_k)
+                for (const auto& kv : E.v_by)
+                    std::fprintf(stderr, "strata-q36 VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
             if (!E.m->hybrid) return;
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "strata-q36: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
@@ -3479,6 +3878,8 @@ int strata::qwen35::run(int argc, char** argv) {
     } report{E};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
+    if (draft_vocab < 0 && std::getenv("STRATA_Q36_DRAFT_VOCAB") != nullptr) draft_vocab = std::atoi(std::getenv("STRATA_Q36_DRAFT_VOCAB"));
+    E.draft_n = std::max(0, draft_vocab);
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
     if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
     if (warm) E.warmup();
