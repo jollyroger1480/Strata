@@ -465,6 +465,11 @@ app. It has three tabs:
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
+
+On a Mac (Metal backend) the Monitor's GPU load and VRAM come from IOKit's IOAccelerator nodes - the driver's Device
+Utilization % and its in-use system memory, against the device's Metal working set - and the card says the rest: there
+is no temperature or power reading without root (`powermetrics`), and an Apple Silicon GPU sits on the die, so there is
+no PCIe link. The engine's own VRAM figures are in its log.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at

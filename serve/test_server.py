@@ -4514,6 +4514,84 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
+IOREG_FIXTURE = '''
+  +-o AGXAcceleratorG13X  <class AGXAcceleratorG13X, id 0x100000428, registered, matched, active, busy 0 (0 ms), retain 41>
+    {
+      "IOClass" = "AGXAcceleratorG13X"
+      "model" = "Apple M1 Max"
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=22991831040,"Tiler Utilization %"=36,"recoveryCount"=44,"lastRecoveryTime"=216970984728,"Renderer Utilization %"=35,"TiledSceneBytes"=1671168,"Device Utilization %"=76,"SplitSceneCount"=0,"Allocated PB Size"=76152832,"In use system memory"=13384105984}
+      +-o IOUserClientCreator  <class IOUserClientCreator, id 0x100000429, registered, matched, active, busy 0 (0 ms), retain 5>
+        {
+          "IOUserClientCreator" = "pid 402, WindowServer"
+        }
+    }
+
+  +-o AGXAccelerator  <class AGXAccelerator, id 0x10000042a, registered, matched, active, busy 0 (0 ms), retain 12>
+    {
+      "IOClass" = "AGXAccelerator"
+      "model" = "Apple M2 Ultra"
+      "PerformanceStatistics" = {"Renderer Utilization %"=3,"Tiler Utilization %"=2,"In use system memory"=1234567890}
+    }
+'''
+
+WORKING_SET = 26800603136          # bytes; the M1 Max's device in the fixture above
+
+
+class MacTelemetry(unittest.TestCase):
+    """The macOS (Metal backend) reader: IOKit's IOAccelerator nodes and the device's Metal working set."""
+
+    def _reader(self, index=0, text=IOREG_FIXTURE):
+        from serve import telemetry
+        return telemetry._Metal(index, run=lambda: text)
+
+    def test_readings(self):
+        g = self._reader()
+        self.assertTrue(g.ok())
+        self.assertEqual(g.name(), "Apple M1 Max")
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g.read(), {"util": 76, "mem_used": 13384105984, "mem_total": WORKING_SET})
+        # the second accelerator is index 1: the older chips' renderer/tiler-only utilization is the fallback
+        g1 = self._reader(1)
+        self.assertTrue(g1.ok())
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g1.read()["util"], 3)          # the renderer, the higher of the two
+            self.assertEqual(g1.name(), "Apple M2 Ultra")
+        self.assertFalse(self._reader(5).ok())
+
+    def test_no_registry(self):
+        g = self._reader(text="")
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+        self.assertIsNone(g.name())
+
+    def test_bad_process(self):
+        from serve import telemetry
+        g = telemetry._Metal(0, run=lambda: (_ for _ in ()).throw(OSError("no ioreg")))
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+
+    def test_note_reaches_the_monitor(self):
+        from serve import telemetry
+        t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+        try:
+            with mock.patch.object(telemetry, "gpu_reader", lambda index=0, amd=False: self._reader()):
+                t2 = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+                try:
+                    self.assertEqual(t2.static["gpu_name"], "Apple M1 Max")
+                    self.assertIn("powermetrics", t2.static["gpu_note"])
+                    with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+                        s = t2.sample()
+                    self.assertEqual(s["gpu_util"], 76)
+                    self.assertEqual(s["gpu_mem_used"], 13384105984)
+                    self.assertEqual(s["gpu_mem_total"], WORKING_SET)
+                    self.assertIsNone(s.get("gpu_temp"))       # no reading without root; the cards show a dash
+                    self.assertIsNone(s.get("gpu_pcie_gen"))
+                finally:
+                    t2.close()
+        finally:
+            t.close()
+
+
 class TelemetryNoDisks(unittest.TestCase):
     """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
     off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left

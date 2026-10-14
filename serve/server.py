@@ -3299,20 +3299,17 @@ class Service:
         threading.Thread(target=loop, daemon=True).start()
 
     def free_vram_mib(self) -> int | None:
-        """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
-        be read (then nothing is refused)."""
+        """Free VRAM on the engine's (first) GPU, from the backend's reader - NVML, the amdgpu sysfs files (#301) or
+        IOKit on macOS (Metal backend); None when it can't be read (then nothing is refused)."""
         try:
-            if getattr(self, "backend", None) == "hip":
-                from serve.telemetry import free_vram_mib
-                return free_vram_mib(int(getattr(self, "gpu_index", 0) or 0), amd=True)
-            from serve.telemetry import _Nvml
-            nv = _Nvml(int(getattr(self, "gpu_index", 0) or 0))
-            if not nv.ok():
+            from serve.telemetry import gpu_reader
+            g = gpu_reader(int(getattr(self, "gpu_index", 0) or 0), amd=getattr(self, "backend", None) == "hip")
+            if not g.ok():
                 return None
-            m = nv.Mem()
-            if nv.lib.nvmlDeviceGetMemoryInfo(nv.dev, ctypes.byref(m)) != 0:
+            r = g.read()
+            if r.get("mem_total") is None or r.get("mem_used") is None:
                 return None
-            return int(m.free >> 20)
+            return int((r["mem_total"] - r["mem_used"]) >> 20)
         except Exception:
             return None
 
