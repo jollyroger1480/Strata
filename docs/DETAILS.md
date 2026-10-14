@@ -1463,6 +1463,8 @@ The config snippets for every client, the tool arguments and the safety rules ar
 
 ## Images (vision)
 
+(Qwen3.6-35B-A3B reads pictures the same way, with its own `mmproj-F16.gguf`: [QWEN36.md](QWEN36.md).)
+
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 (0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
 "Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
