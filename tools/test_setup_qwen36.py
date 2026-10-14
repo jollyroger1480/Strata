@@ -237,9 +237,21 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("parallel", self.cfg)
         self.assertIn("--parallel 3", out)
-        # a 12 GB card runs the hybrid mode: one at a time recommended, any asked number kept
-        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 0)
-        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", parallel=4)
+        # a 12 GB card runs the hybrid mode: parallel is offered there too, with its price said (never forced)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 4)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 131072), 0)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 8.0, 32768), 0)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no")
+        self.assertNotIn("parallel", self.cfg)
+        self.assertIn("--parallel 4", out)
+        self.assertIn("does not hold every expert", out)
+        self.assertIn("about 5% slower", out)
+        self.assertIn("1.5x", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", parallel=6)
+        self.assertEqual(self.cfg["parallel"], 6)
+        self.assertIn("recommended for this card: 4", out)
+        self.assertIn("kept as you chose", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=8.0, vision="no", parallel=4)
         self.assertEqual(self.cfg["parallel"], 4)
         self.assertIn("recommended for this card: one at a time", out)
         self.assertIn("kept as you chose", out)
@@ -249,6 +261,30 @@ class InstallOwnPath(unittest.TestCase):
         self.assertIn("at most 8", out)
         self.assertEqual(self.cfg["parallel"], 12)             # written as asked; the server and the engine cap it
         self.assertGreater(setup.own_path_parallel_slot_gb(fam, 32768), 1.4)
+
+    def test_parallel_is_asked_when_attended_and_enter_keeps_one_at_a_time(self):
+        asked = []
+
+        def ask(question, choices, default, yes):
+            if "requests at once" not in question:
+                return default                                   # size, context, images: the recommended answers
+            asked.append((question, default))
+            return answers.pop(0)
+        for answers, want in ((["1"], None), (["3"], 3)):
+            self.cfg = {}
+            with mock.patch.object(setup, "ask", ask):
+                rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", yes=False)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.cfg.get("parallel"), want)
+            self.assertIn("--parallel 4", out)                  # the offer and its price are said before the question
+            self.assertEqual(out.count("Several requests at once (opt-in)"), 1)
+        self.assertTrue(all(d == "1" for _, d in asked))        # Enter = one at a time
+        # a card with no room for a second session is not asked
+        asked.clear()
+        with mock.patch.object(setup, "ask", ask):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=8.0, vision="no", yes=False)
+        self.assertEqual(asked, [])
+        self.assertNotIn("parallel", self.cfg)
 
     def test_config_read_back(self):
         self.install(model="UD-Q6_K_XL", context=65536)

@@ -5580,18 +5580,29 @@ def own_path_parallel_slot_gb(fam: dict, ctx: int) -> float:
     return ctx * fam["kv_bytes_per_token"] / 1e9 + fam["state_gb"]
 
 
-def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int) -> int:
-    """How many requests at once to recommend: 0 = one at a time.  Only where every routed expert still fits in VRAM with
-    the slots' sessions (a batch then reads each expert once for all its rows); where some experts run on the CPU the
-    batch reads more distinct experts from RAM and every slot's VRAM is room the expert slots lose."""
+PARALLEL_SMALL_ROOM_GB = 5.5    # a card that does not hold every expert: what the dense weights, the buffers and a useful
+                                # expert cache need beside the slots' sessions (a 12 GB card held 4 slots at 32K with this much)
+
+
+def own_path_parallel_fits_all(fam: dict, model: str, vram_gb: float, ctx: int, n: int) -> bool:
+    """True where every routed expert still sits in VRAM beside n slots' sessions (one more session than the slots: the
+    solo path's own)."""
     size = fam["sha256"][fam["file"].format(q=model)][0] / 1e9
     base = size * 0.93 + 4.5       # the routed experts + the dense weights and buffers (the file's 7% beyond them)
+    return base + (n + 1) * own_path_parallel_slot_gb(fam, ctx) <= vram_gb
+
+
+def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int) -> int:
+    """How many requests at once to recommend: 0 = none (the card cannot hold even two slots).  Where every routed expert
+    still fits in VRAM with the slots' sessions, up to 4 (a batch reads each expert once for all its rows).  On a card
+    that does not hold every expert (the hybrid mode) it is recommended too, as an offer with its price said: measured on
+    an RTX 3060 12 GB, 4 requests together run ~1.5x as fast as one, a request alone ~5% slower, because the slots take
+    VRAM from the expert cache; up to the count whose sessions leave PARALLEL_SMALL_ROOM_GB of the card."""
     slot = own_path_parallel_slot_gb(fam, ctx)
-    best = 0
-    for n in (2, 3, 4):
-        if base + (n + 1) * slot <= vram_gb:
-            best = n
-    return best
+    best = max([n for n in (2, 3, 4) if own_path_parallel_fits_all(fam, model, vram_gb, ctx, n)], default=0)
+    if best:
+        return best
+    return max([n for n in (2, 3, 4) if n * slot + PARALLEL_SMALL_ROOM_GB <= vram_gb], default=0)
 
 
 def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ctx: int) -> list:
@@ -5601,19 +5612,23 @@ def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ct
     slot = own_path_parallel_slot_gb(fam, ctx)
     if a_parallel is None or a_parallel <= 1:
         if not rec:
-            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card does not hold every "
-                    "expert beside more sessions. Measured there (RTX 3060 12 GB), 4 requests together ran about 1.5x the speed "
-                    "of one (99 against 64 tok/s) but each of them slower, and a request alone about 5% slower, as the "
-                    "slots take VRAM from the expert cache (docs/QWEN36.md)."]
-        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
-                f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
+            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card has no room for "
+                    f"more sessions (each takes ~{slot:.1f} GB of VRAM at this context)."]
+        if own_path_parallel_fits_all(fam, model, vram_gb, ctx, rec):
+            return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
+                    f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
+        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after the "
+                f"other. The price on this card, which does not hold every expert: each session takes ~{slot:.1f} GB of VRAM "
+                "from the expert cache, so a request alone runs about 5% slower and each of the requests running together "
+                "is slower than one alone; together they are faster (measured on an RTX 3060 12 GB: 4 requests 99 tok/s "
+                "against 64 for one, 1.5x). Worth it for several users or agents at once, not for one chat "
+                "(docs/QWEN36.md)."]
     lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "
              f"{a_parallel * slot:.1f} GB in all)"]
     if a_parallel > PARALLEL_MAX:
         lines.append(f"the engine runs at most {PARALLEL_MAX} at once; it will use {PARALLEL_MAX}")
     if not rec:
-        lines.append("recommended for this card: one at a time - not every expert fits in VRAM beside more sessions; "
-                     "kept as you chose")
+        lines.append("recommended for this card: one at a time - there is no room for more sessions; kept as you chose")
     elif a_parallel > rec:
         lines.append(f"recommended for this card: {rec} - more slots leave fewer experts in VRAM, which can make every "
                      "request slower; kept as you chose")
@@ -5673,6 +5688,18 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"context: {ctx} tokens")
     vision = own_path_vision(a, fam, gpu, hip)
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
+    vram_gb = float(gpu.get("vram_gb", 0.0))
+    par = getattr(a, "parallel", None)
+    par_said = False
+    if par is None and not a.yes:                      # offered, with its price; Enter keeps one at a time (never forced)
+        say()
+        for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
+            say("  " + line)
+        par_said = True
+        if own_path_parallel_recommend(fam, model, vram_gb, ctx):
+            n = int(ask("How many requests at once (1 = one at a time)?", [str(i) for i in range(1, PARALLEL_MAX + 1)],
+                        "1", a.yes))
+            par = n if n > 1 else None
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
@@ -5762,8 +5789,6 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     elif getattr(a, "vision_tokens", None) is not None:
         warn("--vision-tokens: images are off, so it is not used")
     # requests at once ("parallel", opt-in): written only when given; the recommendation is said once
-    vram_gb = float(gpu.get("vram_gb", 0.0))
-    par = getattr(a, "parallel", None)
     if par is not None:
         if par >= 2:
             cfg["parallel"] = par
@@ -5782,7 +5807,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
     if vision != "none":
         say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
-    if par is None:                                    # the opt-in, said once (nothing changes)
+    if par is None and not par_said:                   # the opt-in, said once (nothing changes)
         for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
             say("  " + line)
     if a.no_start:

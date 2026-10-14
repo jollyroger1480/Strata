@@ -103,9 +103,10 @@ The text is the same with and without it (every slot equal to its solo tokens).
 **What a slot costs.** Each slot keeps its own cache in VRAM: 1.5 GB at a context of 32K (fp32 keys and values of the 10 attention layers
 and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
-expert slots lose, and a batch reads more distinct experts from RAM. Setup therefore **recommends `--parallel` only where every expert still
-fits** (about 3 on a 32 GB card at 32K) and says why it leaves it at one otherwise; any number you give is kept. It still pays on a card
-that does not: on the RTX 3060 12 GB, `--batch 4` leaves 37 of 256 experts per layer in VRAM instead of 54, so a request alone decodes
+expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** on every card that has room for the sessions: up to 3-4 where every expert still
+fits (3 on a 32 GB card at 32K), and on a card that does not (12 and 16 GB) up to the count that leaves 5.5 GB of the card for the weights
+and the expert cache; there it says the price in the same breath, asks "How many requests at once?" (Enter keeps one at a time), and any
+number you give is kept. It pays on a card that does not hold every expert too: on the RTX 3060 12 GB, `--batch 4` leaves 37 of 256 experts per layer in VRAM instead of 54, so a request alone decodes
 64.7 tok/s instead of 68.3 (-5%, 3 interleaved runs each, medians of the 10 parity prompts), and four requests at once ran 99 tok/s together
 against 64 for one (table above; each of them slower: ~25 tok/s). The engine says what the sessions take before it
 allocates them and refuses (with the numbers) a count that cannot fit.
