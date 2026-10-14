@@ -3922,6 +3922,7 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
                                                                          const __half* __restrict__ X, int ldx,
                                                                          const int32_t* __restrict__ bounds, int ch_per_e,
                                                                          float* __restrict__ Y, int ldy) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
     using namespace nvcuda;
     constexpr int LDW = WK + 8, LDX = WG_XK + 8;
     extern __shared__ __align__(16) unsigned char wg_smem[];
@@ -4044,6 +4045,7 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
         }
         __syncthreads();
     }
+#endif
 }
 
 // ---- STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down, tiled like a Volta MoE kernel in the
@@ -4135,6 +4137,7 @@ __global__ void __launch_bounds__(W2_NT, 2) gemm_iq_f16_w2_kernel(const uint8_t*
                                                                   int K, const __half* __restrict__ X, int ldx,
                                                                   const int32_t* __restrict__ bounds, int ch_per_e,
                                                                   float* __restrict__ Y, int ldy) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
     using namespace nvcuda;
     using tr = w2_traits<TY>;
     constexpr int NL = w2_nl<TY>(), NSUB = tr::raw_k / W2_KT;
@@ -4241,6 +4244,7 @@ __global__ void __launch_bounds__(W2_NT, 2) gemm_iq_f16_w2_kernel(const uint8_t*
             }
         }
     }
+#endif
 }
 
 bool w2_on() {
