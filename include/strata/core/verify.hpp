@@ -120,6 +120,8 @@ public:
         return t >= 0 && t < 32 && ((nf_mask_ >> t) & 1u) != 0;
     }
     static bool nan_guard_on();
+    /// The most tokens one window holds (`init`'s `max_t`; 0 before it).
+    int max_t() const { return max_t_; }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -170,6 +172,12 @@ public:
     void set_stage(int64_t layer_begin, int64_t layer_end, const float* handoff_in, float* handoff_out) {
         lb_ = layer_begin; le_ = layer_end; hand_in_ = handoff_in; hand_out_ = handoff_out;
     }
+    /// The rows the hand-off buffers of `set_stage` hold (0: kVerifyMaxT, the default).  More than --batch's 8 slots on a
+    /// layer split: the pipelined slot groups write their rows at hbase = group * rows-per-group, one row per slot.
+    void set_handoff_rows(int rows) { handoff_rows_ = rows; }
+    /// Is the zero-doorbell graph the one a batch window would run now (every expert of the stage in VRAM by the host
+    /// table)?  Looks at the table, as each window does.  (STRATA_ADMIT_MERGE_FIRST's gate.)
+    bool ar_live() { refresh_ar(); return ar_on(); }
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
@@ -412,6 +420,7 @@ private:
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
+    int handoff_rows_ = 0;               ///< set_handoff_rows (0: kVerifyMaxT)
     const float* hand_in_ = nullptr;
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
