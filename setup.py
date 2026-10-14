@@ -2312,12 +2312,24 @@ def nvfp4_card_note(gpu) -> str:
     return "runs, but UD-IQ4_XS is faster on this card"
 
 
-def family_menu_note(family: str, hip: bool, gpu) -> str:
-    """The card- and RAM-dependent tail of a family's line in the model menu."""
+def nvfp4_cpu_note(avx2: bool, avx512: bool) -> str:
+    """What the NVFP4 menu line and the install step say about this CPU (#2347).  Its experts that stay on the CPU run
+    on AVX-512 rows when the CPU has them, else on AVX2 rows (bit-equal to ggml's AVX2 dot).  Measured (docs/NVFP4.md):
+    per core the AVX2 rows are ~10% slower, and on a whole pool that reads DRAM the two are the same speed up to two
+    tokens a window (Ryzen 7 255: 58.9 vs 58.7 GB/s) and ~12% apart at four.  A note only: nothing is refused."""
+    if avx512 or not avx2:
+        return ""                                      # no AVX2 at all: the older-CPU build's own warning says it
+    return ("this CPU has no AVX-512, so NVFP4's CPU rows run on AVX2: about as fast when memory-bound, up to ~12% "
+            "slower on 4-token windows")
+
+
+def family_menu_note(family: str, hip: bool, gpu, avx2: bool = True, avx512: bool = True) -> str:
+    """The card-, CPU- and RAM-dependent tail of a family's line in the model menu."""
     if family == "nvfp4":
         d = MODELS["NVFP4"]
+        cpu = nvfp4_cpu_note(avx2, avx512)
         return (f"   [{nvfp4_card_note(gpu)}; {d['download_gb']:.0f} GB download, ~{d['ram_gb']} GB of RAM keeps every "
-                "expert in RAM]")
+                "expert in RAM" + (f"; {cpu}" if cpu else "") + "]")
     if family == "unsloth" and hip:
         return "   [UD-IQ4_XS is the 4-bit choice on AMD and Intel cards; NVFP4 runs on NVIDIA only]"
     return ""
@@ -6303,7 +6315,7 @@ def main() -> int:
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
-                + family_menu_note(f, hip, gpu)
+                + family_menu_note(f, hip, gpu, avx2, avx512)
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         for j, f in enumerate(OWN_PATH_FAMILIES, len(fams) + 1):   # families with an engine path of their own
             d = OWN_PATH_FAMILIES[f]
@@ -6322,6 +6334,8 @@ def main() -> int:
         warn(f"--gguf-dir does not apply to {fam['title']}: its files are ready-made packs, not GGUF shards")
         a.gguf_dir = None
     ok(f"model: {fam['title']}")
+    if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
+        warn(nvfp4_cpu_note(avx2, avx512))
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()

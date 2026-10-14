@@ -49,6 +49,20 @@ class Nvfp4Note(unittest.TestCase):
             self.assertIn("runs, but UD-IQ4_XS is faster on this card", line, arch)
             self.assertNotIn("native FP4", line)
 
+    def test_an_avx2_cpu_is_told_its_rows_but_not_refused(self):      # #2347
+        line = setup.family_menu_note("nvfp4", False, {"arch": 120}, avx2=True, avx512=False)
+        self.assertIn("no AVX-512", line)
+        self.assertIn("AVX2", line)
+        self.assertIn("native FP4 on this card", line)               # the card part is unchanged
+        self.assertTrue(setup.nvfp4_cpu_note(True, False))
+
+    def test_an_avx512_cpu_and_a_cpu_without_avx2_get_no_cpu_note(self):
+        self.assertEqual(setup.nvfp4_cpu_note(True, True), "")
+        self.assertEqual(setup.nvfp4_cpu_note(False, False), "")     # the older-CPU build says its own piece
+        line512 = setup.family_menu_note("nvfp4", False, {"arch": 120})
+        self.assertNotIn("AVX", line512)
+        self.assertEqual(line512, setup.family_menu_note("nvfp4", False, {"arch": 120}, avx2=True, avx512=True))
+
     def test_the_line_gives_the_download_and_the_ram_need(self):
         line = setup.family_menu_note("nvfp4", False, {"arch": 120})
         d = setup.MODELS["NVFP4"]
