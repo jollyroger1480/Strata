@@ -5654,7 +5654,7 @@ def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ct
                 f"each session takes ~{slot:.1f} GB of VRAM from the expert cache, so a request alone runs about 4-11% "
                 "slower, and next to one-at-a-time WITH the draft layer the requests together are only 1.0-1.15x faster "
                 "(measured, Q4_K_XL: RTX 3060 12 GB at 8K context, 4 requests: 1.15x, alone -4%; A4000 / P100 16 GB at "
-                "32K, 2 requests: 1.0x, alone -9 to -11%). Worth it for several users at once, not for one chat "
+                "32K, 2 requests: 1.0x, alone -7 to -11%). Worth it for several users at once, not for one chat "
                 "(docs/QWEN36.md)."]
     lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "
              f"{a_parallel * slot:.1f} GB in all)"]

@@ -114,7 +114,7 @@ with the draft layer):
 | --- | ---: | ---: | ---: |
 | RTX 3060 12 GB, 8K | 2 / 4 / 8 | -3.5% / -4.3% / -12% | 0.99x / 1.15x / 1.10x |
 | RTX A4000 16 GB, 32K | 2 / 4 | -10.6% / -29.9% | 1.03x / 0.76x |
-| Tesla P100 16 GB, 32K | 2 / 4 | -9% / -25% | (see notes-145-q36.md) |
+| Tesla P100 16 GB, 32K | 2 / 4 | -7% / -23% | 0.98x / 0.81x |
 
 Without the draft layer (`--mtp 0`) the same slots give 1.26-1.64x together (3060 at 8K: 4 slots 1.64x for -5.5% alone), but a single request
 with drafts is already about 1.6x as fast as one without, so on a small card the main gain is that a second user starts at once; the
