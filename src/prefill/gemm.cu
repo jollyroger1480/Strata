@@ -678,8 +678,9 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 // same up to summation order.  The weight is widened once per call, the activations in slices of up to 128 MiB of
 // FP32 (an 8,192-token chunk at K = 2560 is one slice).  Small N (< 64: routers, gates) keeps the native call:
 // there the widening costs more than the GEMM gains.  If the FP32 buffers cannot be allocated, the native call runs.
-//   Default: on for gfx103x, off for every other AMD architecture.  STRATA_RDNA2_SGEMM=0 / =1 turns it off / on for
-//   any AMD card (the A/B arms).
+//   OPT-IN here: STRATA_RDNA2_SGEMM=1 turns it on for gfx103x devices (other cards keep the native call, also in a
+//   mixed layer split); =all turns it on for every AMD card (A/B arms, tests); unset or 0 is the native path.  The
+//   author ran it as the gfx103x default (RX 6800 343 -> 534 tok/s); it is not bit-identical to the native call.
 namespace {
 __global__ void rdna2_bf16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -697,12 +698,14 @@ void rdna2_widen(const uint16_t* in, float* out, int64_t n, bool bf16, cudaStrea
 }
 // whether this GEMM runs as an SGEMM (see above)
 bool rdna2_sgemm_on(int64_t N) {
-    static const int forced = [] {
+    static const int mode = [] {   // 0 off (unset), 1 gfx103x devices, 2 every AMD device
         const char* v = std::getenv("STRATA_RDNA2_SGEMM");
-        return v != nullptr && v[0] != '\0' ? std::atoi(v) : -1;
+        if (v == nullptr || v[0] == '\0') return 0;
+        if (std::strcmp(v, "all") == 0) return 2;
+        return std::atoi(v) > 0 ? 1 : 0;
     }();
-    if (forced == 0 || N < 64) return false;
-    if (forced > 0) return true;
+    if (mode == 0 || N < 64) return false;
+    if (mode == 2) return true;
     static std::atomic<int> arch[64] = {};   // per device: 0 not known, 1 gfx103x, 2 another architecture
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
@@ -735,6 +738,8 @@ bool Gemm::rdna2_sgemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
                        float beta, bool bf16) {
     if (K <= 0 || !rdna2_sgemm_on(N)) return false;
     const int64_t rows = std::max<int64_t>(1, std::min<int64_t>(T, kRdna2SliceF32 / K));
+    // growing frees a buffer an earlier GEMM on this stream may still read (as the sm_60 FP32 route does)
+    if (tc_w_elems_ < 2 * N * K || tc_x_elems_ < 2 * rows * K) (void) hipStreamSynchronize((hipStream_t) stream_);
     if (!rdna2_grow(tc_w_, tc_w_elems_, N * K) || !rdna2_grow(tc_x_, tc_x_elems_, rows * K)) return false;
     float* const wf = reinterpret_cast<float*>(tc_w_);
     float* const xf = reinterpret_cast<float*>(tc_x_);

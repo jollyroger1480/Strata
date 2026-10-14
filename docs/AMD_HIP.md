@@ -453,10 +453,10 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
 - **Prompt GEMMs as SGEMMs (engine 0.1.39 + `Gemm::rdna2_sgemm`):** the rocBLAS in setup's ROCm (10.2.0a20260930)
   has tuned gfx1030 kernels for FP16 -> FP16, int8 and FP32 -> FP32 only. The prompt path's dense GEMMs take FP16 or
-  BF16 inputs and write FP32 (rocBLAS's HS / BS types), which run its fallback kernels at about 5 TFLOPS. On gfx103x
-  the engine widens both inputs to FP32 (exact) and runs SGEMM, which accumulates in FP32 like the native call
-  (`src/prefill/gemm.cu`; N < 64 keeps the native call; `STRATA_RDNA2_SGEMM=0` / `=1` turns it off / on for any AMD
-  card). Measured on an RX 6800 16 GB over OCuLink (PCIe 4.0 x4, 7.1 GB/s), Ryzen 7 8845HS, 28.8 GB RAM, Windows 11,
+  BF16 inputs and write FP32 (rocBLAS's HS / BS types), which run its fallback kernels at about 5 TFLOPS. With
+  `STRATA_RDNA2_SGEMM=1` (opt-in; `=all` forces it on any AMD card) the engine widens both inputs to FP32 (exact) and runs SGEMM,
+  which accumulates in FP32 like the native call (`src/prefill/gemm.cu`; N < 64 keeps the native call). The author ran it
+  as the gfx103x default; here it is a switch because it is not bit-identical to the native call (below). Measured on an RX 6800 16 GB over OCuLink (PCIe 4.0 x4, 7.1 GB/s), Ryzen 7 8845HS, 28.8 GB RAM, Windows 11,
   Coder IQ1_M with setup's arguments (64K context, MTP), fresh 12K-token prompts, 4 per arm, A/B in one binary:
 
   | | native GEMMs | SGEMM route |
@@ -471,7 +471,7 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   [-1, 1], the SGEMM route is as close as or closer than the native call on all 10 FP16 / BF16 shapes checked; the
   two differ by at most 4.3e-6 of the largest output. A 9-task code-repair benchmark (the model patches seeded bugs
   in a browser game until 38 browser checks pass) solved 9/9 on the first try with both, model time 458 -> 374 s.
-  The SGEMM route is the default on gfx103x when `STRATA_HIP_PROMPT_F16` is unset; with `STRATA_HIP_PROMPT_F16=1`
+  With the switch on and `STRATA_HIP_PROMPT_F16` unset the SGEMM route runs; with `STRATA_HIP_PROMPT_F16=1`
   the FP16 route above runs first and the SGEMM route takes the products it leaves (`beta != 0`). Same RX 6800, one
   session, fresh 12K-token prompts: native 310, SGEMM 439, FP16 (#835) 494 tok/s; `STRATA_F16_RANGE=1` on the Coder
   IQ1_M peaked at 105.3 (activations) and 424.8 (FP16 outputs) with nothing beyond 65504, and the repair benchmark
