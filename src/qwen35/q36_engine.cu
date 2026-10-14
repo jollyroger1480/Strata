@@ -2530,6 +2530,22 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         const size_t left = budget2 > total_main ? budget2 - total_main : 0;
         S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
     }
+    {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
+        // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
+        const size_t Tn = (size_t) E.tmax, Nn = (size_t) g.n_embd, Kn = (size_t) m.top_k;
+        size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
+        for (Layer* L : all) {
+            if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
+            else need += (S > 0 ? (size_t) S * L->stride + kMmqTail : 0);
+        }
+        if (need > fr) {
+            err = "not enough VRAM left for the hybrid experts' buffers and slots (" + std::to_string((need >> 20)) +
+                  " MiB needed, " + std::to_string(fr >> 20) + " MiB free after the weights, the context and the sessions): use "
+                  "fewer slots (\"parallel\" / --batch), a shorter --max-context" +
+                  (slots > 0 ? ", or fewer --expert-slots" : "");
+            return false;
+        }
+    }
     // host memory: every expert, pinned where the driver allows it (the prompt's stream and the slot copies)
     size_t host = 0;
     for (Layer* L : all)
