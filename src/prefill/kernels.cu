@@ -49,6 +49,7 @@ __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__floa
 // images converted (hf_sat is their one funnel) and how many were beyond 65504 or NaN; W and Y are counted in gemm.cu.
 // Off, the cost is one flag read per value.  The max is kept as float bits (positive floats order as unsigned ints),
 // and a thread takes the atomic only when it beats the value it read, so the atomics stop once the max has settled.
+#if defined(__HIPCC__)   // HIP only: the CUDA kernels stay exactly as they were (no flag read in hf_sat)
 __device__ int g_f16_range_on = 0;
 __device__ unsigned g_f16_range_max = 0;
 __device__ unsigned long long g_f16_range_over = 0;
@@ -58,8 +59,11 @@ __device__ __forceinline__ void f16_range_note(float f) {
     if (bits > g_f16_range_max) atomicMax(&g_f16_range_max, bits);
     if (a > 65504.0f || isnan(f)) atomicAdd(&g_f16_range_over, 1ull);
 }
+#endif
 __device__ __forceinline__ uint16_t hf_sat(float f) {
+#if defined(__HIPCC__)
     if (g_f16_range_on) f16_range_note(f);
+#endif
     return hf(isnan(f) ? f : fminf(fmaxf(f, -65504.0f), 65504.0f));
 }
 // The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16, or FP16 where the GEMM library is fast
@@ -1734,7 +1738,11 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
 }
 __global__ void to_f16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, int64_t n) {
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
+#if defined(__HIPCC__)
         y[i] = hf_sat(x[i]);   // saturated and counted like every other FP16 image (the hc / embedding image on gfx103x)
+#else
+        y[i] = hf(x[i]);       // CUDA: as it was
+#endif
 }
 __global__ void round_f16_kernel(const float* __restrict__ x, float* __restrict__ y, int64_t n) {
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
@@ -1844,13 +1852,21 @@ void set_act_f16(bool on) {
 #endif
 }
 void set_f16_range(bool on) {
+#if defined(__HIPCC__)
     const int v = on ? 1 : 0;
     if (cudaMemcpyToSymbol(g_f16_range_on, &v, sizeof v) != cudaSuccess) {
         std::fprintf(stderr, "prefill: setting the FP16 range check failed: %s\n", cudaGetErrorString(cudaGetLastError()));
         std::exit(1);
     }
+#else
+    (void) on;
+#endif
 }
 bool f16_range_read(float& max_abs, unsigned long long& over, bool reset) {
+#if !defined(__HIPCC__)
+    (void) max_abs; (void) over; (void) reset;
+    return false;
+#else
     unsigned bits = 0; unsigned long long o = 0;
     if (cudaMemcpyFromSymbol(&bits, g_f16_range_max, sizeof bits) != cudaSuccess ||
         cudaMemcpyFromSymbol(&o, g_f16_range_over, sizeof o) != cudaSuccess) { cudaGetLastError(); return false; }
@@ -1860,6 +1876,7 @@ bool f16_range_read(float& max_abs, unsigned long long& over, bool reset) {
         cudaMemcpyToSymbol(g_f16_range_max, &z, sizeof z); cudaMemcpyToSymbol(g_f16_range_over, &zz, sizeof zz);
     }
     return true;
+#endif
 }
 void to_f16(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;
