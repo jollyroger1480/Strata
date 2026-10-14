@@ -1821,7 +1821,7 @@ the pairs in which the switched arm won). They are here so you can try them on y
   180-2,619 tokens - on the 4-GPU split with `--prefill 2048` (chunks of 1,024 tokens and more: the streamed walk),
   the same with 9 GB less expert cache per GPU (20-31% of the expert reads streamed, so groups mix in-place, copied and
   mid-group flushed experts), and on one GPU with `--expert-cache-per-layer`; the 150 greedy tokens of each of
-  `tools/batch_test16.py`'s 16 prompts (solo and batch) were identical too, and to those of a build without the
+  `tools/batch_test.py --n 16` prompts (solo and batch) were identical too, and to those of a build without the
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
 
