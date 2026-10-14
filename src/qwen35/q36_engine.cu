@@ -621,7 +621,8 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
     // is the three inputs before its first token (exactly the values the sequential loop carries); tile 0 reads the old history,
     // and, as the only writer, stores the new one: the last three of (old history, inputs).  The arithmetic per token is the same.
     int t_first = 0, t_end = T;
-    if (hist_tab == nullptr && gridDim.y > 1) {
+    const bool tiled = hist_tab == nullptr && gridDim.y > 1;
+    if (tiled) {
         t_first = (int) blockIdx.y * kConvTile;
         t_end = min(T, t_first + kConvTile);
         if (t_first == 0 && write) {
@@ -659,7 +660,7 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
         }
         h[(size_t) t * C + c] = y;
     }
-    if (!write || gridDim.y > 1) return;   // a verify window: the history is commit()'s to move; tiles: tile 0 stored it
+    if (!write || tiled) return;   // a verify window: the history is commit()'s to move; tiles: tile 0 stored it
     hist[c * 3] = v0;
     hist[c * 3 + 1] = v1;
     hist[c * 3 + 2] = v2;
@@ -1750,15 +1751,15 @@ struct Engine {
     bool grouped_by_route = false;   // route_group already filled the group arrays of this layer
     /// The router's top-k and the grouping of the picks in one launch (T <= 8, 256 experts, 8 picks); the logits are in logits_r.
     /// `slot_of`: the hybrid mode's slot table (null: every expert resident).  Returns false when the old kernels must run.
-    bool route_group(const Layer& L, const int32_t* slot_of, int T) {
+    bool route_group(const Layer& L, const int32_t* slot_of, int T, int ld) {
         const int Kp = (int) m->top_k;
         grouped_by_route = false;
         if (!fast_k || T > 8 || m->g.n_expert != 256 || Kp != 8) return false;
         if (slot_of)
-            q36k::k_route_group<true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, slot_of, L.blobs, L.stride, grp_ptr,
+            q36k::k_route_group<true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, L.blobs, L.stride, grp_ptr,
                                                                  grp_start, n_groups, ent_dst, ent_tok);
         else
-            q36k::k_route_group<false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, nullptr, L.blobs, L.stride, grp_ptr,
+            q36k::k_route_group<false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, L.blobs, L.stride, grp_ptr,
                                                                   grp_start, n_groups, ent_dst, ent_tok);
         grouped_by_route = true;
         if (verify_k) {
@@ -1795,7 +1796,7 @@ struct Engine {
     void* vgrp = nullptr;
     float *vx_ = nullptr, *vh_ = nullptr;
     /// The MoE block's end (k_moe_out) for T rows.
-    void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout) {
+    void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout, int sgs = 1) {
         const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
         const bool small = fast_k && T <= 8 && N <= 2048 && N % 256 == 0 && Kp <= 15;
         if (small && verify_k) {
@@ -1804,11 +1805,11 @@ struct Engine {
                 CK(cudaMalloc((void**) &vh_, (size_t) 8 * 2048 * 4));
             }
             CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
-            k_moe_out<<<T, kThreads, 0, st>>>(vx_, eparts, prow, ewts, Kp, shared, sgate, 1, wn, vh_, N, m->eps);
+            k_moe_out<<<T, kThreads, 0, st>>>(vx_, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, vh_, N, m->eps);
         }
         if (small) {
             const bool mkq = wn != nullptr && hout == h;   // the next layer's input, quantized here
-            q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, 1, wn, hout, N, m->eps,
+            q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps,
                                                       mkq ? (q36k::QB*) xq : nullptr);
             xq_ready = mkq;
             if (verify_k) {
@@ -1819,7 +1820,7 @@ struct Engine {
             return;
         }
         xq_ready = false;
-        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, 1, wn, hout, N, m->eps);
+        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps);
     }
     /// y [T][n_out] = W x from x's q8_1 image, 8 columns per launch.
     void mmq(const Mat& w, const void* q, float* out, int T) {
@@ -1959,13 +1960,16 @@ struct Engine {
         add_rms_post(L, T);
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
-        if (one) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, 1);
+        // a decode batch of up to 8 rows takes the router and the shared expert's gate in one product too (rows of 257) when the fused
+        // router follows; the prompt chunks and the checks keep the separate products
+        const bool ext = one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k && T <= kGemmT && g.n_expert == 256 && Kp == 8);
+        if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
-        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T)))
+        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T, ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
@@ -2023,10 +2027,10 @@ struct Engine {
             k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
             mm(L.sh_down, shh, sy, T);
         }
-        if (!one) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
+        if (!ext) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
         if (hy_rows) moe_hybrid_cpu(li, T);   // the CPU pool's experts (while the GPU runs the rest), merged
         // the combine, the shared expert's gate, the residual add and the next norm in one launch
-        moe_end(T, prow, sy, one ? logits_r + g.n_expert : sgate, wn, hout);
+        moe_end(T, prow, sy, ext ? logits_r + g.n_expert : sgate, wn, hout, ext ? (int) g.n_expert + 1 : 1);
     }
 
     /// The main model over T rows (device `tok`, positions p0 .. p0 + T - 1, also at *pos0): hmain gets every row's
@@ -3756,7 +3760,7 @@ int strata::qwen35::run(int argc, char** argv) {
     Engine E;
     E.use_graph = graph;
     if (chunk == 0) {
-        // auto: 512 with every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
+        // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
         size_t fr = 0, tot = 0, experts = 0;
         CK(cudaMemGetInfo(&fr, &tot));
@@ -3770,6 +3774,28 @@ int strata::qwen35::run(int argc, char** argv) {
         const bool fits = expert_slots <= 0 && (expert_vram < 0 ? want <= (double) fr
                                                                : (double) experts <= expert_vram * (double) (1ull << 30));
         chunk = fits ? 512 : 2048;
+        const double GiB = (double) (1ull << 30);
+        if (fits && expert_vram < 0) {
+            // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
+            // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
+            // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 45 KB per cell and session.
+            // With several slots a long prompt would hold the other slots' windows for a whole chunk: 1024 at most there.
+            const double kv_cell = 45056.0;
+            const int ns = std::max(1, batch);
+            const double sess_extra = std::max(0.0, (double) ns * (double) ctx * kv_cell - 8192.0 * kv_cell);
+            const int cap = ns > 1 ? 1024 : 4096;
+            for (int c : {4096, 2048, 1024})
+                if (c <= cap && want + (double) (c - 512) * 0.5 * 1048576.0 + sess_extra <= (double) fr) {
+                    chunk = c;
+                    break;
+                }
+        } else if (!fits) {
+            // the hybrid mode: 2048 (a chunk streams every layer's experts over PCIe once); a small card, where the chunk's buffers
+            // would take the slots' room, falls back to less
+            const double fr_gib = (double) fr / GiB;
+            chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;
+        }
+        if (const char* cv = std::getenv("STRATA_Q36_CHUNK")) chunk = std::max(256, std::min(4096, std::atoi(cv)));   // force a chunk (512: the old default)
         if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
             std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
                          fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);

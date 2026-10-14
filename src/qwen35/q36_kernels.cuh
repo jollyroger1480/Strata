@@ -307,7 +307,7 @@ __global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32
 /// launch, k_group_small's grouping of the picks.  block (32, 8).  HY as k_group_small.
 template <bool HY>
 __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ logits, int32_t* __restrict__ ids,
-                                                     float* __restrict__ weights, int n_tok, const int32_t* slot_of,
+                                                     float* __restrict__ weights, int n_tok, int ld, const int32_t* slot_of,
                                                      const uint8_t* blobs, unsigned long long blob,
                                                      unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups,
                                                      int32_t* ent_dst, int32_t* ent_tok) {
@@ -316,7 +316,7 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
     const int tk = threadIdx.y;
     const int lane = threadIdx.x;
     if (tk < n_tok) {
-        const float* lg = logits + (size_t) tk * NE;
+        const float* lg = logits + (size_t) tk * ld;
         float values[V];
 #pragma unroll
         for (int i = 0; i < V; ++i) values[i] = lg[lane + i * 32];
