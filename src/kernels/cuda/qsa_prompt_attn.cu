@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -84,7 +85,7 @@ __device__ __forceinline__ uint32_t pack_h2(float lo_k, float hi_k) {   // eleme
 // KV_MODE 4 (Q4_0 K and V, `--kv q4_0`): mode 1 with a scale per 32 values - each q4_0 block's codes enter as exact
 // int8 (code - 8) and its fp16 scale is applied in FP32, as mode 1's are; the caller rotates q and un-rotates the
 // output (kv_q4.hpp).
-template <int KV_MODE>
+template <int KV_MODE, bool PF = false>
 struct Smem {
     using KElem = typename std::conditional<KV_MODE == 0, __half, int8_t>::type;
     using VElem = typename std::conditional<KV_MODE == 1 || KV_MODE == 4, int8_t, __half>::type;
@@ -97,7 +98,7 @@ struct Smem {
     // after the scores (prompt_attn_kernel).  37.9 -> 29.2 KB: two blocks fit an SM's 64 KB on Turing instead of one.
     struct Rows { KElem k[CH][KROW]; VElem v[CH][VROW]; };
     struct SharedRows { union { KElem k[CH][KROW]; VElem v[CH][VROW]; }; };
-    typename std::conditional<KV_MODE == 1, SharedRows, Rows>::type kv;
+    typename std::conditional<KV_MODE == 1 && PF, SharedRows, Rows>::type kv;
     float ks[CH][NG];
     float vs[CH][NG];
     float s[16][CH + 1];
@@ -108,14 +109,14 @@ struct Smem {
     long long row[CH];
 };
 
-template <int KV_MODE>
+template <int KV_MODE, bool PF = false>
 __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                               const int32_t* __restrict__ ids,
                                                               const int32_t* __restrict__ steps, int n_kv_heads,
                                                               int page_size, float scale_log2, float* __restrict__ attn,
                                                               int cap) {
     extern __shared__ __align__(16) unsigned char smem_raw[];
-    Smem<KV_MODE>& S = *reinterpret_cast<Smem<KV_MODE>*>(smem_raw);
+    Smem<KV_MODE, PF>& S = *reinterpret_cast<Smem<KV_MODE, PF>*>(smem_raw);
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
@@ -153,7 +154,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     // int8 K/V: the next chunk's rows are loaded into registers while this chunk computes (Turing has no cp.async, and
     // at 1 block per SM the gather's latency was the kernel's largest stall), then stored to shared memory exactly as
     // the gather below stores them: the same bytes in the same places, the same arithmetic after.
-    constexpr bool PREFETCH = KV_MODE == 1;
+    constexpr bool PREFETCH = KV_MODE == 1 && PF;
     constexpr int KP = HD / 16;                               // 16-byte pieces per int8 row
     constexpr int PPT = PREFETCH ? CH * KP / THREADS : 1;     // pieces per thread
     static_assert(!PREFETCH || (CH * KP) % THREADS == 0 && CH * 4 == THREADS, "prefetch layout");
@@ -804,7 +805,7 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     if (!t75[dev]) {
         int major = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-        t75[dev] = major < 8 ? 1 : 2;
+        t75[dev] = strata::cc_major_of(major) < 8 ? 1 : 2;   // STRATA_EMULATE_CC counts
     }
     const int bytes = (int) (t75[dev] == 1 ? sizeof(Smem2T) : sizeof(Smem2));
     if (!attr[dev]) {
@@ -829,17 +830,16 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     }
     return true;
 }
-
-template <int KV_MODE>
+template <int KV_MODE, bool PF = false>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // per device, as above
     int dev = 0;
     cudaGetDevice(&dev);
-    const int bytes = (int) sizeof(Smem<KV_MODE>);
+    const int bytes = (int) sizeof(Smem<KV_MODE, PF>);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE, PF>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -849,7 +849,7 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_kernel<KV_MODE><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+        prompt_attn_kernel<KV_MODE, PF><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
             q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
@@ -1577,7 +1577,7 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
-    bool volta = false, turing = false;   // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
+    bool volta = false, turing = false, t75 = false;   // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
     {   // sm_75 or newer: the MMA above compiles for both.  sm_80+ runs the cp.async kernel (launch_i8); Turing has
         // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  An older card
         // keeps the old kernel.
@@ -1603,6 +1603,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         if (cc[dev] < 70) return false;
         volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
         turing = cc[dev] < 80;
+        t75 = cc[dev] == 75;      // a Turing card, or one run as such (STRATA_EMULATE_CC=75, STRATA_QSA_WARP=1)
     }
 #if defined(__HIPCC__)
     // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
@@ -1640,7 +1641,14 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         // Turing: v2 with register staging instead of cp.async, opt-in (STRATA_PA_V2T=1) until measured
         static const bool v2t = [] { const char* e = std::getenv("STRATA_PA_V2T"); return e != nullptr && e[0] == '1'; }();
-        if (v1 || (turing && !v2t)) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (v1 || (turing && !v2t)) {
+            // #1821 (xrip): v1 with the next chunk's rows prefetched in registers and K/V sharing one buffer (two blocks an
+            // SM), the same bits.  STRATA_PA_V1_PREFETCH=0 / 1 forces it off / on; unset: a Turing card with
+            // STRATA_SM75_PERF=1.
+            static const int pf_env = [] { const char* e = std::getenv("STRATA_PA_V1_PREFETCH"); return e ? (std::atoi(e) != 0 ? 1 : 0) : -1; }();
+            if (pf_env == 1 || (pf_env < 0 && t75 && strata::sm75_series())) return launch<1, true>(q, pools, ids, steps, cap, s, attn, n_q, st);
+            return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        }
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;
