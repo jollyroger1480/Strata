@@ -116,15 +116,15 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
 }
 
-template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
-__global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
-                                                             const int32_t* __restrict__ ids,
-                                                             const int32_t* __restrict__ step, int n_kv_heads,
-                                                             int page_size, float scale, float* __restrict__ part_acc,
-                                                             float* __restrict__ part_m, float* __restrict__ part_l,
-                                                             int n_chunks, int cap = 0, long long scratch_stride = 0,
-                                                             QsaAttnPoolsRows prow = {}) {
-    if (prow.n > 0) p = prow.p[blockIdx.z];   // a batch window's query attends over its own slot's pools
+// (the body is a device function so the batch window's rows kernel below can run it over each query's own pools without
+// the default kernel's signature, or the function-pointer types the pre-sm_75 / HIP selections build, changing)
+template <int KV_MODE, bool LANE_CELL, bool QUERY_SWIZZLE, bool REDUCE12>
+__device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, QsaAttnPools p,
+                                                const int32_t* __restrict__ ids, const int32_t* __restrict__ step,
+                                                int n_kv_heads, int page_size, float scale,
+                                                float* __restrict__ part_acc, float* __restrict__ part_m,
+                                                float* __restrict__ part_l, int n_chunks, int cap,
+                                                long long scratch_stride) {
     // batched form: query blockIdx.z, with its own q row, selection, step and scratch
     q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
     ids += (size_t) blockIdx.z * (size_t) cap;
@@ -282,6 +282,32 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
+
+template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
+__global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                             const int32_t* __restrict__ ids,
+                                                             const int32_t* __restrict__ step, int n_kv_heads,
+                                                             int page_size, float scale, float* __restrict__ part_acc,
+                                                             float* __restrict__ part_m, float* __restrict__ part_l,
+                                                             int n_chunks, int cap = 0, long long scratch_stride = 0) {
+    attn_chunk_body<KV_MODE, LANE_CELL, QUERY_SWIZZLE, REDUCE12>(q, p, ids, step, n_kv_heads, page_size, scale, part_acc,
+                                                                 part_m, part_l, n_chunks, cap, scratch_stride);
+}
+
+// Batch windows: query blockIdx.z attends over its own slot's pools (rows.p[z]); the default kernel otherwise.
+template <int KV_MODE>
+__global__ void __launch_bounds__(THREADS) attn_chunk_rows_kernel(const float* __restrict__ q, QsaAttnPoolsRows rows,
+                                                                  const int32_t* __restrict__ ids,
+                                                                  const int32_t* __restrict__ step, int n_kv_heads,
+                                                                  int page_size, float scale,
+                                                                  float* __restrict__ part_acc,
+                                                                  float* __restrict__ part_m,
+                                                                  float* __restrict__ part_l, int n_chunks, int cap,
+                                                                  long long scratch_stride) {
+    attn_chunk_body<KV_MODE, false, false, false>(q, rows.p[blockIdx.z], ids, step, n_kv_heads, page_size, scale,
+                                                  part_acc, part_m, part_l, n_chunks, cap, scratch_stride);
+}
+
 
 // PR #540 (sskver): the same attention with fewer shuffles and less shared-memory traffic, bit for bit the kernel
 // above (same operands, same order); +7% prompt speed on a V100, where this kernel reads every prompt chunk.  It
@@ -731,9 +757,25 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
     const float scale = 1.0f / sqrtf((float) HD);
     const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) n_q);
     cudaStream_t st = (cudaStream_t) stream;
-    // the default kernel of qsa_decode_attn_batch on this target (no lane-cell, no pre-sm_75, no gfx906 variants)
-#define STRATA_ATTN_ROWS(M) attn_chunk_kernel<M><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, \
-        (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride, rows)
+    // The plain kernel is what qsa_decode_attn_batch runs unless one of its variants is on (lane-cell scoring, the
+    // pre-sm_75 / gfx103x kernel, the gfx906 swizzle): there each row goes through that call, one launch per row.
+    static const bool lane_cell_rows = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
+    bool per_row = lane_cell_rows;
+#if defined(STRATA_ATTN_PRE75_BUILT)
+    per_row = per_row || pre75_attn();
+#endif
+#if defined(STRATA_HIP_GFX906)
+    per_row = true;
+#endif
+    if (per_row) {
+        for (int64_t r = 0; r < n_q; ++r)
+            qsa_decode_attn_batch(q + (size_t) r * s.n_head * HD, rows.p[r], ids + (size_t) r * cap,
+                                  steps + (size_t) r * kStepCount, cap, s, scratch + (size_t) r * stride,
+                                  attn + (size_t) r * s.n_head * HD, 1, stream);
+        return;
+    }
+#define STRATA_ATTN_ROWS(M) attn_chunk_rows_kernel<M><<<grid, THREADS, 0, st>>>(q, rows, ids, steps, (int) s.n_head_kv, \
+        (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (kv_mode == 3) STRATA_ATTN_ROWS(3);
     else if (kv_mode == 2) STRATA_ATTN_ROWS(2);
     else if (kv_mode == 1) STRATA_ATTN_ROWS(1);

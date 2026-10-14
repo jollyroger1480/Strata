@@ -91,6 +91,26 @@ void scores_case(int rows) {
     char name[96];
     std::snprintf(name, sizeof name, "qsa_block_scores_rows, %d rows (own keys each)", rows);
     report(name, std::memcmp(a.data(), b.data(), n * 4) == 0);
+    // the window selects with one top-k launch over all rows (row-independent) where the per-row path ran one per row
+    const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s);
+    int32_t *i_rows = nullptr, *i_ref = nullptr;
+    ck(cudaMalloc(&i_rows, (size_t) rows * cap * 4), "malloc");
+    ck(cudaMalloc(&i_ref, (size_t) rows * cap * 4), "malloc");
+    ck(cudaMemset(i_rows, 0, (size_t) rows * cap * 4), "memset");
+    ck(cudaMemset(i_ref, 0, (size_t) rows * cap * 4), "memset");
+    k::qsa_block_topk(d_ref, d_steps, rows, max_blocks, cap, s, i_rows, nullptr);
+    for (int r = 0; r < rows; ++r)
+        k::qsa_block_topk(d_ref + (size_t) r * max_blocks, d_steps + (size_t) r * k::kStepCount, 1, max_blocks, cap, s,
+                          i_ref + (size_t) r * cap, nullptr);
+    ck(cudaDeviceSynchronize(), "sync");
+    const std::vector<int32_t> ta = down(i_rows, (size_t) rows * cap), tb = down(i_ref, (size_t) rows * cap);
+    bool tsame = true;
+    for (int r = 0; r < rows; ++r) {
+        const int64_t w = steps[(size_t) r * k::kStepCount + k::kStepWidth];
+        tsame = tsame && std::memcmp(ta.data() + (size_t) r * cap, tb.data() + (size_t) r * cap, (size_t) w * 4) == 0;
+    }
+    std::snprintf(name, sizeof name, "qsa_block_topk over %d rows == one call per row", rows);
+    report(name, tsame);
 }
 
 // ---- 2. the decode attention ----
