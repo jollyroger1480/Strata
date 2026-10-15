@@ -1,3 +1,4 @@
+import { ROOMY_HOST } from './helpers/hardware.mjs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -60,7 +61,7 @@ async function freePort(){const server=createServer();await new Promise(r=>serve
 test('HTTP import leaves the running model intact, loads through normal controls, protects active references and preserves files on removal',{timeout:30000},async t=>{
  const root=fixture(t),home=join(root,'host'),file=join(root,'huihui-Orca.gguf');mkdirSync(join(home,'data'),{recursive:true});ggufFixture(file);
  writeFileSync(join(home,'data','state.json'),JSON.stringify({setup:{complete:true,step:4,flowVersion:2},installed:{'qwen38-q4_k_m':{simulated:true}},loaded:'qwen38-q4_k_m'}));
- const port=await freePort(),base=`http://127.0.0.1:${port}`,host=spawn(process.execPath,['server/index.mjs'],{cwd,env:{...process.env,STRATA_HOME:home,STRATA_MODELS_DIR:join(home,'models'),STRATA_REAL_ENGINE:'0',STRATA_PORT:String(port),STRATA_BIND:'127.0.0.1'},stdio:'ignore'});
+ const port=await freePort(),base=`http://127.0.0.1:${port}`,host=spawn(process.execPath,['server/index.mjs'],{cwd,env:{...process.env,STRATA_HOME:home,STRATA_MODELS_DIR:join(home,'models'),STRATA_REAL_ENGINE:'0',STRATA_TEST_HARDWARE:ROOMY_HOST,STRATA_PORT:String(port),STRATA_BIND:'127.0.0.1'},stdio:'ignore'});
  async function call(path,body,method){const response=await fetch(base+path,{method:method??(body===undefined?'GET':'POST'),headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,body:await response.json()};}
  try {
  let ready=false;for(let i=0;i<100;i++){try{ready=(await call('/api/runtime')).status===200;if(ready)break;}catch{}await pause(100);}assert.ok(ready);

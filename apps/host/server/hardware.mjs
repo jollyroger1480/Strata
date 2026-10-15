@@ -31,17 +31,26 @@ export function cachedHardware() {
   return cached ?? null;
 }
 
+function testHardware() {
+  const raw = process.env.STRATA_TEST_HARDWARE;
+  if (!raw) return null;
+  try { const value = JSON.parse(raw); return value && typeof value === 'object' ? value : null; } catch { return null; }
+}
+
 export async function detect({ force = false } = {}) {
   if (!force && cached && Date.now() - cachedAt < 30_000) return cached;
 
   const platform = process.platform;
   const arch = process.arch;
-  const totalGb = os.totalmem() / 1024 ** 3;
+  // Tests only: STRATA_TEST_HARDWARE='{"totalGb":128,"freeGb":100,"gpus":[...]}' stands in for the probes, so a
+  // test about routing or lifecycle does not depend on how much memory the machine running it has.
+  const forced = testHardware();
+  const totalGb = forced?.totalGb ?? os.totalmem() / 1024 ** 3;
   // os.freemem() ignores reclaimable pages, which reads as "0 GB free" on macOS.
-  const freeGb = (await availableMemoryGb(platform)) ?? os.freemem() / 1024 ** 3;
+  const freeGb = forced?.freeGb ?? (await availableMemoryGb(platform)) ?? os.freemem() / 1024 ** 3;
 
   const cpu = await detectCpu(platform);
-  const gpus = await detectGpus(platform, totalGb);
+  const gpus = forced?.gpus ?? await detectGpus(platform, totalGb);
   const accelerator = pickAccelerator(gpus, cpu, totalGb);
 
   const hw = {
