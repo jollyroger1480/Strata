@@ -58,22 +58,28 @@ fn resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(manifest)
 }
 
+/// File name of the bundled Node runtime: `node.exe` on Windows, `node` elsewhere.
+const NODE_EXE: &str = if cfg!(windows) { "node.exe" } else { "node" };
+
+/// Where `tauri dev` finds a Node sidecar prepared next to the checkout (`toolchain/node`).
+fn dev_node_candidate(res: &Path) -> PathBuf {
+    let root = res.join("..").join("..").join("..").join("toolchain").join("node");
+    if cfg!(windows) {
+        // the Windows zip has node.exe at the top of the folder, not under bin/
+        root.join("node-v24.12.0-win-x64").join("node.exe")
+    } else {
+        root.join("node-v24.12.0-darwin-arm64").join("bin").join("node")
+    }
+}
+
 /// The private Node runtime that ships with the bundle.
 fn node_binary(res: &Path) -> Result<PathBuf, String> {
-    let bundled = res.join("node").join("node");
+    let bundled = res.join("node").join(NODE_EXE);
     if bundled.exists() {
         return Ok(bundled);
     }
     // development fallback: the sidecar prepared alongside the checkout
-    let dev = res
-        .join("..")
-        .join("..")
-        .join("..")
-        .join("toolchain")
-        .join("node")
-        .join("node-v24.12.0-darwin-arm64")
-        .join("bin")
-        .join("node");
+    let dev = dev_node_candidate(res);
     if dev.exists() {
         return Ok(dev);
     }
@@ -83,6 +89,17 @@ fn node_binary(res: &Path) -> Result<PathBuf, String> {
         dev.display()
     ))
 }
+
+/// A packaged GUI app must not flash a console window for the host process on Windows.
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console(_cmd: &mut Command) {}
 
 /// Wait until the host answers `/api/health`, or give up.
 fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
@@ -164,6 +181,7 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    hide_console(&mut cmd);
     // A user with the Strata API worker on a different port sets this; unset means the worker's
     // documented loopback default.
     if let Ok(url) = std::env::var("STRATA_SERVER_URL") {
@@ -256,8 +274,10 @@ fn run_self_test(report_path: &str) -> i32 {
 
     let node = match node_binary(&res) {
         Ok(n) => {
-            let version_ok = Command::new(&n)
-                .arg("--version")
+            let mut probe = Command::new(&n);
+            probe.arg("--version");
+            hide_console(&mut probe);
+            let version_ok = probe
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
@@ -285,6 +305,7 @@ fn run_self_test(report_path: &str) -> i32 {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    hide_console(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => {
             record("host-spawned", true, format!("pid {}", c.id()));
@@ -400,4 +421,41 @@ fn main() {
                 stop_host(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("strata-desktop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn bundled_node_uses_the_platform_file_name() {
+        let res = scratch("node");
+        assert!(node_binary(&res).is_err());
+        let dir = res.join("node");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(NODE_EXE), b"").unwrap();
+        assert_eq!(node_binary(&res).unwrap(), dir.join(NODE_EXE));
+        assert_eq!(NODE_EXE, if cfg!(windows) { "node.exe" } else { "node" });
+        let _ = std::fs::remove_dir_all(&res);
+    }
+
+    #[test]
+    fn a_bare_node_is_not_taken_for_the_windows_runtime() {
+        if !cfg!(windows) {
+            return;
+        }
+        let res = scratch("bare");
+        let dir = res.join("node");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("node"), b"").unwrap();
+        assert!(node_binary(&res).is_err());
+        let _ = std::fs::remove_dir_all(&res);
+    }
 }
