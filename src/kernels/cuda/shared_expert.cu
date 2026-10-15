@@ -19,6 +19,7 @@
 // BF16 path affects only the scalar gate: it reads the original F32 input and uses pinned CUDA MMVF plus
 // an FP32 sigmoid. Native projection overrides independently select CUDA Q8_1 MMVQ and FP32 SwiGLU.
 #include "strata/kernels/shared_expert.hpp"
+#include "strata/kernels/fuse_decode.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -331,6 +332,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     const unsigned g_embd = (unsigned) ((n_embd + THREADS - 1) / THREADS);
 
 #if defined(STRATA_EXPERIMENTAL_SM60)
+        if (strata::kernels::fuse_decode()) {
     // V100 (experimental sm_70 build): gate and up projections, then silu(gate) * up - ONE kernel when both
     // projections are S-family (`s_gemv_pair_silu`: one read of x, SwiGLU in the epilogue, `up` never
     // materialised).  The pair kernel is bit-exact vs the three-kernel sequence (shared row math, shared
@@ -410,7 +412,9 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     } else {
         gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
     }
-#else
+        } else
+#endif
+        {
     // gate and up projections, then silu(gate) * up in place in `gate`
     if (native_gate || native_up)
         native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
@@ -453,7 +457,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
             gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
         }
     }
-#endif
+        }
 
     // the per-token scalar gate, then the multiply.  Note the gate is computed from `x`, the ORIGINAL hidden
     // state, not from anything the expert produced. The historical branch uses BF16-rounded inputs; the

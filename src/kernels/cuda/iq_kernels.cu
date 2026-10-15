@@ -4256,6 +4256,12 @@ bool w2_on() {
 bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, int K, const void* X, int ldx,
                          const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream) {
     if (n_out % WG_BN != 0 || n_experts <= 0 || max_rows <= 0 || ldy % 4 != 0) return false;
+    {   // the tiles are tensor-core kernels: a pre-Volta card has no body for them (the sm_60 pass compiles them empty)
+        int cur = 0, major = 0;
+        if (cudaGetDevice(&cur) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, cur) != cudaSuccess ||
+            major < 7)
+            return false;
+    }
     // STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down through gemm_iq_f16_w2_kernel (above)
     if (w2_on() && n_out % W2_RB == 0 && ldx % 8 == 0 && ldy % 8 == 0 && (uintptr_t) X % 16 == 0 && (uintptr_t) Y % 32 == 0 &&
         (uintptr_t) W % 4 == 0 && expert_bytes % 4 == 0 && ((ty == 22 && K % 512 == 0) || (ty == 20 && K % 128 == 0))) {

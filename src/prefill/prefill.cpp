@@ -1013,18 +1013,23 @@ struct MmqPlan {
 // Volta (sm_70): MMQ runs on dp4a there (no int8 tensor cores).  pf_wmma(): the layers MMQ would take, and the IQ1_M
 // ones the FP16 path would, run as one launch per expert group on FP16 tensor-core tiles instead
 // (strata::kernels::gemm_iq_f16_grouped: each weight superblock dequantized once into shared memory by the FP16 path's
-// own formulas, FP16 activations, FP32 sums).  STRATA_PF_WMMA=0 / 1: off / on on any CUDA card.
+// own formulas, FP16 activations, FP32 sums).  OPT-IN: STRATA_PF_WMMA=1 (the activations are FP16 rather than MMQ's
+// q8_1, so the answers differ from the default).  Only when EVERY visible CUDA card is compute capability 7.0 or
+// newer: the tiles need tensor cores, and a Volta + Pascal rig (one process, one decision) keeps MMQ.
 bool pf_wmma() {
 #if defined(__HIPCC__)
     return false;
 #else
     static const bool on = [] {
-        if (const char* e = std::getenv("STRATA_PF_WMMA")) return e[0] == '1';
-        int dev = 0, major = 0, minor = 0;
-        if (cudaGetDevice(&dev) != cudaSuccess) return false;
-        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        return major == 7 && minor == 0;
+        const char* e = std::getenv("STRATA_PF_WMMA");
+        if (e == nullptr || e[0] != '1') return false;
+        int n = 0;
+        if (cudaGetDeviceCount(&n) != cudaSuccess || n <= 0) return false;
+        for (int d = 0; d < n; ++d) {
+            int major = 0;
+            if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, d) != cudaSuccess || major < 7) return false;
+        }
+        return true;
     }();
     return on;
 #endif
@@ -3483,7 +3488,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         // pf_wmma: this layer's groups on the FP16 tensor-core tiles (single GPU, native pack, Q2_0 / IQ4_NL down)
                         const bool wmma_l = use_mmq && pf_wmma() && !fused_l && on_peer.empty() && lay.native &&
-                                            (mmq_dt == 42 || mmq_dt == 20) && strata::kernels::iq_row_bytes(mmq_gt, N) > 0;
+                                            (mmq_dt == 42 || mmq_dt == 20) && !lay.fmt[(size_t) l].tail_off &&
+                                            strata::kernels::iq_row_bytes(mmq_gt, N) > 0;
                         if (use_mmq && mmq_plan().wmma_only[(size_t) l] && !wmma_l) {
                             err = "prefill: an IQ1_M layer in the MMQ grouping needs the WMMA tiles, which this chunk cannot take";
                             return false;
