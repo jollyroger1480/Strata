@@ -16,10 +16,15 @@
  *   clean shutdown stops the engines the host started, a hard-killed host leaves the engine to Control (reported), stop.
  * With --spy the host runs under tests/helpers/acquire-spy.mjs and the run fails on any attempt to reach the internet or
  * run an installer.
+ *
+ * REAL mode (a test box with a GPU): --components <folder holding engine/<package>> --models <folder with strata-<id>.json
+ * whose engine is "component:strata-engine"> --model <id> [--backend cuda]. The same host and Control, a real engine and a
+ * real model: load, a real answer, ownership, unload, the missing-engine notice, load again, clean shutdown. The stub-only
+ * steps (the marker file, the hard-kill report) are left out.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -33,11 +38,13 @@ const node = join(install, 'node', isWin ? 'node.exe' : 'node');
 const hostEntry = join(install, 'host', 'server', 'index.mjs');
 const controlDir = join(install, 'control');
 const python = isWin ? join(controlDir, 'python', 'python.exe') : join(controlDir, 'python', 'bin', 'python3');
+const real = !!args.components;
+const modelId = String(args.model ?? 'stub');
 const work = resolve(args.work ?? mkdtempSync(join(tmpdir(), 'strata-installed-flow-')));
 mkdirSync(work, { recursive: true });
-const dirs = { components: join(work, 'components'), models: join(work, 'models'), profiles: join(work, 'profiles'), runtime: join(work, 'runtime'), home: join(work, 'home') };
+const dirs = { components: real ? resolve(args.components) : join(work, 'components'), models: real ? resolve(args.models) : join(work, 'models'), profiles: join(work, 'profiles'), runtime: join(work, 'runtime'), home: join(work, 'home') };
 // the runtime and profile folders are created by Control itself, with the owner-only ACL it insists on
-for (const [name, d] of Object.entries(dirs)) if (!['runtime', 'profiles'].includes(name)) mkdirSync(d, { recursive: true });
+for (const [name, d] of Object.entries(dirs)) if (!['runtime', 'profiles'].includes(name) && !(real && ['components', 'models'].includes(name))) mkdirSync(d, { recursive: true });
 
 const steps = [];
 const record = (name, ok, detail = '') => { steps.push({ name, ok: !!ok, detail: String(detail) }); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? '  ' + detail : ''}`); };
@@ -49,7 +56,7 @@ const sha = buf => createHash('sha256').update(buf).digest('hex');
 const baseEnv = {
   ...process.env,
   STRATA_COMPONENTS_DIR: dirs.components, STRATA_PROFILE_DIR: dirs.profiles, STRATA_RUNTIME_DIR: dirs.runtime,
-  STRATA_INSTALL_DIR: dirs.models, STRATA_ENGINE_BACKEND: 'cuda', STRATA_HOME: dirs.home, STRATA_MODELS_DIR: dirs.models,
+  STRATA_INSTALL_DIR: dirs.models, STRATA_ENGINE_BACKEND: String(args.backend ?? 'cuda'), STRATA_HOME: dirs.home, STRATA_MODELS_DIR: real ? join(work, 'models-unused') : dirs.models,
   APPDATA: join(work, 'appdata'), XDG_CONFIG_HOME: join(work, 'xdg'), PYTHONDONTWRITEBYTECODE: '1',
 };
 delete baseEnv.STRATA_API_KEY;
@@ -138,9 +145,14 @@ async function stopHost(hard = false) {
 async function main() {
   for (const need of [node, hostEntry, python, join(controlDir, 'strata.py')]) if (!existsSync(need)) { record('installed layout', false, `missing ${need}`); return; }
   record('installed layout', true, install);
-  installFakeEngine();
-  makeTokenizerAndConfig();
-  record('fixtures', true, `stub engine package in ${dirs.components}; run config strata-stub.json`);
+  if (real) {
+    const packages = existsSync(join(dirs.components, 'engine')) ? readdirSync(join(dirs.components, 'engine')) : [];
+    record('fixtures', packages.length > 0 && existsSync(join(dirs.models, `strata-${modelId}.json`)), `engine package(s) ${packages.join(', ')} in ${dirs.components}; run config strata-${modelId}.json in ${dirs.models}`);
+  } else {
+    installFakeEngine();
+    makeTokenizerAndConfig();
+    record('fixtures', true, `stub engine package in ${dirs.components}; run config strata-stub.json`);
+  }
 
   if (!(await startHost())) { record('host healthy', false, host.hostLog().slice(-600)); return; }
   record('host healthy', true, base);
@@ -150,37 +162,48 @@ async function main() {
     `python=${status.control?.python}; engine=${status.engine?.engine?.version}; forbidden=${status.acquisition?.forbidden}`);
 
   const native = (await call('/api/native?refresh=1')).body;
-  const model = native.installed?.models?.find(m => m.model === 'stub');
+  const model = native.installed?.models?.find(m => m.model === modelId);
   record('models come from Control', native.available && model?.ready === true && native.packaged === true, `available=${native.available}; model ready=${model?.ready}; ${native.summary ?? native.error}`);
 
   // ---- load
-  const started = (await call('/api/native/operations', 'POST', { kind: 'load', args: { model: 'stub' } })).body;
-  const loaded = await waitJob(started.id);
+  const started = (await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body;
+  const loaded = await waitJob(started.id, 400);
   const instance = loaded.state.instances[0];
   record('load through the host starts the engine under Control', loaded.job.state === 'done' && instance?.status === 'ready', `job=${loaded.job.state} ${loaded.job.error ?? ''}; instance=${instance?.status}`);
-  const ran = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
-  record('the engine that ran is the one in the component folder', ran && ran.script.toLowerCase().startsWith(dirs.components.toLowerCase()), ran?.script ?? 'engine never ran');
+  let ran = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+  if (real) {
+    const listed = spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(`${dirs.components}/engine/`) && l.includes('--serve'));
+    ran = listed.length ? { pid: Number(listed[0].trim().split(/\s+/)[0]), script: listed[0].trim().split(/\s+/)[1] } : null;
+    record('the engine process running is the binary from the component folder', !!ran, listed[0] ? listed[0].trim().slice(0, 160) : 'no engine process under the component folder');
+  } else {
+    record('the engine that ran is the one in the component folder', ran && ran.script.toLowerCase().startsWith(dirs.components.toLowerCase()), ran?.script ?? 'engine never ran');
+  }
 
   const runtime = controlJson('runtime', 'status', '--profile', 'app-1');
   record('a second client sees the same owner and instance (ownership)', runtime.json?.state === 'ready' && !!runtime.json.owner_id && !!runtime.json.instance_id && runtime.json.host_pid !== host.pid,
     `state=${runtime.json?.state}; owner=${String(runtime.json?.owner_id).slice(0, 8)}; instance=${String(runtime.json?.instance_id).slice(0, 8)}; owner host pid ${runtime.json?.host_pid} is not the app host (${host.pid})`);
 
   // ---- answer
-  const chat = await call('/v1/chat/completions', 'POST', { model: instance?.apiModelId ?? 'stub', messages: [{ role: 'user', content: 'hi' }], max_tokens: 4, stream: false });
+  const chat = await call('/v1/chat/completions', 'POST', real
+    ? { model: instance?.apiModelId ?? modelId, messages: [{ role: 'user', content: 'Reply with exactly one word: pong' }], max_tokens: 200, temperature: 0, reasoning_effort: 'none', stream: false }
+    : { model: instance?.apiModelId ?? modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 4, stream: false });
   const message = chat.body?.choices?.[0]?.message ?? {};
   const answer = `${message.content ?? ''}${message.reasoning_content ?? ''}`;   // the stub emits token 97 ("a"); the server files it as reasoning
-  record('the engine answers through the host (the stub token, not an error)', chat.status === 200 && answer === 'a', `status=${chat.status}; answer=${JSON.stringify(answer)}${chat.status === 200 ? '' : ' ' + JSON.stringify(chat.body).slice(0, 160)}`);
+  record(real ? 'the real model answers through the host (the answer text is checked)' : 'the engine answers through the host (the stub token, not an error)',
+    chat.status === 200 && (real ? /pong/i.test(answer) : answer === 'a'), `status=${chat.status}; answer=${JSON.stringify(answer.slice(0, 200))}${chat.status === 200 ? '' : ' ' + JSON.stringify(chat.body).slice(0, 160)}`);
 
   // ---- unload
   const unloaded = await call(`/api/native/instances/${instance.id}/unload`, 'POST', {});
   await delay(500);
   const after = controlJson('runtime', 'status', '--profile', 'app-1');
+  for (let i = 0; i < 100 && ran && alive(ran.pid); i++) await delay(100);       // a real engine takes a moment to release the GPU
   record('unload stops the engine', unloaded.status === 200 && after.json?.state === 'stopped' && (!ran || !alive(ran.pid)), `status=${unloaded.status}; runtime=${after.json?.state}; engine pid ${ran?.pid} alive=${ran ? alive(ran.pid) : 'n/a'}`);
 
   // ---- no engine for this PC
-  rmSync(join(dirs.components, 'engine'), { recursive: true, force: true });
+  const hidden = join(dirs.components, real ? 'engine.hidden-by-flow' : 'engine.gone');
+  renameSync(join(dirs.components, 'engine'), hidden);
   rmSync(mark, { force: true });
-  const missing = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: 'stub' } })).body.id);
+  const missing = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body.id);
   record('no engine for this PC is a notice and nothing is started', missing.job.state === 'error' && /No engine for this PC/.test(missing.job.error) && /never downloads/.test(missing.job.error) && !existsSync(mark),
     `${missing.job.state}: ${String(missing.job.error).slice(0, 160)}`);
   const refused = await waitJob((await call('/api/native/operations', 'POST', { kind: 'install', args: { family: 'qwen', model: 'IQ2_XS' } })).body.id);
@@ -189,20 +212,26 @@ async function main() {
   record('the llama.cpp download route is refused', binary.status === 409 && /never downloads/.test(binary.body?.error ?? ''), `${binary.status} ${binary.body?.error}`);
 
   // ---- clean shutdown (what the Tauri shell does on exit)
-  installFakeEngine();
+  renameSync(hidden, join(dirs.components, 'engine'));
   rmSync(mark, { force: true });
-  const again = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: 'stub' } })).body.id);
-  const ran2 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+  const again = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body.id, 400);
+  let ran2 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+  if (real) {
+    const listed = spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(`${dirs.components}/engine/`) && l.includes('--serve'));
+    ran2 = listed.length ? { pid: Number(listed[0].trim().split(/\s+/)[0]) } : null;
+  }
   record('load again after the engine package returns', again.job.state === 'done', again.job.error ?? '');
   const wrong = await fetch(base + '/api/control/shutdown', { method: 'POST', headers: { 'x-strata-shutdown': 'nope' } });
   record('shutdown without the shell\'s secret is refused', wrong.status === 403, String(wrong.status));
   const exited = new Promise(r => host.once('exit', code => r(code)));
   const stopping = await fetch(base + '/api/control/shutdown', { method: 'POST', headers: { 'x-strata-shutdown': shutdownToken } });
   const code = await Promise.race([exited, delay(90000).then(() => 'timeout')]);
+  for (let i = 0; i < 100 && ran2 && alive(ran2.pid); i++) await delay(100);
   const final = controlJson('runtime', 'status', '--profile', 'app-1');
   record('clean shutdown stops the engine the app started and exits', stopping.status === 202 && code === 0 && final.json?.state === 'stopped' && (!ran2 || !alive(ran2.pid)), `status=${stopping.status}; host exit=${code}; runtime=${final.json?.state}; engine alive=${ran2 ? alive(ran2.pid) : 'n/a'}`);
 
-  // ---- hard kill: report what happens to an engine whose app host dies
+  // ---- hard kill: report what happens to an engine whose app host dies (stub engine only)
+  if (real) { await finishSpy(); return; }
   if (!(await startHost())) { record('host restarts', false, host.hostLog().slice(-400)); return; }
   await call('/api/native?refresh=1');
   rmSync(mark, { force: true });
@@ -215,6 +244,10 @@ async function main() {
   const cleanup = controlJson('runtime', 'stop', '--profile', 'app-1');
   record('Control stops it on request', cleanup.json?.state === 'stopped' && (!ran3 || !alive(ran3.pid)), `runtime=${cleanup.json?.state}; engine alive=${ran3 ? alive(ran3.pid) : 'n/a'}`);
 
+  await finishSpy();
+}
+
+async function finishSpy() {
   if (spyLog) {
     const attempts = readFileSync(spyLog, 'utf8').split('\n').filter(Boolean);
     record('no acquisition attempt by the host during the whole run (spy)', attempts.length === 0, attempts.join(' | '));
@@ -224,6 +257,7 @@ async function main() {
 try { await main(); }
 catch (error) { record('flow', false, error.stack ?? error.message); }
 finally {
+  try { const hid = join(dirs.components, 'engine.hidden-by-flow'); if (real && existsSync(hid) && !existsSync(join(dirs.components, 'engine'))) renameSync(hid, join(dirs.components, 'engine')); } catch { /* reported by the run */ }
   await stopHost(true);
   controlJson('runtime', 'stop', '--profile', 'app-1');
   controlJson('runtime', 'stop', '--profile', 'app-2');
