@@ -59,6 +59,14 @@ export function controlEnvironment(control, { env = process.env, components = co
   };
 }
 
+/**
+ * The environment of the installer process (tools/strata_mcp.py): Control's, with acquiring still forbidden for the process
+ * itself. Only the install job it starts when the user asks to download a model lifts that for its own children.
+ */
+export function installerEnvironment(control, { env = process.env, installDir, components = componentsDirectory({ env }) } = {}) {
+  return { ...controlEnvironment(control, { env, components }), STRATA_CONTROL_INSTALL: '1', ...(installDir ? { STRATA_INSTALL_DIR: installDir } : {}) };
+}
+
 export class ControlError extends Error {
   constructor(message, { code = 'control_failed', exitCode = null, output = null } = {}) {
     super(message);

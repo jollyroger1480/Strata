@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -95,8 +96,9 @@ function packagedFixture({ engineUsable = true } = {}) {
   });
   const calls = [];
   const spawned = [];
+  const rpc = [];
   const control = {
-    control: { dir: join(root, 'control') }, version: '0.1.45',
+    control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: '0.1.45',
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
     async engine() {
       calls.push(['engine']);
@@ -110,8 +112,37 @@ function packagedFixture({ engineUsable = true } = {}) {
   };
   const requests = [];
   const fetcher = async url => { calls.push(['fetch', url.replace(/:\d+/, ':PORT')]); return Response.json({ status: 'ok' }); };
-  const native = createNativeControl({ control, directory: data, spawnProcess: (...args) => { spawned.push(args); throw new Error('no process may be started by the host in packaged mode'); }, fetcher, requests: () => requests });
-  return { native, calls, spawned, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
+  // The only process the host may start is Control's installer (its bundled tools/strata_mcp.py on Control's Python); the fake
+  // answers like it: the catalog, the hardware with the GPUs, and an install plan or job.
+  const catalog = { families: [{ family: 'qwen', title: 'Qwen3.8-Flash-Next', about: 'x', images: true, experimental: false, sizes: [
+    { id: 'q2_0', model: 'Q2_0', download_gb: 66.4, ram_needed_gb: 48, about: 'fast', on_this_pc: 'fits', installed: false, images: true, experimental: false },
+    { id: 'iq3_xxs', model: 'IQ3_XXS', download_gb: 75.8, ram_needed_gb: 60, about: 'balanced', on_this_pc: 'fits', installed: false, images: true, experimental: false }] }],
+    contexts: [8192, 32768], recommendation: { family: 'qwen', model: 'IQ3_XXS', context: 32768 }, context_note: '' };
+  const hardware = { ram_gb: 63, cpu: { name: 'cpu', cores: 12 }, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5070', vram_gb: 11.9, usable: true }] };
+  let installJob = null;
+  const spawnProcess = (command, args, options) => {
+    spawned.push({ command, args, options });
+    if (!String(args[0]).endsWith('strata_mcp.py')) throw new Error('no process but the installer may be started by the host in packaged mode: ' + command + ' ' + args.join(' '));
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.exitCode = null;
+    child.kill = () => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0)); return true; };
+    child.stdin = { write(line) {
+      const message = JSON.parse(line); if (!message.id) return;
+      if (message.method === 'tools/call') rpc.push(message.params);
+      let result;
+      if (message.method === 'initialize') result = { protocolVersion: '2024-11-05' };
+      else if (message.method === 'tools/list') result = { tools: ['strata_models', 'strata_status', 'strata_install'].map(name => ({ name })) };
+      else if (message.params.name === 'strata_models') result = { structuredContent: catalog };
+      else if (message.params.name === 'strata_status') result = { structuredContent: { hardware, recommendation: catalog.recommendation, install: installJob, running: [], summary: 'x' } };
+      else if (message.params.arguments?.confirm) { installJob = { running: false, exit_code: 0 }; result = { structuredContent: { summary: 'Install started', plan: { download_gb: 66.4 }, install: { running: true, step: 'downloading' } } }; }
+      else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
+      else result = { structuredContent: { summary: 'Plan', plan: { title: 'Qwen3.8-Flash-Next Q2_0', download_gb: 66.4, disk_short: null } } };
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + String.fromCharCode(10))));
+    } };
+    return child;
+  };
+  const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
+  const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
+  return { native, calls, spawned, others, rpc, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -125,7 +156,19 @@ test('packaged: models come from Control, no python, git or engine process is st
     assert.equal(state.packaged, true);
     assert.match(state.summary, /engine 0\.1\.45/);
     assert.equal(state.version, '0.1.45');
-    assert.equal(f.spawned.length, 0);
+    assert.equal(f.others().length, 0, 'nothing but the installer is started');
+    // the catalog, the GPUs and the recommendation come from the bundled installer, run on Control's own Python
+    assert.equal(state.catalog.families[0].sizes.length, 2);
+    assert.equal(state.catalog.recommendation.model, 'IQ3_XXS');
+    assert.equal(state.hardware.gpus[0].name, 'NVIDIA GeForce RTX 5070');
+    assert.equal(state.hardware.ram_gb, 63);
+    const installer = f.spawned[0];
+    assert.equal(installer.command, join(f.root, 'control', 'python', 'python.exe'));
+    assert.deepEqual(installer.args.slice(1), ['--root', f.install, '--src', join(f.root, 'control')]);
+    assert.equal(installer.options.env.STRATA_CONTROL_INSTALL, '1');
+    assert.equal(installer.options.env.STRATA_NO_ACQUIRE, '1', 'the installer process itself may not acquire; only its explicit install job does');
+    assert.equal(installer.options.env.STRATA_INSTALL_DIR, f.install);
+    assert.equal(installer.options.env.PYTHONNOUSERSITE, '1');
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -146,7 +189,7 @@ test('packaged: load = saved profile + runtime start under Control; unload = run
     await f.native.unload(first.id);
     assert.deepEqual(f.calls.filter(c => c[0] === 'stop').at(-1), ['stop', 'app-1']);
     assert.equal(f.native.state().instances.length, 1);
-    assert.equal(f.spawned.length, 0, 'the host never spawned anything itself');
+    assert.equal(f.others().length, 0, 'the host never spawned anything itself');
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -159,20 +202,50 @@ test('packaged: no engine for this PC is the notice, and nothing is started', as
     assert.match(job.error, /No engine for this PC/);
     assert.match(job.error, /never downloads an engine/);
     assert.equal(f.calls.some(c => ['saveProfile', 'start'].includes(c[0])), false);
-    assert.equal(f.spawned.length, 0);
+    assert.equal(f.others().length, 0);
   } finally { await f.native.close(); f.cleanup(); }
 });
 
-test('packaged: install, update, rollback and calibration are refused with the Terminal notice and start nothing', async () => {
+test('packaged: the user can download and prepare a model: the plan and the install job go to the bundled installer, the engine is not touched', async () => {
   const f = packagedFixture();
   try {
     await f.native.refresh(true);
-    for (const [kind, args] of [['install', { family: 'qwen', model: 'IQ2_XS' }], ['update-engine', {}], ['update-strata', {}], ['rollback', {}], ['calibrate', { model: 'iq3_s' }]]) {
+    const plan = await f.native.plan({ family: 'qwen', model: 'Q2_0' });
+    assert.equal(plan.plan.title, 'Qwen3.8-Flash-Next Q2_0');
+    const planned = f.rpc.at(-1);
+    assert.equal(planned.name, 'strata_install');
+    assert.equal(planned.arguments.confirm, false, 'a plan changes nothing');
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    const started = f.rpc.filter(c => c.name === 'strata_install' && c.arguments.confirm);
+    assert.equal(started.length, 1);
+    assert.equal(started[0].arguments.family, 'qwen');
+    assert.equal(started[0].arguments.model, 'Q2_0');
+    assert.equal(f.others().length, 0, 'the host starts no pip, git, python of its own or engine');
+    assert.equal(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).length, 0, 'installing does not start an engine');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: the installer works in a folder the app can write, never in the read-only bundle', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    assert.equal(existsSync(f.install), true);
+    assert.notEqual(f.native.state().installDir, join(f.root, 'control'));
+    assert.equal(f.spawned[0].args.at(-3), f.install);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: update, rollback and calibration are refused with the Terminal notice and start nothing', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    for (const [kind, args] of [['update-engine', {}], ['update-strata', {}], ['rollback', {}], ['calibrate', { model: 'iq3_s' }]]) {
       const job = await finish(f.native, f.native.operation(kind, args).id);
       assert.equal(job.state, 'error', kind);
       assert.match(job.error, /Terminal|calibrates NVIDIA|No saved previous engine/, `${kind}: ${job.error}`);
     }
-    assert.equal(f.spawned.length, 0);
+    assert.equal(f.others().length, 0);
     assert.equal(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).length, 0);
   } finally { await f.native.close(); f.cleanup(); }
 });
