@@ -251,7 +251,9 @@ class TestSafeExtraction(StoreCase):
             tar.addfile(info, io.BytesIO(b"#\n"))
         out = self.extract(buffer.getvalue())
         mode = (out / "bin/run").stat().st_mode
-        self.assertTrue(mode & stat.S_IXUSR, "a bundled runtime needs its executable bit")
+        if os.name != "nt":
+            # NTFS has no execute bit: Windows decides by file extension (.exe), so there is nothing to keep.
+            self.assertTrue(mode & stat.S_IXUSR, "a bundled runtime needs its executable bit")
         self.assertFalse(mode & stat.S_ISUID, "setuid from an archive is never trusted")
 
 
