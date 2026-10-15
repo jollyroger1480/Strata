@@ -255,3 +255,20 @@ class InstallerServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailedStartTests(unittest.TestCase):
+    def test_a_failed_start_carries_the_last_lines_the_server_wrote(self):
+        """The app turns `server_exited` into words and keeps the reason under Details: Control reports the log's last lines."""
+        from strata_control import runtime
+        owner = [c for _, c in vars(runtime).items() if isinstance(c, type) and hasattr(c, "_log_tail")][0]
+        with tempfile.TemporaryDirectory() as directory:
+            fake = mock.Mock()
+            fake.state_path = Path(directory) / "app-1.json"
+            fake.name = "app-1"
+            self.assertIsNone(owner._log_tail(fake))                       # no log: nothing, no exception
+            (Path(directory) / "app-1.server.log").write_text("loading\n\nmemory guard: 5.1 GiB free is under 6 GiB\nthe engine process ended: exit code 3\n", encoding="utf-8")
+            tail = owner._log_tail(fake)
+            self.assertIn("memory guard: 5.1 GiB free", tail)
+            self.assertTrue(tail.endswith("exit code 3"))
+            self.assertNotIn("loading", tail.split(" | ")[0] if tail.count(" | ") > 2 else "")

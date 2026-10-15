@@ -885,6 +885,10 @@ def combined_progress(prog: dict, job: dict) -> dict:
     prog["download"] = {"file": "model files", "done_gb": round(done_gb, 3), "total_gb": float(total),
                         "remaining_gb": round(max(0.0, float(total) - done_gb), 3),
                         "percent": min(99, int(100 * done_gb / float(total))) if total else 0}
+    # The parts of the whole job, for a progress bar that sums them (the job that fetches the engine adds its own part):
+    # {kind, name, done_gb, total_gb, state}
+    prog["parts"] = [{"kind": "model", "name": "Model files", "done_gb": prog["download"]["done_gb"],
+                      "total_gb": float(total), "state": "downloading"}]
     return prog
 
 

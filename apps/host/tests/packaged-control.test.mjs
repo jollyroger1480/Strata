@@ -296,18 +296,13 @@ test('packaged: the catalog offers no picture reading (app installs have none), 
   } finally { await f.native.close(); f.cleanup(); }
 });
 
-test('packaged: an engine that stops while loading is explained in words, with the engine\'s last line', async () => {
+test('packaged: an engine that stops while loading keeps the code and the last engine line for the Details disclosure', async () => {
   const f = packagedFixture();
   try {
     await f.native.refresh(true);
-    const control = f.native;
-    // the fixture's Control starts fine; make start fail the way Control reports a dead engine
     f.failStart({ message: 'server_exited', output: { log_tail: 'memory guard: 5.1 GiB free is under the 6 GiB limit' } });
-    const job = await finish(control, control.operation('load', { model: 'iq2_xs' }).id);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
     assert.equal(job.state, 'error');
-    assert.match(job.error, /ran low on memory/);
-    assert.match(job.error, /Leave 20% for my work/);
-    assert.match(job.error, /memory guard: 5\.1 GiB free/);
-    assert.doesNotMatch(job.error, /^server_exited$/);
+    assert.match(job.error, /^server_exited: memory guard: 5\.1 GiB free/);
   } finally { await f.native.close(); f.cleanup(); }
 });

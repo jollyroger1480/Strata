@@ -798,15 +798,18 @@ class Host:
                 self.last_error = result["error"]
 
     def _log_tail(self, limit: int = 4096) -> str | None:
-        """The last line the server wrote (a failed start is explained by it), or None. Bounded read, never raises."""
+        """The last lines the server wrote (a failed start is explained by them), or None. Bounded read, never raises."""
         try:
             with open(self.state_path.parent / f"{self.name}.server.log", "rb") as stream:
                 stream.seek(0, os.SEEK_END)
                 stream.seek(max(0, stream.tell() - limit))
-                lines = [x.strip() for x in stream.read().decode("utf-8", "replace").splitlines() if x.strip()]
+                lines = [x.rstrip() for x in stream.read().decode("utf-8", "replace").splitlines() if x.strip()]
         except OSError:
             return None
-        return lines[-1][:300] if lines else None
+        # not the indented frames of a Python traceback: the engine's own lines and the final exception line say why
+        plain = [x for x in lines if not x[0].isspace() and not x.startswith("Traceback")]
+        chosen = plain[-3:] or lines[-1:]
+        return " | ".join(x[:200] for x in chosen) if chosen else None
 
     def _status(self) -> dict:
         child = self.child

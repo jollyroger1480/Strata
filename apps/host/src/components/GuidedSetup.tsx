@@ -12,7 +12,7 @@ import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { completeSetup, completeSetupStep, go, newSession, openSetup, selectRemoteModel, setSettingsSection, useStore } from '../lib/store';
 import type { LocalModelFolder, SetupState } from '../lib/types';
 import { downloadCounter, modelFolderLabel, onboardingError } from '../lib/onboarding-download';
-import { useDownloadEta } from '../lib/download-eta';
+import { installProgress, useDownloadEta } from '../lib/download-eta';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
@@ -142,7 +142,7 @@ export function GuidedSetup() {
             await persist(4, { tuneJobId: result.id });
         });
     }
-    const progress = installJob?.result?.install?.download;
+    const progress = installProgress(installJob?.result?.install);
     const preparing = installJob?.state === 'running';
     const stopped = installJob && ['error', 'cancelled'].includes(installJob.state);
     useEffect(() => {

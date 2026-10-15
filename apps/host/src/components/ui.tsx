@@ -10,6 +10,7 @@ import { tr } from '../lib/i18n';
 import { createContext, useContext, useCallback, useEffect, useId, useRef, useState, type AriaAttributes, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cx, userError } from '../lib/format';
+import { plainFailure } from '../lib/plain-errors';
 import { dismissActionError, dismissToast, holdToast, releaseToast, useStore } from '../lib/store';
 import { isTopSurface, useSurfaceFocus } from '../lib/focus';
 /* -------------------------------------------------------------------- icon */
@@ -514,12 +515,18 @@ export function MetricGrid({ children, min = 200 }: {
     </div>);
 }
 /** Shared, announced error with a cause and a concrete recovery action. */
-export function ErrorNotice({ message, next, action, onRetry }: {
+export function ErrorNotice({ message, next, action, onRetry, detail }: {
     message: string;
     next?: string;
     action?: string;
     onRetry?: () => void;
+    detail?: string;
 }) {
-    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(userError(message))}</strong>{tr(next ? <p>{tr(next)}</p> : null)}</div>{tr(onRetry ? <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn> : null)}</div>;
+    // A known failure is shown as a sentence and a next step; the original text stays under Details for experts.
+    const plain = plainFailure(message);
+    const known = plain.kind !== 'plain';
+    const nextStep = known ? (plain.next ? tr(plain.next) : next) : next;
+    const raw = detail ?? (known ? plain.detail : undefined);
+    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(known ? plain.message : userError(message))}</strong>{tr(nextStep ? <p>{tr(nextStep)}</p> : null)}{tr(raw ? <details className="error-detail"><summary className="small">{tr("Details")}</summary><pre className="small muted">{raw}</pre></details> : null)}</div>{tr(onRetry ? <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn> : null)}</div>;
 }
 export function PreviewBadge() { const demo = useStore(s => s.library?.mode === 'simulated'); return demo ? <span className="preview-badge">{tr("Preview build")}</span> : null; }

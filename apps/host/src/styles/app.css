@@ -6993,3 +6993,15 @@ textarea {
   white-space: normal;
   padding: 8px;
 }
+
+/* The reading size reaches everything in a conversation, not only paragraphs: headings, inline code, tables, code blocks and the
+   model's reasoning keep their usual proportion (18px, 13px, 13px at the 16px default) at any size. */
+.st-bubble h2, .st-bubble h3, .st-bubble h4 { font-size: 1.125em; }
+.st-bubble .md-code { font-size: .8125em; }
+.st-bubble .md-table { font-size: calc(var(--st-content-fs, 16px) * .8125); }
+.st-bubble .md-table th, .st-bubble .md-table td { font-size: inherit; }
+.st-bubble .st-code pre, .st-bubble .st-code pre code, .st-bubble .st-code .syntax-text { font-size: calc(var(--st-content-fs, 16px) * .8125); }
+.st-msg--assistant .st-collapse__body { font-size: calc(var(--st-content-fs, 16px) * .8125); }
+.error-notice .error-detail { margin-top: 6px; }
+.error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
+.error-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }

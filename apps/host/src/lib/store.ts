@@ -1,3 +1,4 @@
+import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
@@ -1341,7 +1342,7 @@ export async function sendMessage(text: string) {
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
-          if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', String(frame.message ?? '')); }
+          if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -1368,7 +1369,7 @@ export async function sendMessage(text: string) {
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
           }));
         } else if (type === 'error') {
-          patchAssistant((m) => ({ ...m, error: String(frame.message ?? 'Engine error'), streaming: false }));
+          patchAssistant((m) => ({ ...m, error: plainFailure(String(frame.message ?? 'Engine error')).message, streaming: false }));
         } else if (type === 'done') {
           patchSession(sessionId, (sess) => ({
             ...sess,
