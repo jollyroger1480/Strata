@@ -261,6 +261,24 @@ class TunerTest(unittest.TestCase):
         t, s2, r = run_tuner(noisy, session_kw={"noise": 0.0})
         self.assertNotIn("spec_min_p", r.settings["per_request"])
 
+    def test_sending_any_setting_is_not_a_gain(self):
+        # the p620 artifact: every request that carried a setting read ~10% faster than the plain default, even a setting equal
+        # to what the engine already uses. The control point catches it.
+        def model(args, env, tune=None):
+            return 60.0 * (1.10 if tune else 1.0)
+        t, s, r = run_tuner(model, session_kw={"noise": 0.002})
+        self.assertEqual(r.settings["per_request"], {})
+        self.assertNotEqual(r.outcome, "improved")
+
+    def test_a_real_per_request_gain_is_confirmed_in_a_fresh_engine(self):
+        def model(args, env, tune=None):
+            return 60.0 * (1.06 if tune and tune.get("spec_min_p") == 0.7 else 1.0)
+        t, s, r = run_tuner(model, session_kw={"noise": 0.002})
+        self.assertEqual(r.settings["per_request"], {"spec_min_p": 0.7})
+        self.assertEqual(r.per_request_confirm["status"], "PASS")
+        self.assertGreaterEqual(sum(1 for x in r.per_request_confirm["ratios"] if x > 1.0), 4)
+        self.assertAlmostEqual(r.gain_pct, 6.0, delta=1.5)
+
     def test_thorough_confirms_with_five_pairs(self):
         model = speed_with({("--host-core", "last"): 1.06})
         t, s, r = run_tuner(model, opts=autotune.Options(mode="thorough", budget_s=7200), session_kw={"noise": 0.003})

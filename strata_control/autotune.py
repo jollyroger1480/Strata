@@ -113,6 +113,7 @@ class TuneResult:
     pairs: int = 0
     faster_pairs: int = 0
     per_request: list[dict[str, Any]] = field(default_factory=list)
+    per_request_confirm: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
     facts: dict[str, Any] = field(default_factory=dict)
@@ -540,6 +541,16 @@ class Tuner:
 
         # ---- per-request winners (found in the base engine): keep only the ones that won every round
         per_request_chosen = {row["key"]: row["value"] for row in r.per_request if row.get("won")}
+        if per_request_chosen and not self.storm and not self.cancel.is_set() and not self._over_budget(reserve_s=self._avg_run()):
+            # a per-request win from one engine's quick points is only a candidate: confirm it in a fresh engine, 5 interleaved rounds
+            self._say("confirm", "Confirming the settings that need no restart")
+            r.per_request_confirm = self._confirm_per_request(per_request_chosen, spec, threshold)
+            if not r.per_request_confirm["ok"]:
+                r.notes.append("a per-request setting looked faster in the first test but did not hold in the confirmation, so it was not kept")
+                per_request_chosen = {}
+        elif per_request_chosen:
+            r.notes.append("a per-request setting looked faster but could not be confirmed in the time left, so it was not kept")
+            per_request_chosen = {}
 
         # ---- result
         if end_base is not None and end_base.status == "PASS" and drift > 0.03 and winners:
@@ -593,8 +604,9 @@ class Tuner:
                         "rss_peak_mib": max([c.rss_peak_mib for c in c_runs if c.rss_peak_mib] or [None]) if any(c.rss_peak_mib for c in c_runs) else None,
                         "vram_used_mib": max([c.vram_used_mib for c in c_runs if c.vram_used_mib] or [None]) if any(c.vram_used_mib for c in c_runs) else None}
         elif r.outcome == "improved" and per_request_chosen:
-            r.gain_pct = r.gain_decode_pct = round(100 * (statistics.median(
-                [row["ratio"] for row in r.per_request if row.get("won")]) - 1.0), 1)
+            r.gain_pct = r.gain_decode_pct = round(100 * ((r.per_request_confirm or {}).get("ratio", 1.0) - 1.0), 1)
+            r.pairs = len((r.per_request_confirm or {}).get("ratios", []))
+            r.faster_pairs = sum(1 for x in (r.per_request_confirm or {}).get("ratios", []) if x > 1.0)
             r.chosen = dict(r.base)
         else:
             r.chosen = {k: r.base.get(k) for k in ("decode_tok_s", "pp_tok_s", "rss_peak_mib", "vram_used_mib")}
@@ -649,8 +661,10 @@ class Tuner:
     def _per_request_stage(self, eng: Any) -> list[dict[str, Any]]:
         """Per-request settings against the engine's own choice, in this one engine, 3 interleaved rounds (6.3 step 2).
 
-        A value is kept only if it beat the default by the margin in every round. No restart is needed, so these are
-        tried before any restart (5). One value per key can win."""
+        A **control** point sends a per-request value equal to what the engine already uses (the configuration's own
+        `--spec-min-p`), so it changes nothing: whatever it "gains" is the bias of sending a setting at all (the first run
+        after an idle gap, the order). A value must beat the default by the margin AND beat the control by the margin in every
+        round. A win here is only a candidate: the tuner confirms it afterwards in a fresh engine. One value per key can win."""
         points: list[tuple[str, Any]] = []
         for spec in tune_knobs.PER_REQUEST:
             if self.ctx.backend not in spec["backends"]:
@@ -661,27 +675,35 @@ class Tuner:
                 points.append((spec["key"], v))
         if not points:
             return []
+        own = tune_knobs._current(self.ctx.base_args, "--spec-min-p")
+        control = ("control", float(own)) if own not in (None, "") and self.ctx.backend != "metal" else None
         rounds = 3
-        default: dict[int, float] = {}
-        vals: dict[tuple[str, Any], dict[int, float]] = {pt: {} for pt in points}
+        default: dict[int, list[float]] = {}
+        vals: dict[tuple[str, Any], dict[int, float]] = {pt: {} for pt in points + ([control] if control else [])}
         self._say("per_request", "Trying settings that need no restart")
         for rnd in range(rounds):
-            for item in rotate([None] + points, rnd):
+            order = rotate([None] + points + ([control] if control else []) + [None], rnd)
+            for item in order:
                 self._check_cancel()
                 if item is None:
                     d = eng.decode_once(None, 200)
                     if d:
-                        default[rnd] = d
+                        default.setdefault(rnd, []).append(d)
                 else:
-                    d = eng.decode_once({item[0]: item[1]}, 200)
+                    key = "spec_min_p" if item[0] == "control" else item[0]
+                    d = eng.decode_once({key: item[1]}, 200)
                     if d:
                         vals[item][rnd] = d
+        ref = {i: statistics.mean(v) for i, v in default.items() if v}
+        ctl = [vals[control][i] / ref[i] for i in range(rounds) if control and i in vals[control] and i in ref] if control else []
         rows: list[dict[str, Any]] = []
         for pt in points:
-            ratios = [vals[pt][i] / default[i] for i in range(rounds) if i in vals[pt] and i in default]
-            won = len(ratios) == rounds and all(x >= 1.0 + self.o.margin for x in ratios)
-            rows.append({"key": pt[0], "value": pt[1], "ratios": [round(x, 4) for x in ratios],
-                         "ratio": round(statistics.median(ratios), 4) if ratios else None, "won": won})
+            ratios = [vals[pt][i] / ref[i] for i in range(rounds) if i in vals[pt] and i in ref]
+            adj = [ratios[j] / ctl[j] for j in range(min(len(ratios), len(ctl)))] if ctl else ratios
+            won = len(ratios) == rounds and len(adj) == rounds and all(x >= 1.0 + self.o.margin for x in adj) \
+                and all(x >= 1.0 + self.o.margin for x in ratios)
+            rows.append({"key": pt[0], "value": pt[1], "ratios": [round(x, 4) for x in ratios], "control_ratios": [round(x, 4) for x in ctl],
+                         "ratio": round(statistics.median(adj), 4) if adj else None, "won": won})
         best: dict[str, dict[str, Any]] = {}
         for row in rows:
             if row["won"] and (row["key"] not in best or row["ratio"] > best[row["key"]]["ratio"]):
@@ -689,6 +711,29 @@ class Tuner:
         for row in rows:
             row["won"] = best.get(row["key"]) is row
         return rows
+
+    def _confirm_per_request(self, chosen: dict[str, Any], spec: RequestSet, threshold: float) -> dict[str, Any]:
+        """5 interleaved rounds in a fresh engine of the chosen per-request settings against the engine's own choice (two decodes
+        each, the order alternating). Kept only if the median ratio beats the threshold in at least 4 of 5 rounds."""
+        ratios: list[float] = []
+
+        def points(eng: Any) -> None:
+            for i in range(5):
+                self._check_cancel()
+                got: dict[str, list[float]] = {"d": [], "t": []}
+                for who in (("d", "t") if i % 2 == 0 else ("t", "d")):
+                    for _ in range(2):
+                        v = eng.decode_once(chosen if who == "t" else None, 200)
+                        if v:
+                            got[who].append(v)
+                if got["d"] and got["t"]:
+                    ratios.append(statistics.mean(got["t"]) / statistics.mean(got["d"]))
+
+        res = self._run(self.base_args, {}, spec, "confirm per-request", points=points)
+        ok = res.status == "PASS" and len(ratios) == 5 and sum(1 for x in ratios if x > 1.0) >= 4 \
+            and statistics.median(ratios) >= threshold
+        return {"ok": ok, "ratios": [round(x, 4) for x in ratios], "ratio": round(statistics.median(ratios), 4) if ratios else None,
+                "status": res.status}
 
 
 # --------------------------------------------------------------------------- building a tuner from a run configuration
