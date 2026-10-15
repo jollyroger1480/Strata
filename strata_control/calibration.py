@@ -167,7 +167,7 @@ def _exclusive_preflight(cfg: dict, profile: dict | None = None) -> None:
 @contextmanager
 def _managed_exclusive():
     """Keep new owner hosts out for the full calibration engine action."""
-    if os.name != "posix":
+    if os.name not in ("posix", "nt"):
         yield
         return
     from strata_control import runtime

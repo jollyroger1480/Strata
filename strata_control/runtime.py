@@ -1,9 +1,16 @@
 """Local owner-controlled supervisor for one saved Strata serving profile.
 
 The supervisor holds the Popen handle for the server it started. A client never
-sends a signal to a PID found in a ready file. The control socket and token live
-in an owner-private directory. This first implementation supports POSIX; Windows
-needs a qualified owner-only pipe/ACL implementation before it may manage work.
+sends a signal to a PID found in a ready file. The control channel and token live
+in an owner-private directory.
+
+POSIX: an owner-private AF_UNIX socket, flock leases, SIGTERM to the server's own
+process group. Windows: a loopback-only TCP listener authorised by the 256-bit
+token (strata_control/owner_transport.py), byte-range leases (winproc.py), a
+protected one-entry ACL on the state directory, and a kill-on-close job object
+around the server tree. A PID in a state file is never signalled: it is only
+compared (with its creation time on Windows) to decide whether the recorded
+child is still there.
 """
 
 from __future__ import annotations
@@ -30,14 +37,44 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, profiles, readiness
+from strata_control import owner_transport, private_files, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
 
 MAX_MESSAGE = 64 * 1024
 ROOT = Path(__file__).resolve().parents[1]
+WINDOWS = os.name == "nt"
 _STARTED_HOSTS: dict[str, subprocess.Popen] = {}
+
+
+def _is_private(details: os.stat_result, path: Path) -> bool:
+    """Owner-only: POSIX owner and no group/other bits; Windows an ACL that shuts out every other account."""
+    if WINDOWS:
+        try:
+            return private_files.is_unshared(path)
+        except OSError:
+            return False
+    return details.st_uid == os.getuid() and not stat.S_IMODE(details.st_mode) & 0o077
+
+
+def _lock_file(descriptor: int, *, exclusive: bool) -> bool:
+    """Take a lease without waiting: True when taken, False when another holder has it."""
+    if WINDOWS:
+        return winproc.try_lock(descriptor, exclusive=exclusive)
+    try:
+        fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return False
+        raise
+    return True
+
+
+def _unlock_file(descriptor: int) -> None:
+    """Windows releases a lock only some time after the handle closes: release it now. POSIX closes."""
+    if WINDOWS:
+        winproc.unlock(descriptor)
 
 
 def _supported() -> None:
@@ -63,14 +100,20 @@ def _name(value: str) -> str:
 def runtime_dir() -> Path:
     _supported()
     override = os.environ.get("STRATA_RUNTIME_DIR")
-    base = Path(override).expanduser() if override else \
-        Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "strata" / "runtime"
+    if override:
+        base = Path(override).expanduser()
+    elif WINDOWS:
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Strata" / "runtime"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "strata" / "runtime"
     if not base.is_absolute():
         raise ProfileError("STRATA_RUNTIME_DIR must be absolute")
+    existed = base.exists()
     base.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if WINDOWS and not existed:
+        private_files.restrict_to_current_user(base, directory=True)   # no mode bits on NTFS: a protected ACL
     details = base.lstat()
-    if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.getuid() or \
-            stat.S_IMODE(details.st_mode) & 0o077:
+    if not stat.S_ISDIR(details.st_mode) or not _is_private(details, base):
         raise ProfileError("runtime directory must be owner-only (mode 0700)", 5)
     return base
 
@@ -82,15 +125,10 @@ def acquire_activity_lease(*, shared: bool) -> int:
     try:
         descriptor = os.open(directory / ".activity.lock", flags, 0o600)
         details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or \
-                stat.S_IMODE(details.st_mode) & 0o077:
+        if not stat.S_ISREG(details.st_mode) or not _is_private(details, directory / ".activity.lock"):
             raise ProfileError("runtime activity lock must be owner-only", 5)
-        try:
-            fcntl.flock(descriptor, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise ProfileError("a managed runtime or calibration owns the local engine lease", 6) from None
-            raise
+        if not _lock_file(descriptor, exclusive=not shared):
+            raise ProfileError("a managed runtime or calibration owns the local engine lease", 6)
         return descriptor
     except BaseException:
         if "descriptor" in locals():
@@ -128,15 +166,18 @@ def _read_state(name: str) -> dict | None:
         details = path.lstat()
     except FileNotFoundError:
         return None
-    if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or \
-            stat.S_IMODE(details.st_mode) & 0o077 or details.st_size > 16 * 1024:
+    if not stat.S_ISREG(details.st_mode) or not _is_private(details, path) or details.st_size > 16 * 1024:
         raise ProfileError("runtime state file is not private or is invalid", 5)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         raise ProfileError("runtime state file is unreadable", 5) from None
+    # POSIX: the address is the one derived from the profile. Windows: the port is chosen when the owner binds, so
+    # the state file carries it, and the only address a client may be sent to is a loopback port.
+    address_ok = bool(re.fullmatch(r"tcp:127\.0\.0\.1:[1-9][0-9]{0,4}", str(state.get("socket", "")))) \
+        if WINDOWS and isinstance(state, dict) else (isinstance(state, dict) and state.get("socket") == socket_path)
     if not isinstance(state, dict) or state.get("schema_version") != 1 or state.get("profile") != name or \
-            state.get("socket") != socket_path or not isinstance(state.get("token"), str) or \
+            not address_ok or not isinstance(state.get("token"), str) or \
             not re.fullmatch(r"[0-9a-f]{64}", state["token"]):
         raise ProfileError("runtime state file has an unsupported shape", 5)
     return state
@@ -146,7 +187,12 @@ def _child_marker(name: str, token: str) -> Path:
     return runtime_dir() / f"{name}-{token}.child.json"
 
 
-def _pid_exists(pid: int) -> bool:
+def _pid_exists(pid: int, started: int | None = None) -> bool:
+    """Whether the recorded child is still there. Never signals: on Windows `os.kill(pid, 0)` would END the process,
+    so liveness is a handle query, and `started` (the creation time recorded with the PID) tells the recorded
+    process from a later one that reused the number."""
+    if WINDOWS:
+        return winproc.pid_alive(pid, started)
     try:
         os.kill(pid, 0)  # Liveness check only; never signal a PID from saved state.
     except ProcessLookupError:
@@ -160,12 +206,9 @@ def _host_lease_active(name: str) -> bool:
     path, _, _ = _paths(name)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return True
-            raise
+        if not _lock_file(descriptor, exclusive=True):
+            return True
+        _unlock_file(descriptor)
         return False
     finally:
         os.close(descriptor)
@@ -182,17 +225,12 @@ def _recover_stale(name: str, *, wait: float) -> bool:
     try:
         if os.fstat(descriptor).st_ino != state_path.lstat().st_ino:
             raise ProfileError("runtime state changed during recovery", 6)
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise ProfileError("this profile already has a live managed runtime", 6) from None
-            raise
+        if not _lock_file(descriptor, exclusive=True):
+            raise ProfileError("this profile already has a live managed runtime", 6)
         marker = _child_marker(name, state["token"])
         try:
             details = marker.lstat()
-            if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or \
-                    stat.S_IMODE(details.st_mode) & 0o077 or details.st_size > 4096:
+            if not stat.S_ISREG(details.st_mode) or not _is_private(details, marker) or details.st_size > 4096:
                 raise ValueError("invalid owner marker")
             child = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -201,9 +239,10 @@ def _recover_stale(name: str, *, wait: float) -> bool:
                 child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
         deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        while _pid_exists(child["pid"]) and time.monotonic() < deadline:
+        started = child.get("started") if type(child.get("started")) is int else None
+        while _pid_exists(child["pid"], started) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _pid_exists(child["pid"]):
+        if _pid_exists(child["pid"], started):
             raise ProfileError("lost host child is still present; retry after it exits", 6)
         if not isinstance(child.get("ready"), str):
             raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
@@ -213,8 +252,7 @@ def _recover_stale(name: str, *, wait: float) -> bool:
             raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
         try:
             details = ready.lstat()
-            if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or \
-                    stat.S_IMODE(details.st_mode) & 0o077:
+            if not stat.S_ISREG(details.st_mode) or not _is_private(details, ready):
                 raise ProfileError("lost host ready file is invalid; inspect before recovery", 6)
             ready.unlink()
         except FileNotFoundError:
@@ -248,15 +286,19 @@ def _recover_stale(name: str, *, wait: float) -> bool:
             raise ProfileError("too many lost-host config snapshots; inspect before recovery", 6)
         for snapshot in snapshots:
             details = snapshot.lstat()
-            if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or \
-                    stat.S_IMODE(details.st_mode) & 0o077:
+            if not stat.S_ISREG(details.st_mode) or not _is_private(details, snapshot):
                 raise ProfileError("lost-host config snapshot is not private; inspect before recovery", 6)
             snapshot.unlink()
         marker.unlink()
+        if WINDOWS:                    # an open file cannot be deleted on Windows: release the lease first
+            _unlock_file(descriptor)
+            os.close(descriptor)
+            descriptor = -1
         state_path.unlink()
         return True
     finally:
-        os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _write_new(path: Path, data: bytes) -> int:
@@ -264,7 +306,8 @@ def _write_new(path: Path, data: bytes) -> int:
     try:
         # Keep this lease open in the owner host. The kernel releases it even
         # after SIGKILL, unlike a PID file or a stale Unix socket.
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not _lock_file(descriptor, exclusive=True):
+            raise OSError(errno.EWOULDBLOCK, "the runtime lease is held")
         with os.fdopen(os.dup(descriptor), "wb") as stream:
             stream.write(data)
             stream.flush()
@@ -286,7 +329,10 @@ def _rpc(name: str, command: str, *, timeout: float = 5, params: dict | None = N
     raw = (json.dumps(request) + "\n").encode("utf-8")
     # The transport decides the address family: a private POSIX socket, or the loopback listener
     # on Windows. The token in `raw` is what authorises the request either way.
-    client = owner_transport.connect(state["socket"], timeout=timeout)
+    try:
+        client = owner_transport.connect(state["socket"], timeout=timeout)
+    except OSError:      # nothing listens there any more (a lost owner), or it did not answer in time
+        raise ProfileError("runtime control is unavailable; inspect the private host log", 3) from None
     try:
         try:
             client.sendall(raw)
@@ -378,9 +424,11 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
                 command += ["--expected-profile-revision", expected_profile_revision]
             if expected_source_sha256 is not None:
                 command += ["--expected-source-sha256", expected_source_sha256]
+            detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+                      if WINDOWS else {"start_new_session": True})
             proc = subprocess.Popen(command,
                                     cwd=ROOT, stdin=subprocess.DEVNULL, stdout=stream,
-                                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+                                    stderr=subprocess.STDOUT, close_fds=True, **detach)
         _STARTED_HOSTS[name] = proc
         deadline = time.monotonic() + max(5.0, wait)
         while _read_state(name) is None and proc.poll() is None and time.monotonic() < deadline:
@@ -518,6 +566,7 @@ class Host:
         self.running = True
         self.state_fd: int | None = None
         self.owner_write_fd: int | None = None
+        self.owner_write = None            # Windows: the server's stdin pipe, whose EOF asks it to drain and stop
         self.probe_timeout = startup_wait
         self.probe_deadline = 0.0
         self.probe_key: tuple[int, str] | None = None
@@ -528,6 +577,10 @@ class Host:
         payload = {"host_token": self.token, "phase": phase}
         if pid is not None and ready is not None:
             payload.update(pid=pid, ready=str(ready))
+            if WINDOWS:
+                started = winproc.process_started(pid)
+                if started is not None:
+                    payload["started"] = started   # tells this process from a later one with the same number
         profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())
 
     def _plan(self) -> tuple[dict, list[str], Path, bytes]:
@@ -592,32 +645,47 @@ class Host:
         log = self.state_path.parent / f"{self.name}.server.log"
         self._mark_child("launching")
         descriptor = os.open(log, flags, 0o600)
-        reader, writer = os.pipe()
+        # POSIX: an inherited pipe with one writer (this host). Windows: the server's standard input is that pipe.
+        reader, writer = (None, None) if WINDOWS else os.pipe()
         server_args = [*args, "--ready-file", str(ready),
                        "--shutdown-timeout", str(self.shutdown_timeout),
-                       "--owner-fd", str(reader)]
+                       "--owner-fd", "0" if WINDOWS else str(reader)]
         attestation_key = secrets.token_bytes(32)
         expected_attestation = launch_identity.attestation(attestation_key, source_bytes, server_args)
         child_env = os.environ.copy()
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
         try:
             with os.fdopen(descriptor, "ab") as stream:
-                self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
-                                              cwd=ROOT, stdin=subprocess.DEVNULL, stdout=stream,
-                                              stderr=subprocess.STDOUT, close_fds=True,
-                                              pass_fds=(reader,), start_new_session=True, env=child_env)
+                if WINDOWS:
+                    self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
+                                                  cwd=ROOT, stdin=subprocess.PIPE, stdout=stream,
+                                                  stderr=subprocess.STDOUT, close_fds=True, env=child_env,
+                                                  creationflags=subprocess.CREATE_NO_WINDOW)
+                    # the whole server tree ends with this host, however the host ends (a kill-on-close job)
+                    from serve import winjob
+                    winjob.contain(self.child)
+                else:
+                    self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
+                                                  cwd=ROOT, stdin=subprocess.DEVNULL, stdout=stream,
+                                                  stderr=subprocess.STDOUT, close_fds=True,
+                                                  pass_fds=(reader,), start_new_session=True, env=child_env)
         except BaseException:
-            os.close(writer)
+            if writer is not None:
+                os.close(writer)
             raise
         finally:
-            os.close(reader)
-        self.owner_write_fd = writer
+            if reader is not None:
+                os.close(reader)
+        if WINDOWS:
+            self.owner_write = self.child.stdin
+        else:
+            self.owner_write_fd = writer
         try:
             self._mark_child("owned", pid=self.child.pid, ready=ready)
         except BaseException:
             # No ownership record means a future start cannot safely reclaim
             # this instance. Stop this child immediately instead.
-            os.killpg(self.child.pid, signal.SIGKILL)
+            self._kill_child_tree()
             self.child.wait(timeout=10)
             self._close_owner_pipe()
             raise
@@ -702,11 +770,14 @@ class Host:
             if self.ready_path is not None:
                 self.ready_path.unlink(missing_ok=True)
             return {"ok": True, "state": "stopped", "exit_code": child.returncode if child else 0}
-        child.send_signal(signal.SIGTERM)
+        if WINDOWS:
+            self._close_owner_pipe()             # EOF on the server's stdin: it drains and stops (no SIGTERM here)
+        else:
+            child.send_signal(signal.SIGTERM)
         try:
             code = child.wait(timeout=self.shutdown_timeout + 8)
         except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
+            self._kill_child_tree()
             child.wait(timeout=10)
             self._close_owner_pipe()
             return {"ok": False, "state": "failed", "error": "server_stop_deadline_expired", "exit_code": 8}
@@ -720,6 +791,30 @@ class Host:
         if self.owner_write_fd is not None:
             os.close(self.owner_write_fd)
             self.owner_write_fd = None
+        if self.owner_write is not None:
+            try:
+                self.owner_write.close()
+            except OSError:
+                pass
+            self.owner_write = None
+
+    def _kill_child_tree(self) -> None:
+        """The deadline kill of the server this host started, and everything it started. Only our own child: POSIX
+        signals its process group, Windows ends the job the child was put in (taskkill of our own child's tree if
+        the job could not be made)."""
+        child = self.child
+        if child is None:
+            return
+        if WINDOWS:
+            from serve import winjob
+            if not winjob.terminate():
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], capture_output=True)
+            try:
+                child.kill()
+            except OSError:
+                pass
+        else:
+            os.killpg(child.pid, signal.SIGKILL)
 
     def _restart(self, startup_wait: float, expected_profile_revision: str | None = None,
                  allow_source_switch: bool = False,
@@ -955,6 +1050,8 @@ class Host:
                 self.running = False
             signal.signal(signal.SIGTERM, shutdown)
             signal.signal(signal.SIGINT, shutdown)
+            if hasattr(signal, "SIGBREAK"):      # Windows: the signal a console Ctrl+Break / a closing console sends
+                signal.signal(signal.SIGBREAK, shutdown)
             self.state_fd = _write_new(self.state_path, (json.dumps({"schema_version": 1, "profile": self.name,
                                                                      "socket": bound_address, "token": self.token,
                                                                      "host_pid": os.getpid()}) + "\n").encode())
@@ -1006,6 +1103,11 @@ class Host:
                 self._stop_child()
             self._close_owner_pipe()
             listener.close()
+            if WINDOWS and self.state_fd is not None:
+                # an open file cannot be deleted on Windows: the lease ends just before the state file does
+                _unlock_file(self.state_fd)
+                os.close(self.state_fd)
+                self.state_fd = None
             try:
                 current = _read_state(self.name)
                 if current and current.get("token") == self.token:
@@ -1024,6 +1126,7 @@ class Host:
                 self._retire_snapshot(snapshot)
             if self.state_fd is not None:
                 os.close(self.state_fd)
+            _unlock_file(activity_lease)
             os.close(activity_lease)
         return 0
 

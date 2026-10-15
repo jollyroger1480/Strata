@@ -21,10 +21,13 @@ from unittest import mock
 from strata_cli.cli import main
 from strata_cli import bench
 from strata_cli.client import Endpoint
-from strata_control import calibration, journal, management, profiles, recipes, runtime
+from strata_control import calibration, journal, management, owner_transport, profiles, recipes, runtime
 
 
-@unittest.skipUnless(os.name == "posix", "owner-only Unix socket transport is POSIX-only")
+WINDOWS = os.name == "nt"
+
+
+@unittest.skipUnless(os.name in ("posix", "nt"), "no qualified owner transport on this platform")
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="strata-runtime-test-")
@@ -56,6 +59,11 @@ class RuntimeTests(unittest.TestCase):
                           "        print('DONE 1 1 1.0 1.0 length 0 0 0', flush=True)\n"
                           "        if slot is not None: print(f'BADM {slot} 0', flush=True)\n", encoding="utf-8")
         engine.chmod(0o700)
+        if WINDOWS:
+            # a script cannot be an engine exe on Windows: a .cmd that runs it stands in for the binary
+            wrapper = self.root / "engine.cmd"
+            wrapper.write_bytes(f'@echo off\r\n"{sys.executable}" "{engine}" %*\r\n'.encode())
+            engine = wrapper
         from tools.strata_tokenizer import BYTE_TO_UNICODE
         tokenizer = self.root / "tokenizer"
         tokenizer.mkdir()
@@ -108,7 +116,7 @@ class RuntimeTests(unittest.TestCase):
         code, invalid = send("true")
         self.assertEqual((code, invalid["ok"]), (2, False))
         self.assertIn("live must be true or false", invalid["error"])
-        engine = self.root / "engine.py"
+        engine = self.root / ("engine.cmd" if WINDOWS else "engine.py")
         engine.unlink()
         code, missing = send(False)
         self.assertEqual((code, missing["ok"], missing["report"]["ok"]), (0, True, False))
@@ -416,6 +424,7 @@ class RuntimeTests(unittest.TestCase):
                 finally:
                     host.wait(timeout=10)
 
+    @unittest.skipIf(WINDOWS, "Windows console stop needs a platform-specific integration runner (no SIGTERM/SIGINT)")
     def test_foreground_jsonl_emits_ready_and_stop_without_human_stdout(self):
         for stop_signal, expected_code, expected_reason, quiet in (
                 (signal.SIGTERM, 0, "sigterm", False),
@@ -676,7 +685,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(self.config.read_text())["port"], edited["port"])
         snapshot = Path(result["rollback_source_config"])
         self.assertEqual(snapshot.parent, self.root / "runtime")
-        self.assertEqual(snapshot.stat().st_mode & 0o077, 0)
+        if WINDOWS:
+            from strata_control import private_files
+            self.assertTrue(private_files.is_unshared(snapshot))      # NTFS has no mode bits: the ACL is the promise
+        else:
+            self.assertEqual(snapshot.stat().st_mode & 0o077, 0)
         self.assertEqual(json.loads(snapshot.read_text())["port"], 0)
         self.assertEqual(json.loads(snapshot.read_text())["api_key"], secret)
         self.assertNotIn(secret, json.dumps(result))
@@ -970,6 +983,7 @@ class RuntimeTests(unittest.TestCase):
             code = main(["ops", *args, "--profile", "local", "--output", "json"])
         return code, json.loads(output.getvalue())
 
+    @unittest.skipIf(WINDOWS, "SIGTERM to a Windows process is TerminateProcess: the hard-kill test below covers it")
     def test_terminating_owner_host_stops_its_child_and_removes_state(self):
         started = runtime.start("local", wait=10, shutdown_timeout=2)
         self.assertTrue(started["ok"])
@@ -990,9 +1004,18 @@ class RuntimeTests(unittest.TestCase):
         orphan = self.root / "runtime" / f"local-{state['token']}-{'a' * 32}.rollback.json"
         orphan.write_bytes(self.config.read_bytes())
         orphan.chmod(0o600)
-        os.kill(started["host_pid"], signal.SIGKILL)
         owned = runtime._STARTED_HOSTS.pop("local")
-        self.assertEqual(owned.wait(timeout=3), -signal.SIGKILL)
+        if WINDOWS:
+            owned.kill()                          # TerminateProcess: the host cannot clean up after itself
+            owned.wait(timeout=3)
+            # the job object ends the server tree with the host, no matter how the host ended
+            deadline = time.monotonic() + 15
+            while runtime._pid_exists(old_child) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(runtime._pid_exists(old_child))
+        else:
+            os.kill(started["host_pid"], signal.SIGKILL)
+            self.assertEqual(owned.wait(timeout=3), -signal.SIGKILL)
         stale = runtime.status("local")
         self.assertEqual((stale["state"], stale["error"]), ("stale", "owner_host_lost"))
         # The next start waits for the inherited-pipe guard to stop the old
@@ -1006,7 +1029,8 @@ class RuntimeTests(unittest.TestCase):
     def test_recovery_refuses_a_still_present_child(self):
         state_path, socket_path, _ = runtime._paths("local")
         token = "a" * 64
-        state = {"schema_version": 1, "profile": "local", "socket": str(socket_path),
+        state = {"schema_version": 1, "profile": "local",
+                 "socket": "tcp:127.0.0.1:50000" if WINDOWS else str(socket_path),
                  "token": token, "host_pid": 999999}
         lease = runtime._write_new(state_path, (json.dumps(state) + "\n").encode())
         os.close(lease)
@@ -1018,6 +1042,137 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(profiles.ProfileError, "still present"):
             runtime.start("local", wait=0, shutdown_timeout=2)
         self.assertTrue(state_path.exists())
+
+    # ---- owner transport, attach and identity (POSIX socket and Windows loopback alike)
+
+    def _stale_host(self, child_pid, *, started=None, token="a" * 64):
+        """A state file whose host is gone, and the ownership marker naming `child_pid` as its server."""
+        state_path, socket_path, _ = runtime._paths("local")
+        state = {"schema_version": 1, "profile": "local",
+                 "socket": "tcp:127.0.0.1:50000" if WINDOWS else str(socket_path),
+                 "token": token, "host_pid": 999999}
+        lease = runtime._write_new(state_path, (json.dumps(state) + "\n").encode())
+        runtime._unlock_file(lease)
+        os.close(lease)
+        marker = runtime._child_marker("local", token)
+        record = {"host_token": token, "phase": "owned", "pid": child_pid,
+                  "ready": str(state_path.parent / "local-fake.ready.json")}
+        if started is not None:
+            record["started"] = started
+        marker.write_text(json.dumps(record), encoding="utf-8")
+        marker.chmod(0o600)
+        return state_path, marker
+
+    def _send(self, state, token, command):
+        client = owner_transport.connect(state["socket"], timeout=5)
+        try:
+            client.sendall((json.dumps({"token": token, "command": command}) + "\n").encode())
+            return json.loads(client.recv(4096).split(b"\n")[0])
+        finally:
+            client.close()
+
+    def test_a_second_client_attaches_from_another_process_and_shares_the_owner(self):
+        started = runtime.start("local", wait=10, shutdown_timeout=2)
+        self.assertTrue(started["ok"])
+        state = runtime._read_state("local")
+        if WINDOWS:
+            self.assertRegex(state["socket"], r"^tcp:127\.0\.0\.1:[1-9][0-9]*$")
+        root = Path(__file__).resolve().parents[2]
+        done = subprocess.run([sys.executable, "strata.py", "runtime", "status", "--profile", "local",
+                               "--output", "json"], cwd=root, env=os.environ.copy(), capture_output=True,
+                              text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        other = json.loads(done.stdout)
+        self.assertEqual((other["state"], other["owner_id"], other["instance_id"], other["host_pid"]),
+                         ("ready", started["owner_id"], started["instance_id"], started["host_pid"]))
+        self.assertEqual(runtime.status("local")["owner_id"], started["owner_id"])   # attaching took nothing over
+        self.assertEqual(runtime.stop("local", timeout=12)["ok"], True)
+        self.assertEqual(runtime.status("local")["state"], "stopped")
+
+    def test_a_wrong_or_stale_token_cannot_stop_the_owner(self):
+        started = runtime.start("local", wait=10, shutdown_timeout=2)
+        self.assertTrue(started["ok"])
+        state = runtime._read_state("local")
+        wrong_last = "0" if state["token"][-1] != "0" else "1"
+        for bad in ("0" * 64, state["token"][:-1] + wrong_last, "", "x" * 10):
+            with self.subTest(token=bad[:6]):
+                answer = self._send(state, bad, "stop")
+                self.assertEqual((answer["ok"], answer["error"]), (False, "unauthorized"))
+        self.assertEqual(runtime.status("local")["instance_id"], started["instance_id"])
+        self.assertTrue(self._send(state, state["token"], "status")["ok"])     # the real token is what authorises
+
+    def test_a_recorded_pid_of_an_unrelated_live_process_is_never_signalled(self):
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            state_path, marker = self._stale_host(victim.pid)
+            with self.assertRaisesRegex(profiles.ProfileError, "still present"):
+                runtime.start("local", wait=0, shutdown_timeout=2)
+            with self.assertRaises(profiles.ProfileError):            # nothing answers on the recorded address
+                runtime.stop("local", timeout=2)
+            self.assertIsNone(victim.poll(), "an unrelated process was stopped")
+            self.assertTrue(state_path.exists() and marker.exists())
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+
+    @unittest.skipUnless(WINDOWS, "a creation time is recorded with the PID on Windows only")
+    def test_a_reused_pid_with_another_creation_time_is_not_the_recorded_child(self):
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            real = runtime.winproc.process_started(victim.pid)
+            self.assertTrue(runtime._pid_exists(victim.pid, real))
+            self.assertFalse(runtime._pid_exists(victim.pid, real + 12345))
+            self._stale_host(victim.pid, started=real + 12345)           # the number was reused by another process
+            started = runtime.start("local", wait=10, shutdown_timeout=2)
+            self.assertTrue(started["ok"])                               # recovered: it was not the recorded child
+            self.assertIsNone(victim.poll(), "the process that reused the PID was stopped")
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+
+    @unittest.skipUnless(WINDOWS, "os.kill(pid, 0) ends a process on Windows; liveness is a handle query")
+    def test_liveness_check_does_not_end_the_process_it_asks_about(self):
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            for _ in range(5):
+                self.assertTrue(runtime._pid_exists(victim.pid))
+            self.assertIsNone(victim.poll())
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+        self.assertFalse(runtime._pid_exists(victim.pid))
+
+    @unittest.skipUnless(WINDOWS, "ACLs stand in for mode 0700 on Windows")
+    def test_runtime_directory_is_owner_only_and_a_shared_one_is_refused(self):
+        from strata_control import private_files
+        directory = runtime.runtime_dir()
+        self.assertTrue(private_files.is_private(directory))
+        shared = Path(self.temp.name) / "shared-runtime"
+        shared.mkdir()
+        done = subprocess.run(["icacls", str(shared), "/grant", "*S-1-1-0:(OI)(CI)R"], capture_output=True)
+        if done.returncode != 0:
+            self.skipTest("icacls could not widen the test directory")
+        with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(shared)}):
+            with self.assertRaisesRegex(profiles.ProfileError, "owner-only"):
+                runtime.runtime_dir()
+
+    def test_exclusive_lease_waits_for_shared_holders_and_shared_holders_coexist(self):
+        first = runtime.acquire_activity_lease(shared=True)
+        second = runtime.acquire_activity_lease(shared=True)
+        try:
+            with self.assertRaisesRegex(profiles.ProfileError, "engine lease"):
+                runtime.acquire_activity_lease(shared=False)
+        finally:
+            for descriptor in (first, second):
+                runtime._unlock_file(descriptor)
+                os.close(descriptor)
+        exclusive = runtime.acquire_activity_lease(shared=False)
+        try:
+            with self.assertRaisesRegex(profiles.ProfileError, "engine lease"):
+                runtime.acquire_activity_lease(shared=True)
+        finally:
+            runtime._unlock_file(exclusive)
+            os.close(exclusive)
 
 
 if __name__ == "__main__":
