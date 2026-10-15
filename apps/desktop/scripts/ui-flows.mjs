@@ -323,7 +323,7 @@ await scenario('fail', { installed: true, env: { FAKE_ENGINE_FAIL: '1' } }, asyn
   await delay(500);
   await shot(page, '2-tune-error-details');
   const details = await page.locator('.error-notice pre').first().innerText();
-  check(/server_exited/.test(details) && /memory guard: 5\.1 GiB/.test(details), 'Details holds the code and the last engine line', details.replace(/\s+/g, ' ').slice(0, 120));
+  check(/server_exited/.test(details) && /exited before/.test(details), 'Details holds the code and the reason the server logged', details.replace(/\s+/g, ' ').slice(0, 120));
   const badOpen = await noScroll(page);
   check(badOpen.length === 0, 'and the pop-up still does not scroll with Details open', badOpen.join('; '));
   await page.setViewportSize({ width: 1280, height: 700 });

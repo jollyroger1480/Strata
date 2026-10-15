@@ -110,6 +110,13 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
   <NativeBenchmark open={benchmark} onClose={() => setBenchmark(false)}/>
  </Screen>;
 }
+/** setup's "5/7: downloading …" as a sentence a person can read. */
+function installStepLabel(step?: string): string {
+    const n = Number(step?.match(/^(\d+)\//)?.[1]);
+    if (!n)
+        return step ? 'Getting things ready…' : 'Downloading and preparing model files…';
+    return n <= 2 ? 'Checking your computer…' : n <= 4 ? 'Getting things ready…' : n === 5 ? 'Downloading your model…' : n === 6 ? 'Preparing your model for Strata…' : 'Finishing up…';
+}
 export function NativeProgress({ job }: {
     job: NativeJob;
 }) { const download = installProgress(job.result?.install); const detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n'); const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
@@ -120,4 +127,4 @@ catch (e) {
 }
 finally {
     setStopping(false);
-} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? 'Preparing your model' : job.kind === 'load' ? 'Loading model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.step ?? 'Downloading and preparing model files…') : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<details><summary className="small">{tr("Details")}</summary><p className="small muted">{tr("Completed files are retained. Downloading, packing and loading are separate stages; readiness is confirmed by the engine.")}</p>{tr(detailsText ? <pre className="small muted error-detail-text">{detailsText}</pre> : null)}</details>{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }
+} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? 'Preparing your model' : job.kind === 'load' ? 'Loading model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? installStepLabel(job.result?.install?.step) : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<details><summary className="small">{tr("Details")}</summary><p className="small muted">{tr("Completed files are retained. Downloading, packing and loading are separate stages; readiness is confirmed by the engine.")}</p>{tr(detailsText ? <pre className="small muted error-detail-text">{detailsText}</pre> : null)}</details>{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }
