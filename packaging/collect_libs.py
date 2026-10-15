@@ -42,6 +42,17 @@ def is_driver(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in DRIVER_PATTERNS)
 
 
+GFX = re.compile(r"gfx[0-9a-f]+", re.I)
+
+
+def arch_wanted(name: str, wanted: str) -> bool:
+    """Data files for other GPU architectures are left out; shared ones (no gfx name) stay."""
+    if not wanted:
+        return True
+    named = {m.group(0).lower() for m in GFX.finditer(name)}
+    return not named or bool(named & {w.strip().lower() for w in wanted.split(",") if w.strip()})
+
+
 def dependencies(binary: Path, search: list[str]) -> tuple[dict[str, str], list[str]]:
     """{soname: resolved path} and the sonames ldd could not find."""
     env = dict(os.environ)
@@ -66,6 +77,8 @@ def main(argv=None) -> int:
     ap.add_argument("--also", action="append", default=[], help="glob of dlopen'd libraries to add, searched in --search")
     ap.add_argument("--data", action="append", default=[], metavar="SRC=DEST")
     ap.add_argument("--data-glob", action="append", default=[], help="keep only data files matching one of these globs")
+    ap.add_argument("--data-arch", default="", help="comma list (gfx1200,gfx1201): of the data files that name a gfx arch keep "
+                                                    "only these; files naming none (shared tables) are kept")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     copied: dict[str, str] = {}
@@ -116,7 +129,7 @@ def main(argv=None) -> int:
         if not dest:
             ap.error(f"--data {spec!r} is not SRC=DEST")
         for path in sorted(Path(src).rglob("*")):
-            if path.is_file() and (not a.data_glob or any(fnmatch.fnmatch(path.name, g) for g in a.data_glob)):
+            if path.is_file() and (not a.data_glob or any(fnmatch.fnmatch(path.name, g) for g in a.data_glob))                     and arch_wanted(path.name, a.data_arch):
                 target = a.out / dest / path.relative_to(src)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path.resolve(), target)
