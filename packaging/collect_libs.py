@@ -139,7 +139,11 @@ def main(argv=None) -> int:
                 continue
             shutil.copy2(real, a.out / name)
             copied[name] = str(real)
-            for dep, path in dependencies(a.out / name, a.search)[0].items():
+            found, missing = dependencies(a.out / name, a.search)
+            for dep in missing:
+                if not is_driver(dep):
+                    print(f"WARNING: {name} needs {dep}, which ldd cannot find", file=sys.stderr)
+            for dep, path in found.items():
                 if is_driver(dep) or dep in copied:
                     continue
                 if is_system(path):
