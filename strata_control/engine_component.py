@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from strata_control import acquisition
-from strata_control.components import BACKEND_MATRIX, backend_supported, host_platform
+from strata_control.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 1
 MANIFEST = "engine-component.json"
@@ -339,6 +339,27 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         raise EngineMissing("; ".join(reasons + [p["folder"] + ": " + p["problem"] for p in problems])
                             or "nothing matched", base, problems=problems)
     return max(usable, key=lambda item: _version_key(item.version))
+
+
+#: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the
+#: component folder for the engine that fits this PC when it starts (a config written before an engine update keeps
+#: working after it, and a config copied to another PC finds that PC's engine).
+REFERENCE_PREFIX = "component:"
+
+
+def is_reference(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(REFERENCE_PREFIX)
+
+
+def expand(value: str, cfg: dict | None = None, *, root: Path | None = None) -> str:
+    """The engine path for `value`: unchanged when it is a path, resolved when it is a component reference."""
+    if not is_reference(value):
+        return value
+    name = value[len(REFERENCE_PREFIX):]
+    if name not in ("", COMPONENT_ID):
+        raise EngineMissing(f"the run config names an unknown component {name!r}", root or components_dir())
+    backend = (cfg or {}).get("backend")
+    return str(resolve(root, backend=backend if backend in BACKEND_MATRIX else None).exe)
 
 
 def status(root: Path | None = None, *, backend: str | None = None, full: bool = False) -> dict:
