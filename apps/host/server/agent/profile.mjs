@@ -169,6 +169,8 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },
+    // Office documents are not previewed in the app (the converter is not shipped): do not try to start it.
+    { id: 'office-to-pdf', disabled: true },
   ];
   // JSON is valid YAML, and a JSON document cannot be mis-quoted by a model id or a display name.
   // JSON is valid YAML. A tool server's secret is a `!!js process.env.NAME` value, swapped in after stringifying.

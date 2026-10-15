@@ -14,8 +14,8 @@
  * The host finds the result at `<install>/harness` (server/agent/harness-runtime.mjs), or in the component folder.
  */
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const args = process.argv.slice(2);
@@ -37,14 +37,63 @@ mkdirSync(out, { recursive: true });
 const pnpm = platform === 'win32' ? ['corepack.cmd', ['pnpm']] : ['corepack', ['pnpm']];
 run(pnpm[0], [...pnpm[1], 'deploy', '--legacy', '--prod', '--filter', '@deepseek-ai/dsh', out], src, { shell: platform === 'win32' });
 
+// --- peers -------------------------------------------------------------------------------------------------------------
+// `pnpm deploy --prod` leaves out peer dependencies, but the Harness loads some of them by name at run time (for example the
+// plugin-group helper that app-boot imports). Walk the installed packages; every dependency or peer that cannot be
+// resolved from the output is copied from the source checkout's own node_modules, and its own requirements after it.
+function packageJsonsUnder(dir, out2 = []) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isSymbolicLink()) continue;
+    if (e.isDirectory()) packageJsonsUnder(p, out2);
+    else if (e.name === 'package.json' && p.includes(`${sep}node_modules${sep}`)) out2.push(p);
+  }
+  return out2;
+}
+function requirementsOf(file) {
+  try { const j = JSON.parse(readFileSync(file, 'utf8')); return [...Object.keys(j.dependencies ?? {}), ...Object.keys(j.peerDependencies ?? {}), ...Object.keys(j.optionalDependencies ?? {})]; } catch { return []; }
+}
+/** The checkout's own workspace packages (packages/**, vendor/*, apps/*) by name: where a peer that is one of ours comes from. */
+const workspace = new Map();
+function indexWorkspace(dir, depth = 0) {
+  if (depth > 4) return;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (!e.isDirectory() || e.isSymbolicLink() || e.name === 'node_modules' || e.name.startsWith('.')) continue;
+    const p = join(dir, e.name);
+    const manifest = join(p, 'package.json');
+    if (existsSync(manifest)) { try { workspace.set(JSON.parse(readFileSync(manifest, 'utf8')).name, p); } catch { /* not a package */ } }
+    indexWorkspace(p, depth + 1);
+  }
+}
+for (const top of ['packages', 'vendor', 'apps']) if (existsSync(join(src, top))) indexWorkspace(join(src, top));
+const resolvable = name => existsSync(join(out, 'node_modules', ...name.split('/')));
+const queue = [...new Set(packageJsonsUnder(join(out, 'node_modules')).flatMap(requirementsOf))].filter(n => !resolvable(n));
+const added = [];
+while (queue.length) {
+  const name = queue.shift();
+  if (resolvable(name)) continue;
+  const from = workspace.get(name) ?? join(src, 'node_modules', ...name.split('/'));
+  if (!existsSync(from)) continue; // an optional package for another platform, or not installed in the source: nothing to copy
+  const to = join(out, 'node_modules', ...name.split('/'));
+  mkdirSync(join(to, '..'), { recursive: true });
+  const realFrom = realpathSync(from);
+  cpSync(realFrom, to, { recursive: true, dereference: true, filter: f => !relative(realFrom, f).split(sep).includes('node_modules') });
+  added.push(name);
+  queue.push(...requirementsOf(join(to, 'package.json')).filter(n => !resolvable(n)));
+}
+if (added.length) console.log(`peer packages added: ${added.join(', ')}`);
+
 // --- prune ------------------------------------------------------------------------------------------------------------
 const OTHER_OS = platform === 'win32' ? /(^|[\\/._-])(darwin|linux|android|freebsd|musl)([\\/._-]|$)/i
   : platform === 'darwin' ? /(^|[\\/._-])(win32|linux|android|freebsd|musl)([\\/._-]|$)/i
     : /(^|[\\/._-])(win32|darwin|android|freebsd)([\\/._-]|$)/i;
 /** Whole packages the app never loads: office-document conversion (hundreds of MB) and speech input. */
 const DROP_PACKAGES = [/libreoffice-kit/i, /sherpa-onnx/i];
-const DROP_DIRS = new Set(['test', 'tests', '__tests__', 'docs', 'doc', 'website', 'benchmarks', 'examples', 'example', '.github']);
-const DROP_FILES = /(\.map|\.md|\.markdown|\.pdb|\.ts\.map|\.tsbuildinfo)$/i;
+/** Only when sitting directly in a package's root (a library may have a runtime folder called `doc`, e.g. yaml/dist/doc). */
+const DROP_DIRS = new Set(['test', 'tests', '__tests__', 'docs', 'website', 'benchmarks', 'examples', '.github']);
+const DROP_FILES = /\.(map|md|markdown|pdb|tsbuildinfo)$/i;
+/** Licences and notices travel with the files they cover. */
+const KEEP_FILES = /^(LICENSE|LICENCE|NOTICE|THIRD_PARTY)/i;
 let removed = 0;
 function prune(dir) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -52,7 +101,7 @@ function prune(dir) {
     if (e.isSymbolicLink()) continue;
     if (e.isDirectory()) {
       const inLib = p.split(sep).includes('lib');
-      if ((DROP_DIRS.has(e.name) && !inLib) || DROP_PACKAGES.some(r => r.test(e.name)) || (OTHER_OS.test(e.name) && /prebuild|bin|native|platform|-(win32|darwin|linux)/i.test(p))) {
+      if ((DROP_DIRS.has(e.name) && !inLib && existsSync(join(dir, 'package.json'))) || DROP_PACKAGES.some(r => r.test(e.name)) || (OTHER_OS.test(e.name) && /prebuild|bin|native|platform|-(win32|darwin|linux)/i.test(p))) {
         rmSync(p, { recursive: true, force: true }); removed++; continue;
       }
       prune(p);
