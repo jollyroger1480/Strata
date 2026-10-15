@@ -51,54 +51,13 @@ from typing import Any, Iterable, Sequence
 
 SCHEMA_VERSION = 1
 
-#: The OS × backend families the handoff commits to. A component may only be activated where its
-#: family is listed here, so an unqualified combination is refused rather than attempted: the packet
-#: is explicit that Windows SYCL and Intel Macs are not supported rather than merely untested.
-BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
-    "metal": ("macos-arm64",),
-    "cuda": ("windows-x86_64", "linux-x86_64"),
-    "hip": ("windows-x86_64", "linux-x86_64"),
-    "sycl": ("linux-x86_64",),
-    "cpu": ("macos-arm64", "macos-x86_64", "windows-x86_64", "linux-x86_64"),
-}
-
+from strata_control.targets import BACKEND_MATRIX, ComponentError, backend_supported, host_platform  # noqa: E402,F401
 #: Component kinds, so a manifest cannot claim a role the architecture does not have.
 KINDS = ("application", "runtime", "agent-runtime", "tuning", "engine", "prepared-data")
 
 
-class ComponentError(RuntimeError):
-    """A component could not be used. The message names the reason and nothing was changed."""
-
-    def __init__(self, message: str, code: int = 6) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 class UnsafeArchive(ComponentError):
     """An archive member would escape the destination. Nothing was extracted."""
-
-
-def host_platform() -> str:
-    """This machine as an `os-arch` key, matching `BACKEND_MATRIX`."""
-    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(platform.system())
-    if system is None:
-        raise ComponentError(f"unsupported operating system: {platform.system()}")
-    machine = platform.machine().lower()
-    arch = {"arm64": "arm64", "aarch64": "arm64",
-            "x86_64": "x86_64", "amd64": "x86_64"}.get(machine, machine)
-    return f"{system}-{arch}"
-
-
-def backend_supported(backend: str, target: str | None = None) -> tuple[bool, str]:
-    """Whether a backend family is committed to on a platform, with the reason if not."""
-    target = target or host_platform()
-    if backend not in BACKEND_MATRIX:
-        return False, f"unknown backend family {backend!r}"
-    platforms = BACKEND_MATRIX[backend]
-    if target in platforms:
-        return True, ""
-    return False, (f"{backend} is not a supported combination on {target}; it is supported on "
-                   f"{', '.join(platforms)}. Unsupported combinations are not attempted.")
 
 
 # --------------------------------------------------------------------------- manifests
@@ -568,6 +527,8 @@ class ComponentStore:
         are kept under `partial/` and a ranged request picks up where it stopped. The result is
         verified by the caller before anything is unpacked.
         """
+        from strata_control import acquisition
+        acquisition.require(f"the download of {artifact.name}", "strata install")
         import urllib.error
         import urllib.request
         partial = self.root / "partial" / artifact.name

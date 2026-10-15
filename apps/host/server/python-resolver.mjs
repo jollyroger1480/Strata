@@ -4,6 +4,8 @@
  *
  * Order:
  *   1. STRATA_PYTHON, then STRATA_NATIVE_PYTHON      (an explicit choice is never second-guessed)
+ *   1b. the Control component's own interpreter, when the app ships one (control-runtime.mjs findControl):
+ *      the installed app never looks at the user's Python
  *   2. the repository's own venv: .venv\Scripts\python.exe on Windows, .venv/bin/python elsewhere
  *   3. Windows: `py -3` (the launcher), then python.exe; each one must actually start
  *      (the Microsoft Store alias in WindowsApps exists on PATH but only opens the Store)
@@ -28,12 +30,13 @@ export function pythonStarts(command, args = []) {
 
 const cache = new Map();
 
-export function resolvePython({ repo = null, env = process.env, platform = process.platform, exists = existsSync, starts = pythonStarts, useCache = true } = {}) {
-  const key = JSON.stringify([repo, env.STRATA_PYTHON, env.STRATA_NATIVE_PYTHON, platform]);
+export function resolvePython({ repo = null, control = null, env = process.env, platform = process.platform, exists = existsSync, starts = pythonStarts, useCache = true } = {}) {
+  const key = JSON.stringify([repo, control?.python ?? null, env.STRATA_PYTHON, env.STRATA_NATIVE_PYTHON, platform]);
   if (useCache && cache.has(key)) return cache.get(key);
   const found = (() => {
     const explicit = env.STRATA_PYTHON || env.STRATA_NATIVE_PYTHON;
     if (explicit) return { command: explicit, args: [], source: 'environment' };
+    if (control?.python) return { command: control.python, args: [], source: 'bundled' };
     if (repo) {
       const venv = venvPython(repo, platform);
       if (exists(venv)) return { command: venv, args: [], source: 'venv' };

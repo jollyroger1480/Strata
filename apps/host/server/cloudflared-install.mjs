@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, lstat, rename, rm, chmod, writeFile, access } from 'nod
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { require as requireAcquisition } from './acquisition.mjs';
 
 const run = promisify(execFile);
 const RELEASES = 'https://api.github.com/repos/cloudflare/cloudflared/releases/latest';
@@ -24,16 +25,26 @@ export function verifyConnector(bytes, digest) {
   }
 }
 
-export function createConnectorInstaller({ directory, platform = process.platform, arch = process.arch, fetchImpl = fetch }) {
-  const binary = join(directory, platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+/**
+ * `componentDirectory` is where an optional, explicitly installed connector component would live (the local
+ * component folder). A connector found there is used as it is; one that is not there is never fetched while the app
+ * runs (acquisition.mjs), it is a notice.
+ */
+export function createConnectorInstaller({ directory, componentDirectory = null, platform = process.platform, arch = process.arch, fetchImpl = fetch }) {
+  const name = platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
+  const binary = join(directory, name);
   let installing = null;
   async function locate() {
-    try { await access(binary, platform === 'win32' ? constants.F_OK : constants.X_OK); return binary; }
-    catch { return null; }
+    for (const candidate of [binary, componentDirectory && join(componentDirectory, name)].filter(Boolean)) {
+      try { await access(candidate, platform === 'win32' ? constants.F_OK : constants.X_OK); return candidate; }
+      catch { /* try the next place */ }
+    }
+    return null;
   }
   async function install() {
     const existing = await locate();
     if (existing) return existing;
+    requireAcquisition('The Cloudflare connector (cloudflared)', 'the optional connector component');
     const name = connectorAsset(platform, arch);
     await mkdir(directory, { recursive: true });
     const stage = await mkdtemp(join(directory, '.install-'));

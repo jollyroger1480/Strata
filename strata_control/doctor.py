@@ -27,6 +27,12 @@ MONITOR_TEXTUAL_VERSION = "8.2.8"
 
 
 def _location(raw: str, cfg: dict, config_path: Path) -> Path:
+    from strata_control import engine_component
+    if engine_component.is_reference(raw):
+        try:
+            return Path(engine_component.expand(raw, cfg))
+        except engine_component.EngineMissing:
+            return engine_component.engine_dir() / "(no engine for this PC)"     # reported as missing
     value = Path(raw).expanduser()
     if value.is_absolute():
         return value

@@ -74,6 +74,40 @@ not declare and which are rejected outright rather than ignored.
 **The `dmg`/`app` targets were rebuilt and the packaged self-test re-run (8/8) after the Windows and
 Linux targets were added**, so the added targets do not affect the macOS artifact.
 
+## Strata Control and the engine in the installed app
+
+The installer carries two things that start a model, and neither fetches anything when it runs.
+
+**Control** (`<install>/control`, built by `apps/desktop/scripts/stage-control.py`): the same bundle as the Terminal
+archive, the pinned CPython 3.12.15, the hash-locked wheels, `strata_control`, `strata_cli` and `serve`, plus a
+`BUNDLE.json` with the interpreter and lock digests. The host finds it beside itself (or through `STRATA_CONTROL_DIR`),
+runs it on its own interpreter (`PYTHONNOUSERSITE=1`, no `PYTHONHOME`/`PYTHONPATH`) and starts a model with
+`strata profile create|use-config` + `strata runtime start`, so the engine runs under the owner runtime (loopback TCP and a
+256-bit token on Windows, a private socket elsewhere; a Job Object / process group; leases) and a second client (the
+Terminal) attaches to the same instance.
+
+**The engine** is not in the installer. It is a component in the per-user component folder
+(`%LOCALAPPDATA%\Strata\components`, `$XDG_DATA_HOME/strata/components`, or `STRATA_COMPONENTS_DIR`):
+
+    components/engine/<version>-<platform>-<backend>/
+        engine-component.json     schema_version, id "strata-engine", version, platform, backend, entrypoint,
+                                  cuda_archs (optional), min_runtime (optional), files [{path, sha256, bytes}]
+        strata[.exe]  *.dll | *.so   the binary and the GPU runtime libraries beside it
+
+A run config names it as `"exe": "component:strata-engine"`; at start `strata_control/engine_component.py` picks the package
+for this PC (platform, then the backend its GPU needs: nvidia-smi / rocminfo / sycl-ls, or `STRATA_ENGINE_BACKEND`; CUDA
+architectures and `min_runtime` are checked; the newest version wins), checks every file's size and the entrypoint's
+SHA-256 (`strata components engine --full` hashes everything) and puts the package folder first on the library path.
+Nothing matching is `EngineMissing`: exit 5, "No engine for this PC was found in ... The app never downloads an engine
+while it starts or serves", and no fetch. `packaging/package_engine.py` makes a local package from a build folder.
+
+**No acquisition at run time.** `STRATA_NO_ACQUIRE=1` (set by the Tauri shell for the host, and for Control by the host)
+makes `strata_control/acquisition.py` refuse pip, downloads and compiles; on the host side `server/acquisition.mjs`
+refuses the llama.cpp and cloudflared fetches (a connector placed in `components/cloudflared/` is used as it is). Models the
+user chooses to download are a separate, explicit action. `apps/host/tests/no-acquire.test.mjs` runs the host under
+`tests/helpers/acquire-spy.mjs` and fails on any outbound request or installer process;
+`apps/desktop/scripts/installed-flow.mjs` drives an installed app end to end (stub engine anywhere, real engine with `--components`).
+
 ## What every platform must produce before it can be called qualified
 
 1. The app launches and the window serves the supplied UI from the host's origin.

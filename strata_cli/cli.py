@@ -127,6 +127,13 @@ def parser() -> argparse.ArgumentParser:
     components_backend = components_sp.add_parser(
         "backends", help="the OS and backend combinations that are committed to, and what is not")
     components_backend.add_argument("--output", choices=("human", "json"), default="human")
+    components_engine = components_sp.add_parser(
+        "engine", help="which engine package in the local component folder this PC would start (never downloads)")
+    components_engine.add_argument("--backend", default=None, help="ask for one backend family instead of detecting it")
+    components_engine.add_argument("--components-dir", default=None,
+                                   help="the component folder (default: STRATA_COMPONENTS_DIR or the per-user folder)")
+    components_engine.add_argument("--full", action="store_true", help="hash every file, not only the entrypoint")
+    components_engine.add_argument("--output", choices=("human", "json"), default="human")
     models = sp.add_parser("models", help="inspect setup-written local model run configs")
     models_sp = models.add_subparsers(dest="models_command", required=True)
     models_list = models_sp.add_parser("list", help="list local installed-model config candidates")
@@ -1649,6 +1656,33 @@ def _components_plan(a: argparse.Namespace) -> int:
     return 0
 
 
+def _components_engine(a: argparse.Namespace) -> int:
+    """Which engine package the local component folder offers this PC. Read-only; a missing engine is a notice with a
+    non-zero exit (5), never a fetch."""
+    from strata_control import engine_component
+    root = Path(a.components_dir) if a.components_dir else None
+    try:
+        report = engine_component.status(root, backend=a.backend, full=a.full)
+    except engine_component.ComponentProblem as exc:
+        return _error(str(exc), 2, a.output == "json")
+    code = 0 if report["usable"] else 5
+    if a.output == "json":
+        print(json.dumps({"schema_version": 1, "ok": report["usable"], **report}, ensure_ascii=False))
+        return code
+    print(f"component folder  {report['components_dir']}")
+    print(f"this PC           {report['platform']}, {report['backend'] or 'no GPU found'} ({report['backend_source']})")
+    for item in report["installed"]:
+        print(f"  installed       {item['version']} {item['platform']}-{item['backend']}  {item['root']}")
+    for item in report["problems"]:
+        print(f"  unusable        {item['folder']}: {item['problem']}")
+    if report["usable"]:
+        print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
+    else:
+        print(report["notice"], file=sys.stderr)
+    print("nothing was downloaded or changed")
+    return code
+
+
 def _components_backends(a: argparse.Namespace) -> int:
     """The committed OS and backend matrix, so an unsupported combination is visible up front."""
     from strata_control import components
@@ -1695,6 +1729,8 @@ def _run(a: argparse.Namespace) -> int:
             return _components_plan(a)
         if a.command == "components" and a.components_command == "backends":
             return _components_backends(a)
+        if a.command == "components" and a.components_command == "engine":
+            return _components_engine(a)
         if a.command in ("doctor", "components"):
             return _doctor(a)
         if a.command == "models":

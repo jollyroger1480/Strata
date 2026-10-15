@@ -72,7 +72,7 @@ esac
 URL="https://nodejs.org/dist/v$NODE_VERSION/$ARCHIVE"
 
 EXPECTED="$(digest_for "$TARGET")"
-WORK="$(mktemp -d -t strata-node)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/strata-node.XXXXXX")"     # GNU mktemp needs the X template; BSD accepts it too
 trap 'rm -rf "$WORK"' EXIT
 
 echo "fetch-node: $URL"

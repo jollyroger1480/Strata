@@ -30,6 +30,43 @@ struct HostProcess(Mutex<Option<Child>>);
 /// The port the App Host bound, so the window (and the frontend) can be pointed at it.
 struct HostPort(Mutex<Option<u16>>);
 
+/// The secret that lets this shell (and nothing else) ask the host for a clean stop.
+struct ShutdownToken(Mutex<Option<String>>);
+
+/// 256 random bits as hex, from the standard library's per-process random hasher keys (no extra crate).
+fn random_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    (0..4)
+        .map(|i| {
+            let mut h = RandomState::new().build_hasher();
+            h.write_u32(i);
+            h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+            format!("{:016x}", h.finish())
+        })
+        .collect()
+}
+
+/// The Control component that ships beside the host (`<resources>/control`): the bundled CPython, the locked
+/// wheels, strata_control and the API server. None in a development checkout.
+fn control_dir(res: &Path) -> Option<PathBuf> {
+    let dir = res.join("control");
+    let python = if cfg!(windows) { dir.join("python").join("python.exe") } else { dir.join("python").join("bin").join("python3") };
+    if python.exists() && dir.join("strata.py").exists() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// What every host start gets, packaged or self-test: acquiring is forbidden, Control is where the bundle put it.
+fn apply_runtime_policy(cmd: &mut Command, res: &Path) {
+    cmd.env("STRATA_NO_ACQUIRE", "1");
+    if let Some(dir) = control_dir(res) {
+        cmd.env("STRATA_CONTROL_DIR", dir);
+    }
+}
+
 /// Ask the OS for an unused loopback port.
 ///
 /// The port is released before the host binds it, so there is a small race; the host reports a
@@ -139,6 +176,40 @@ fn wait_for_health(
     Err(format!("the Strata App Host did not become healthy at {url}: {last}"))
 }
 
+/// A minimal blocking HTTP POST with no body (the shell's one clean-stop request). Returns the status line.
+fn http_post(url: &str, headers: &[(&str, &str)]) -> Result<String, String> {
+    http_request("POST", url, headers).map(|(status, _)| status)
+}
+
+/// GET returning the response body (the self-test reads `/api/control/status`).
+fn http_get_body(url: &str) -> Result<(String, String), String> {
+    http_request("GET", url, &[])
+}
+
+fn http_request(method: &str, url: &str, headers: &[(&str, &str)]) -> Result<(String, String), String> {
+    use std::io::{Read, Write};
+    let rest = url.strip_prefix("http://").ok_or("only http:// is supported")?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &authority.parse().map_err(|e| format!("bad authority {authority}: {e}"))?,
+        Duration::from_millis(800),
+    )
+    .map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(20))).map_err(|e| e.to_string())?;
+    let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+    stream
+        .write_all(format!("{method} {path} HTTP/1.1\r\nHost: {authority}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+        .map_err(|e| e.to_string())?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
+    let status = buf.lines().next().unwrap_or_default().to_string();
+    let body = buf.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    Ok((status, body))
+}
+
 /// A minimal blocking HTTP GET, so the shell needs no async runtime for one health probe.
 fn ureq_get_ok(url: &str) -> Result<bool, String> {
     use std::io::{Read, Write};
@@ -203,6 +274,10 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    apply_runtime_policy(&mut cmd, &res);
+    let token = random_token();
+    cmd.env("STRATA_SHUTDOWN_TOKEN", &token);
+    *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
     hide_console(&mut cmd);
     // A user with the Strata API worker on a different port sets this; unset means the worker's
     // documented loopback default.
@@ -234,8 +309,23 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
 /// deliberately not touched here: quitting the window must not kill inference another client is
 /// using.
 fn stop_host(app: &tauri::AppHandle) {
+    let port = app.try_state::<HostPort>().and_then(|s| *s.0.lock().unwrap());
+    let token = app.try_state::<ShutdownToken>().and_then(|s| s.0.lock().unwrap().clone());
     if let Some(state) = app.try_state::<HostProcess>() {
         if let Some(mut child) = state.0.lock().unwrap().take() {
+            // A clean stop first: the host stops, through Control, the engines this app started, then exits.
+            // Engines another client started (the Terminal) are not touched. If it does not finish in time the
+            // process is ended as before.
+            if let (Some(port), Some(token)) = (port, token) {
+                let _ = http_post(&format!("http://127.0.0.1:{port}/api/control/shutdown"), &[("x-strata-shutdown", token.as_str())]);
+                let deadline = Instant::now() + Duration::from_secs(80);
+                while Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -275,6 +365,49 @@ fn self_test_path(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Run `strata.py --version` on the bundle's own interpreter with a scrubbed environment.
+fn control_runs(dir: &Path) -> (bool, String) {
+    let python = if cfg!(windows) { dir.join("python").join("python.exe") } else { dir.join("python").join("bin").join("python3") };
+    let mut cmd = Command::new(&python);
+    cmd.arg(dir.join("strata.py")).arg("--version").current_dir(dir)
+        .env_remove("PYTHONHOME").env_remove("PYTHONPATH").env_remove("VIRTUAL_ENV")
+        .env("PYTHONNOUSERSITE", "1").env("PYTHONDONTWRITEBYTECODE", "1").env("STRATA_NO_ACQUIRE", "1");
+    hide_console(&mut cmd);
+    match cmd.output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let ok = out.status.success() && text.contains("python 3.12") && text.contains(&dir.display().to_string());
+            (ok, if text.is_empty() { String::from_utf8_lossy(&out.stderr).trim().to_string() } else { text })
+        }
+        Err(e) => (false, format!("could not start {}: {e}", python.display())),
+    }
+}
+
+/// With an empty component folder Control must say there is no engine and name the explicit command, exit 5,
+/// and must not create or fetch anything.
+fn control_engine_notice(dir: &Path) -> (bool, String) {
+    let python = if cfg!(windows) { dir.join("python").join("python.exe") } else { dir.join("python").join("bin").join("python3") };
+    let empty = std::env::temp_dir().join(format!("strata-self-test-components-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty);
+    let mut cmd = Command::new(&python);
+    cmd.arg(dir.join("strata.py")).args(["components", "engine", "--backend", "cuda", "--output", "json"])
+        .arg("--components-dir").arg(&empty).current_dir(dir)
+        .env_remove("PYTHONHOME").env_remove("PYTHONPATH")
+        .env("PYTHONNOUSERSITE", "1").env("PYTHONDONTWRITEBYTECODE", "1").env("STRATA_NO_ACQUIRE", "1");
+    hide_console(&mut cmd);
+    let result = match cmd.output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let notice = text.contains("never downloads an engine");
+            let created = empty.exists();
+            (out.status.code() == Some(5) && notice && !created, format!("exit {:?}; notice={notice}; folder created={created}", out.status.code()))
+        }
+        Err(e) => (false, e.to_string()),
+    };
+    let _ = std::fs::remove_dir_all(&empty);
+    result
 }
 
 /// Start the host from the packaged resources and report what actually happened.
@@ -348,6 +481,7 @@ fn run_self_test(report_path: &str) -> i32 {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    apply_runtime_policy(&mut cmd, &res);
     hide_console(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => {
@@ -377,6 +511,29 @@ fn run_self_test(report_path: &str) -> i32 {
     // The API the renderer will call must be reachable on the same origin.
     let api_ok = ureq_get_ok(&format!("http://127.0.0.1:{port}/api/health")).unwrap_or(false);
     record("api-reachable-on-same-origin", api_ok, "GET /api/health".into());
+
+    // The bundled Control component: present, runs on its own interpreter, and the host sees it with acquiring forbidden.
+    match control_dir(&res) {
+        Some(dir) => {
+            record("control-component-present", true, dir.display().to_string());
+            let (ok, detail) = control_runs(&dir);
+            record("control-runs-on-bundled-python", ok, detail);
+            let (ok, detail) = control_engine_notice(&dir);
+            record("engine-missing-is-a-notice-not-a-download", ok, detail);
+        }
+        None => record("control-component-present", false, format!("no control component under {}", res.display())),
+    }
+    let status = http_get_body(&format!("http://127.0.0.1:{port}/api/control/status"));
+    let (status_ok, status_detail) = match &status {
+        Ok((line, body)) => {
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+            let forbidden = parsed["acquisition"]["forbidden"] == serde_json::Value::Bool(true);
+            let control = parsed["control"]["python"].is_string();
+            (line.contains(" 200") && forbidden && control, format!("{line}; acquisition.forbidden={forbidden}; control={control}"))
+        }
+        Err(e) => (false, e.clone()),
+    };
+    record("host-sees-control-and-forbids-acquiring", status_ok, status_detail);
 
     let _ = child.kill();
     let _ = child.wait();
@@ -436,6 +593,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .manage(HostProcess(Mutex::new(None)))
         .manage(HostPort(Mutex::new(None)))
+        .manage(ShutdownToken(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
             let port = start_host(&handle).map_err(|e| {
@@ -500,6 +658,28 @@ mod tests {
             PathBuf::from(r"\\srv\share\x")
         );
         assert_eq!(plain_path(PathBuf::from("/usr/lib/Strata")), PathBuf::from("/usr/lib/Strata"));
+    }
+
+    #[test]
+    fn control_is_found_only_when_whole() {
+        let res = scratch("control");
+        assert!(control_dir(&res).is_none());
+        let dir = res.join("control");
+        let py = if cfg!(windows) { dir.join("python").join("python.exe") } else { dir.join("python").join("bin").join("python3") };
+        std::fs::create_dir_all(py.parent().unwrap()).unwrap();
+        std::fs::write(&py, b"").unwrap();
+        assert!(control_dir(&res).is_none(), "no strata.py yet");
+        std::fs::write(dir.join("strata.py"), b"").unwrap();
+        assert_eq!(control_dir(&res), Some(dir));
+        let _ = std::fs::remove_dir_all(&res);
+    }
+
+    #[test]
+    fn shutdown_tokens_are_long_and_different() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

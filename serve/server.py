@@ -62,6 +62,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
+from strata_control import engine_component  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -7259,6 +7260,27 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def with_component_engine(cfg: dict) -> dict:
+    """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
+    the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
+    if not engine_component.is_reference(cfg.get("exe")):
+        return cfg
+    cfg = dict(cfg)
+    cfg["exe"] = _component_exe(cfg["exe"], cfg)
+    cfg["lib_dirs"] = [str(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    return cfg
+
+
+def _component_exe(reference: str, cfg: dict) -> str:
+    """The engine a run config names as "component:strata-engine". No engine for this PC is a clear notice and exit 5;
+    the server never goes looking on the internet for one (strata_control/engine_component.py)."""
+    try:
+        return engine_component.expand(reference, cfg)
+    except engine_component.EngineMissing as e:
+        print(f"[strata] {e}", file=sys.stderr, flush=True)
+        raise SystemExit(e.exit_code) from None
+
+
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     event_sink = lifecycle_event
 
@@ -7444,6 +7466,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
+        cfg = with_component_engine(cfg)
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
@@ -7462,7 +7485,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
-                    for k, v in cfg["vision"].items()}
+                    for k, v in cfg["vision"].items() if not (k == "exe" and engine_component.is_reference(v))}
+            if engine_component.is_reference(cfg["vision"].get("exe")):     # the engine from the component folder
+                vcfg["exe"] = _component_exe(cfg["vision"]["exe"], cfg)
             if vcfg.get("elastic") is True and cfg.get("vram_elastic") is not True:
                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
@@ -7483,7 +7508,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                   flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
-        exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
+        if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
+            exe = _component_exe(cfg["exe"], cfg)
+        else:
+            exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
         try:
             silence = engine_silence_s(cfg)             # #481: checked before the (minutes-long) start
         except ValueError as e:

@@ -67,6 +67,9 @@ def preview(ref: str) -> dict:
 
 
 def _resolved(raw: str, cfg: dict, path: Path) -> Path:
+    from strata_control import engine_component
+    if engine_component.is_reference(raw):
+        return Path(engine_component.expand(raw, cfg))
     value = Path(raw).expanduser()
     if value.is_absolute():
         return value
