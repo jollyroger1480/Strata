@@ -13,9 +13,9 @@
 //     the engine is up; the allocation then releases it and retries once (host_alloc_guarded).
 // A reserve that cannot be had is shrunk, then skipped: this never fails a start.
 //
-// Defaults: Windows 768 + 192 MiB; Linux off (the NVIDIA driver there pins past RLIMIT_MEMLOCK and has no such
+// Defaults: Windows 640 + 160 MiB; Linux off (the NVIDIA driver there pins past RLIMIT_MEMLOCK and has no such
 // ceiling; checked with a 4 GiB cudaHostRegister under `ulimit -l 1 GiB`).  STRATA_PIN_RESERVE_MIB=N sets the soft
-// reserve (0 = off) on any OS; the hard one is a fifth of it, at least 64 MiB.
+// reserve (0 = off) on any OS; the hard one is a quarter of it, at least 64 MiB.
 //
 // STRATA_TEST_PIN_BUDGET_MIB=N is a TEST knob: it makes the engine's own pinned allocations and registrations that go
 // through these wrappers (the arena's, the verify window's, the session's, the KV copy's) fail once N MiB are
@@ -90,9 +90,9 @@ inline uint64_t soft_reserve_default_mib() {
     if (const char* e = std::getenv("STRATA_PIN_RESERVE_MIB"); e != nullptr && *e != '\0')
         return (uint64_t) std::strtoull(e, nullptr, 10);
 #if defined(_WIN32)
-    return 768;
+    return 640;
 #else
-    return st().sim_budget != 0 ? 768 : 0;   // Linux: only when the test ceiling is on
+    return st().sim_budget != 0 ? 640 : 0;   // Linux: only when the test ceiling is on
 #endif
 }
 }  // namespace pin_detail
@@ -168,8 +168,25 @@ inline void pin_reserve_release_hard() {
     s.hard = nullptr;
     s.hard_bytes = 0;
 }
-inline void pin_note_arena(uint64_t pinned_bytes) { pin_detail::st().arena_pinned = pinned_bytes; }
+inline void pin_note_arena(uint64_t pinned_bytes) {
+    auto& s = pin_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    s.arena_pinned = pinned_bytes;
+    // TEST knob: the driver took everything but N KiB (what WDDM did on the 64 GB PC: the arena pinned to the ceiling)
+    if (s.sim_budget != 0)
+        if (const char* e = std::getenv("STRATA_TEST_PIN_LEFT_KIB"); e != nullptr && *e != 0)
+            s.sim_budget = s.sim_used + ((uint64_t) std::strtoull(e, nullptr, 10) << 10);
+}
 inline uint64_t pin_sim_peak() { return pin_detail::st().sim_peak; }
+/// Test knob only: one line with the simulated ceiling, what is pinned now and the peak.
+inline void pin_sim_report(const char* when) {
+    auto& s = pin_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    if (s.sim_budget == 0) return;
+    std::fprintf(stderr, "strata: test pinned budget %llu MiB: %llu MiB charged, peak %llu MiB (%s)\n",
+                 (unsigned long long) (s.sim_budget >> 20), (unsigned long long) (s.sim_used >> 20),
+                 (unsigned long long) (s.sim_peak >> 20), when);
+}
 
 /// cudaHostAlloc for a buffer the engine cannot run without.  On a refusal it hands the reserves back and tries once
 /// more; the caller still reports a second refusal.

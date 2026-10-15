@@ -5231,6 +5231,7 @@ int main(int argc, char** argv) {
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
+        strata::core::pin_sim_report("after the expert arena");
         strata::core::pin_reserve_release_soft();
         if (!arena_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -10035,6 +10036,7 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
+        strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
