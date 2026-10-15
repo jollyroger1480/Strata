@@ -104,6 +104,10 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual(failure_kind("", -9)[0], "OOM")
         self.assertEqual(failure_kind("something else broke", 1)[0], "FAIL_BOOT")
 
+    def test_gpu_cache_wording_is_not_the_low_ram_mode(self):
+        self.assertFalse(parse_facts("R4 hit path ON - resident experts are computed on the GPU")["resident_ram"])
+        self.assertTrue(parse_facts("WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 34.47 GiB")["resident_ram"])
+
     def test_facts(self):
         f = parse_facts("strata generate: 6 CPU threads\nhybrid experts: 37% on the GPU\n")
         self.assertEqual(f["workers"], 6)
