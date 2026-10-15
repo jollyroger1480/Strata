@@ -74,7 +74,7 @@ test('preparation completes without loading until the user chooses a resource pr
   await f.control.refresh();
   const prepared=await finishJob(f.control,f.control.operation('install',{family:'qwen',model:'IQ2_XS',loadAfter:false}).id);
   assert.equal(prepared.state,'done',prepared.error);assert.equal(f.control.state().instances.length,0);
-  assert.equal(f.calls.some(c=>c.args[0]?.endsWith('serve/server.py')),false);
+  assert.equal(f.calls.some(c=>c.args[0]?.replaceAll('\\','/').endsWith('serve/server.py')),false);
  }finally{await f.cleanup();}
 });
 
@@ -87,7 +87,7 @@ test('stopping long tuning retains files and does not continue into loading',asy
   assert.equal(f.control.state().jobs.find(j=>j.id===job.id).state,'cancelled');
   assert.equal(f.control.state().instances.length,0);
   assert.ok(readFileSync(join(f.repo,'strata-iq2_xs.json')));
-  assert.equal(f.calls.some(c=>c.args[0]?.endsWith('serve/server.py')),false);
+  assert.equal(f.calls.some(c=>c.args[0]?.replaceAll('\\','/').endsWith('serve/server.py')),false);
  }finally{await f.cleanup();}
 });
 
@@ -124,13 +124,13 @@ test('vision can be disabled at load without losing the prepared encoder config 
   const source=JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json')));
   assert.deepEqual(source.vision,{gpu:0});assert.equal(source.ui_vision_enabled,false);
   assert.equal(f.control.state().installed.models[0].visionEnabled,false);
-  const proc=f.calls.findLast(c=>c.args[0]?.endsWith('serve/server.py'));
+  const proc=f.calls.findLast(c=>c.args[0]?.replaceAll('\\','/').endsWith('serve/server.py'));
   assert.equal(JSON.parse(readFileSync(proc.args[proc.args.indexOf('--config')+1])).vision,undefined);
   const again=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',vision:'no'}).id);
-  assert.equal(again.state,'done',again.error);assert.equal(f.calls.filter(c=>c.args[0]?.endsWith('serve/server.py')).length,1);
+  assert.equal(again.state,'done',again.error);assert.equal(f.calls.filter(c=>c.args[0]?.replaceAll('\\','/').endsWith('serve/server.py')).length,1);
   const on=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',vision:'cpu'}).id);
   assert.equal(on.state,'done',on.error);assert.equal(f.control.state().instances[0].vision,true);
-  const runtime=f.calls.findLast(c=>c.args[0]?.endsWith('serve/server.py'));
+  const runtime=f.calls.findLast(c=>c.args[0]?.replaceAll('\\','/').endsWith('serve/server.py'));
   assert.equal(JSON.parse(readFileSync(runtime.args[runtime.args.indexOf('--config')+1])).vision.gpu,false);
   assert.equal(f.control.state().installed.models[0].visionEnabled,true);
   assert.equal(f.control.state().installed.models[0].visionDevice,'cpu');
