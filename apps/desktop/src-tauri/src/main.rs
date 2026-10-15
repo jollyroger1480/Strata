@@ -46,6 +46,9 @@ mod job {
 
     type Handle = *mut c_void;
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    /// A process may ask to start a child outside the job (CREATE_BREAKAWAY_FROM_JOB). Only the app updater does, for the
+    /// installer that replaces this app: it must outlive the app, which the kill-on-close job would otherwise prevent.
+    const JOB_OBJECT_LIMIT_BREAKAWAY_OK: u32 = 0x0800;
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
 
     #[repr(C)]
@@ -110,7 +113,7 @@ mod job {
                     return None;
                 }
                 let mut info = ExtendedLimits::default();
-                info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
                 let ok = SetInformationJobObject(
                     handle,
                     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,

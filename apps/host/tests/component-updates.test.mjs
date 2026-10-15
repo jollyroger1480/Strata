@@ -127,7 +127,7 @@ test('the Settings update check maps the feed to the existing result shape', asy
   assert.equal(result.engine.status, 'error');
   assert.doesNotMatch(result.engine.message, /update key/);
   assert.match(result.engine.details, /no update key/);
-  assert.match(result.engine.message, /Try again/);
+  assert.match(result.engine.message, /aren't available in this version/);
   // the app's verdict comes from the shell's updater when the bridge exists
   const appUpdater = { check: async () => ({ available: true, version: '0.2.0', notes: 'Faster starts.' }) };
   result = await checkComponentUpdates({ control: make(report()), appUpdater, appVersion: '0.1.0' });

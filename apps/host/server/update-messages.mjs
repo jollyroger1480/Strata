@@ -39,7 +39,10 @@ export function plainUpdateError(error, subject = 'engine') {
   } else if (/no engine for this PC|has no engine|no package/i.test(raw)) {
     message = "There isn't an engine for this PC's graphics card yet.";
     next = 'Check for updates again later.';
-  } else if (/trusts no update key|signature|SHA-256|does not match|not trusted|expired|older than|replayed|integrity|refused/i.test(raw) || exit === 5) {
+  } else if (/trusts no update key/i.test(raw)) {
+    message = "Updates aren't available in this version of Strata yet.";
+    next = 'They will be after the next version.';
+  } else if (/signature|SHA-256|does not match|not trusted|expired|older than|replayed|integrity|refused/i.test(raw) || exit === 5) {
     message = `The update didn't pass its safety check, so it was not installed. ${keep}`;
     next = 'Try again later.';
   }

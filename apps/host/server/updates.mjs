@@ -56,7 +56,7 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
     report = await control.updateCheck({ appVersion });
   } catch (error) {
     const plain = plainUpdateError(error, 'Strata');
-    const message = /update server/.test(plain.headline) ? `${plain.headline} Check your internet connection and try again.` : `Couldn't check for updates. Try again in a moment.`;
+    const message = /update server|aren't available/.test(plain.headline) ? plain.message : `Couldn't check for updates. Try again in a moment.`;
     return { checkedAt, strata: { installedVersion: appVersion ?? control.version ?? null, status: 'error', message, details: plain.details, canInstall: false }, engine: { installedVersion: null, status: 'error', message, details: plain.details, canInstall: false } };
   }
   const mib = bytes => `${Math.round((bytes ?? 0) / (1 << 20))} MB`;
@@ -67,6 +67,7 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
   if (engine.status === 'available') Object.assign(engineView, { status: 'available', message: `A new engine is available (${mib(engine.download_bytes)}).` });
   else if (engine.status === 'install') Object.assign(engineView, { status: 'available', message: `This PC needs an engine to run models. Press Update engine to download it (${mib(engine.download_bytes)}).` });
   else if (engine.status === 'current' || engine.status === 'failed-before' || engine.status === 'skipped') Object.assign(engineView, { status: 'current', message: 'The engine is up to date.', details: engine.note });
+  else if (engine.status === 'not-in-feed') Object.assign(engineView, { status: 'current', message: 'No engine update is listed right now.' });
   else Object.assign(engineView, { status: 'unavailable', message: "There isn't an engine for this PC's graphics card yet.", details: (engine.reasons ?? []).join('\n') || undefined });
   const control_ = report.control ?? {};
   const app = report.app ?? {};

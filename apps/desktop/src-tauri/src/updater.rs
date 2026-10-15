@@ -108,15 +108,52 @@ async fn install(app: AppHandle, progress: Arc<Mutex<Progress>>) {
         let progress = progress.clone();
         move || progress.lock().unwrap().state = "installing"
     };
-    // Tauri checks the installer's minisign signature before it runs anything. On Windows the plugin ends this process
-    // when the installer starts; elsewhere the app restarts itself once the update is in place.
-    match update.download_and_install(on_chunk, on_finish).await {
+    // Tauri checks the installer's minisign signature when it downloads it. Installing is done here, not by the plugin's
+    // download_and_install: on Windows this app lives in a kill-on-close Job Object, and an installer the plugin starts is in
+    // that job, so it is ended the moment the app exits and the update never happens. `launch_installer` starts it outside
+    // the job; the app then exits and the installer (passive: a progress window, no questions) replaces it and starts it again.
+    let bytes = match update.download(on_chunk, on_finish).await {
+        Ok(bytes) => bytes,
+        Err(e) => return fail(e.to_string()),
+    };
+    progress.lock().unwrap().state = "installing";
+    match launch_installer(&update.version, &bytes) {
         Ok(()) => {
             progress.lock().unwrap().state = "done";
-            app.restart();
+            app.exit(0);
         }
-        Err(e) => fail(e.to_string()),
+        Err(first) => match update.install(&bytes) {
+            Ok(()) => {
+                progress.lock().unwrap().state = "done";
+                app.restart();
+            }
+            Err(e) => fail(format!("{first}; {e}")),
+        },
     }
+}
+
+/// Windows: write the verified installer to a temp folder and start it detached and outside the app's Job Object.
+#[cfg(windows)]
+fn launch_installer(version: &str, bytes: &[u8]) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let dir = std::env::temp_dir().join(format!("strata-app-update-{version}"));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let installer = dir.join("installer.exe");
+    std::fs::write(&installer, bytes).map_err(|e| e.to_string())?;
+    std::process::Command::new(&installer)
+        .args(["/P", "/R", "/UPDATE"])
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start the installer outside the app: {e}"))
+}
+
+/// Elsewhere the plugin's own install is used (the installer replaces the app in place).
+#[cfg(not(windows))]
+fn launch_installer(_version: &str, _bytes: &[u8]) -> Result<(), String> {
+    Err("not Windows".into())
 }
 
 fn respond(stream: &mut TcpStream, status: &str, body: &serde_json::Value) {
