@@ -664,16 +664,35 @@ def monitor_case(rig: Rig, how: str) -> Result:
         monitor = subprocess.Popen(argv, cwd=ROOT, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=info)
         pid, alive = monitor.pid, lambda: monitor.poll() is None
     else:
-        import pty
+        import fcntl, pty, struct, termios
         child, master = pty.fork()
         if child == 0:
             os.chdir(ROOT)
             _default_signals()
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))     # a terminal that has a size
             os.execve(sys.executable, argv, env)
         pid = child
+        gone = []
+
+        def drain():                                  # a TUI paints without pause; a full pty buffer would freeze it
+            while True:
+                try:
+                    if not os.read(master, 65536):
+                        return
+                except OSError:
+                    return
+        import threading
+        threading.Thread(target=drain, daemon=True).start()
 
         def alive():
-            done, _ = os.waitpid(child, os.WNOHANG)
+            if gone:
+                return False
+            try:
+                done, _ = os.waitpid(child, os.WNOHANG)
+            except ChildProcessError:
+                done = child
+            if done:
+                gone.append(True)
             return not done
     problems = []
     time.sleep(4)
