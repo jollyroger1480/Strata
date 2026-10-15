@@ -374,6 +374,12 @@ def serve_case(rig: Rig, name: str, action, *, graceful: bool | None, vram: bool
                     psutil.Process(i.pid).kill()
                 except psutil.Error:
                     pass
+        keep = os.environ.get("STRATA_MATRIX_LOGS")                 # keep the server's and engine's logs as evidence
+        if keep:
+            Path(keep).mkdir(parents=True, exist_ok=True)
+            for log in ("serve.log", "engine.log"):
+                if (rig.root / log).exists():
+                    (Path(keep) / f"{name}.{log}").write_bytes((rig.root / log).read_bytes())
         (rig.root / "serve.log").write_bytes(b"")
 
 
