@@ -3,6 +3,12 @@
 The setup installer writes strata-*.json beside setup.py. A configured model is
 not automatically a compatible or loadable model: component presence and native
 engine compatibility are reported separately.
+
+Finding an existing install: a terminal archive is a new folder with no run configs in it. The folders earlier
+Strata installs remembered in the user's settings file (``installs``, written by setup.py next to ``data_dir``) are
+searched for run configs, read-only, and the first that has any is used where it is. Nothing is copied or moved:
+the configs name their engine and model files by absolute path, so the old install and its data folder keep
+serving the models.
 """
 
 from __future__ import annotations
@@ -30,14 +36,58 @@ SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "q
                                    "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL"})
 
 
-def install_dir(override: str | None = None) -> Path:
+def settings_path() -> Path:
+    """The user's Strata settings file: the same place setup.py writes it (%APPDATA%\\Strata\\settings.json, or
+    $XDG_CONFIG_HOME/strata/settings.json)."""
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
+
+
+def remembered_installs() -> list[Path]:
+    """Earlier Strata folders recorded in the settings file, newest first. Read-only; a missing or unreadable file
+    is an empty list."""
+    try:
+        with settings_path().open("rb") as stream:
+            data = json.loads(stream.read(1024 * 1024).decode("utf-8-sig"))
+    except (OSError, UnicodeError, ValueError):
+        return []
+    items = data.get("installs") if isinstance(data, dict) else None
+    found: list[Path] = []
+    for raw in (items if isinstance(items, list) else [])[:20]:
+        if isinstance(raw, str) and raw:
+            path = Path(raw).expanduser()
+            if path.is_absolute() and path not in found:
+                found.append(path)
+    return found
+
+
+def _has_configs(directory: Path) -> bool:
+    try:
+        return directory.is_dir() and bool(_paths(directory))
+    except (ProfileError, OSError):
+        return False
+
+
+def resolve_install(override: str | None = None) -> tuple[Path, str]:
+    """(the install folder, how it was found): explicit (an argument or STRATA_INSTALL_DIR), here (this folder has run
+    configs), remembered (an earlier install from the settings file) or default (this folder, with none yet)."""
     raw = override or os.environ.get("STRATA_INSTALL_DIR")
-    if raw is None:
-        return ROOT
-    path = Path(raw).expanduser()
-    if not path.is_absolute() or not path.is_dir():
-        raise ProfileError("install directory must be an existing absolute directory", 5)
-    return path.resolve()
+    if raw is not None:
+        path = Path(raw).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise ProfileError("install directory must be an existing absolute directory", 5)
+        return path.resolve(), "explicit"
+    if _has_configs(ROOT):
+        return ROOT, "here"
+    for earlier in remembered_installs():
+        if earlier != ROOT and _has_configs(earlier):
+            return earlier.resolve(), "remembered"
+    return ROOT, "default"
+
+
+def install_dir(override: str | None = None) -> Path:
+    return resolve_install(override)[0]
 
 
 def _model_id(path: Path) -> str | None:
@@ -125,7 +175,7 @@ def _inspect_one(model_id: str, path: Path) -> tuple[dict, dict]:
 
 
 def list_installed(override: str | None = None) -> dict:
-    directory = install_dir(override)
+    directory, source = resolve_install(override)
     models = []
     for model_id, path in _paths(directory):
         try:
@@ -134,7 +184,8 @@ def list_installed(override: str | None = None) -> dict:
             summary = {"id": model_id, "source_config": str(path), "component_status": "invalid",
                        "error": str(exc), "execution_compatibility": "unverified"}
         models.append(summary)
-    return {"scope": "local_run_configs", "install_dir": str(directory), "models": models,
+    return {"scope": "local_run_configs", "install_dir": str(directory), "install_dir_source": source,
+            "models": models,
             "model_count": len(models), "discovery_limit": MAX_CONFIGS}
 
 
