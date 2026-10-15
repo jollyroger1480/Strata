@@ -2045,3 +2045,27 @@ under `compute-sanitizer --tool memcheck --error-exitcode 86`. Build with
 signal, early cleanup and `--errors` error-propagation checks. Its `--synchronous`
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
+
+## CUDA opt-in switches measured for 0.1.45 (RTX 3060 and RTX A4000, sm_86; all off unless you set them)
+
+Ported from open pull requests and A/B'd as whole engine runs against the default (a fresh engine per side, IQ3_XXS, 5 pairs, medians;
+bit-exact means the 10-prompt + 4K/20K identity gate with the switch on equals the gate with it off). Decode after a 30K-token prompt
+unless noted; the gain is small on these two cards and larger on the Turing cards the authors measured.
+
+| Switch | What | Answers | RTX 3060 / A4000 |
+|---|---|---|---|
+| `STRATA_ATTN_DAILY=1` (#2075) | decode attention: two cells per step, a merge that skips empty chunks | bit-exact | +3.2% (5/5) / +0.7% |
+| `STRATA_QSA_ROWS=1` (#2059) | block scores of a verify window, queries in registers ([QSAROWS.md](QSAROWS.md)) | bit-exact | -0.3% / +0.3% |
+| `STRATA_EXPDEC=1` (#2058) | gate/up of the window's resident experts with the q8_1 rows in shared memory ([EXPERTDEC.md](EXPERTDEC.md)) | bit-exact | +0.5% / +1 to +5% (short context) |
+| `STRATA_SIDE_MIXER=1/2` (#1889) | the mixer's input-only work on graph branches | bit-exact | +0.5% / -0.6% (short context) |
+| `STRATA_B6_MMVQ_ROWS=1` (#1418) | exact multi-column MMVQ reusing the activation fragment across rows (K-quants, IQ4_XS) | bit-exact | +0.2..1% / +0.5..2% |
+| `STRATA_QSA_SPLIT_ATTN=1` (#1888) | decode attention split across blocks on the int8 mma path (sm_80+, int8 KV) | rounding-level (teacher-forced KL 0.0016 against a floor of 0.0012) | +2.8% / +3.5% |
+| `STRATA_HC_UPMIX=1` (#1370) | the hyper-connection up projection and `gr_mix_r` in one kernel (sm_80+) | bit-exact here (gate identical) | prompt +0.6% / +0.4% |
+| `STRATA_PROMPT_ATTN_IMMA=1` (#1367) | int8-KV prompt attention on INT8 tensor cores | rounding-level (KL at the floor) | prompt read +2.5% |
+| `STRATA_HC_REQ8=1` (#1262) | the hyper-connection projections as int8 + a scale per 32 (more expert-cache slots) | rounding-level (KL 0.0018) | decode -0.2% / +2.2% |
+| `STRATA_QUANT_GATHER=1` (#1368) | turns the once-per-token MoE input quantization back to the per-row gather | n/a | no difference measured |
+| `STRATA_PREFILL_GROUP_GATHER=0` (#1107) | turns the short-prompt grouped gather off | n/a | on is 0.6-1.3% faster |
+
+`STRATA_DEQUANT_WIDE` (the wide dequantization of Q4_K / Q5_K / Q6_K / IQ4_XS for the prompt's dense weights) is now on by default on
+sm_86 as well as sm_61: bit-exact, and the time to the first token of a 150 / 300 / 450-token prompt fell 11-15% on the RTX 3060 (5 of 5 pairs each).
+`STRATA_DEQUANT_WIDE=0` turns it off.
