@@ -122,6 +122,20 @@ async function startHost() {
   for (let i = 0; i < 200; i++) { try { if ((await fetch(base + '/api/health')).ok) return true; } catch { /* not yet */ } await delay(150); }
   return false;
 }
+/** The host started the way the Tauri shell starts it, by a stand-in shell (a node process) that can then be killed hard. */
+async function startHostViaShell() {
+  port = await freePort(); base = `http://127.0.0.1:${port}`;
+  const spec = { command: node, args: [hostEntry], options: {
+    cwd: join(install, 'host'), stdio: 'ignore', windowsHide: true,
+    env: { ...baseEnv, STRATA_PORT: String(port), STRATA_DIST: join(install, 'host', 'dist'), NODE_ENV: 'production', STRATA_PACKAGED: '1', STRATA_REAL_ENGINE: '1',
+      STRATA_NO_ACQUIRE: '1', STRATA_SHUTDOWN_TOKEN: shutdownToken, STRATA_EXIT_WITH_PARENT: '1', FAKE_ENGINE_MARK: mark,
+      STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()) } } };
+  const shell = spawn(node, ['-e', "const s=JSON.parse(process.env.HOST_SPEC);const c=require('node:child_process').spawn(s.command,s.args,s.options);console.log(c.pid);setInterval(()=>{},1000);"],
+    { env: { ...process.env, HOST_SPEC: JSON.stringify(spec) }, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+  const hostPid = await new Promise(r => shell.stdout.once('data', c => r(Number(String(c).trim()))));
+  for (let i = 0; i < 200; i++) { try { if ((await fetch(base + '/api/health')).ok) return { shell, hostPid }; } catch { /* not yet */ } await delay(150); }
+  return { shell, hostPid, failed: true };
+}
 const call = async (path, method = 'GET', body) => {
   const response = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: response.status, body: await response.json().catch(() => null) };
@@ -247,6 +261,29 @@ async function main() {
   record('a hard-killed app host takes its engine with it', third.job.state === 'done' && (!ran3 || !alive(ran3.pid)), `engine alive=${ran3 ? alive(ran3.pid) : 'n/a'}; runtime=${orphan.json?.state ?? orphan.json?.error?.message}`);
   const cleanup = controlJson('runtime', 'stop', '--profile', 'app-1');
   record('nothing is left to stop afterwards', /stopped|not managed/.test(JSON.stringify(cleanup.json)) && controlJson('runtime', 'status', '--profile', 'app-1').json?.state === 'stopped', JSON.stringify(cleanup.json).slice(0, 160));
+
+  // ---- the shell itself is killed (what the desktop shell's crash or kill looks like to the host): the host leaves, and
+  // its engine with it, with nothing announced. Windows also has the job object; this is the path that works everywhere.
+  const started2 = await startHostViaShell();
+  if (started2.failed) { record('host starts under a stand-in shell', false, ''); try { started2.shell.kill('SIGKILL'); } catch { /* gone */ } }
+  else {
+    await call('/api/native?refresh=1');
+    rmSync(mark, { force: true });
+    const fourth = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body.id, 400);
+    let ran4 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+    if (real) {
+      const listed = spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(`${dirs.components}/engine/`) && l.includes('--serve'));
+      ran4 = listed.length ? { pid: Number(listed[0].trim().split(/\s+/)[0]) } : null;
+    }
+    if (isWin) spawnSync('taskkill', ['/PID', String(started2.shell.pid), '/F'], { windowsHide: true }); else started2.shell.kill('SIGKILL');
+    for (let i = 0; i < 100 && alive(started2.hostPid); i++) await delay(100);
+    const hostGone = !alive(started2.hostPid);
+    for (let i = 0; i < 900 && ran4 && alive(ran4.pid); i++) await delay(100);
+    const engineGone = !ran4 || !alive(ran4.pid);
+    record('a killed shell takes the host and its engine with it', fourth.job.state === 'done' && hostGone && engineGone,
+      `host pid ${started2.hostPid} gone=${hostGone}; engine pid ${ran4?.pid} gone=${engineGone}; runtime=${controlJson('runtime', 'status', '--profile', 'app-1').json?.state}`);
+    controlJson('runtime', 'stop', '--profile', 'app-1');
+  }
 
   await finishSpy();
 }
