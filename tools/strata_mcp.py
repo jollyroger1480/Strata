@@ -43,6 +43,9 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this se
 VERSION = "0.1.0"
 WIN = os.name == "nt"
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+# The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
+# .venv and installs no package (setup.py's own CONTROL mode).
+CONTROL = os.environ.get("STRATA_CONTROL_INSTALL") == "1"
 DEFAULT_PORT = 8080
 STATE_DIR = ".strata-mcp"                             # in the Strata folder (git-ignored)
 
@@ -404,15 +407,18 @@ def system_folders() -> list[Path]:
 class Strata:
     """One Strata folder: what is installed there, the PC, and the processes this server started."""
 
-    def __init__(self, root: Path | str = DEFAULT_ROOT):
+    def __init__(self, root: Path | str = DEFAULT_ROOT, src: Path | str | None = None):
         self.root = Path(root).resolve()
+        # where setup.py, tools/ and serve/ are (the app: inside Strata Control); `root` is where the installs live
+        self.src = Path(src).resolve() if src else self.root
         self.state_dir = self.root / STATE_DIR
         self.lock = threading.Lock()                    # install / start / stop one at a time
         self.children: list[subprocess.Popen] = []      # reaped now and then (no zombies on POSIX)
         self._setup = None
         self._setup_tried = False
         self._hw_cache = None
-        self.python_override: str | None = None         # tests: the interpreter that runs setup / the server
+        # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
+        self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
 
     # ---- setup.py's own tables and logic
@@ -422,7 +428,9 @@ class Strata:
         if not self._setup_tried:
             self._setup_tried = True
             try:
-                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.root / "setup.py")
+                if str(self.src) not in sys.path:
+                    sys.path.insert(0, str(self.src))   # setup.py imports strata_control
+                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.src / "setup.py")
                 mod = importlib.util.module_from_spec(spec)
                 real = sys.stdout
                 sys.stdout = sys.stderr                 # nothing it prints may reach the protocol stream
@@ -1318,7 +1326,8 @@ class Tools:
         log_path = s.state_dir / "setup.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n===== strata-mcp: install {plan['title']} at {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
-        spec = {"job": job_id, "root": str(s.root), "python": s.run_python(), "base_python": sys.executable,
+        spec = {"job": job_id, "root": str(s.root), "src": str(s.src), "control": CONTROL,
+                "python": s.run_python(), "base_python": sys.executable,
                 "create_venv": s.python_override is None and not s.venv_python().exists(),
                 "args": args, "result": str(s.state_dir / "install-result.json")}
         spec_path = s.state_dir / "install-job.json"
@@ -1712,6 +1721,7 @@ def install_job(spec_path: str) -> int:
         os.replace(tmp, result)
 
     py = Path(spec["python"])
+    src = Path(spec.get("src") or root)
     try:
         if spec.get("create_venv"):
             venv = root / ".venv"
@@ -1727,10 +1737,18 @@ def install_job(spec_path: str) -> int:
                           "once in a terminal", flush=True)
                     record(exit_code=1, ended=time.strftime("%Y-%m-%d %H:%M:%S"))
                     return 1
-        cmd = [str(py), str(root / "setup.py"), *spec["args"]]
+        cmd = [str(py), str(src / "setup.py"), *spec["args"]]
         print("strata-mcp: running " + " ".join(cmd), flush=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        p = subprocess.Popen(cmd, cwd=str(root), stdin=subprocess.DEVNULL, env=env)
+        if spec.get("control"):                         # the app: the installer's own mode, writing to `root`
+            env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(root), PYTHONNOUSERSITE="1")
+            for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+                env.pop(key, None)
+            # This job is the explicit install the user asked for (it downloads model files and the preparation sources). The
+            # server that started it, and every start or serve, keep STRATA_NO_ACQUIRE; setup.py's CONTROL mode still runs
+            # no pip, git, compiler or engine fetch.
+            env.pop("STRATA_NO_ACQUIRE", None)
+        p = subprocess.Popen(cmd, cwd=str(src if spec.get("control") else root), stdin=subprocess.DEVNULL, env=env)
         record(child_pid=p.pid, child_ident=proc_identity(p.pid))
         rc = p.wait()
     except Exception as e:                              # noqa: BLE001
@@ -1745,6 +1763,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Strata's MCP server (stdio): install, start, check and stop Strata "
                                              "from an AI assistant. See docs/MCP_SERVER.md.")
     ap.add_argument("--root", help="the Strata folder (default: the one this file is in)")
+    ap.add_argument("--src", help="where setup.py, tools/ and serve/ are, when that is not the Strata folder (the app)")
     ap.add_argument("--install-job", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.install_job:
@@ -1753,12 +1772,13 @@ def main(argv=None) -> int:
         log("Python 3.10 or newer is needed")
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
-    if not (root / "setup.py").is_file() or not (root / "serve" / "server.py").is_file():
-        log(f"{root} is not a Strata folder (no setup.py / serve/server.py)")
+    src = Path(a.src).expanduser().resolve() if a.src else root
+    if not (src / "setup.py").is_file() or not (src / "serve" / "server.py").is_file():
+        log(f"{src} is not a Strata folder (no setup.py / serve/server.py)")
         return 2
     out = sys.stdout.buffer
     sys.stdout = sys.stderr                             # stray prints must never corrupt the protocol stream
-    server = McpServer(Strata(root), out)
+    server = McpServer(Strata(root, src), out)
     log(f"ready (Strata folder {root})")
     try:
         server.serve(sys.stdin.buffer)

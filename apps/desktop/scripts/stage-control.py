@@ -73,6 +73,55 @@ def extract(archive: Path, destination: Path) -> Path:
     return inner
 
 
+#: What the app's installer needs on top of the Terminal bundle: the model catalog and GPU probe (tools/strata_mcp.py reads
+#: setup.py's tables), and the install job, which downloads a model the user chose, prepares it with the bundled tools and
+#: writes a run config naming "component:strata-engine". setup.py runs in its CONTROL mode there (no pip, no engine fetch,
+#: no compiler). Entry points; their local imports under tools/ come with them.
+INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
+INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
+                   "strata_tokenizer", "gguf_reader")
+INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
+
+
+def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
+    """The tools/ modules `entry` imports, transitively (static: import and from-import statements)."""
+    import ast
+    seen: set[str] = set()
+    todo = list(entry)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        source = folder / "tools" / f"{name}.py"
+        if not source.exists():
+            raise SystemExit(f"installer tool missing: tools/{name}.py")
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8-sig"))):
+            names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else \
+                [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
+            todo += [m for m in names if (folder / "tools" / f"{m}.py").exists() and m not in seen]
+    return sorted(seen)
+
+
+def add_installer(folder: Path) -> dict:
+    """Copy the installer's files from the source tree into the staged Control (after the Terminal bundle is in place)."""
+    tools = local_imports(ROOT, INSTALLER_TOOLS)
+    copied = []
+    for name in INSTALLER_FILES:
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, folder / name)
+        copied.append(name)
+    (folder / "tools").mkdir(exist_ok=True)
+    for name in tools:
+        shutil.copy2(ROOT / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
+        copied.append(f"tools/{name}.py")
+    if (folder / INSTALLER_DATA).exists():
+        shutil.rmtree(folder / INSTALLER_DATA)
+    shutil.copytree(ROOT / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
+    return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
+            "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
+
+
 def write_bundle_record(folder: Path, archive: Path) -> dict:
     manifest_path = archive.with_name(archive.name.rsplit(".", 2 if archive.name.endswith(".tar.gz") else 1)[0] + ".manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
@@ -86,6 +135,7 @@ def write_bundle_record(folder: Path, archive: Path) -> dict:
         "installed": manifest.get("installed"),
         "archive": {"name": archive.name, "sha256": sha256(archive), "bytes": archive.stat().st_size},
         "acquires_at_runtime": False,
+        "installer": add_installer(folder),
     }
     (folder / "BUNDLE.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return record
@@ -95,7 +145,8 @@ def check(folder: Path) -> int:
     target = pt.host_target()
     python = folder / pt.PYTHON_PINS[target]["python"]
     problems = []
-    for need in (python, folder / "strata.py", folder / "strata_control", folder / "serve" / "server.py", folder / "BUNDLE.json"):
+    for need in (python, folder / "strata.py", folder / "strata_control", folder / "serve" / "server.py", folder / "BUNDLE.json",
+                 folder / "setup.py", folder / "tools" / "strata_mcp.py", folder / "tools" / "iq_pack.py", folder / "data" / "draft_vocab.bin"):
         if not need.exists():
             problems.append(f"missing {need}")
     if problems:
@@ -105,7 +156,16 @@ def check(folder: Path) -> int:
     done = subprocess.run([str(python), str(folder / "strata.py"), "--version"], capture_output=True, text=True, env=env,
                           cwd=str(folder), timeout=60)
     print(done.stdout.strip() or done.stderr.strip())
-    return done.returncode
+    if done.returncode:
+        return done.returncode
+    # the installer: its catalog, a GPU probe and its imports work on the bundled Python alone (nothing is installed or fetched)
+    probe = ("import sys; sys.path.insert(0, %r); import importlib.util as u; s = u.spec_from_file_location('s', %r); m = u.module_from_spec(s); "
+             "s.loader.exec_module(m); import iq_pack, strata_pack, pack_index, mtp_fetch; "
+             "print('installer ok: %%d models, %%d families' %% (len(m.MODELS), len(m.FAMILIES)))") % (str(folder / "tools"), str(folder / "setup.py"))
+    env["STRATA_CONTROL_INSTALL"] = "1"
+    again = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, env=env, cwd=str(folder), timeout=120)
+    print(again.stdout.strip() or again.stderr.strip()[-600:])
+    return again.returncode
 
 
 def main() -> int:
