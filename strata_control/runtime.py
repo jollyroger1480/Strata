@@ -37,7 +37,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, paths, private_files, profiles, readiness, winproc
+from strata_control import owner_transport, paths, private_files, procs, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
@@ -411,8 +411,20 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
 
 def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
           expected_profile_revision: str | None = None,
-          expected_source_sha256: str | None = None) -> dict:
+          expected_source_sha256: str | None = None,
+          die_with_pid: int | None = None) -> dict:
+    """Start the saved profile under a new owner host.
+
+    The owner host is a background service: it is not tied to the terminal or the process that ran this command and
+    keeps serving after they end. It stops on `runtime stop`, when its server ends, or - only if `die_with_pid`
+    names a process - when that process is gone (the desktop app uses this for the engines it starts)."""
     name = _name(name)
+    die_with = None
+    if die_with_pid is not None:
+        token = procs.start_token(die_with_pid) if type(die_with_pid) is int else None
+        if token is None:
+            raise ProfileError("the process to follow with --die-with-pid is not running")
+        die_with = (die_with_pid, token)
     if not 0 <= wait <= 600 or not 0 <= shutdown_timeout <= 300:
         raise ProfileError("start wait must be 0..600 and shutdown timeout 0..300 seconds")
     if expected_profile_revision is not None and (not isinstance(expected_profile_revision, str) or
@@ -431,6 +443,7 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
     with profiles._lock(lock_name):
         if expected_profile_revision is not None or expected_source_sha256 is not None:
             _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
+        procs.end_leftovers(profile=name)               # a server or engine a lost owner left behind (verified one by one)
         if _read_state(name) is not None:
             _recover_stale(name, wait=wait)
         descriptor = os.open(log_path, flags, 0o600)
@@ -442,6 +455,8 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
                 command += ["--expected-profile-revision", expected_profile_revision]
             if expected_source_sha256 is not None:
                 command += ["--expected-source-sha256", expected_source_sha256]
+            if die_with is not None:
+                command += ["--die-with-pid", str(die_with[0]), "--die-with-token", die_with[1]]
             detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
                       if WINDOWS else {"start_new_session": True})
             proc = subprocess.Popen(command,
@@ -494,6 +509,9 @@ def stop(name: str, *, timeout: float = 330,
         raise ProfileError("expected instance ID must be 32 lowercase hex characters")
     params = {"expected_owner_id": expected_owner_id,
               "expected_instance_id": expected_instance_id}
+    lost = _stop_lost(name)
+    if lost is not None:
+        return lost
     result = _rpc(name, "stop", timeout=timeout, params=params)
     if not result["ok"]:
         return result
@@ -504,6 +522,50 @@ def stop(name: str, *, timeout: float = 330,
         except subprocess.TimeoutExpired:
             _STARTED_HOSTS[name] = owned
     return result
+
+
+def _stop_lost(name: str) -> dict | None:
+    """`stop` when there is no live owner host: the host was killed or crashed, so nobody can be asked to stop the
+    server it started. End what it left behind - the recorded server and engine, each re-checked by PID, start time
+    and command line - and clear the private state. None when an owner is running (the normal stop applies)."""
+    try:
+        state = _read_state(name)
+    except ProfileError:
+        state = None
+    if state is not None:
+        try:
+            if _host_lease_active(name):
+                return None
+        except FileNotFoundError:
+            state = None
+    outcome = procs.end_leftovers(profile=name)
+    recovered = False
+    if state is not None:
+        recovered = _recover_stale(name, wait=20)
+    if state is None and not any(outcome[key] for key in ("ended", "stuck", "unverifiable")):
+        return None                                   # nothing recorded: the normal "not managed or is stopped"
+    stuck = bool(outcome["stuck"] or outcome["unverifiable"])
+    return {"ok": not stuck, "profile": name, "state": "failed" if stuck else "stopped", "recovered": recovered,
+            "ended": outcome["ended"], "leftover_unverified": outcome["unverifiable"],
+            "exit_code": 6 if stuck else 0,
+            **({"error": "leftover_process_not_ended"} if stuck else {})}
+
+
+def cleanup(profile: str | None = None) -> dict:
+    """End the servers and engines Strata started whose owner is gone (`strata runtime cleanup`). Owned instances
+    that are running are not touched, and neither is any process that is not exactly what Strata recorded."""
+    if profile is not None:
+        profile = _name(profile)
+    outcome = procs.end_leftovers(profile=profile)
+    if profile is not None:
+        try:
+            if _read_state(profile) is not None and not _host_lease_active(profile):
+                outcome["recovered"] = _recover_stale(profile, wait=20)
+        except (ProfileError, FileNotFoundError):
+            pass
+    stuck = bool(outcome["stuck"] or outcome["unverifiable"])
+    return {"ok": not stuck, "state": "cleaned" if not stuck else "failed", **outcome,
+            "exit_code": 6 if stuck else 0}
 
 
 def verify(name: str, *, timeout: float = 300, load: bool = False,
@@ -565,8 +627,10 @@ def plan_restart(name: str, *, allow_source_switch: bool = False,
 class Host:
     def __init__(self, name: str, shutdown_timeout: float, startup_wait: float = 300,
                  expected_profile_revision: str | None = None,
-                 expected_source_sha256: str | None = None):
+                 expected_source_sha256: str | None = None,
+                 die_with: tuple[int, str] | None = None):
         self.name = _name(name)
+        self.die_with = die_with           # (pid, start token): stop the server when that process is gone
         self.shutdown_timeout = shutdown_timeout
         self.expected_profile_revision = expected_profile_revision
         self.expected_source_sha256 = expected_source_sha256
@@ -673,6 +737,7 @@ class Host:
         child_env = os.environ.copy()
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
         child_env["STRATA_NO_ACQUIRE"] = "1"      # a managed server never installs or downloads (acquisition.py)
+        child_env["STRATA_RUNTIME_PROFILE"] = self.name   # the records of its engine say which profile they belong to
         try:
             with os.fdopen(descriptor, "ab") as stream:
                 if WINDOWS:
@@ -699,6 +764,7 @@ class Host:
             self.owner_write = self.child.stdin
         else:
             self.owner_write_fd = writer
+        procs.write_record(self.child.pid, "server", profile=self.name)
         try:
             self._mark_child("owned", pid=self.child.pid, ready=ready)
         except BaseException:
@@ -1086,6 +1152,9 @@ class Host:
             except (ProfileError, OSError) as exc:
                 self.last_error = str(exc) if isinstance(exc, ProfileError) else type(exc).__name__
             while self.running:
+                if self.die_with is not None and procs.start_token(self.die_with[0]) != self.die_with[1]:
+                    self.running = False         # the process this instance lives for is gone: stop (drained) and leave
+                    break
                 if self.probe_result is not None and "error" in self.probe_result and \
                         self.child is not None and self.child.poll() is None:
                     self._stop_child()
@@ -1157,6 +1226,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--startup-wait", type=float, default=300)
     parser.add_argument("--expected-profile-revision")
     parser.add_argument("--expected-source-sha256")
+    parser.add_argument("--die-with-pid", type=int)
+    parser.add_argument("--die-with-token")
     args = parser.parse_args(argv)
     if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= 600:
         parser.error("shutdown timeout must be 0..300")
@@ -1165,8 +1236,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.expected_source_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", args.expected_source_sha256):
         parser.error("expected source digest must be 64 lowercase hex characters")
     try:
+        die_with = (args.die_with_pid, args.die_with_token) if args.die_with_pid and args.die_with_token else None
         return Host(args.host, args.shutdown_timeout, args.startup_wait,
-                    args.expected_profile_revision, args.expected_source_sha256).serve()
+                    args.expected_profile_revision, args.expected_source_sha256, die_with).serve()
     except (ProfileError, OSError) as exc:
         print(f"[strata runtime] host failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 6

@@ -81,8 +81,9 @@ class ApiHarness:
         self._log = tempfile.NamedTemporaryFile(prefix="strata-api-harness-", suffix=".log",
                                                 delete=False)
         try:
-            self._proc = subprocess.Popen(self._argv(), cwd=str(self.serve_dir), env=self.env,
-                                          stdout=self._log, stderr=subprocess.STDOUT)
+            from serve import lifeline       # the worker (and the engine under it) end with this process
+            self._proc = lifeline.popen(self._argv(), "worker", cwd=str(self.serve_dir), env=self.env,
+                                        stdout=self._log, stderr=subprocess.STDOUT)
         except OSError as e:
             raise MeasurementError(f"the worker could not be started: {e}") from e
 
