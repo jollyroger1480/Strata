@@ -3748,6 +3748,18 @@ int main(int argc, char** argv) {
         if (off != nullptr) {
             std::fprintf(stderr, "strata generate: --pipeline-windows %d is off: %s\n", o.pipeline_windows, off);
             o.pipeline_windows = 0;
+        } else if (!pw_auto && o.pipeline_windows >= 2 && split_devs.size() == 1) {
+            // #2637: the default (above) takes two stages only with the draft layer on the first card (mtp_first); asked for by
+            // hand it was taken without a word.  Recommend, never force: it stays on as asked, and the line says what it costs.
+            const char* e0 = std::getenv("STRATA_MTP_STAGE0");
+            const bool first_card = mtp_first_ok && (e0 != nullptr ? std::atoi(e0) != 0 : mtp_first_default_on());
+            if (!first_card)
+                std::fprintf(stderr, "strata generate: note: --pipeline-windows %d on a layer split of two stages without the draft layer "
+                                     "on the first card (%s): the draft chain then shares the last card with its window and the "
+                                     "pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, "
+                                     "--pipeline-windows 0 turns it off\n", o.pipeline_windows,
+                             !mtp_first_ok ? "it needs --mtp with --spec 2 or more and the draft head's subset file (draft_vocab.bin)"
+                                           : "STRATA_MTP_STAGE0=1 asks for it");
         }
     }
     // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
