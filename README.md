@@ -192,6 +192,9 @@ every expert (Strata's arena mode, for example Q2_0 or IQ3_XXS on a 64 GB PC). O
 ```
 
 Restart Strata (`START-HERE.bat` or `./setup.sh`) after the change. To undo, remove the two entries.
+Developers testing the terminal client in this source branch can start with the
+[terminal quick start](docs/TERMINAL_QUICKSTART.md). It covers read-only status and Monitor, plus explicit local
+profile, component, calibration and benchmark commands. The terminal client is still being qualified for release.
 
 ## Something went wrong?
 
