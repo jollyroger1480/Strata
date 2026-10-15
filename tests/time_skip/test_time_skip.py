@@ -15,12 +15,27 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from strata_control import time_skip as ts  # noqa: E402
+
+
+def _py(code: str) -> str:
+    """A check command that runs the same on sh and cmd.exe, with no dependency on coreutils."""
+    return f'"{sys.executable}" -c "{code}"'
+
+
+#: stand-ins for `test -s doc.txt`, `grep -q WORD doc.txt` and `true`
+NONEMPTY = _py("import os,sys; sys.exit(0 if os.path.getsize('doc.txt') != 0 else 1)")
+TRUE = _py("pass")
+
+
+def _has(word: str) -> str:
+    return _py(f"import sys; sys.exit(0 if '{word}' in open('doc.txt').read() else 1)")
 
 
 class TimeSkipCase(unittest.TestCase):
@@ -44,7 +59,7 @@ class TimeSkipCase(unittest.TestCase):
         # and shadowing it makes every test in the class fail with a confusing AttributeError.
         run = ts.TimeSkipRun(self.tmp / "runs", self.ws, "improve the document",
                              checks if checks is not None else self.checks(
-                                 {"id": "nonempty", "command": "test -s doc.txt"},
+                                 {"id": "nonempty", "command": NONEMPTY},
                              ),
                              max_attempts=max_attempts)
         result = run.run(revise)
@@ -61,7 +76,7 @@ class TestCandidateImproves(TimeSkipCase):
             return "added the missing line"
 
         run, result = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
+            {"id": "has-three", "command": _has("three")},
         ))
         self.assertEqual(result["state"], "completed")
         self.assertEqual(run.attempts[0].decision, "keep")
@@ -80,7 +95,7 @@ class TestRegressionRejected(TimeSkipCase):
             return "shortened it"
 
         run, result = self.start(revise, checks=self.checks(
-            {"id": "has-two", "command": "grep -q two doc.txt"},
+            {"id": "has-two", "command": _has("two")},
         ))
         self.assertEqual(run.attempts[0].decision, "reject")
         self.assertIn("has-two", run.attempts[0].reason)
@@ -96,7 +111,7 @@ class TestRegressionRejected(TimeSkipCase):
             return "shortened it"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-two", "command": "grep -q two doc.txt"},
+            {"id": "has-two", "command": _has("two")},
         ))
         rejected = Path(run.attempts[0].path) / "doc.txt"
         self.assertTrue(rejected.exists(), "a rejected candidate must remain on disk to inspect")
@@ -111,7 +126,7 @@ class TestNoImprovement(TimeSkipCase):
             return "did nothing"
 
         run, result = self.start(revise, checks=self.checks(
-            {"id": "nonempty", "command": "test -s doc.txt"},
+            {"id": "nonempty", "command": NONEMPTY},
         ))
         self.assertEqual(run.attempts[0].decision, "inconclusive")
         self.assertEqual(result["decision"]["outcome"], "inconclusive")
@@ -147,10 +162,30 @@ class TestTimeoutsAndHardErrors(TimeSkipCase):
     """A check that times out is unknown, and a check that crashes is recorded as an error."""
 
     def test_timeout_is_unknown(self):
-        spec = ts.CheckSpec(id="slow", command="sleep 5", timeout_s=0.3)
+        spec = ts.CheckSpec(id="slow", command=_py("import time; time.sleep(30)"), timeout_s=0.3)
+        started = time.time()
         r = ts.run_check(spec, self.ws)
         self.assertEqual(r.outcome, "unknown")
         self.assertIn("timed out", r.detail)
+        self.assertLess(time.time() - started, 20, "the program the shell started must be stopped too")
+
+    def test_an_existing_program_that_fails_is_failed_not_unknown(self):
+        r = ts.run_check(ts.CheckSpec(id="real", command=_py("import sys; sys.exit(1)")), self.ws)
+        self.assertEqual((r.outcome, r.exit_code), ("failed", 1))
+
+    def test_a_missing_program_is_unknown_with_the_shells_not_found_code(self):
+        r = ts.run_check(ts.CheckSpec(id="gone", command="definitely-not-a-real-program-xyz --check"), self.ws)
+        self.assertEqual(r.outcome, "unknown")
+        self.assertIn("could not be run", r.detail)
+
+    @unittest.skipUnless(sys.platform == "win32", "cmd.exe's code")
+    def test_cmd_exit_9009_is_unknown(self):
+        r = ts.run_check(ts.CheckSpec(id="nine", command="exit 9009"), self.ws)
+        self.assertEqual(r.outcome, "unknown")
+
+    def test_exit_127_means_not_found_only_where_the_shell_says_so(self):
+        r = ts.run_check(ts.CheckSpec(id="c127", command="exit 127"), self.ws)
+        self.assertEqual(r.outcome, "failed" if sys.platform == "win32" else "unknown")
 
     def test_nonzero_exit_is_failed(self):
         spec = ts.CheckSpec(id="fails", command="exit 3")
@@ -167,7 +202,7 @@ class TestAdviceDoesNotGate(TimeSkipCase):
             return "the model says this is better"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "opinion", "command": "true", "kind": "advice"},
+            {"id": "opinion", "command": TRUE, "kind": "advice"},
         ))
         self.assertEqual(run.attempts[0].decision, "inconclusive")
         self.assertIn("no deterministic checks", run.attempts[0].reason)
@@ -178,8 +213,8 @@ class TestAdviceDoesNotGate(TimeSkipCase):
             return "the model says this is better"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "nonempty", "command": "test -s doc.txt"},
-            {"id": "opinion", "command": "true", "kind": "advice"},
+            {"id": "nonempty", "command": NONEMPTY},
+            {"id": "opinion", "command": TRUE, "kind": "advice"},
         ))
         self.assertEqual(run.attempts[0].decision, "reject")
 
@@ -200,7 +235,7 @@ class TestCancellation(TimeSkipCase):
             return "attempted"
 
         run = ts.TimeSkipRun(self.tmp / "runs", self.ws, "p",
-                             self.checks({"id": "nonempty", "command": "test -s doc.txt"}),
+                             self.checks({"id": "nonempty", "command": NONEMPTY}),
                              max_attempts=5)
         result = run.run(revise)
         self.assertEqual(result["state"], "cancelled")
@@ -216,7 +251,7 @@ class TestCancellation(TimeSkipCase):
             (candidate / "doc.txt").write_text("speculative\n", encoding="utf-8")
             return "changed the candidate only"
 
-        self.start(revise, checks=self.checks({"id": "nonempty", "command": "test -s doc.txt"}))
+        self.start(revise, checks=self.checks({"id": "nonempty", "command": NONEMPTY}))
         self.assertEqual((self.ws / "doc.txt").read_text(encoding="utf-8"), before)
 
 
@@ -229,7 +264,7 @@ class TestApplySafety(TimeSkipCase):
             return "added three"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
+            {"id": "has-three", "command": _has("three")},
         ))
         # The user edits the workspace while the run is under way / before apply.
         (self.ws / "doc.txt").write_text("the user rewrote this\n", encoding="utf-8")
@@ -246,7 +281,7 @@ class TestApplySafety(TimeSkipCase):
             return "added three"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
+            {"id": "has-three", "command": _has("three")},
         ))
         before = (self.ws / "doc.txt").read_text(encoding="utf-8")
         outcome = run.apply(dry_run=True)
@@ -260,7 +295,7 @@ class TestApplySafety(TimeSkipCase):
             return "added three"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
+            {"id": "has-three", "command": _has("three")},
         ))
         original = (self.ws / "doc.txt").read_text(encoding="utf-8")
         outcome = run.apply()
@@ -279,7 +314,7 @@ class TestPersistence(TimeSkipCase):
             return "added three"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
+            {"id": "has-three", "command": _has("three")},
         ))
         reloaded = self.store.get(run.id)
         self.assertEqual(reloaded["id"], run.id)
@@ -304,8 +339,8 @@ class TestDeclaredChecks(TimeSkipCase):
         d = self.ws / ".strata"
         d.mkdir()
         (d / "checks.json").write_text(json.dumps({"checks": [
-            {"id": "a", "command": "true"},
-            {"id": "b", "command": "true", "kind": "advice", "description": "a judgement"},
+            {"id": "a", "command": TRUE},
+            {"id": "b", "command": TRUE, "kind": "advice", "description": "a judgement"},
         ]}), encoding="utf-8")
         specs = self.store.load_checks(self.ws)
         self.assertEqual([s.id for s in specs], ["a", "b"])
@@ -316,7 +351,7 @@ class TestDeclaredChecks(TimeSkipCase):
 
     def test_check_without_id_is_refused(self):
         with self.assertRaises(ts.TimeSkipError):
-            ts.CheckSpec.from_dict({"command": "true"})
+            ts.CheckSpec.from_dict({"command": TRUE})
 
     def test_check_without_command_or_file_is_refused(self):
         with self.assertRaises(ts.TimeSkipError):
@@ -334,14 +369,14 @@ class TestBoundedAttempts(TimeSkipCase):
             return f"attempt {index}"
 
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "nonempty", "command": "test -s doc.txt"},
+            {"id": "nonempty", "command": NONEMPTY},
         ), max_attempts=2)
         self.assertEqual(seen, [1, 2])
         self.assertEqual(len(run.attempts), 2)
 
     def test_zero_attempts_is_a_checkpoint_only_run(self):
         run, result = self.start(lambda c, p, i: "nope", checks=self.checks(
-            {"id": "nonempty", "command": "test -s doc.txt"},
+            {"id": "nonempty", "command": NONEMPTY},
         ), max_attempts=0)
         self.assertEqual(run.attempts, [])
         self.assertEqual(result["decision"]["outcome"], "inconclusive")
@@ -363,8 +398,8 @@ class TestBoundedAttempts(TimeSkipCase):
         # reject an attempt that fixed nothing. The gate rejects any failing deterministic check,
         # which is the rule being tested in TestRegressionRejected, not here.
         run, _ = self.start(revise, checks=self.checks(
-            {"id": "has-three", "command": "grep -q three doc.txt"},
-            {"id": "has-four", "command": "grep -q four doc.txt", "kind": "advice"},
+            {"id": "has-three", "command": _has("three")},
+            {"id": "has-four", "command": _has("four"), "kind": "advice"},
         ), max_attempts=2)
         # This case is about the *starting point*, not the verdict, so it asserts exactly that.
         # The assertion inside `revise` is the real test: attempt 2 sees `three`, which can only be

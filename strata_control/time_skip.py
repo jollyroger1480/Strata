@@ -116,6 +116,61 @@ class CheckResult:
         return {k: v for k, v in self.__dict__.items() if v not in ("", None) or k in ("id", "kind", "outcome")}
 
 
+#: cmd.exe's own "command not found" exit code.
+CMD_NOT_FOUND = 9009
+#: Things cmd.exe runs itself, so there is no program to look up.
+_CMD_BUILTINS = frozenset((
+    "assoc call cd chdir cls copy date del dir echo endlocal erase exit for ftype goto if md mkdir mklink "
+    "move path pause popd prompt pushd rd rem ren rename rmdir set setlocal shift start time title type "
+    "ver verify vol").split())
+_CMD_OPERATORS = set("&|<>^%")
+
+
+def _shell_could_not_run(command: str, returncode: int, env: dict[str, str]) -> bool:
+    """True when the shell reported that the program does not exist or cannot be executed.
+
+    POSIX ``sh`` says so with 126/127. ``cmd.exe`` says 9009 from a batch context but often a plain 1
+    from ``cmd /c`` (and the message is localised), so for exit 1 the first word is looked up on PATH
+    instead of trusting the code. A real failure of an existing program stays ``failed``.
+    """
+    if os.name != "nt":
+        return returncode in (126, 127)
+    if returncode == CMD_NOT_FOUND:
+        return True
+    if returncode != 1:
+        return False
+    text = command.strip()
+    if not text or _CMD_OPERATORS & set(text):
+        return False  # a pipeline or redirect: the failing part is unknowable from here
+    if text.startswith('"'):
+        program = text[1:].split('"', 1)[0]
+    else:
+        program = text.split(None, 1)[0]
+    if program.lower() in _CMD_BUILTINS:
+        return False
+    return shutil.which(program, path=env.get("PATH") or env.get("Path")) is None
+
+
+def _run_shell(command: str, cwd: str, timeout: float, env: dict[str, str]) -> "subprocess.CompletedProcess[str]":
+    """``subprocess.run(shell=True)`` that also stops what the shell started when the check times out.
+
+    ``cmd.exe /c`` is a parent process: killing it leaves the real program holding the output pipes,
+    so a hung check would block here until it ended on its own. On Windows the whole tree is killed.
+    """
+    if os.name != "nt":
+        return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, env=env)
+    with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, env=env) as process:
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, out, err)
+
+
 def run_check(spec: CheckSpec, workdir: Path, env: dict[str, str] | None = None) -> CheckResult:
     """Run one check and report what actually happened.
 
@@ -125,10 +180,7 @@ def run_check(spec: CheckSpec, workdir: Path, env: dict[str, str] | None = None)
     started = time.time()
     if spec.command:
         try:
-            proc = subprocess.run(
-                spec.command, shell=True, cwd=str(workdir), capture_output=True, text=True,
-                timeout=spec.timeout_s, env={**os.environ, **(env or {})},
-            )
+            proc = _run_shell(spec.command, str(workdir), spec.timeout_s, {**os.environ, **(env or {})})
         except subprocess.TimeoutExpired:
             return CheckResult(spec.id, spec.kind, "unknown",
                                detail=f"timed out after {spec.timeout_s:.0f}s",
@@ -136,10 +188,10 @@ def run_check(spec: CheckSpec, workdir: Path, env: dict[str, str] | None = None)
         except OSError as e:
             return CheckResult(spec.id, spec.kind, "unknown", detail=f"could not run: {e}")
         tail = lambda s: (s or "")[-2000:]  # noqa: E731 - a local shorthand
-        if proc.returncode in (126, 127):
-            # The shell's own "not executable" / "command not found". The check never ran, so this
-            # is `unknown`: reporting it as `failed` would blame the candidate for a declaration
-            # mistake, and reporting it as `passed` would be worse.
+        if _shell_could_not_run(spec.command, proc.returncode, {**os.environ, **(env or {})}):
+            # The shell's own "not executable" / "command not found" (126/127 on sh, 9009 on cmd).
+            # The check never ran, so this is `unknown`: reporting it as `failed` would blame the
+            # candidate for a declaration mistake, and reporting it as `passed` would be worse.
             return CheckResult(spec.id, spec.kind, "unknown",
                                detail=f"the check's command could not be run (shell exit "
                                       f"{proc.returncode}): {spec.command}",
