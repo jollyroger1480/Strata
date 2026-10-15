@@ -258,6 +258,17 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;
         else { std::fprintf(stderr, "usage: gdn_chunk_parity [--selftest]\n"); return 2; }
     }
+    {
+        // the kkt stage needs 2*64*129 floats (66 KB) of dynamic shared memory: a card whose opt-in limit is lower
+        // (Pascal: 48 KB) cannot launch it, and the engine dispatch never selects the chunked path there
+        int dev = 0, smem = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+        if (smem < 2 * 64 * 129 * 4) {
+            std::printf("gdn_chunk_parity: the card's shared-memory opt-in (%d B) is below the kkt stage's need, skipped\n", smem);
+            return 77;
+        }
+    }
     if (!strata::prefill::gdn_chunk_available())
         std::printf("note: not a V100 (cc 7.0) - the parity still runs; the engine dispatch keeps the recurrence\n");
     run_case(64, 1);
