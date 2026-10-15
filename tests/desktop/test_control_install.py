@@ -272,3 +272,81 @@ class FailedStartTests(unittest.TestCase):
             self.assertIn("memory guard: 5.1 GiB free", tail)
             self.assertTrue(tail.endswith("exit code 3"))
             self.assertNotIn("loading", tail.split(" | ")[0] if tail.count(" | ") > 2 else "")
+
+
+class DeleteModelTests(unittest.TestCase):
+    """Deleting a downloaded model removes its own files and run config, never what another installed model still uses."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.root = base / "install"
+        self.root.mkdir()
+        self.data = base / "Strata-data"
+        spec = importlib.util.spec_from_file_location("strata_mcp_for_delete", ROOT / "tools" / "strata_mcp.py")
+        self.mcp = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"STRATA_CONTROL_INSTALL": "1", "STRATA_INSTALL_DIR": str(self.root)}):
+            spec.loader.exec_module(self.mcp)
+        self.s = self.mcp.Strata(self.root, ROOT)
+        self.tools = self.mcp.Tools(self.s)
+
+        def make(path: Path, size: int):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * size)
+            return path
+        self.make = make
+        mtp = self.data / "mtp" / "rt"
+        make(mtp / "experts.bin", 3000)
+        shared_ple = make(self.data / "models" / "Q2_0" / "shard-2.gguf", 2000)     # the same second shard in both models
+        for tag, size in (("iq3_s", 10000), ("q2_0", 4000)):
+            folder = self.data / "models" / tag
+            first = make(folder / "shard-1.gguf", size)
+            make(first.with_name(first.name + ".done"), 1)
+            pack = self.data / "packs" / tag
+            make(pack / "tokenizer" / "vocab.json", 500)
+            (self.root / f"strata-{tag}.json").write_text(json.dumps({"exe": "component:strata-engine", "args": [
+                "--pack", str(pack), "--native", str(first), "--ple-gguf", str(shared_ple), "--mtp", str(mtp), "--max-context", "32768"]}), encoding="utf-8")
+            (self.root / f"strata-{tag}.log").write_text("log", encoding="utf-8")
+
+    def test_the_plan_names_what_goes_and_what_stays(self):
+        plan = self.tools.strata_remove(model="iq3_s")["plan"]
+        removed = {Path(x["path"]).name for x in plan["remove"]}
+        kept = {Path(x["path"]).name for x in plan["keep"]}
+        self.assertIn("shard-1.gguf", removed)
+        self.assertIn("iq3_s", removed)                                    # its pack folder
+        self.assertIn("strata-iq3_s.json", removed)
+        self.assertEqual(kept, {"shard-2.gguf", "rt"})                     # the shared PLE shard and the shared MTP draft
+        self.assertEqual(plan["bytes"], 10000 + 1 + 500 + 3 + (self.root / "strata-iq3_s.json").stat().st_size)
+
+    def test_confirm_deletes_only_that_model_and_the_other_still_has_everything(self):
+        result = self.tools.strata_remove(model="iq3_s", confirm=True)
+        self.assertEqual(result["failed"], [])
+        self.assertFalse((self.data / "models" / "iq3_s").exists())        # its folder is gone with its file
+        self.assertFalse((self.data / "packs" / "iq3_s").exists())
+        self.assertFalse((self.root / "strata-iq3_s.json").exists())
+        self.assertTrue((self.data / "models" / "Q2_0" / "shard-2.gguf").is_file())
+        self.assertTrue((self.data / "mtp" / "rt" / "experts.bin").is_file())
+        self.assertTrue((self.data / "models" / "q2_0" / "shard-1.gguf").is_file())
+        self.assertTrue((self.data / "packs" / "q2_0" / "tokenizer" / "vocab.json").is_file())
+        self.assertTrue((self.root / "strata-q2_0.json").is_file())
+
+    def test_the_last_model_takes_its_shared_files_with_it(self):
+        self.tools.strata_remove(model="iq3_s", confirm=True)
+        self.tools.strata_remove(model="q2_0", confirm=True)
+        self.assertFalse((self.data / "mtp" / "rt").exists())
+        self.assertFalse((self.data / "models" / "Q2_0" / "shard-2.gguf").exists())
+
+    def test_nothing_outside_strata_s_folders_is_touched_and_each_model_reports_its_own_disk_use(self):
+        outside = Path(self.tmp.name) / "elsewhere" / "mine.gguf"
+        self.make(outside, 777)
+        cfg = self.root / "strata-q2_0.json"
+        data = json.loads(cfg.read_text())
+        data["args"] += ["--ple-gguf", str(outside)]
+        cfg.write_text(json.dumps(data), encoding="utf-8")
+        plan = self.tools.strata_remove(model="q2_0")["plan"]
+        self.assertIn("mine.gguf", {Path(x["path"]).name for x in plan["keep"]})
+        self.tools.strata_remove(model="q2_0", confirm=True)
+        self.assertTrue(outside.is_file())
+        described = self.s.describe_config(self.root / "strata-iq3_s.json")
+        self.assertGreater(described["disk_bytes"], 10000)

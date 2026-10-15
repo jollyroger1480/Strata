@@ -30,7 +30,7 @@ const nodeExe = resolve(args.node ?? join(staged, 'node', process.platform === '
 const work = mkdtempSync(join(tmpdir(), 'strata-ui-flows-'));
 const shots = resolve(args.shots ?? join(work, 'shots'));
 mkdirSync(shots, { recursive: true });
-const only = new Set(String(args.only ?? 'download,models,tune,fail,theme,restart').split(','));
+const only = new Set(String(args.only ?? 'download,models,tune,fail,delete,theme,restart').split(','));
 const isWin = process.platform === 'win32';
 const { chromium } = await import(pathToFileURL(join(repoHost, 'node_modules/playwright-core/index.mjs')).href).catch(() => import('playwright-core'));
 const CHROME = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find(existsSync);
@@ -51,6 +51,7 @@ const python = isWin ? join(control, 'python', 'python.exe') : join(control, 'py
 const FAKE_INSTALLER = String.raw`
 import json, os, sys, time
 from pathlib import Path
+ROOT = Path(sys.argv[sys.argv.index('--root') + 1]) if '--root' in sys.argv else Path('.')
 STATE = Path(os.environ['FAKE_STATE']); STATE.mkdir(parents=True, exist_ok=True)
 RATE = float(os.environ.get('FAKE_RATE_GB_S', '0.5'))
 def size(model, gb, ram, mid):
@@ -71,7 +72,11 @@ def job():
             'download': {'file': 'model files', 'done_gb': round(done, 3), 'total_gb': TOTAL, 'remaining_gb': round(TOTAL - done, 3), 'percent': int(100 * done / TOTAL)}}
 def call(name, a):
     if name == 'strata_models': return CATALOG
-    if name == 'strata_status': return {'summary': 'fake', 'hardware': HARDWARE, 'recommendation': CATALOG['recommendation'], 'install': job(), 'running': []}
+    if name == 'strata_remove':
+        cfg = ROOT / ('strata-%s.json' % a['model'])
+        if a.get('confirm') and cfg.exists(): cfg.unlink()
+        return {'summary': 'Deleted', 'plan': {'gb': 83.6}, 'failed': []}
+    if name == 'strata_status': return {'summary': 'fake', 'installed': {'models': [{'model': 'iq3_s', 'disk_gb': 83.6, 'disk_bytes': 83600000000}]}, 'hardware': HARDWARE, 'recommendation': CATALOG['recommendation'], 'install': job(), 'running': []}
     if name == 'strata_install':
         if a.get('cancel'):
             f = STATE / 'job.json'
@@ -90,7 +95,7 @@ for line in sys.stdin:
     if 'id' not in m: continue
     method = m.get('method')
     if method == 'initialize': res = {'protocolVersion': '2024-11-05'}
-    elif method == 'tools/list': res = {'tools': [{'name': n} for n in ('strata_models', 'strata_status', 'strata_install')]}
+    elif method == 'tools/list': res = {'tools': [{'name': n} for n in ('strata_models', 'strata_status', 'strata_install', 'strata_remove')]}
     else:
         p = m['params']
         res = {'structuredContent': call(p['name'], p.get('arguments') or {})}
@@ -342,6 +347,31 @@ await scenario('tune', { installed: true, env: { FAKE_TOKEN_DELAY: '0.02', FAKE_
     check(parseFloat(dragged[0]) >= 20 && parseFloat(dragged[2]) >= 20, 'clicking the slider with the mouse changes it too, and it is saved', dragged.join(' '));
   } else console.log('info  the settings slider was not reachable by hash here; the stored size was checked above');
   check(page.problems.length === 0, 'no page error', page.problems.join('; '));
+});
+
+// ------------------------------------------------------------------------------------------------ delete
+await scenario('delete', { installed: true }, async ({ base, api, browser, dirs, shot }) => {
+  const page = await newPage(browser, base);
+  await clickText(page, /Go straight to the app/i);
+  await page.waitForURL(/#\/models/, { timeout: 15000 }).catch(() => {});
+  await page.getByRole('button', { name: /^Load model$/ }).first().click();
+  let ready = false;
+  for (let i = 0; i < 90 && !ready; i++) { ready = (await api('/api/native')).body.instances.some(x => x.status === 'ready'); await delay(1000); }
+  check(ready, 'a model is loaded');
+  await clickText(page, /Manage models/i);
+  await page.getByRole('button', { name: /^Delete$/ }).first().click();
+  await delay(600);
+  await shot(page, '1-delete-confirm');
+  const dialog = await page.getByRole('dialog').last().innerText();
+  check(/Delete this version\?/.test(dialog) && /Remove 83\.6 GB of downloaded files\. You can download this version again\./.test(dialog), 'the confirm dialog uses the existing words and the real size', dialog.replace(/\s+/g, ' ').slice(0, 200));
+  check(/running model will be unloaded/i.test(dialog), 'and says the loaded model is unloaded first');
+  await page.getByRole('button', { name: /^Delete version$/ }).click();
+  let state = null;
+  for (let i = 0; i < 40; i++) { state = (await api('/api/native')).body; if (state.instances.length === 0 && !state.installed?.models?.some(m => m.model === 'iq3_s')) break; await delay(500); }
+  check(state.instances.length === 0, 'the loaded model was unloaded');
+  check(!existsSync(join(dirs.install, 'strata-iq3_s.json')), 'the installer removed the run config of the model');
+  check(!state.installed?.models?.some(m => m.model === 'iq3_s'), 'the model is no longer listed as downloaded');
+  await shot(page, '2-after-delete');
 });
 
 // ------------------------------------------------------------------------------------------------ fail

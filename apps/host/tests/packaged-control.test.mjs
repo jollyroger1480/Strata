@@ -131,8 +131,9 @@ function packagedFixture({ engineUsable = true } = {}) {
       if (message.method === 'tools/call') rpc.push(message.params);
       let result;
       if (message.method === 'initialize') result = { protocolVersion: '2024-11-05' };
-      else if (message.method === 'tools/list') result = { tools: ['strata_models', 'strata_status', 'strata_install'].map(name => ({ name })) };
+      else if (message.method === 'tools/list') result = { tools: ['strata_models', 'strata_status', 'strata_install', 'strata_remove'].map(name => ({ name })) };
       else if (message.params.name === 'strata_models') result = { structuredContent: catalog };
+      else if (message.params.name === 'strata_remove') result = { structuredContent: { summary: 'Deleted', plan: { gb: 1.2 }, failed: [] } };
       else if (message.params.name === 'strata_status') result = { structuredContent: { hardware, recommendation: catalog.recommendation, install: installJob, running: [], summary: 'x' } };
       else if (message.params.arguments?.confirm) { installJob = { running: false, exit_code: 0 }; result = { structuredContent: { summary: 'Install started', plan: { download_gb: 66.4 }, install: { running: true, step: 'downloading' } } }; }
       else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
@@ -326,5 +327,25 @@ test('packaged: a run config that points into an old Control folder is repaired 
     const before = readFileSync(path, 'utf8');
     await f.native.refresh(true);
     assert.equal(readFileSync(path, 'utf8'), before);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: deleting a downloaded model unloads it first, then the installer removes its files', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    const load = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(load.state, 'done', load.error);
+    assert.equal(f.native.state().instances.length, 1);
+    const job = await finish(f.native, f.native.operation('remove', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.native.state().instances.length, 0, 'the loaded model was unloaded first');
+    assert.deepEqual(f.calls.filter(c => c[0] === 'stop').at(-1), ['stop', 'app-1']);
+    const removed = f.rpc.filter(c => c.name === 'strata_remove');
+    assert.equal(removed.length, 1);
+    assert.deepEqual(removed[0].arguments, { model: 'iq2_xs', confirm: true });
+    assert.equal(f.others().length, 0);
+    const bad = await finish(f.native, f.native.operation('remove', { model: '../x' }).id);
+    assert.equal(bad.state, 'error', 'an id that is not an installed model is refused');
   } finally { await f.native.close(); f.cleanup(); }
 });
