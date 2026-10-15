@@ -24,6 +24,22 @@ const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'ope
 /** A conservative window for an API model whose connection does not report one. */
 export const ASSUMED_API_CONTEXT = 128_000;
 
+/**
+ * The three chat modes as Harness permission presets (see README, "Modes"). A preset is a
+ * sandbox mode plus an approval policy; the Harness switches them with its own `/permission` command.
+ *   manual  read-only sandbox + ask:   any change is denied by the sandbox until the user approves a one-shot widening
+ *   plan    read-only sandbox + never: nothing can change, and the agent is told not to ask
+ *   bypass  workspace-write + never:   changes inside the workspace without prompts; anything wider is refused
+ */
+export const MODE_PRESETS = Object.freeze({
+  manual: { key: 'strata-manual', sandbox: 'read-only', approval: 'ask', name: 'Manual', description: 'Asks before changing a file or running a command that changes anything.' },
+  plan: { key: 'strata-plan', sandbox: 'read-only', approval: 'never', name: 'Plan', description: 'Read-only. Nothing is changed and no approval prompts appear.' },
+  bypass: { key: 'strata-bypass', sandbox: 'workspace-write', approval: 'never', name: 'Bypass', description: 'Changes inside the workspace without asking. Nothing outside the workspace.' },
+});
+export const DEFAULT_MODE = 'manual';
+/** The preset for a chat's stored mode. Anything unknown (older values such as `auto`) gets the strictest ask-first mode. */
+export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEFAULT_MODE);
+
 const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'x';
 
 /** Identity of one route's wire configuration, secret included by hash only. */
@@ -97,6 +113,8 @@ export function buildProfile({ local = [], connections = [] }) {
   const entries = [
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
+    // The chat modes. Replacing the table also drops the Harness's own three presets: a chat is always in one of ours.
+    { id: 'permission', config: { presets: Object.fromEntries(Object.values(MODE_PRESETS).map(({ key, sandbox, approval, name, description }) => [key, { sandbox, approval, name, description }])), defaultPreset: MODE_PRESETS[DEFAULT_MODE].key } },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },

@@ -200,3 +200,32 @@ test('without the agent component the chat says so and still uses the model the 
   // The direct path used the API model the chat picked, nothing else.
   assert.ok(s.worker.requests.length >= 1 && s.worker.requests.every(q => q.model === 'cloud-model'));
 });
+
+test('Mode over HTTP: the chat body carries the Mode menu choice; Plan refuses a write, Bypass writes, Manual asks', { skip }, async t => {
+  const s = await setup(t);
+  const body = (sessionId, message, mode) => ({ sessionId, message, remoteModel: s.remoteModel, workspaceId: null, history: [], ...(mode ? { mode } : {}) });
+
+  const plan = await s.host.chat(body('chat-h-plan', 'SCRIPT:retrywrite plan-http.txt x', 'plan'));
+  assert.equal(plan.find(f => f.type === 'start').mode, 'plan');
+  assert.equal(existsSync(join(s.ws, 'plan-http.txt')), false);
+  assert.ok(!toolStates(plan).includes('proposed'));
+  assert.equal(toolStates(plan).at(-1), 'denied');
+
+  const bypass = await s.host.chat(body('chat-h-bypass', 'SCRIPT:retrywrite bypass-http.txt x', 'bypass'));
+  assert.equal(lines(join(s.ws, 'bypass-http.txt')), 1);
+  assert.ok(!toolStates(bypass).includes('proposed'));
+
+  // No mode in the body (an older page) is Manual: it asks.
+  let asked = false;
+  const manual = await s.host.chat(body('chat-h-manual', 'SCRIPT:retrywrite manual-http.txt x'), async f => {
+    if (f.type === 'agent-tool' && f.tool.state === 'proposed' && !asked) {
+      asked = true;
+      assert.equal(existsSync(join(s.ws, 'manual-http.txt')), false);
+      await s.host.post('/api/chat/approval', { sessionId: 'chat-h-manual', toolId: f.tool.id, decision: 'approve' });
+    }
+  });
+  assert.ok(asked);
+  assert.equal(manual.find(f => f.type === 'start').mode, 'manual');
+  assert.equal(lines(join(s.ws, 'manual-http.txt')), 1);
+  assert.equal(manual.filter(f => f.type === 'agent-tool').at(-1).tool.approved, true);
+});

@@ -464,7 +464,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   if (entry) serving.mark(entry.id, { state: 'generating' });
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
   try {
-    const result = await agent.runTurn({ chatId, message, workspacePath: cwd, choice, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal });
+    const result = await agent.runTurn({ chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal });
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {

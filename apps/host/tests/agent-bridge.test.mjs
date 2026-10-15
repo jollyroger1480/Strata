@@ -40,7 +40,7 @@ async function rig(t, { connections = [], dataDir } = {}) {
     const frames = [];
     const answerWith = opts.answer; // 'approve' | 'deny' | undefined
     const promise = bridge.runTurn({
-      chatId, message, workspacePath: ws, choice: opts.choice ?? null, history: opts.history ?? [],
+      chatId, message, workspacePath: ws, choice: opts.choice ?? null, mode: opts.mode ?? null, history: opts.history ?? [],
       onFrame: f => {
         frames.push(f);
         opts.onFrame?.(f);
@@ -218,7 +218,8 @@ test('an API connection becomes a route; its key reaches the model by reference 
   assert.ok(r.worker.requests.length >= 1);
 
   // The shell tool the agent runs must not see the key.
-  const env = r.run('chat-api', 'SCRIPT:envdump envdump.txt', { choice: { connectionId: 'abcd1234-conn', modelId: 'cloud-model' }, answer: 'approve' });
+  // Bypass: the dump is a plain in-workspace write, which Manual would (rightly) make the person approve first.
+  const env = r.run('chat-api', 'SCRIPT:envdump envdump.txt', { choice: { connectionId: 'abcd1234-conn', modelId: 'cloud-model' }, mode: 'bypass' });
   await env.promise;
   assert.ok(existsSync(join(r.ws, 'envdump.txt')), 'the env dump tool must have run');
   const dump = readFileSync(join(r.ws, 'envdump.txt'), 'utf8');

@@ -18,6 +18,9 @@ export function toolScope(name) {
   return 'connected';
 }
 
+/** Shown on a card the mode refused (Plan, Bypass): the model's own error text would say "the user rejected". */
+export const NOT_IN_MODE = 'Not allowed in this mode. Nothing ran.';
+
 const clip = (value, max) => {
   const text = String(value ?? '');
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -52,8 +55,15 @@ export function resultText(message) {
  * It owns the per-turn state (tool cards, usage, text emitted) so the I/O layer stays thin.
  */
 export class TurnProjector {
-  constructor({ startedAt = Date.now() } = {}) {
+  /**
+   * `policy` is the session's approval policy for this turn. Under `never` the Harness rejects an ask by itself, so
+   * no question ever reaches the person: the card goes straight from running to denied, without a moment where it
+   * offers Approve and Deny buttons that would do nothing.
+   */
+  constructor({ startedAt = Date.now(), policy = 'ask' } = {}) {
     this.startedAt = startedAt;
+    this.policy = policy;
+    this.byPolicy = new Set();       // callIds the approval policy rejected without asking
     this.tools = new Map();          // callId -> { card, calledAt }
     this.tokensIn = 0;
     this.tokensOut = 0;
@@ -116,6 +126,7 @@ export class TurnProjector {
       case 'approval/asked': {
         if (!d.callId) break;
         this.asked.set(d.id, d.callId);
+        if (this.policy === 'never') break;
         const entry = this.tools.get(d.callId);
         const patch = { state: 'proposed', effect: clip(d.reason ?? entry?.card.effect ?? 'Needs your approval.', 400) };
         const frame = this.#card(d.callId, patch);
@@ -124,6 +135,12 @@ export class TurnProjector {
       }
       case 'approval/decided': {
         const callId = this.asked.get(d.id);
+        if (callId && this.policy === 'never' && d.outcome !== 'allowed-once') {
+          this.byPolicy.add(callId); this.denied.add(callId);
+          const frame = this.#card(callId, { state: 'denied', result: NOT_IN_MODE });
+          if (frame) out.push(frame);
+          break;
+        }
         const frame = callId ? this.decide(callId, d.outcome) : null;
         if (frame) out.push(frame);
         break;
@@ -136,7 +153,7 @@ export class TurnProjector {
         const denied = this.denied.has(callId);
         const frame = this.#card(callId, {
           state: denied ? 'denied' : isError ? 'error' : 'done',
-          result: resultText(d.message),
+          result: this.byPolicy.has(callId) ? NOT_IN_MODE : resultText(d.message),
           durationMs: Math.max(0, (e.time ?? 0) - entry.calledAt),
         });
         if (frame) out.push(frame);
@@ -154,7 +171,8 @@ export class TurnProjector {
   /** An approval was decided. `outcome` is the Harness vocabulary. */
   decide(callId, outcome) {
     if (!this.tools.has(callId)) return null;
-    if (outcome === 'allowed-once') return this.#card(callId, { state: 'running' });
+    // `approved` is what lets the card say "Approved" (the user answered) rather than "Ran" (it never asked).
+    if (outcome === 'allowed-once') return this.#card(callId, { state: 'running', approved: true });
     this.denied.add(callId);
     return this.#card(callId, { state: 'denied', result: outcome === 'rejected' ? 'Denied. Nothing ran.' : outcome === 'cancelled' ? 'Cancelled. Nothing ran.' : 'No one could answer this request, so nothing ran.' });
   }

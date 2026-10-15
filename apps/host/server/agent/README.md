@@ -41,8 +41,28 @@ and talks to its Gateway. Nothing here downloads or builds anything.
 - **Fallback.** Without the component the host says so (`/api/agent/status`, a `notice` frame) and the chat runs on the
   direct path with the model the user picked.
 
+## Modes (the Mode menu)
+
+The chat's Mode menu is real Harness behaviour. Each turn the page sends the chat's mode (`mode` in the `/api/chat/stream`
+body); before the prompt reaches the Harness the bridge puts that chat's session into the matching permission preset with the
+Harness's own `/permission` command (`commands/execute`), reads the session's `permissions` projection back, and refuses to
+start the turn (typed error `mode-unavailable`) if it does not match. The preset table is ours (profile entry `permission`);
+the Harness's own `read-only`, `workspace-write` and `danger-full-access` presets are not offered.
+
+| Menu | Preset | Harness sandbox | Approval policy | What it means |
+| --- | --- | --- | --- | --- |
+| Manual (default) | `strata-manual` | `read-only` | `ask` | The sandbox denies every file change, so the agent must request a one-shot widening (`sandbox_permissions`), and that request is the Approve/Deny card. Reads and read-only commands run without a question. |
+| Plan | `strata-plan` | `read-only` | `never` | Nothing can change. A request to widen is rejected without asking anyone, so no Approve card is ever shown; the card ends "Not allowed in this mode". The agent reads, plans and answers. |
+| Bypass | `strata-bypass` | `workspace-write` | `never` | Writes and commands inside the workspace (and the Harness's permitted temp areas) run without a question. Anything wider, such as `danger-full-access` or a path outside the workspace, is refused, again without a question. |
+
+- The mode is read once per turn. Changing the menu during a turn affects the next turn; the running one keeps the permissions it started with.
+- An unknown or missing value (an older stored `auto` or `accept-edits`) is Manual, never something looser.
+- The session keeps its preset across host restarts (it is a durable event in the Harness record); the page's choice is stored with the chat.
+- Nothing in the three presets is `danger-full-access`. If Bypass should mean "also outside the workspace", change `MODE_PRESETS.bypass` in `profile.mjs` to `danger-full-access` + `never`; that is the Harness's own "full access without approval prompts" bundle.
+- Windows: the read-only shell runs PowerShell in Constrained Language Mode. A shell command can fail inside Manual or Plan for reasons that have nothing to do with approvals (the card shows the PowerShell error).
+
 ## Tests
 
-`tests/agent-events.test.mjs` (pure), `tests/agent-bridge.test.mjs` and `tests/agent-host.test.mjs` (need a built Harness:
+`tests/agent-events.test.mjs` (pure), `tests/agent-bridge.test.mjs`, `tests/agent-modes.test.mjs` and `tests/agent-host.test.mjs` (need a built Harness:
 `STRATA_HARNESS_DIR=<checkout>`, otherwise they skip and say so). The model in those tests is `tests/helpers/scripted-worker.mjs`.
 `scripts/agent-flow.mjs` drives the real app in Chrome and takes screenshots.

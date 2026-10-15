@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
-import { buildProfile, routeFor } from './profile.mjs';
+import { buildProfile, routeFor, MODE_PRESETS, modeOf } from './profile.mjs';
 import { TurnProjector } from './events.mjs';
 
 export class AgentUnavailable extends Error {
@@ -176,6 +176,28 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
   }
 
   /**
+   * Put the session into the preset of the chat's mode, through the Harness's own `/permission` command, and
+   * check that it took. A turn never starts in a mode other than the one asked for: if the switch cannot be
+   * confirmed the turn fails closed with a typed error instead of running with unknown permissions.
+   */
+  async function applyMode(runtime, sessionId, mode) {
+    const want = MODE_PRESETS[mode].key;
+    const read = async () => {
+      const r = await runtime.gw.rpc('session/projections', { request: { sessionId, keys: ['permissions'] } });
+      return r?.values?.permissions?.currentValue ?? null;
+    };
+    try {
+      if (await read() === want) return;
+      const done = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: `/permission ${want}`, submittedAttachments: [] });
+      if (done?.result?.kind !== 'success') throw new Error(done?.result?.text ?? 'the agent did not recognise the command');
+      const now = await read();
+      if (now !== want) throw new Error(`the session reports "${now}" instead of "${want}"`);
+    } catch (e) {
+      throw new AgentUnavailable(`The agent could not switch this chat to ${MODE_PRESETS[mode].name} mode, so nothing ran: ${e.message}`, 'mode-unavailable');
+    }
+  }
+
+  /**
    * Run one agent turn for a Strata chat and stream it as frames.
    * `signal` means the client went away: the turn keeps running (that is not Stop).
    */
@@ -187,7 +209,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal }) {
     let send = onFrame;
     signal?.addEventListener('abort', () => { send = () => {}; }, { once: true });
     const emit = frame => { try { send(frame); } catch { send = () => {}; } };
@@ -208,7 +230,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       c.route = `${route.route}/${route.modelId}`; c.routeGeneration = runtime.generation;
     }
 
-    const projector = new TurnProjector();
+    // The chat's permission mode is read once, here, for this whole turn. A change the user makes while the
+    // turn runs applies to the next one, so a running turn never sees its permissions move under it.
+    const appliedMode = modeOf(mode);
+    await applyMode(runtime, sessionId, appliedMode);
+
+    const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval });
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
       ended: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
@@ -226,7 +253,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       notifyIdle();
     }
 
-    emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, sessionId, requestId, skills: [] });
+    emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [] });
 
     turn.follow = runtime.gw.openStream('session/follow', { request: { address: { kind: 'session', sessionId }, assistantStream: true } }, {
       onItem: item => {

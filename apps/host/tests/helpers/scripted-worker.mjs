@@ -17,6 +17,10 @@
  *   SCRIPT:echo <text>              replies with <text>
  *   SCRIPT:ask                      one ask_user_question call (the agent asking the person something)
  *   SCRIPT:envdump <file>           one shell call that writes the shell's environment to <file>
+ *   SCRIPT:retrywrite <file> <text> the `write` tool, like a careful model: when the sandbox denies it and offers
+ *                                   an escalation, retry once with `sandbox_permissions: workspace-write`
+ *   SCRIPT:retryshell <file> <text> the same with the shell tool (an in-workspace append)
+ *   SCRIPT:read <file>              the `read` tool on <file>
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
  */
@@ -53,6 +57,8 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       authSha: req.headers.authorization ? createHash('sha256').update(req.headers.authorization).digest('hex') : null,
       promptChars: raw.length,
     });
+    const shellName = () => (body.tools ?? []).find(t => ['bash', 'pwsh'].includes(t.function?.name))?.function?.name ?? 'bash';
+    const shellCommand = (file, value) => (shellName() === 'pwsh' ? `Add-Content -Path '${file}' -Value '${value}'` : `echo ${value} >> ${file}`);
     let closed = false;
     res.on('close', () => { if (!res.writableEnded) { closed = true; aborted++; } });
 
@@ -64,12 +70,32 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [], usage: { prompt_tokens: 100 + messages.length, completion_tokens: tokens, total_tokens: 100 + messages.length + tokens } })}\n\n`);
       res.write('data: [DONE]\n\n'); res.end();
     };
+    const toolCall = async (name, call) => {
+      send({ role: 'assistant', content: '', reasoning_content: `I will use ${name}.` });
+      await delay(chunkDelayMs);
+      const argsJson = JSON.stringify(call);
+      send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name, arguments: '' } }] });
+      for (let i = 0; i < argsJson.length; i += 17) { send({ tool_calls: [{ index: 0, function: { arguments: argsJson.slice(i, i + 17) } }] }); await delay(5); }
+      return finish('tool_calls', 30);
+    };
     const say = async (parts, tokens) => {
       send({ role: 'assistant', content: '' });
       for (const p of parts) { if (closed) return; send({ content: p }); await delay(chunkDelayMs); }
       if (!closed) finish('stop', tokens ?? parts.length);
     };
 
+    // A model that read "[sandbox: escalation available ...]" retries the exact call once with the narrowest wider mode.
+    // Only this prompt's own tool results count: a chat that has run tools before carries older ones.
+    const promptAt = messages.findLastIndex(m => m.role === 'user' && /SCRIPT:/.test(text(m)));
+    const toolMessages = messages.slice(promptAt + 1).filter(m => m.role === 'tool');
+    if (last.role === 'tool' && ['retrywrite', 'retryshell'].includes(directive?.[1]) && toolMessages.length === 1 && /escalation available/.test(text(last))) {
+      const [file, ...rest] = (directive[2] ?? '').trim().split(/\s+/);
+      const value = rest.join(' ') || 'run';
+      return toolCall(directive[1] === 'retrywrite' ? 'write' : shellName(), directive[1] === 'retrywrite'
+        ? { file_path: file, content: `${value}
+`, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' }
+        : { command: shellCommand(file, value), description: `Append one line to ${file}`, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' });
+    }
     if (last.role === 'tool') {
       const result = text(last).replace(/\s+/g, ' ').slice(0, 120);
       return say(['Tool finished. ', `Result: ${result}`]);
@@ -82,6 +108,15 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       return say(Array.from({ length: n }, (_, i) => `w${i} `));
     }
     if (name === 'echo') return say([args]);
+    if (name === 'retrywrite' || name === 'retryshell') {
+      const [file, ...rest] = args.split(/\s+/);
+      const value = rest.join(' ') || 'run';
+      return name === 'retrywrite'
+        ? toolCall('write', { file_path: file, content: `${value}
+` })
+        : toolCall(shellName(), { command: shellCommand(file, value), description: `Append one line to ${file}` });
+    }
+    if (name === 'read') return toolCall('read', { file_path: args });
     if (name === 'ask') {
       send({ role: 'assistant', content: '' });
       send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }) } }] });
