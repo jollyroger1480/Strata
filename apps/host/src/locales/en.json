@@ -2594,5 +2594,21 @@
   "s2593": "Checking your computer…",
   "s2594": "Getting things ready…",
   "s2595": "Downloading your model…",
-  "s2596": "Preparing your model for Strata…"
+  "s2596": "Preparing your model for Strata…",
+  "s2597": "Update component",
+  "s2598": "Update the engine for this computer. Your models and settings are kept.",
+  "s2599": "Saved to {0}",
+  "s2600": "Already have a supported model on this computer? Choose the folder that holds its files. Strata checks them, prepares the model and loads it. Nothing is copied or downloaded.",
+  "s2601": "Folder with the GGUF files",
+  "s2602": "Full path to the folder",
+  "s2603": "Check files",
+  "s2604": "Model found",
+  "s2605": "{0} files · {1}",
+  "s2606": "Prepare and load",
+  "s2607": "Some parts of this model are missing, or the folder holds more than one model.",
+  "s2608": "Put every part of one model in one folder, then check again.",
+  "s2609": "Strata can’t run these files yet.",
+  "s2610": "Strata runs the Qwen3.8-Flash-Next models. Download one from Models, or choose a folder with its files.",
+  "s2611": "These files could not be checked.",
+  "s2612": "Check that the folder holds complete GGUF files, then try again."
 }

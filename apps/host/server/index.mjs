@@ -22,11 +22,12 @@ import { createAgentBridge } from './agent/agent-bridge.mjs';
  * live metrics and the local inference API. No runtime dependencies.
  */
 import http from 'node:http';
+import { homedir } from 'node:os';
 import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, extname, isAbsolute, join, normalize, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hardware from './hardware.mjs';
@@ -772,6 +773,24 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
+  if(path==='/api/native/logs/save'&&method==='POST'){
+   /* Diagnostics to a file: the engine messages the app kept, failed operations, and the tail of each model's server log under Control.
+      Written to the user's Downloads folder (the window cannot save a download); the path is returned to show. */
+   const NL=String.fromCharCode(10);
+   const lines=[`Strata diagnostics ${new Date().toISOString()}`,`Version ${native.state().version??'unknown'}`,'','== Engine messages =='];
+   for(const l of native.logs())lines.push(`${l.at} ${l.instanceId}: ${l.line}`);
+   lines.push('','== Operations ==');for(const j of native.state().jobs)lines.push(`${j.startedAt} ${j.kind} ${j.state}${j.error?`: ${j.error}`:''}${j.details?`${NL}  ${j.details}`:''}`);
+   try{const runtime=process.env.STRATA_RUNTIME_DIR??join(dirname(componentsDirectory()),'runtime');for(const name of readdirSync(runtime).filter(n=>n.endsWith('.server.log'))){lines.push('',`== ${name} (last lines) ==`,...readFileSync(join(runtime,name),'utf8').split(NL).slice(-200));}}catch{/* no server logs yet */}
+   const folder=join(process.env.USERPROFILE??process.env.HOME??homedir(),'Downloads');mkdirSync(folder,{recursive:true});
+   const file=join(folder,`strata-diagnostics-${new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)}.txt`);writeFileSync(file,lines.join(NL),'utf8');
+   return json(res,200,{path:file});}
+  if(path==='/api/native/local/preview'&&method==='POST'){
+   /* "Use a local GGUF": pick (or type) the folder, and Control says what is in it. Nothing is copied or changed. */
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const picked=typed?{path:typed}:await chooseFolder('Choose the folder that holds your GGUF files');
+   if(picked.unavailable)return error(res,501,`${TYPE_A_PATH} ${picked.reason}`);
+   if(picked.cancelled)return json(res,200,{cancelled:true});
+   return json(res,200,{path:picked.path,preview:await native.localPreview(picked.path)});}
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
   const nativeOperation=/^\/api\/native\/operations\/([a-z0-9-]+)\/cancel$/.exec(path);
   if(nativeOperation&&method==='POST')return json(res,200,await native.cancel(nativeOperation[1]));

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Screen } from './layout';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
 import { installProgress, useDownloadEta } from '../lib/download-eta';
+import { sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
 import { api } from '../lib/client';
@@ -12,7 +13,6 @@ import { NativeSettings } from './NativeSettings';
 import { RunImageModel } from './RunImageModel';
 import { useStore } from '../lib/store';
 import { NativePresets } from './NativePresets';
-import { NativeBenchmark } from './NativeOperations';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine }: {
     onOtherModels: () => void;
@@ -25,7 +25,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const manual = useStore(s => s.setup?.choices?.onboarding?.manual ?? false);
     const [expert, setExpert] = useState(manual), [multiple, setMultiple] = useState(false), [gpus, setGpus] = useState<number[]>([]), [kv, setKv] = useState('int8'), [lowRam, setLowRam] = useState('auto'), [split, setSplit] = useState('auto'), [deviceChoice, setDeviceChoice] = useState('auto');
     const [resourceProfile, setResourceProfile] = useState<'work' | 'performance'>('work');
-    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [benchmark, setBenchmark] = useState(false), [jobId, setJobId] = useState(''), [manage, setManage] = useState(false);
+    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [jobId, setJobId] = useState(''), [manage, setManage] = useState(false);
     const presetPending = useRef(false);
     const [deleting, setDeleting] = useState<string | null>(null);
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
@@ -35,6 +35,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const selectedFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family)) ?? families[0], selectedSize = selectedFamily?.sizes.find(s => s.id === size) ?? selectedFamily?.sizes[0];
     const installed = native?.installed?.models.find(m => m.model === selectedSize?.id);
     // The model that is running is shown as running, with Unload: not offered for loading again.
+    const downloaded = native?.installed?.models ?? [], allSizes = families.flatMap(f => f.sizes);
     const loadedSelected = native?.instances.find(i => i.model === selectedSize?.id && i.status === 'ready');
     // A model that is already on this PC loads as it was prepared: the page shows its settings, so loading it never asks to download.
     useEffect(() => { if (installed?.ready) {
@@ -105,14 +106,20 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     {tr(active ? <NativeProgress job={active}/> : null)}
     {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
     {tr(error ? <ErrorNotice message={error}/> : null)}
-    <div className="native-model-actions">{tr(loadedSelected ? <><Btn icon="gauge" disabled={!!active} onClick={() => setBenchmark(true)}>{tr("Tune model")}</Btn><Btn disabled={pending || !!active} onClick={() => void perform(() => nativeAction(`instances/${loadedSelected.id}/unload`))}>{tr("Unload")}</Btn>{tr(onReady ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <span className="native-ready">{tr("Ready")}</span>)}</> : onReady && native?.instances.some(i => i.status === 'ready') ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <><Btn icon="gauge" disabled={!native?.instances.some(i => i.status === 'ready') || !!active} onClick={() => setBenchmark(true)}>{tr("Tune model")}</Btn><Btn variant="primary" icon="models" disabled={pending || !native?.available || !!active || !selectedSize || expert && deviceChoice === 'split' && gpus.length < 2} onClick={() => void load()}>{tr(pending ? 'Checking…' : installed?.ready ? 'Load model' : 'Download & load')}</Btn></>)}</div>
+    <div className="native-model-actions">{tr(loadedSelected ? <><Btn disabled={pending || !!active} onClick={() => void perform(() => nativeAction(`instances/${loadedSelected.id}/unload`))}>{tr("Unload")}</Btn>{tr(onReady ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <span className="native-ready">{tr("Ready")}</span>)}</> : onReady && native?.instances.some(i => i.status === 'ready') ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <><Btn variant="primary" icon="models" disabled={pending || !native?.available || !!active || !selectedSize || expert && deviceChoice === 'split' && gpus.length < 2} onClick={() => void load()}>{tr(pending ? 'Checking…' : installed?.ready ? 'Load model' : 'Download & load')}</Btn></>)}</div>
    </div>
    <aside className="stack stack--lg"><section className="st-card"><h2 className="h4">{tr("This computer")}</h2><p>{tr(native?.hardware?.ram_gb || hardware?.memory.totalGb || '—')}{tr(" GB RAM")}</p>{tr(native?.hardware?.gpus.length ? native.hardware.gpus.map(g => <p className="small" key={g.index}>{tr(g.name)} · {tr(g.vram_gb)}{tr(" GB")}</p>) : <p className="small muted">{tr("No supported GPU reported by this installation.")}</p>)}<p className="small muted">{tr("Compatibility and sizes come from your installed Strata version.")}</p></section><section className="st-card"><h2 className="h4">{tr("Model files")}</h2><p className="small muted">{tr("Strata prepares all shards, the draft layer and shared files. Completed downloads are reused.")}</p><code className="native-path">{installed?.dataFolder ?? native?.downloadDirectory ?? native?.installed?.data_folder ?? 'Choose an installation'}</code><Btn size="sm" variant="ghost" onClick={() => { setSettingsSection('Storage'); go('settings'); }}>{tr("Storage settings")}</Btn></section><Btn size="sm" variant="ghost" onClick={onOtherModels}>{tr("Other local models\u2026")}</Btn></aside>
   </div>
   <Dialog open={!!plan} title={tr("Download and prepare")} compact onClose={() => !pending && setPlan(null)} actions={<><Btn disabled={pending} onClick={() => setPlan(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || !!plan?.plan?.disk_short} onClick={() => void download()}>{tr("Download & load")}</Btn></>}><p><strong>{tr(plan?.plan?.title ?? selectedFamily?.title)}</strong>{tr(" \u00B7 approximately ")}{tr(plan?.plan?.download_gb ?? selectedSize?.download_gb)}{tr(" GB")}</p>{tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}<p className="small muted">{tr("Existing files are checked and reused. Any currently loaded native models will be unloaded before preparing files.")}</p><p className="small muted">{tr("Your computer may feel slower while weights load. You can stop the download and resume later.")}</p>{tr(selectedSize?.images ? <p className="small muted">{tr("Vision encoder files are included. Picture reading loads only when enabled.")}</p> : null)}</Dialog>
   <NativeDeleteDialog id={deleting} onClose={() => setDeleting(null)}/>
-  <Dialog open={manage} title={tr("Manage models")} onClose={() => setManage(false)} actions={<Btn onClick={() => setManage(false)}>{tr("Done")}</Btn>}><div className="stack"><p className="strong">{tr(selectedFamily?.title)}</p><div className="st-tablewrap"><table className="st-table"><thead><tr><th>{tr("Version")}</th><th>{tr("Download")}</th><th>{tr("Status")}</th><th></th></tr></thead><tbody>{tr(selectedFamily?.sizes.map(v => <tr key={v.id}><td><strong>{tr(catalogVersionLabel(v))}</strong><small>{tr(v.model)} · {tr(v.about)}</small></td><td>{tr(v.download_gb.toFixed(1))}{tr(" GB")}</td><td>{tr(native?.instances.some(i => i.model === v.id) ? 'Loaded' : v.installed ? 'Downloaded' : 'Available')}</td><td><Btn size="sm" disabled={!!active} onClick={() => { setSize(v.id); setManage(false); }}>{tr(selectedSize?.id === v.id ? 'Selected' : 'Use version')}</Btn>{tr(native?.installed?.models.some(m => m.model === v.id) ? <> <Btn size="sm" variant="danger" disabled={!!active} onClick={() => setDeleting(v.id)}>{tr("Delete")}</Btn></> : null)}</td></tr>))}</tbody></table></div><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF\u2026")}</Btn><p className="xs muted">{tr("Choose a version, then load it from Models. Shared native files are kept together in Storage.")}</p></div></Dialog>
-  <NativeBenchmark open={benchmark} onClose={() => setBenchmark(false)}/>
+  <Dialog open={manage} title={tr("Manage models")} onClose={() => setManage(false)} actions={<Btn onClick={() => setManage(false)}>{tr("Done")}</Btn>}><div className="native-manage">
+   {tr(downloaded.length ? <div className="native-manage-list" role="list">{tr(downloaded.map(m => { const v = allSizes.find(x => x.id === m.model), loaded = native?.instances.some(i => i.model === m.model && i.status === 'ready'); return <div className="native-manage-row" role="listitem" key={m.model} data-selected={selectedSize?.id === m.model || undefined}>
+     <span className="native-manage-name"><strong>{tr(v ? `${catalogVersionLabel(v)}` : m.model_name ?? m.model)}</strong><small>{tr(v ? v.model : m.model)}{tr(m.diskGb ? ` · ${sizeGb(m.diskGb)}` : '')}</small></span>
+     <span className={loaded ? 'st-pill st-pill--accent' : 'st-pill'}>{tr(loaded ? 'Loaded' : 'Downloaded')}</span>
+     <span className="native-manage-actions"><Btn size="sm" disabled={!!active || !v} onClick={() => { if (v) setSize(v.id); setManage(false); }}>{tr(selectedSize?.id === m.model ? 'Selected' : 'Use version')}</Btn><Btn size="sm" variant="danger" disabled={!!active} onClick={() => setDeleting(m.model)}>{tr("Delete")}</Btn></span>
+    </div>; }))}</div> : <p className="small muted native-manage-empty">{tr("No downloaded models")}</p>)}
+   <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF…")}</Btn></div>
+  </div></Dialog>
  </Screen>;
 }
 /** setup's "5/7: downloading …" as a sentence a person can read. */

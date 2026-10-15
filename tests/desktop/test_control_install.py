@@ -350,3 +350,23 @@ class DeleteModelTests(unittest.TestCase):
         self.assertTrue(outside.is_file())
         described = self.s.describe_config(self.root / "strata-iq3_s.json")
         self.assertGreater(described["disk_bytes"], 10000)
+
+
+class LocalGgufInstallTests(unittest.TestCase):
+    def test_a_plan_from_a_local_folder_adopts_the_files_and_needs_no_download_space(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            local = Path(tmp) / "mine"
+            local.mkdir()
+            spec = importlib.util.spec_from_file_location("strata_mcp_for_local", ROOT / "tools" / "strata_mcp.py")
+            mcp = importlib.util.module_from_spec(spec)
+            with mock.patch.dict(os.environ, {"STRATA_CONTROL_INSTALL": "1", "STRATA_INSTALL_DIR": str(root)}):
+                spec.loader.exec_module(mcp)
+            tools = mcp.Tools(mcp.Strata(root, ROOT))
+            plan, args = tools.install_plan("qwen", "IQ3_S", 32768, "no", None, None, None, None, None, None, None, str(local))
+            self.assertIn("--gguf-dir", args)
+            self.assertEqual(args[args.index("--gguf-dir") + 1], str(local))
+            self.assertLessEqual(plan["disk_needed_gb"], 9)           # the 8 GB for preparing, not the download
+            with self.assertRaises(mcp.ToolError):
+                tools.install_plan("qwen", "IQ3_S", 32768, "no", None, None, None, None, None, None, None, str(local / "missing"))

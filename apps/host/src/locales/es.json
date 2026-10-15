@@ -2594,5 +2594,21 @@
   "s2593": "Revisando tu equipo…",
   "s2594": "Preparando todo…",
   "s2595": "Descargando tu modelo…",
-  "s2596": "Preparando tu modelo para Strata…"
+  "s2596": "Preparando tu modelo para Strata…",
+  "s2597": "Actualizar componente",
+  "s2598": "Actualiza el motor de este equipo. Tus modelos y ajustes se conservan.",
+  "s2599": "Guardado en {0}",
+  "s2600": "¿Ya tienes un modelo compatible en este equipo? Elige la carpeta con sus archivos. Strata los comprueba, prepara el modelo y lo carga. No se copia ni se descarga nada.",
+  "s2601": "Carpeta con los archivos GGUF",
+  "s2602": "Ruta completa de la carpeta",
+  "s2603": "Comprobar archivos",
+  "s2604": "Modelo encontrado",
+  "s2605": "{0} archivos · {1}",
+  "s2606": "Preparar y cargar",
+  "s2607": "Faltan partes de este modelo, o la carpeta contiene más de un modelo.",
+  "s2608": "Pon todas las partes de un modelo en una carpeta y vuelve a comprobar.",
+  "s2609": "Strata aún no puede ejecutar estos archivos.",
+  "s2610": "Strata ejecuta los modelos Qwen3.8-Flash-Next. Descarga uno en Modelos o elige una carpeta con sus archivos.",
+  "s2611": "No se pudieron comprobar estos archivos.",
+  "s2612": "Comprueba que la carpeta tenga archivos GGUF completos e inténtalo de nuevo."
 }

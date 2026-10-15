@@ -3902,9 +3902,10 @@ textarea.st-input {
    composer, and only while there is something below the fold worth reaching. */
 .jumplatest {
   position: sticky;
-  bottom: 12px;
+  bottom: 16px;
   z-index: 3;
-  margin: 0 auto;
+  /* clear of the navigation above it where it sits at the top of the transcript, and of the messages beside it */
+  margin: 14px auto 14px;
   display: flex;
   align-items: center;
   gap: 4px;

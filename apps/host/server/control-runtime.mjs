@@ -123,6 +123,12 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.code !== 0 || !result.json) throw failure(result, 'The installed models could not be read.');
       return result.json;
     },
+    /** What a local GGUF folder or file holds, without touching it: the model it is, and why it cannot be used when it cannot. */
+    async importPlan(path) {
+      const result = await call(['models', 'import', path, '--plan', '--output', 'json'], { timeoutMs: 120_000 });
+      if (result.json && result.code === 0) return result.json.plan ?? result.json;
+      throw failure(result, 'The files could not be checked.');
+    },
     async saveProfile(name, configPath) {
       const listed = await call(['profile', 'list', '--output', 'json'], { timeoutMs: 20_000 });
       const known = (listed.json?.profiles ?? []).some(p => p.id === name);

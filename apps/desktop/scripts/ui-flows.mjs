@@ -30,7 +30,7 @@ const nodeExe = resolve(args.node ?? join(staged, 'node', process.platform === '
 const work = mkdtempSync(join(tmpdir(), 'strata-ui-flows-'));
 const shots = resolve(args.shots ?? join(work, 'shots'));
 mkdirSync(shots, { recursive: true });
-const only = new Set(String(args.only ?? 'download,models,tune,fail,delete,theme,restart').split(','));
+const only = new Set(String(args.only ?? 'download,models,tune,fail,delete,theme,restart,perf,polish,stop,latest').split(','));
 const isWin = process.platform === 'win32';
 const { chromium } = await import(pathToFileURL(join(repoHost, 'node_modules/playwright-core/index.mjs')).href).catch(() => import('playwright-core'));
 const CHROME = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find(existsSync);
@@ -130,7 +130,7 @@ async function scenario(name, { installed = false, env = {} } = {}, body) {
   const dir = join(work, name);
   const dirs = { home: join(dir, 'home'), appdata: join(dir, 'appdata'), local: join(dir, 'local'), components: join(dir, 'local', 'Strata', 'components'), install: join(dir, 'local', 'Strata', 'install'), state: join(dir, 'fake-state'), profiles: join(dir, 'profiles'), runtime: join(dir, 'runtime') };
   for (const d of [dirs.home, dirs.appdata, dirs.local, dirs.components, dirs.install, dirs.state, join(dir, 'models')]) mkdirSync(d, { recursive: true });
-  const baseEnv = { ...process.env, STRATA_COMPONENTS_DIR: dirs.components, STRATA_PROFILE_DIR: dirs.profiles, STRATA_RUNTIME_DIR: dirs.runtime, STRATA_HOME: dirs.home, STRATA_MODELS_DIR: join(dir, 'models'), APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local, XDG_CONFIG_HOME: join(dir, 'xdg'), XDG_DATA_HOME: join(dir, 'xdgdata'), PYTHONDONTWRITEBYTECODE: '1', STRATA_ENGINE_BACKEND: 'cuda', FAKE_STATE: dirs.state, ...env };
+  const baseEnv = { ...process.env, STRATA_COMPONENTS_DIR: dirs.components, STRATA_PROFILE_DIR: dirs.profiles, STRATA_RUNTIME_DIR: dirs.runtime, STRATA_HOME: dirs.home, STRATA_MODELS_DIR: join(dir, 'models'), APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local, USERPROFILE: dirs.home, XDG_CONFIG_HOME: join(dir, 'xdg'), XDG_DATA_HOME: join(dir, 'xdgdata'), PYTHONDONTWRITEBYTECODE: '1', STRATA_ENGINE_BACKEND: 'cuda', FAKE_STATE: dirs.state, ...env };
   delete baseEnv.STRATA_API_KEY; delete baseEnv.STRATA_INSTALL_DIR;
   if (installed) {
     const platform = isWin ? 'windows-x86_64' : 'linux-x86_64';
@@ -168,7 +168,7 @@ async function scenario(name, { installed = false, env = {} } = {}, body) {
   }
 }
 const newPage = async (browser, base, options = {}) => {
-  const context = await browser.newContext({ viewport: { width: 1400, height: 950 }, ...options });
+  const context = await browser.newContext({ viewport: { width: 1400, height: 950 }, ...(process.env.SCHEME ? { colorScheme: process.env.SCHEME } : {}), ...options });
   const page = await context.newPage();
   const problems = [];
   page.on('pageerror', e => problems.push(e.message));
@@ -372,6 +372,130 @@ await scenario('delete', { installed: true }, async ({ base, api, browser, dirs,
   check(!existsSync(join(dirs.install, 'strata-iq3_s.json')), 'the installer removed the run config of the model');
   check(!state.installed?.models?.some(m => m.model === 'iq3_s'), 'the model is no longer listed as downloaded');
   await shot(page, '2-after-delete');
+});
+
+// ------------------------------------------------------------------------------------------------ perf
+await scenario('perf', { installed: true }, async ({ base, api, browser, shot }) => {
+  const page = await newPage(browser, base);
+  await clickText(page, /Go straight to the app/i);
+  await page.waitForURL(/#\/models/, { timeout: 15000 }).catch(() => {});
+  await page.getByRole('button', { name: /^Load model$/ }).first().click();
+  let ready = false;
+  for (let i = 0; i < 90 && !ready; i++) { ready = (await api('/api/native')).body.instances.some(x => x.status === 'ready'); await delay(1000); }
+  check(ready, 'a model is loaded');
+  await delay(2500);
+  const requests = [];
+  const started = new Map();
+  page.on('request', r => started.set(r, Date.now()));
+  page.on('requestfinished', r => requests.push([r.url().replace(base, '').slice(0, 60), Date.now() - (started.get(r) ?? Date.now())]));
+  await page.evaluate(() => { window.__long = []; new PerformanceObserver(l => { for (const e of l.getEntries()) window.__long.push(Math.round(e.duration)); }).observe({ entryTypes: ['longtask'] }); });
+  const t0 = Date.now();
+  await page.evaluate(() => { location.hash = '#/chat'; });
+  await page.getByRole('textbox', { name: /Message Strata/i }).waitFor({ timeout: 30000 });
+  const open = Date.now() - t0;
+  await delay(1500);
+  const long = await page.evaluate(() => window.__long);
+  console.log('info  chat opened in', open, 'ms; long tasks', JSON.stringify(long), 'requests', JSON.stringify(requests.filter(r => r[1] > 100)), 'all', requests.length);
+  check(open < 1500 && Math.max(0, ...long) < 300, 'Models to Chat opens at once, with no long block', open + ' ms, longest task ' + Math.max(0, ...long) + ' ms');
+});
+
+// ------------------------------------------------------------------------------------------------ polish
+await scenario('polish', { installed: true }, async ({ base, api, browser, dirs, shot }) => {
+  const page = await newPage(browser, base);
+  await clickText(page, /Go straight to the app/i);
+  await page.waitForURL(/#\/models/, { timeout: 15000 }).catch(() => {});
+  await page.getByText(/Conversation context/i).first().waitFor({ timeout: 30000 });
+  check(await page.getByRole('button', { name: /Tune model/i }).count() === 0, 'the Models tab has no "Tune model" button');
+  await clickText(page, /Manage models/i);
+  await delay(500);
+  const rows = await page.locator('.native-manage-row').count();
+  check(rows === 1, 'Manage models lists only the downloaded model, not the catalog', rows + ' row(s)');
+  await shot(page, '1-manage-models');
+  await page.getByRole('button', { name: /^Done$/ }).click();
+  await page.getByRole('button', { name: /Other local models/i }).click().catch(async () => { await clickText(page, /Manage models/i); await clickText(page, /Use a local GGUF/i); });
+  await page.getByText(/Folder with the GGUF files/i).first().waitFor({ timeout: 15000 }).catch(() => {});
+  await shot(page, '2-local-gguf');
+  check(await page.getByText(/Folder with the GGUF files/i).count() > 0, 'the local GGUF page opens in the same design as Models');
+  await page.getByPlaceholder(/Full path to the folder/i).fill(join(dirs.install, 'does-not-exist'));
+  await page.getByRole('button', { name: /^Check files$/ }).click();
+  await delay(3000);
+  check(await page.locator('.error-notice').count() > 0, 'a folder that cannot be used says so in words');
+  await shot(page, '2b-local-gguf-problem');
+  await page.evaluate(() => { location.hash = '#/chat?settings=1'; });
+  await delay(1500);
+  const text = await page.locator('body').innerText();
+  check(!/Contrast/.test(text), 'Settings has no Contrast option');
+  check(!/View request log/.test(text), 'and no "View request log" button');
+  await page.getByText(/^Engine$/).first().click().catch(() => {});
+  await delay(1500);
+  await shot(page, '3-settings-engine');
+  const engine = await page.locator('body').innerText();
+  check(/Update component/.test(engine) && /Diagnostics/.test(engine), 'Settings > Engine has Update component and Diagnostics');
+  check(!/Performance|Model settings|Calibrate|Engine installation/.test(engine), 'and nothing else');
+  await page.getByRole('button', { name: /^Save logs$/ }).click();
+  await page.getByText(/Saved to/).first().waitFor({ timeout: 15000 }).catch(() => {});
+  const savedText = await page.getByText(/Saved to/).first().innerText().catch(() => '');
+  const savedPath = savedText.replace(/^Saved to\s*/, '').trim();
+  check(!!savedPath && existsSync(savedPath), 'Save logs writes a file to Downloads and says where', savedPath);
+  await shot(page, '4-logs-saved');
+  await page.evaluate(() => { location.hash = '#/monitor'; });
+  await delay(6000);
+  await shot(page, '5-monitor');
+  const mon = await page.locator('body').innerText();
+  check(/°C/.test(mon), 'the Monitor shows GPU data with no model loaded', (mon.match(/.{0,30}°C.{0,20}/)?.[0] ?? 'no temperature text').replace(/\s+/g, ' '));
+});
+
+// ------------------------------------------------------------------------------------------------ stop
+await scenario('stop', { installed: true, env: { FAKE_TOKEN_DELAY: '0.1', FAKE_REPLY: 'thinking '.repeat(30) } }, async ({ base, api, browser, shot }) => {
+  const page = await newPage(browser, base);
+  await clickText(page, /Go straight to the app/i);
+  await page.waitForURL(/#\/models/, { timeout: 15000 }).catch(() => {});
+  await page.getByRole('button', { name: /^Load model$/ }).first().click();
+  let ready = false;
+  for (let i = 0; i < 90 && !ready; i++) { ready = (await api('/api/native')).body.instances.some(x => x.status === 'ready'); await delay(1000); }
+  if (!ready) { const st = (await api('/api/native')).body; console.log('info  jobs', JSON.stringify(st.jobs.map(j => [j.kind, j.state, j.error ?? j.summary])), JSON.stringify(st.instances.map(i => [i.status, i.error]))); await shot(page, '0-stop-notloaded'); }
+  check(ready, 'a model is loaded');
+  await page.evaluate(() => { location.hash = '#/chat'; });
+  const box = page.getByRole('textbox', { name: /Message Strata/i });
+  await box.waitFor({ timeout: 30000 });
+  await box.fill('hello');
+  await page.keyboard.press('Enter');
+  await page.locator('.typing').first().waitFor({ timeout: 30000 });
+  await delay(1500);
+  await page.getByRole('button', { name: /^Stop/i }).first().click().catch(async () => { await page.keyboard.press('Escape'); });
+  await delay(4000);
+  const dots = await page.locator('.typing').count();
+  await shot(page, '1-after-stop');
+  check(dots === 0, 'after Stop in the middle of thinking the three dots are gone', dots + ' left');
+});
+
+// ------------------------------------------------------------------------------------------------ latest
+await scenario('latest', {}, async ({ base, browser, shot }) => {
+  const page = await newPage(browser, base);
+  const now = Date.now();
+  await page.evaluate(now => {
+    const messages = [];
+    for (let i = 0; i < 40; i++) { messages.push({ id: 'u' + i, role: 'user', content: 'question ' + i, at: now }, { id: 'a' + i, role: 'assistant', content: 'answer number ' + i + ' with some text to fill the line and more of it.', at: now, tokens: 20, inputTokens: 5 }); }
+    localStorage.setItem('strata.sessions.v1', JSON.stringify([{ id: 's_latest', title: 'long', updatedAt: now, createdAt: now, messages }]));
+    localStorage.setItem('strata.active-session.v1', 's_latest');
+  }, now);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await delay(1500);
+  if (await page.getByRole('button', { name: /Go straight to the app/i }).count()) { await clickText(page, /Go straight to the app/i); await delay(1500); }
+  await page.goto(base + '/#/chat', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('textbox', { name: /Message Strata/i }).waitFor({ timeout: 30000 });
+  await delay(800);
+  await page.locator('.main__body.chat').first().waitFor({ timeout: 15000 }).catch(async () => { await shot(page, '0-latest-missing'); console.log('info  body', JSON.stringify((await page.locator('body').innerText()).slice(0, 300))); });
+  await page.locator('.main__body.chat').first().evaluate(el => { el.scrollTop = 3000; });
+  await delay(600);
+  await page.mouse.wheel(0, -400);
+  await delay(600);
+  await page.locator('.main__body.chat').first().evaluate(el => { el.scrollTop = 0; });
+  await delay(800);
+  const gaps = await page.evaluate(() => { const b = document.querySelector('.jumplatest'), c = document.querySelector('.main__body.chat'); if (!b || !c) return null; const r = b.getBoundingClientRect(), cr = c.getBoundingClientRect(); return { top: Math.round(r.top - cr.top), bottom: Math.round(cr.bottom - r.bottom) }; });
+  console.log('info  chat dom', JSON.stringify(await page.evaluate(() => { const c = document.querySelector('.main__body.chat'); return { msgs: document.querySelectorAll('.st-msg').length, scrollH: c?.scrollHeight, clientH: c?.clientHeight, top: c?.scrollTop, jump: document.querySelectorAll('.jumplatest').length }; })));
+  await shot(page, '1-latest-button');
+  check(!!gaps && gaps.top >= 12 && gaps.bottom >= 12, 'the Latest button keeps a gap from the top navigation and from the bottom', JSON.stringify(gaps));
 });
 
 // ------------------------------------------------------------------------------------------------ fail

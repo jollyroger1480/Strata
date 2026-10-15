@@ -15,7 +15,7 @@ import { gpuCapacity, gpuId, gpuMetric, hasReading } from '../lib/monitor-hardwa
 import { useStore } from '../lib/store';
 import type { Hardware, MonitorState, ServeRequest } from '../lib/types';
 import { useNative, nativeRouting, type NativeState } from '../lib/native';
-import { nativeMonitorData } from '../lib/native-monitor';
+import { nativeMonitorData, withHostSensors } from '../lib/native-monitor';
 const number = (value: number | null | undefined, digits = 0) => hasReading(value) ? value.toLocaleString(localeTag(), { maximumFractionDigits: digits, minimumFractionDigits: digits }) : '—';
 const percent = (used: number | null | undefined, total: number | null | undefined) => hasReading(used) && hasReading(total) && total > 0 ? Math.max(0, Math.min(100, used / total * 100)) : null;
 const sourceLabel = (source: string | undefined) => source === 'demo' ? 'Illustrative' : source === 'sensor' || source === 'engine' || source === 'reported' ? 'Measured' : source === 'estimated' ? 'Estimated' : 'Unavailable';
@@ -65,7 +65,7 @@ function LegacyMonitorScreen({ native }: {
     const [instanceSelection, setInstanceSelection] = useState('all');
     const routing = native ? nativeRouting(native, inventory) : null;
     const runtime = routing && native ? { ...routing, instances: routing.instances.map(instance => { const raw = native.instances.find(item => item.id === instance.id)?.metrics?.live; return { ...instance, outputTps: raw?.tok_s ?? NaN, promptTps: raw?.prefill_tok_s_mean ?? NaN, active: raw ? (raw.running ?? (['reading', 'generating'].includes(raw.state) ? 1 : 0)) : NaN, queued: raw?.queued ?? NaN }; }) } : storedRuntime;
-    const live = native ? nativeMonitorData(native, inventory, instanceSelection) : storedLive;
+    const live = native ? withHostSensors(nativeMonitorData(native, inventory, instanceSelection), storedLive) : storedLive;
     const multipleModels = (runtime?.instances.length ?? 0) > 1;
     const selectedInstance = runtime?.instances.find(i => i.id === instanceSelection) ?? (!multipleModels ? runtime?.instances[0] : undefined);
     const selection = selectedInstance?.id ?? 'all';
@@ -103,7 +103,8 @@ function LegacyMonitorScreen({ native }: {
     const data = frozen?.data ?? scoped, hardware = frozen?.hardware ?? inventory;
     if (!data)
         return <Screen title={tr("Monitor")}><p className="muted">{tr("Waiting for engine telemetry\u2026")}</p></Screen>;
-    const devices = hardware?.gpus ?? [], processors = hardware?.processors?.length ? hardware.processors : hardware ? [{ ...hardware.cpu, id: 'cpu', socket: '' }] : [];
+    // A display adapter that has no sensors and no memory of its own (an integrated one) cannot be measured; counting it would blank every total.
+    const devices = (hardware?.gpus ?? []).filter(g => g.backend !== 'vulkan' || g.vramGb > 0), processors = hardware?.processors?.length ? hardware.processors : hardware ? [{ ...hardware.cpu, id: 'cpu', socket: '' }] : [];
     const gpuChoice = gpuSelection === 'assigned' && selectedInstance ? 'assigned' : devices.some(g => gpuId(g) === gpuSelection) ? gpuSelection : 'all';
     const cpuChoice = processors.some(p => p.id === cpuSelection) ? cpuSelection : 'all';
     const selectedGpus = gpuChoice === 'assigned' ? devices.filter(g => selectedInstance?.gpuIds.includes(gpuId(g))) : gpuChoice === 'all' ? devices : devices.filter(g => gpuId(g) === gpuChoice);

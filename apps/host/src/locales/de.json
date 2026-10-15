@@ -2594,5 +2594,21 @@
   "s2593": "Ihr Computer wird geprüft …",
   "s2594": "Alles wird vorbereitet …",
   "s2595": "Ihr Modell wird heruntergeladen …",
-  "s2596": "Ihr Modell wird für Strata vorbereitet …"
+  "s2596": "Ihr Modell wird für Strata vorbereitet …",
+  "s2597": "Komponente aktualisieren",
+  "s2598": "Aktualisiert die Engine für diesen Computer. Ihre Modelle und Einstellungen bleiben erhalten.",
+  "s2599": "Gespeichert unter {0}",
+  "s2600": "Haben Sie bereits ein unterstütztes Modell auf diesem Computer? Wählen Sie den Ordner mit seinen Dateien. Strata prüft sie, bereitet das Modell vor und lädt es. Es wird nichts kopiert oder heruntergeladen.",
+  "s2601": "Ordner mit den GGUF-Dateien",
+  "s2602": "Vollständiger Pfad zum Ordner",
+  "s2603": "Dateien prüfen",
+  "s2604": "Modell gefunden",
+  "s2605": "{0} Dateien · {1}",
+  "s2606": "Vorbereiten und laden",
+  "s2607": "Teile dieses Modells fehlen, oder der Ordner enthält mehr als ein Modell.",
+  "s2608": "Legen Sie alle Teile eines Modells in einen Ordner und prüfen Sie erneut.",
+  "s2609": "Strata kann diese Dateien noch nicht ausführen.",
+  "s2610": "Strata führt die Qwen3.8-Flash-Next-Modelle aus. Laden Sie eines unter „Modelle“ herunter oder wählen Sie einen Ordner mit dessen Dateien.",
+  "s2611": "Diese Dateien konnten nicht geprüft werden.",
+  "s2612": "Prüfen Sie, ob der Ordner vollständige GGUF-Dateien enthält, und versuchen Sie es erneut."
 }

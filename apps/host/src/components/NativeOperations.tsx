@@ -2,8 +2,7 @@ import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/client';
-import { nativeAction, refreshNative, useNative, type NativeJob } from '../lib/native';
-import { NativeSettings } from './NativeSettings';
+import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { Btn, Dialog, ErrorNotice, Select } from './ui';
 import { NativeProgress } from './NativeModels';
 export function NativeBenchmark({ open, onClose }: {
@@ -48,57 +47,60 @@ export function NativeBenchmark({ open, onClose }: {
 }
 export function NativeOperations() {
     const native = useNative();
-    const [repository, setRepository] = useState(''), [model, setModel] = useState(''), [error, setError] = useState(''), [pending, setPending] = useState(false), [benchmark, setBenchmark] = useState(false), [logs, setLogs] = useState<{
+    const [error, setError] = useState(''), [saved, setSaved] = useState(''), [saving, setSaving] = useState(false);
+    const [logs, setLogs] = useState<{
         at: string;
         instanceId: string;
         line: string;
-    }[]>([]), [showLogs, setShowLogs] = useState(false), [confirm, setConfirm] = useState('');
-    const installed = native?.installed?.models ?? [], selected = installed.find(i => i.model === model) ?? installed[0], active = native?.jobs.find(j => j.state === 'running');
-    useEffect(() => { setRepository(native?.repo ?? ''); }, [native?.repo]);
+    }[]>([]), [showLogs, setShowLogs] = useState(false), [confirm, setConfirm] = useState(false);
+    const [update, setUpdate] = useState<'checking' | 'available' | 'current' | 'unknown'>('checking');
+    const active = native?.jobs.find(j => j.state === 'running');
+    // The engine's update is offered only when the update check says there is one.
+    useEffect(() => {
+        let alive = true;
+        void api.get<{ engine?: { status?: string } }>('/api/updates/check').then(r => { if (alive) setUpdate(r.engine?.status === 'available' ? 'available' : r.engine?.status === 'current' ? 'current' : 'unknown'); }).catch(() => { if (alive) setUpdate('unknown'); });
+        return () => { alive = false; };
+    }, []);
     useEffect(() => {
         if (!showLogs)
             return;
-        let current = true;
-        const load = () => void api.get<{
+        const read = () => void api.get<{
             logs: typeof logs;
-        }>('/api/native/logs').then(value => {
-            if (current)
-                setLogs(value.logs);
-        }).catch(e => setError(e.message));
-        load();
-        const timer = setInterval(load, 2500);
-        return () => { current = false; clearInterval(timer); };
+        }>('/api/native/logs').then(value => { setLogs(value.logs); }).catch(() => { });
+        read();
+        const timer = setInterval(read, 2000);
+        return () => clearInterval(timer);
     }, [showLogs]);
-    async function connect() {
-        setPending(true);
+    async function updateEngine() {
         setError('');
         try {
-            await api.patch('/api/native', { repository });
-            await refreshNative(true);
+            await nativeAction('operations', { kind: 'update-engine' });
+            setConfirm(false);
+        }
+        catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        }
+    }
+    // The window cannot save a download, so the host writes the file to Downloads and says where.
+    async function saveLogs() {
+        setSaving(true);
+        setSaved('');
+        setError('');
+        try {
+            const result = await api.post<{ path: string }>('/api/native/logs/save', {});
+            setSaved(result.path);
         }
         catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         }
         finally {
-            setPending(false);
+            setSaving(false);
         }
     }
-    async function operate(kind: string) {
-        setError('');
-        try {
-            await nativeAction('operations', { kind, args: { model: selected?.model } });
-            setConfirm('');
-        }
-        catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-        }
-    }
-    function exportLogs() { const url = URL.createObjectURL(new Blob([logs.map(l => `${l.at} ${l.instanceId}: ${l.line}`).join('\n')], { type: 'text/plain' })); const a = document.createElement('a'); a.href = url; a.download = 'strata-engine.log'; a.click(); URL.revokeObjectURL(url); }
-    return <div className="stack stack--lg native-engine-settings"><section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Engine installation")}</h2><span className="st-pill">{tr(native?.available ? 'Connected' : 'Setup needed')}</span></div><p className="small muted">{tr("Your local Strata installation handles optimized models, companion files and engine updates.")}</p><details open={!native?.available}><summary className="small">{tr("Installation folder")}</summary><label className="input-field"><span>{tr("Strata folder")}</span><input className="st-input" aria-label={tr("Strata installation folder")} placeholder={tr("Folder containing setup.py")} value={repository} onChange={e => setRepository(e.target.value)}/></label><div className="native-settings-actions"><Btn disabled={pending || !repository.trim() || !!active} onClick={() => void connect()}>{tr(pending ? 'Connecting…' : 'Connect installation')}</Btn><Btn disabled={!!active} onClick={() => void refreshNative(true)}>{tr("Check again")}</Btn><a className="st-btn st-btn--ghost" href="https://github.com/Niko1221/Strata" target="_blank" rel="noreferrer">{tr("Get Strata")}</a></div></details>{tr(native?.error ? <p className="small inline-error">{tr(native.error)}</p> : <p className="small muted">{tr(native?.summary)}</p>)}</section>
- {tr(installed.length ? <section className="st-card"><h2 className="h3">{tr("Model settings & tools")}</h2><Select ariaLabel={tr("Native settings model")} value={selected?.model ?? ''} options={installed.map(m => ({ value: m.model, label: m.model_name ?? m.model }))} onChange={setModel}/>{tr(selected ? <NativeSettings model={selected.model}/> : null)}</section> : <p className="small muted">{tr("Prepare a model in Models to configure its engine parameters and MCP tools.")}</p>)}
- <section className="st-card"><h2 className="h3">{tr("Performance")}</h2><p className="small muted">{tr("Measure speed with a short test. Expert calibration tries engine settings and saves the fastest measured configuration.")}</p><div className="native-settings-actions"><Btn icon="gauge" disabled={!native?.instances.some(i => i.status === 'ready') || !!active} onClick={() => setBenchmark(true)}>{tr("Measure speed")}</Btn><Btn disabled={!native?.capabilities.calibration || !selected?.ready || !!active} onClick={() => setConfirm('calibrate')}>{tr("Calibrate engine\u2026")}</Btn></div>{tr(!native?.capabilities.calibration ? <p className="xs muted">{tr("Calibration is available on NVIDIA hardware supported by the installed version. Short benchmarks work with any running native instance.")}</p> : null)}</section>
- <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Diagnostics")}</h2><Btn size="sm" onClick={() => setShowLogs(v => !v)}>{tr(showLogs ? 'Hide logs' : 'View engine logs')}</Btn></div><p className="small muted">{tr("Downloads, preparation and engine failures include their original messages here.")}</p>{tr(showLogs ? <><pre className="native-log" aria-label={tr("Engine log")}>{logs.length ? logs.map(l => `${l.at} · ${l.line}`).join('\n') : 'No engine messages yet.'}</pre><Btn size="sm" icon="download" onClick={exportLogs}>{tr("Save logs")}</Btn></> : null)}{tr(native?.jobs.filter(j => j.state === 'error').slice(-3).map(j => <ErrorNotice key={j.id} message={j.error ?? j.summary}/>))}</section>
+    return <div className="stack stack--lg native-engine-settings">
+ <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Update component")}</h2>{tr(update === 'available' ? <Btn size="sm" variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => setConfirm(true)}>{tr("Update available")}</Btn> : null)}</div><p className="small muted">{tr("Update the engine for this computer. Your models and settings are kept.")}</p>{tr(update === 'current' ? <p className="small muted">{tr("Up to date")}</p> : null)}{tr(update === 'available' && (native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</section>
+ <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Diagnostics")}</h2><Btn size="sm" onClick={() => setShowLogs(v => !v)}>{tr(showLogs ? 'Hide logs' : 'View engine logs')}</Btn></div><p className="small muted">{tr("Downloads, preparation and engine failures include their original messages here.")}</p>{tr(showLogs ? <pre className="native-log" aria-label={tr("Engine log")}>{logs.length ? logs.map(l => `${l.at} · ${l.line}`).join(String.fromCharCode(10)) : 'No engine messages yet.'}</pre> : null)}<div className="native-settings-actions"><Btn size="sm" icon="download" disabled={saving} onClick={() => void saveLogs()}>{tr(saving ? 'Working…' : 'Save logs')}</Btn></div>{tr(saved ? <p className="small" role="status">{tr("Saved to {0}", [saved])}</p> : null)}{tr(native?.jobs.filter(j => j.state === 'error').slice(-3).map(j => <ErrorNotice key={j.id} message={j.error ?? j.summary} detail={j.details}/>))}</section>
  {tr(active ? <NativeProgress job={active}/> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}
- <NativeBenchmark open={benchmark} onClose={() => setBenchmark(false)}/><Dialog open={!!confirm} compact title={tr("Calibrate this computer?")} onClose={() => setConfirm('')} actions={<><Btn onClick={() => setConfirm('')}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate('calibrate')}>{tr("Start calibration")}</Btn></>}><p>{tr("The computer will be busy for about 5–15 minutes. Unload models first.")} {tr("Strata will calibrate {0} and save the fastest measured settings.", [selected?.model_name ?? tr("The selected model")])}</p></Dialog>
+ <Dialog open={confirm} compact title={tr("Update engine?")} onClose={() => setConfirm(false)} actions={<><Btn onClick={() => setConfirm(false)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void updateEngine()}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p></Dialog>
  </div>;
 }

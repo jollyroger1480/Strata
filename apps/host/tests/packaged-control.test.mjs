@@ -107,6 +107,7 @@ function packagedFixture({ engineUsable = true } = {}) {
         ? { usable: true, backend: 'cuda', components_dir: 'E:\\c', engine: { version: '0.1.45', platform: 'windows-x86_64', backend: 'cuda', exe: 'E:\\engine\\strata.exe', root: 'E:\\engine' } }
         : { usable: false, notice: 'No engine for this PC was found in E:\\c: the component folder holds no engine package. The app never downloads an engine while it starts or serves.', backend: 'cuda', engine: null, components_dir: 'E:\\c' };
     },
+    async importPlan(path) { calls.push(['importPlan', path]); return { file_set_status: 'plausible', candidate_selection: { family: 'qwen', model: 'IQ3_S' }, file_count: 2, total_bytes: 1e9, issues: [] }; },
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); return {}; },
     async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
@@ -347,5 +348,18 @@ test('packaged: deleting a downloaded model unloads it first, then the installer
     assert.equal(f.others().length, 0);
     const bad = await finish(f.native, f.native.operation('remove', { model: '../x' }).id);
     assert.equal(bad.state, 'error', 'an id that is not an installed model is refused');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: a local GGUF folder is checked by Control, then installed from where it is (no download)', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    const preview = await f.native.localPreview('D:/models/iq3s');
+    assert.equal(preview.candidate_selection.model, 'IQ3_S');
+    assert.deepEqual(f.calls.find(c => c[0] === 'importPlan'), ['importPlan', 'D:/models/iq3s']);
+    await assert.rejects(() => f.native.localPreview('  '), /Choose a folder/);
+    await f.native.plan({ family: 'qwen', model: 'IQ3_S', gguf_dir: 'D:/models/iq3s' });
+    assert.equal(f.rpc.at(-1).arguments.gguf_dir, 'D:/models/iq3s');
   } finally { await f.native.close(); f.cleanup(); }
 });

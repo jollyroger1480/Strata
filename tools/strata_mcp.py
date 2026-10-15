@@ -1123,6 +1123,9 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                          "Strata folder). Only the current data folder, a folder inside the Strata "
                                          "folder, or a new absolute path whose last folder is named Strata... "
                                          "(e.g. D:\\Strata-data) outside system folders"},
+             "gguf_dir": {"type": "string", "maxLength": 260,
+                          "description": "a folder that already holds this model's GGUF files under their original names: setup "
+                                         "checks them (size and SHA-256) and does not download them again"},
              "confirm": {"type": "boolean", "description": "true = really start the install (after the user agreed "
                                                            "to the plan and the download size)"},
              "cancel": {"type": "boolean", "description": "true = stop the install in progress"}}},
@@ -1325,7 +1328,8 @@ class Tools:
         return p
 
     def strata_install(self, family=None, model=None, context=None, vision=None, kv=None, gpu=None, gpus=None,
-                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False) -> dict:
+                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
+                       gguf_dir=None) -> dict:
         s = self.s
         with s.lock:
             job = s.install_job()
@@ -1356,7 +1360,7 @@ class Tools:
                                 "fix the problem above and call strata_install again with confirm=true (finished "
                                 "steps are skipped)"}
             plan, args = self.install_plan(family, model, context, vision, kv, gpu, gpus, backend, low_ram, port,
-                                           data_dir)
+                                           data_dir, gguf_dir)
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 raise ToolError("Strata is running (started by strata_start): stop it first with strata_stop - setup "
@@ -1370,7 +1374,7 @@ class Tools:
                 raise ToolError(plan["disk_short"])
             return self.launch_install(plan, args)
 
-    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir):
+    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None):
         s = self.s
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
@@ -1420,7 +1424,7 @@ class Tools:
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
-        partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
+        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
         need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
@@ -1435,6 +1439,11 @@ class Tools:
                         ("--data-dir", str(target) if data_dir else None)):
             if v is not None:
                 args += [flag, str(v)]
+        if gguf_dir:
+            local = Path(os.path.expandvars(gguf_dir)).expanduser()
+            if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
+                raise ToolError("gguf_dir must be an existing absolute folder")
+            args += ["--gguf-dir", str(local)]
         if backend in ("cuda", "hip"):
             args += ["--backend", backend]
         fit = None
