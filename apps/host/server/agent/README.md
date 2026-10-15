@@ -53,12 +53,12 @@ the Harness's own `read-only`, `workspace-write` and `danger-full-access` preset
 | --- | --- | --- | --- | --- |
 | Manual (default) | `strata-manual` | `read-only` | `ask` | The sandbox denies every file change, so the agent must request a one-shot widening (`sandbox_permissions`), and that request is the Approve/Deny card. Reads and read-only commands run without a question. |
 | Plan | `strata-plan` | `read-only` | `never` | Nothing can change. A request to widen is rejected without asking anyone, so no Approve card is ever shown; the card ends "Not allowed in this mode". The agent reads, plans and answers. |
-| Bypass | `strata-bypass` | `workspace-write` | `never` | Writes and commands inside the workspace (and the Harness's permitted temp areas) run without a question. Anything wider, such as `danger-full-access` or a path outside the workspace, is refused, again without a question. |
+| Bypass | `strata-bypass` | `danger-full-access` | `never` | The Harness's own full-access, never-ask bundle. Writes and commands anywhere on this computer run without a question. |
 
 - The mode is read once per turn. Changing the menu during a turn affects the next turn; the running one keeps the permissions it started with.
 - An unknown or missing value (an older stored `auto` or `accept-edits`) is Manual, never something looser.
 - The session keeps its preset across host restarts (it is a durable event in the Harness record); the page's choice is stored with the chat.
-- Nothing in the three presets is `danger-full-access`. If Bypass should mean "also outside the workspace", change `MODE_PRESETS.bypass` in `profile.mjs` to `danger-full-access` + `never`; that is the Harness's own "full access without approval prompts" bundle.
+- Bypass is the only full-access mode (the pinned Harness's `danger-full-access` preset: sandbox `danger-full-access`, approval `never`). Manual and Plan stay read-only.
 - Windows: the read-only shell runs PowerShell in Constrained Language Mode. A shell command can fail inside Manual or Plan for reasons that have nothing to do with approvals (the card shows the PowerShell error).
 
 ## Tests
