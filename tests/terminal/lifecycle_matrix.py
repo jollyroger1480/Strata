@@ -308,7 +308,7 @@ class Result(dict):
 
 
 def finish(rig: Rig, name: str, idents, *, expect_graceful: bool | None, note: str = "", vram_before=None,
-           vram: bool = False, wait: float = 45, stopped_text: str | None = None) -> Result:
+           vram: bool = False, wait: float = 45, stopped_text: str | None = None, vram_during=None) -> Result:
     left = rig.wait_gone(idents, wait)
     problems = []
     if left:
@@ -331,7 +331,9 @@ def finish(rig: Rig, name: str, idents, *, expect_graceful: bool | None, note: s
             used = vram_used_mib()
         if used is not None and used > vram_before + 300:
             problems.append(f"VRAM not freed: {used} MiB used, {vram_before} before")
-        note += f" vram {vram_before}->{used} MiB"
+        note += f" vram {vram_before}->{vram_during}->{used} MiB"
+        if vram_during is not None and vram_during <= vram_before + 500:
+            problems.append(f"the engine never held GPU memory ({vram_during} MiB while running), so the check proves nothing")
     return Result(name=name, ok=not problems, problems=problems, graceful=("quit" in marks or "eof" in marks),
                   marks=marks, note=note.strip(), stopped=stopped_text)
 
@@ -347,9 +349,11 @@ def serve_case(rig: Rig, name: str, action, *, graceful: bool | None, vram: bool
         idents += [i for i in rig.engine_idents() if i.pid not in {x.pid for x in idents}]
         if not any("engine" in " ".join(i.cmd) or "--serve" in " ".join(i.cmd) for i in idents):
             raise RuntimeError(f"no engine in the tree: {[' '.join(i.cmd)[:60] for i in idents]}")
+        during = vram_used_mib() if vram else None
         t0 = time.monotonic()
         action(rig, proc)
-        out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, wait=wait)
+        out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, wait=wait,
+                     vram_during=during)
         out["seconds"] = round(time.monotonic() - t0, 1)
         text = (rig.root / "serve.log").read_text(errors="replace") if (rig.root / "serve.log").exists() else ""
         out["stopped"] = "[strata] stopped" in text
@@ -437,9 +441,10 @@ def pty_close_case(rig: Rig, name: str = "serve-terminal-closed", *, vram: bool 
         rig.wait_ready(_P())
         idents = rig.tree(pid)
         idents += [i for i in rig.engine_idents() if i.pid not in {x.pid for x in idents}]
+        during = vram_used_mib() if vram else None
         t0 = time.monotonic()
         os.close(master)                            # the window is closed
-        out = finish(rig, name, idents, expect_graceful=True, vram_before=before, vram=vram)
+        out = finish(rig, name, idents, expect_graceful=True, vram_before=before, vram=vram, vram_during=during)
         out["seconds"] = round(time.monotonic() - t0, 1)
         return out
     finally:
@@ -495,6 +500,7 @@ def runtime_case(rig: Rig, name: str, what: str, *, vram: bool = False) -> Resul
             raise RuntimeError(f"not ready: {started}")
         owner = owner_pid(rig)
         idents = rig.tree(owner)
+        during = vram_used_mib() if vram else None
         t0 = time.monotonic()
         graceful = True
         note = ""
@@ -521,7 +527,8 @@ def runtime_case(rig: Rig, name: str, what: str, *, vram: bool = False) -> Resul
             holder.kill(); holder.wait(timeout=10)
         if what == "server-killed":
             # the server and engine are gone; the owner host stays to report the failure until it is told to stop
-            out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, note=note, wait=60)
+            out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, note=note, wait=60,
+                     vram_during=during)
             out["problems"] = [p for p in out["problems"] if p != "lease still held"]
             res = runtime_stop(rig)
             out["stop_after"] = res.get("state")
@@ -530,7 +537,8 @@ def runtime_case(rig: Rig, name: str, what: str, *, vram: bool = False) -> Resul
                 out["problems"].append(f"after runtime stop: {left} lease_free={rig.lease_free()}")
             out["ok"] = not out["problems"]
             return out
-        out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, note=note, wait=60)
+        out = finish(rig, name, idents, expect_graceful=graceful, vram_before=before, vram=vram, note=note, wait=60,
+                     vram_during=during)
         out["seconds"] = round(time.monotonic() - t0, 1)
         if what == "owner-killed":
             res = runtime_stop(rig)                       # the next stop clears the private state of a lost owner
