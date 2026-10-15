@@ -2116,7 +2116,7 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
     (void) variant;   // the quad recurrence kernels are AMD-only
 #endif
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
-#if defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(STRATA_EXPERIMENTAL_SM60) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700)   // the kernels exist in the host pass and the sm_70 device pass only
     // v100/gdn-chunk: the chunked recurrence (src/prefill/gdn_chunk.cu) on Volta, where the token chain is the
     // cost.  STRATA_GDN_CHUNK=0 forces the recurrence, =1 forces the chunked path (the parity test's A/B switch);
     // unset: cc == 7.0 only, every other architecture keeps the recurrence bit-for-bit as before.  Read per call

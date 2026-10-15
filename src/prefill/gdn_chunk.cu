@@ -532,7 +532,7 @@ void gdn_chunk_recurrence(float* state, const float* h, const float* gate, const
     (void) state; (void) h; (void) gate; (void) beta; (void) oc; (void) T; (void) stream;
     std::fprintf(stderr, "gdn_chunk_recurrence: not built for HIP\n");
     std::exit(1);
-#else
+#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700   // the sm_60 device pass of a multi-arch build has no wmma kernel to name
     if (T <= 0) return;
     const int64_t T64 = T - T % CH;
     if (T64 <= 0) return;
