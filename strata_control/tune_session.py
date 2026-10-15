@@ -86,7 +86,7 @@ class Engine(Protocol):
 
 
 class Session(Protocol):
-    def engine(self, args: list[str], env: dict[str, str | None]) -> contextlib.AbstractContextManager[Engine]: ...
+    def engine(self, args: list[str], env: dict[str, str | None], pre_start: Callable[[], None] | None = None) -> contextlib.AbstractContextManager[Engine]: ...
 
     def system(self) -> dict[str, Any]: ...
 
@@ -399,10 +399,12 @@ class WorkerSession:
         return {"memory": tune_machine.memory(), "gpus": tune_machine.gpus(), "cpu": tune_machine.cpu()}
 
     @contextlib.contextmanager
-    def engine(self, args: list[str], env: dict[str, str | None]) -> Iterator[WorkerEngine]:
+    def engine(self, args: list[str], env: dict[str, str | None], pre_start: Callable[[], None] | None = None) -> Iterator[WorkerEngine]:
         with contextlib.ExitStack() as stack:
             if self.lock is not None:
                 stack.enter_context(self.lock())
+            if pre_start is not None:
+                pre_start()                      # the memory and quiet checks run once the lock is ours, right before the start
             self.runs += 1
             n = self.runs
             cfg = json.loads(json.dumps(self.base))

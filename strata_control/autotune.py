@@ -240,7 +240,7 @@ class Tuner:
             return f"the CPU is {busy:.0f}% busy"
         return None
 
-    def _ram_guard(self, delta_mib: int, label: str) -> str | None:
+    def _ram_guard(self, delta_mib: int, label: str, wait_s: float | None = None) -> str | None:
         """None when a start fits; otherwise the plain reason it does not."""
         waited = 0.0
         while True:
@@ -256,7 +256,7 @@ class Tuner:
                 need = max(need, self.o.min_free_ram_mib)
             if avail >= need:
                 return None
-            if waited >= self.o.wait_ram_s:
+            if waited >= (self.o.wait_ram_s if wait_s is None else wait_s):
                 return (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
                         f"{need / 1024:.1f} GiB needed)")
             self._say("waiting", f"Waiting for memory to be freed before trying {label}")
@@ -266,22 +266,30 @@ class Tuner:
 
     # ---- one engine run
     def _run(self, args: list[str], env: dict[str, str | None], spec: RequestSet, label: str,
-             points: Callable[[Any], None] | None = None) -> RunResult:
+             points: Callable[[Any], None] | None = None, delta_mib: int = 0) -> RunResult:
         self._check_cancel()
-        self._wait_for_quiet()
         t0 = self.clock()
+
+        def pre_start() -> None:
+            # checked again once the box lock is ours: another stream's engine may have come and gone while we waited
+            self._wait_for_quiet()
+            why = self._ram_guard(delta_mib, label, wait_s=60.0)
+            if why:
+                raise StartFailed("SKIPPED", why)
+
         try:
-            with self.session.engine(args, env) as eng:
+            with self.session.engine(args, env, pre_start=pre_start) as eng:
                 res = eng.measure(spec)
                 if points is not None and res.status == "PASS":
                     points(eng)
         except StartFailed as e:
             res = RunResult(status=e.status, reason=e.reason)
         dt = self.clock() - t0
-        self.run_times.append(dt)
-        self.done_runs += 1
+        if res.status != "SKIPPED":
+            self.run_times.append(dt)
+            self.done_runs += 1
+            self.result.runs += 1
         res.wall_s = round(dt, 1)
-        self.result.runs += 1
         self.result.trials.append({"label": label, "args": args, "env": env, "status": res.status, "reason": res.reason,
                                    "decode_tok_s": res.decode_tok_s, "pp_tok_s": res.pp_tok_s,
                                    "rss_peak_mib": res.rss_peak_mib, "load_s": res.load_s, "at": time.time()})
@@ -380,6 +388,10 @@ class Tuner:
                         break
                     self._say("rounds", f"Measuring your current settings again (round {rnd + 1} of {per_arm})")
                     b = self._run(self.base_args, {}, spec, f"base r{rnd + 1}")
+                    if b.status == "SKIPPED":
+                        r.notes.append("not enough free memory for another measurement of your current settings; the search stopped")
+                        self.storm = stop = True
+                        break
                     if b.status != "PASS":
                         r.notes.append("your current settings failed to start a second time; the search stopped")
                         self.storm = stop = True
@@ -395,7 +407,12 @@ class Tuner:
                     alive = [x for x in alive if x.arm.id != p.arm.id]
                     continue
                 self._say("rounds", f"Trying: {p.arm.label} (round {rnd + 1} of {per_arm})", arm=p.arm.id)
-                res = self._run(tune_knobs.apply_to_argv(self.base_args, p.args), dict(p.env), spec, p.arm.id)
+                res = self._run(tune_knobs.apply_to_argv(self.base_args, p.args), dict(p.env), spec, p.arm.id,
+                                delta_mib=p.arm.ram_delta_mib)
+                if res.status == "SKIPPED":
+                    rep.status, rep.reason = "skipped", res.reason
+                    alive = [x for x in alive if x.arm.id != p.arm.id]
+                    continue
                 if res.status != "PASS":
                     rep.status, rep.reason = "failed", f"{res.status}: {res.reason}"
                     alive = [x for x in alive if x.arm.id != p.arm.id]

@@ -61,7 +61,9 @@ class StubSession:
                                                     "vram_used_mib": 400, "driver": "1"}], "cpu": {"model": "stub", "logical": 12, "hybrid": False}}
 
     @contextlib.contextmanager
-    def engine(self, args: list[str], env: dict[str, Any]):
+    def engine(self, args: list[str], env: dict[str, Any], pre_start=None):
+        if pre_start is not None:
+            pre_start()
         self.runs.append((list(args), dict(env)))
         if self.clock is not None:
             self.clock.t += self.run_s
