@@ -114,6 +114,8 @@ def main(argv=None) -> int:
             if hit.name in copied or not hit.is_file():
                 continue
             real = hit.resolve()
+            if str(real) in copied.values():          # libX.so -> libX.so.1 -> libX.so.1.2.3: one file, one name (the soname)
+                continue
             shutil.copy2(real, a.out / hit.name)
             copied[hit.name] = str(real)
             for name, path in dependencies(a.out / hit.name, a.search)[0].items():
