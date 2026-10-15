@@ -2202,28 +2202,17 @@ bool g_stage_grid_mmvq = g_stage_grid && [] {
     return v != nullptr && v[0] == '1';
 }();
 // IQ3_XXS's and IQ3_S's codebooks and sign-mask tables staged in shared memory by the grouped expert kernels (the
-// single-matrix mmvq does not): bitwise the same either way.  The default on compute capability 6.0 (GP100: no
-// __dp4a, these kernels decode-bound at 70-140 GB/s) and off elsewhere: on an RTX 3090 Ti, where they run at
-// 490-665 GB/s, the staging made the IQ3_S layers 3-13% slower, and 6.1 cards (which have __dp4a) are unmeasured.
-// STRATA_IQ_STAGE_TABLES=1 / 0 forces it on / off on any card.
+// single-matrix mmvq does not): bitwise the same either way.  OPT-IN: STRATA_IQ_STAGE_TABLES=1.  The PR (#1424) made it
+// the default on compute capability 6.0 (GP100: no __dp4a, these kernels decode-bound at 70-140 GB/s); on a Tesla P100
+// (IQ3_XXS and IQ3_S packs, 5-6 interleaved pairs each) the decode was 0.97-1.03x of the unstaged kernels, noise, so
+// it is not on by default.  On an RTX 3090 Ti, forced on, the IQ3_S layers took 3-13% longer.
 bool stage_tables_on() {
     if (!g_stage_grid) return false;
-    static const int forced = [] {
+    static const bool on = [] {
         const char* v = std::getenv("STRATA_IQ_STAGE_TABLES");
-        return (v && v[0]) ? (v[0] != '0' ? 1 : 0) : -1;
+        return v && v[0] && v[0] != '0';
     }();
-    if (forced >= 0) return forced == 1;
-    static int by_device[64];   // 0 unknown, 1 on, 2 off
-    int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
-    if (by_device[dev] == 0) {
-        int major = 0, minor = 0;
-        const bool gp100 = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                           cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess &&
-                           major == 6 && minor == 0;
-        by_device[dev] = gp100 ? 1 : 2;
-    }
-    return by_device[dev] == 1;
+    return on;
 }
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>

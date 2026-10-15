@@ -114,16 +114,16 @@ and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two chang
   (+3.5 GiB; the experts keep their offsets, so the native pack is reused). Point `--native` and
   `--ple-gguf` at the new folder. Requantizing costs at most 0.4% of a tensor's |w|max (Q8_0 is finer than the
   sources).
-- IQ3_XXS's and IQ3_S's codebooks and sign-mask tables are staged in shared memory by the grouped expert kernels on
-  compute capability 6.0 (IQ3_XXS's ported from shinbunbun/llama-cpp-p100-patches 29 and 30, IQ3_S's the same for its
-  sign bytes; bitwise the same output; `STRATA_IQ_STAGE_TABLES=0|1` forces it off or on, on any card). IQ3_S was the
-  one gate/up format whose codebook those kernels still read from global memory: a verify window's layer of IQ3_S
-  experts (20 experts, 24 entries) takes 24% less on a GP100 die (517 -> 393 us with a Q2_0 down projection, 492 ->
-  369 us with IQ4_NL), and Swift 1.5 IQ3_XXS (13 of its 48 layers are IQ3_S) decodes 3.2% faster with the settings
-  below at 1M context (39.3 -> 40.5 tok/s, mean of the four prompts; the same drafts accepted). IQ3_XXS's tables
-  alone were within noise (+0-4%). It is a trade that only pays where the decode is the limit: on an RTX 3090 Ti
-  (sm_86), forced on, the same IQ3_S layers took 3-13% longer (those kernels already read at 490-665 GB/s there), so
-  the default is 6.0 only.
+- **Opt-in `STRATA_IQ_STAGE_TABLES=1`**: IQ3_XXS's and IQ3_S's codebooks and sign-mask tables are staged in shared memory by
+  the grouped expert kernels (IQ3_XXS's ported from shinbunbun/llama-cpp-p100-patches 29 and 30, IQ3_S's the same for its
+  sign bytes; bitwise the same output). IQ3_S was the one gate/up format whose codebook those kernels still read from
+  global memory: the contributor measured a verify window's layer of IQ3_S experts (20 experts, 24 entries) 24% faster on a
+  GP100 die (517 -> 393 us with a Q2_0 down projection, 492 -> 369 us with IQ4_NL), and Swift 1.5 IQ3_XXS (13 of its 48
+  layers are IQ3_S) 3.2% faster at 1M context (39.3 -> 40.5 tok/s); IQ3_XXS's tables alone were within noise (+0-4%). The
+  maintainers' interleaved A/Bs on a Tesla P100 (PCIe, IQ3_XXS pack and IQ3_S pack, 5-6 pairs each) showed no end-to-end
+  change (decode 0.97-1.03x, inside the noise of that box), so it is off by default (the contributor's version had it on
+  for compute capability 6.0). On an RTX 3090 Ti, forced on, the same IQ3_S layers took 3-13% longer (those kernels already
+  read at 490-665 GB/s there).
 - Neither change is measured on compute capability 6.1 (P40, P4, GTX 10 series), which has `__dp4a`. Both build for
   sm_61, and on a card with `__dp4a` the Q8_0 kernel's dot is the hardware instruction (`tools/q8_sm60_check.cu`
   passes on an RTX 3090 Ti); numbers from a 6.1 card with `STRATA_Q8_SM60=1` or `STRATA_IQ_STAGE_TABLES=1` would
