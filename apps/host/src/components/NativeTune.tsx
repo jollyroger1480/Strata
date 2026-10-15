@@ -80,7 +80,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
         const stale = active && status?.state && status.state !== 'fresh';
         body = <div className="stack">
             {error ? <p className="small inline-error" role="alert">{error}</p> : null}
-            {active ? <div className="stack"><p className="strong">{tr("Saved tuning in use: {0}", [active.name])}</p>
+            {active ? <div><p className="strong">{tr("Saved tuning in use: {0}", [active.name])}</p>
                 {active.gain_pct ? <p className="small muted">{tr("+{0}% faster answers", [Math.round(active.gain_pct)])}</p> : null}
                 {notice(active.answers?.class)}
                 {stale ? <p className="small">{status?.state === 'hard' ? tr("This PC changed since it was tuned, so these settings are not used until you tune again.") : tr("This PC or the engine changed since it was tuned. A short check takes about 2 minutes.")}</p> : null}</div>
@@ -99,9 +99,9 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
             </section> : null}
             {renaming ? <div className="row"><input className="st-input" aria-label={tr("Name")} value={name} maxLength={80} onChange={e => setName(e.target.value)}/><Btn size="sm" variant="primary" disabled={!name.trim() || busy} onClick={() => void act(async () => { await tunePresetAction(renaming.id, 'rename', { name: name.trim() }); setRenaming(null); })}>{tr("Save")}</Btn><Btn size="sm" onClick={() => setRenaming(null)}>{tr("Cancel")}</Btn></div> : null}
         </div>;
-        actions = <><Btn onClick={close}>{tr("Close")}</Btn>
+        actions = <>
             {status?.can_undo ? <Btn disabled={busy || !!other} onClick={() => void act(async () => { await tuneUndo(model, resourceProfile, vision); })}>{tr("Undo")}</Btn> : null}
-            {active && status?.state === 'soft' ? <Btn disabled={busy || !!other} onClick={() => void start('recheck')}>{tr("Check again (about 2 minutes)")}</Btn> : null}
+            {active && status?.state === 'soft' ? <Btn disabled={busy || !!other} onClick={() => void start('recheck')}>{tr("Check again")}</Btn> : null}
             <Btn variant="primary" icon="gauge" disabled={busy || !!other || !status} onClick={() => void start('autotune')}>{tr(active ? "Tune again" : "Start tuning")}</Btn></>;
     }
     return <Dialog open={open} title={tr("Tune this model")} onClose={close} actions={actions}>{body}</Dialog>;

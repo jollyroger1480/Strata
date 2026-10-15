@@ -159,6 +159,13 @@ T = {
     ],
 }
 
+# the "Check again" button keeps to one short line; the 2 minutes are said in the sentence above it
+import re as _re
+_i = KEYS.index("Check again (about 2 minutes)")
+KEYS[_i] = "Check again"
+for _v in T.values():
+    _v[_i] = _re.split(r"\s*[(（]", _v[_i])[0].strip()
+
 out = Path(__file__).resolve().parent.parent / "src" / "locales"
 ids = [f"tune{i + 1:02d}" for i in range(len(KEYS))]
 for lang, values in T.items():
