@@ -222,6 +222,22 @@ class TestMemory(unittest.TestCase):
         self.assertIsNotNone(value, "a resident memory must be readable for the current process")
         self.assertGreater(value, 0.0)
 
+    def test_a_child_process_tree_is_summed(self):
+        import subprocess
+        import sys
+        import time
+        child = subprocess.Popen([sys.executable, "-c",
+                                  "import sys; b = bytearray(80 * 1024 * 1024); b[::4096] = b'x' * len(b[::4096]); "
+                                  "print('ready', flush=True); sys.stdin.readline()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            time.sleep(0.2)
+            self.assertGreater(process_tree_peak_mib(child.pid) or 0.0, 70.0)
+        finally:
+            child.stdin.close()
+            child.wait(timeout=10)
+
     def test_a_nonexistent_pid_yields_no_memory_rather_than_a_zero(self):
         """Absent is absent; a zero would look like a measurement."""
         import os

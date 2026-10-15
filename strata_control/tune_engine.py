@@ -30,6 +30,7 @@ measurement, and neither is a run whose `produced` is zero.
 from __future__ import annotations
 
 import json
+import os
 import re
 import select
 import subprocess
@@ -274,6 +275,80 @@ class LineReader:
 
 
 
+def _windows_tree_peak_mib(pid: int) -> float | None:
+    """The same measurement on Windows: peak working set summed over the process and its children.
+
+    ``ps`` does not exist there, so the process list comes from a Toolhelp snapshot and each
+    process's peak from ``GetProcessMemoryInfo``. A process that cannot be opened (another
+    session, already gone) is skipped; if none can be read the answer is absent, not zero.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+    kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(MemoryCounters), wintypes.DWORD]
+
+    snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)       # TH32CS_SNAPPROCESS
+    if snapshot in (None, wintypes.HANDLE(-1).value):
+        return None
+    rows: list[tuple[int, int]] = []
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(ProcessEntry)
+        more = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            rows.append((entry.th32ProcessID, entry.th32ParentProcessID))
+            more = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel.CloseHandle(snapshot)
+    if pid not in {child for child, _ in rows}:
+        return None
+    wanted = {pid}
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in rows:
+            if parent in wanted and child not in wanted:
+                wanted.add(child)
+                changed = True
+    total = 0
+    for member in wanted:
+        handle = kernel.OpenProcess(0x1000 | 0x0010, False, member)   # QUERY_LIMITED_INFORMATION | VM_READ
+        if not handle:
+            handle = kernel.OpenProcess(0x0400 | 0x0010, False, member)  # QUERY_INFORMATION | VM_READ
+        if not handle:
+            continue
+        try:
+            counters = MemoryCounters()
+            counters.cb = ctypes.sizeof(MemoryCounters)
+            if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                total += counters.PeakWorkingSetSize
+        finally:
+            kernel.CloseHandle(handle)
+    return round(total / (1024.0 * 1024.0), 1) if total else None
+
+
 def process_tree_peak_mib(pid: int) -> float | None:
     """Peak resident memory of a process and its children, in MiB.
 
@@ -282,6 +357,8 @@ def process_tree_peak_mib(pid: int) -> float | None:
     `vsz` is address space); when it is unavailable the memory is simply absent, which is the honest
     answer and not a zero.
     """
+    if os.name == "nt":
+        return _windows_tree_peak_mib(pid)
     try:
         out = subprocess.run(["ps", "-o", "rss=,pid=,ppid=", "-ax"], capture_output=True, text=True,
                              timeout=5).stdout
