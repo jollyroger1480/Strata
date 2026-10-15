@@ -1681,6 +1681,9 @@ def _components_engine(a: argparse.Namespace) -> int:
         print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
     else:
         print(report["notice"], file=sys.stderr)
+    notice = engine_component.cached_notice(root)
+    if notice:
+        print(notice)
     print("nothing was downloaded or changed")
     return code
 

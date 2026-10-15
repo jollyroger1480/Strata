@@ -430,6 +430,10 @@ def check(ctx: Context) -> dict:
                            "generated_at": feed.generated_at, "trusted_by": "test key file" if signing.extra_keys_in_effect(ctx.environ) else "built-in keys"},
                   "engine": decide_engine(feed, ctx, state), "control": decide_control(feed, ctx, state),
                   "app": decide_app(feed, ctx), "serving": _serving_or_empty(ctx), "hardware": ctx.hardware}
+        state.data["last_check"] = {
+            "at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(),
+            "engine": report["engine"]["offered"]["version"] if report["engine"]["status"] in ("available", "install") and report["engine"]["offered"] else None,
+            "app": report["app"]["offered"] if report["app"]["status"] == "available" else None}
         state.save()
         return report
 
@@ -925,6 +929,8 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
             except UpdateError as exc:
                 results.append({"component": name, "status": "failed", "changed": False, "error": str(exc), "exit_code": exc.exit_code})
                 failure = failure or exc
+        if any(r.get("component") == "engine" and r.get("status") == "updated" for r in results):
+            state.data.get("last_check", {}).pop("engine", None)
         state.save()
     return {"feed": {"source": ctx.source, "sequence": feed.sequence, "channel": feed.channel, "key_id": feed.key_id},
             "results": results, "exit_code": failure.exit_code if failure else 0}

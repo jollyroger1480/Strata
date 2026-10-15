@@ -164,6 +164,17 @@ def engine_dir(root: Path | None = None) -> Path:
     return (root or components_dir()) / "engine"
 
 
+def cached_notice(root: Path | None = None) -> str | None:
+    """"update available (x.y.z): run `strata update`" from the last explicit check, or None. Reads one small local file; it never
+    touches the network, so showing it at a start does not break the rule that only an update step downloads."""
+    try:
+        last = (json.loads(((root or components_dir()) / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
+    except (OSError, ValueError, AttributeError):
+        return None
+    parts = [f"engine {last['engine']}" for _ in [0] if last.get("engine")] + [f"app {last['app']}" for _ in [0] if last.get("app")]
+    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+
+
 def pinned_folder(root: Path | None = None) -> str | None:
     """The package folder a manual rollback pinned, or None. Read-only; a missing or damaged state file means no pin."""
     try:
