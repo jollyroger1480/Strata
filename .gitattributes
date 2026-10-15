@@ -10,3 +10,6 @@ tests/data/native_experts/** -text
 
 # the quant yardstick's text set: tokenized byte for byte (set.ids.json), never convert its line endings
 data/quant_quality/** -text
+
+# the license text is shipped and checked as LF text on every checkout
+LICENSE text eol=lf

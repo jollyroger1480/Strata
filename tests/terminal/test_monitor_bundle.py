@@ -48,6 +48,25 @@ class MonitorBundleTests(unittest.TestCase):
         verify(destination)
         return destination
 
+    def test_crlf_license_checkout_still_verifies(self):
+        """A Windows checkout (autocrlf) ships LICENSE with CRLF; the bundle must still verify."""
+        real_copy = BUILDER_MODULE.shutil.copyfile
+
+        def crlf_license(src, dst, *args, **kwargs):
+            if Path(src).name != "LICENSE":
+                return real_copy(src, dst, *args, **kwargs)
+            text = Path(src).read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            Path(dst).write_bytes(text)
+            return dst
+
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / "monitor.pyz"
+            with mock.patch.object(BUILDER_MODULE.shutil, "copyfile", crlf_license):
+                build(bundle)
+            with zipfile.ZipFile(bundle) as archive:
+                self.assertIn(b"MIT License\r\n", archive.read("LICENSE"))
+            self.assertEqual(verify(bundle)["schema_version"], 4)
+
     def test_update_rollback_and_commit_keep_one_verified_previous_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

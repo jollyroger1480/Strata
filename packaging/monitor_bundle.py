@@ -116,7 +116,7 @@ def verify(bundle: Path) -> dict:
         if archive.testzip() is not None:
             raise ValueError("bundle CRC failure")
         files = {name: digest(archive.read(name)) for name in members}
-        if report["schema_version"] >= 2 and not archive.read(LICENSE_NOTICE).startswith(b"MIT License\n"):
+        if report["schema_version"] >= 2 and not archive.read(LICENSE_NOTICE).replace(b"\r\n", b"\n").startswith(b"MIT License\n"):
             raise ValueError("bundle license notice is invalid")
     if report.get("files") != files:
         raise ValueError("bundle member checksum mismatch")
