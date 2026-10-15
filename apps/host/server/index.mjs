@@ -773,6 +773,12 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
+  /* The auto-tuner's saved tunings (Strata Control's presets, shared with the Terminal). Starting a tune or a re-check is POST /api/native/operations with kind autotune / recheck. */
+  if(path==='/api/native/tune/status'&&method==='GET')return json(res,200,await native.tuneStatus({model:url.searchParams.get('model'),resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined}));
+  if(path==='/api/native/tune/presets'&&method==='GET')return json(res,200,await native.tunePresets.list());
+  if(path==='/api/native/tune/undo'&&method==='POST'){const body=await readBody(req);return json(res,200,await native.tunePresets.undoFor({model:body.model,resourceProfile:body.resourceProfile,vision:body.vision}));}
+  const tunePreset=/^\/api\/native\/tune\/presets\/([0-9a-f]{8,32})\/(apply|rename|delete|undo)$/.exec(path);
+  if(tunePreset&&method==='POST')return json(res,200,await native.tunePresets.action(tunePreset[2],tunePreset[1],await readBody(req)));
   const nativeOperation=/^\/api\/native\/operations\/([a-z0-9-]+)\/cancel$/.exec(path);
   if(nativeOperation&&method==='POST')return json(res,200,await native.cancel(nativeOperation[1]));
   const nativeInstance=/^\/api\/native\/instances\/([a-z0-9-]+)\/(unload|default)$/.exec(path);
