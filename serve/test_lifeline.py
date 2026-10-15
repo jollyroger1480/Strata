@@ -136,3 +136,33 @@ class Lifeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+STUBBORN = (
+    "import signal, sys, time\n"
+    "if hasattr(signal, 'SIGTERM'): signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "print('READY 4096 stop', flush=True)\n"
+    "time.sleep(600)\n"          # never reads QUIT, never answers STOP, ignores SIGTERM
+)
+
+
+class HardFallback(unittest.TestCase):
+    """The clean stop has a deadline: an engine that ignores STOP, QUIT and SIGTERM is killed, and close() returns."""
+
+    def test_an_engine_that_ignores_everything_is_killed(self):
+        from unittest import mock
+        from serve import server
+        engine = server.StrataEngine("missing-executable", [], lazy=True)
+        engine.proc = subprocess.Popen([sys.executable, "-c", STUBBORN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        engine.proc.stdout.readline()
+        victim = engine.proc
+        t0 = time.monotonic()
+        with mock.patch.object(server, "ENGINE_QUIT_WAIT_S", 1), mock.patch.object(server, "ENGINE_TERM_WAIT_S", 1), \
+                mock.patch.object(server, "ENGINE_KILL_WAIT_S", 10):
+            engine.close()
+        self.assertLess(time.monotonic() - t0, 12)
+        self.assertIsNotNone(victim.poll(), "the engine is still running after close()")
+        self.assertIsNone(engine.proc)
+        if os.name == "posix":
+            self.assertEqual(victim.returncode, -signal.SIGKILL, "it ignored SIGTERM, so only the kill ended it")
