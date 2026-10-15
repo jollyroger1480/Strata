@@ -33,7 +33,8 @@
       "../../host/dist": "host/dist",
       "../../host/server": "host/server",
       "../../host/package.json": "host/package.json",
-      "resources/node": "node"
+      "resources/node": "node",
+      "resources/control": "control"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",
