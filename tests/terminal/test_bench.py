@@ -21,7 +21,21 @@ from strata_cli import bench
 from strata_cli.cli import main
 from strata_cli.client import Endpoint
 from strata_control import benchmarking, journal, management
+from strata_control.private_files import is_unshared
 from strata_control.profiles import ProfileError
+
+
+class _NoGpu:
+    note = None
+
+    def ok(self):
+        return False
+
+    def name(self):
+        return None
+
+    def read(self):
+        return {}
 
 
 class BenchTests(unittest.TestCase):
@@ -29,6 +43,11 @@ class BenchTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        # The telemetry sampler reads the machine's real GPU on a timer; a card's first reading lands
+        # between two benchmark runs and makes their reported environments differ. Use no GPU.
+        patcher = mock.patch("serve.telemetry.gpu_reader", lambda index=0, amd=False: _NoGpu())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         tok = ByteTokenizer()
         service = Service(MockEngine(tok, "Benchmark mock answer.", max_context=4096), tok,
                           ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja"))
@@ -107,8 +126,13 @@ class BenchTests(unittest.TestCase):
                 self.assertEqual(benchmarking.benchmark_activity("local", output), "active")
                 self.assertEqual(benchmarking.benchmark_activity("local", self.root / "other-run"),
                                  "other_active")
-                raw = (self.root / "profiles" / ".bench-local.lock").read_bytes()
-                self.assertNotIn(os.fsencode(str(output)), raw)
+                lock_file = self.root / "profiles" / ".bench-local.lock"
+                if os.name == "nt":
+                    # msvcrt.locking is mandatory: the locked byte cannot be read while the lease is
+                    # held, so only the file's size can be checked (it is a single marker byte).
+                    self.assertLessEqual(lock_file.stat().st_size, 65)
+                else:
+                    self.assertNotIn(os.fsencode(str(output)), lock_file.read_bytes())
                 with self.assertRaisesRegex(ProfileError, "another benchmark is running"):
                     with benchmarking.benchmark_lease("local"):
                         self.fail("overlapping benchmark lease was accepted")
@@ -220,8 +244,11 @@ class BenchTests(unittest.TestCase):
             self.assertEqual(recovered["result"]["run_id"], bench.load(output)["run_id"])
             self.assertEqual(recovered["progress"]["state"], "report_saved")
             self.assertEqual(journal.load("local", job_id)["state"], "succeeded")
-            self.assertEqual(stat.S_IMODE((self.root / "profiles" / ".ops" / "local" /
-                                           ".runs" / f"{job_id}.json").stat().st_mode), 0o600)
+            receipt = self.root / "profiles" / ".ops" / "local" / ".runs" / f"{job_id}.json"
+            if os.name == "nt":
+                self.assertTrue(is_unshared(receipt))     # NTFS has no mode bits: assert the effective ACL
+            else:
+                self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
 
             failed_path = self.root / "failed-job"
             failed_params = {**params, "path": str(failed_path)}

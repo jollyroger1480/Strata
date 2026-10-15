@@ -67,6 +67,21 @@ class PrivateFileTests(unittest.TestCase):
         for sid in ("WD", "BU", "AU", "SY", "BA", "S-1-1-0", "S-1-5-32-545"):
             self.assertNotIn(f";;;{sid})", sddl)
 
+    def test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private(self):
+        path = self.root / "inherited.json"
+        path.write_text("{}")
+        self.assertTrue(pf.is_unshared(path))
+        if pf.WINDOWS:
+            self.assertFalse(pf.is_private(path))   # SYSTEM and Administrators still inherit
+
+    @unittest.skipUnless(pf.WINDOWS, "NTFS ACLs")
+    def test_everyone_is_noticed_by_the_relaxed_check_too(self):
+        import subprocess
+        path = self.root / "shared.json"
+        path.write_text("{}")
+        subprocess.run(["icacls", str(path), "/grant", "*S-1-1-0:R"], check=True, capture_output=True)
+        self.assertFalse(pf.is_unshared(path))
+
     @unittest.skipUnless(pf.WINDOWS, "NTFS ACLs")
     def test_widening_the_acl_is_noticed(self):
         path = self.root / "key.json"

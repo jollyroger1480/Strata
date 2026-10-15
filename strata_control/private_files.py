@@ -154,3 +154,25 @@ def is_private(path: str | os.PathLike) -> bool:
         return False
     fields = entries[0].split(";")
     return len(fields) >= 6 and fields[0] == "A" and fields[5] == current_user_sid()
+
+
+_PRIVILEGED = {"SY", "BA", "OW", "CO", "CG", "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
+
+
+def is_unshared(path: str | os.PathLike) -> bool:
+    """True when nobody but this user, SYSTEM and the administrators can reach ``path``.
+
+    The relaxed form of :func:`is_private`, for files created under the user's profile where the
+    inherited ACL already shuts out other accounts: any allow entry for Everyone, Users,
+    Authenticated Users or another account makes it False. POSIX is the same check as
+    :func:`is_private`.
+    """
+    if not WINDOWS:
+        return is_private(path)
+    sddl = dacl_sddl(path)
+    allowed = _PRIVILEGED | {current_user_sid()}
+    for entry in re.findall(r"\(([^()]*)\)", sddl):
+        fields = entry.split(";")
+        if len(fields) >= 6 and fields[0] in ("A", "OA") and fields[5] not in allowed:
+            return False
+    return True
