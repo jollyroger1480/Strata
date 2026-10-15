@@ -50,11 +50,11 @@ export function findControl({ env = process.env, platform = process.platform, ex
 /** The environment Control runs in: nothing from the user's Python, and acquiring forbidden. */
 export function controlEnvironment(control, { env = process.env, components = componentsDirectory({ env }) } = {}) {
   const next = { ...env };
-  for (const key of ['PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'VIRTUAL_ENV', 'STRATA_PYTHON', 'STRATA_NATIVE_PYTHON']) delete next[key];
+  for (const key of ['PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'VIRTUAL_ENV', 'STRATA_PYTHON', 'STRATA_NATIVE_PYTHON', 'STRATA_API_KEY']) delete next[key];
   return {
     ...next,
     PYTHONNOUSERSITE: '1', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
-    STRATA_NO_ACQUIRE: '1', STRATA_COMPONENTS_DIR: components, STRATA_API_KEY: '',
+    STRATA_NO_ACQUIRE: '1', STRATA_COMPONENTS_DIR: components,
     ...(control?.dir ? { STRATA_CONTROL_DIR: control.dir } : {}),
   };
 }

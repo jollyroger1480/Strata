@@ -55,7 +55,7 @@ test("Control runs on its own interpreter with nothing from the user's Python an
   assert.equal(env.PYTHONNOUSERSITE, '1');
   assert.equal(env.STRATA_NO_ACQUIRE, '1');
   assert.equal(env.STRATA_COMPONENTS_DIR, '/components');
-  assert.equal(env.STRATA_API_KEY, '', 'an inherited inference key never reaches the engine');
+  assert.equal(env.STRATA_API_KEY, undefined, 'an inherited inference key never reaches the engine (the run config carries its own)');
   assert.equal(env.PATH, 'p');
   // the resolver prefers the bundled interpreter over py -3 / PATH / a venv
   const python = resolvePython({ repo: '/repo', control, env: {}, exists: () => true, starts: () => { throw new Error('must not probe'); }, useCache: false });
