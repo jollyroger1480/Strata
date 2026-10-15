@@ -126,13 +126,8 @@ class BenchTests(unittest.TestCase):
                 self.assertEqual(benchmarking.benchmark_activity("local", output), "active")
                 self.assertEqual(benchmarking.benchmark_activity("local", self.root / "other-run"),
                                  "other_active")
-                lock_file = self.root / "profiles" / ".bench-local.lock"
-                if os.name == "nt":
-                    # msvcrt.locking is mandatory: the locked byte cannot be read while the lease is
-                    # held, so only the file's size can be checked (it is a single marker byte).
-                    self.assertLessEqual(lock_file.stat().st_size, 65)
-                else:
-                    self.assertNotIn(os.fsencode(str(output)), lock_file.read_bytes())
+                raw = (self.root / "profiles" / ".bench-local.lock").read_bytes()
+                self.assertNotIn(os.fsencode(str(output)), raw)
                 with self.assertRaisesRegex(ProfileError, "another benchmark is running"):
                     with benchmarking.benchmark_lease("local"):
                         self.fail("overlapping benchmark lease was accepted")

@@ -18,6 +18,10 @@ from strata_control import journal, profiles, runtime
 from strata_control.profiles import ProfileError
 
 
+#: Windows byte-range locks are mandatory: a locked byte cannot be read through any other handle. The lock
+#: therefore sits far past the marker bytes, so another process can still read who holds the lease.
+WINDOWS_LOCK_OFFSET = 1 << 16
+
 def _lease_file(profile: str, *, create: bool) -> Path | None:
     if not profiles.PROFILE_ID.fullmatch(profile):
         raise ProfileError("benchmark lease needs a saved profile")
@@ -52,7 +56,7 @@ def _lock(descriptor: int, *, initialize: bool = False) -> None:
         os.write(descriptor, b"0")
     if os.name == "nt":
         import msvcrt
-        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
@@ -62,7 +66,7 @@ def _lock(descriptor: int, *, initialize: bool = False) -> None:
 def _unlock(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
-        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
     else:
         import fcntl

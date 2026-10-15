@@ -22,6 +22,10 @@ STAGES = frozenset({"preflight", "loading", "pcie_share", "draft_floor", "confir
                     "cpu_workers", "expert_tier", "saving_report"})
 
 
+#: Windows byte-range locks are mandatory: a locked byte cannot be read through any other handle. The lock
+#: therefore sits far past the marker bytes, so another process can still read who holds the lease.
+WINDOWS_LOCK_OFFSET = 1 << 16
+
 def _directory(profile: str) -> Path:
     return journal._directory(profile, create=True)
 
@@ -48,7 +52,7 @@ def _open_lease(profile: str, *, create: bool) -> int | None:
 def _try_lock(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
-        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
@@ -58,7 +62,7 @@ def _try_lock(descriptor: int) -> None:
 def _unlock(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
-        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
