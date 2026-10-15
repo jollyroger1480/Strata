@@ -191,6 +191,32 @@ class InstallerServerTests(unittest.TestCase):
         self.assertFalse((self.root / ".venv").exists(), "no virtual environment, no pip")
         self.assertIsNotNone(s)
 
+    def test_a_two_file_model_has_one_combined_progress(self):
+        """The bar went 70 GB -> 0 -> up again because each file reported its own total. One total for the whole model now."""
+        folder = self.root / "Strata-data" / "models" / "IQ3_S"
+        folder.mkdir(parents=True)
+        job = {"folder": str(folder), "total_gb": 0.004}
+        step5 = {"step": "5/7: downloading Qwen3.8-Flash-Next IQ3_S"}
+        seen = []
+        # file 1 downloading, then complete, then file 2 starts: the combined figure only goes up
+        for name, size in (("a.gguf.part", 400_000), ("a.gguf.part", 1_500_000)):
+            (folder / name).write_bytes(b"x" * size)
+            seen.append(self.mcp.combined_progress(dict(step5), job)["download"])
+        (folder / "a.gguf.part").rename(folder / "a.gguf")
+        (folder / "b.gguf.part").write_bytes(b"x" * 100_000)
+        seen.append(self.mcp.combined_progress(dict(step5), job)["download"])
+        (folder / "b.gguf.part").write_bytes(b"x" * 1_000_000)
+        seen.append(self.mcp.combined_progress(dict(step5), job)["download"])
+        done = [d["done_gb"] for d in seen]
+        self.assertEqual(done, sorted(done), done)
+        self.assertEqual(seen[-1]["total_gb"], 0.004)
+        self.assertAlmostEqual(seen[-1]["remaining_gb"], 0.004 - seen[-1]["done_gb"], places=2)
+        self.assertTrue(all(d["file"] == "model files" for d in seen))
+        # not a download any more once setup is preparing the files
+        self.assertNotIn("download", self.mcp.combined_progress({"step": "6/7: preparing the model for Strata", "download": {"x": 1}}, job))
+        # a resumed install counts what is already on disk
+        self.assertGreater(self.mcp.combined_progress(dict(step5), job)["download"]["done_gb"], 0)
+
     @unittest.skipUnless(os.name == "nt" or sys.platform.startswith("linux"), "a PC with a GPU probe")
     def test_a_real_install_reaches_the_model_download_with_nothing_else_acquired(self):
         """setup.py in the app's mode, as the install job runs it: steps 1-4 pass (PC check, packages bundled, engine component

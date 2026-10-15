@@ -136,7 +136,7 @@ export interface Prefs {
 const PREFS_DEFAULTS: Prefs = {
   language: 'en',
   fontFamily: '',
-  theme: 'light',
+  theme: 'system',
   contrast: 'standard',
   rail: false,
   focus: false,

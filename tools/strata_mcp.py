@@ -847,6 +847,7 @@ class Strata:
         log_path = Path(j.get("log", ""))
         tail = read_tail(log_path, 400) if log_path.name else []
         prog = install_progress(tail)
+        prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
                "log": str(log_path), **prog}
         if not running:
@@ -860,6 +861,31 @@ class Strata:
             out["result"] = "running"
         out["last_lines"] = tail[-12:]
         return out
+
+
+def combined_progress(prog: dict, job: dict) -> dict:
+    """One total for the whole model: the bytes of all its files (finished, partial and the one in flight, read from the
+    model's folder) over the download size, instead of each file's own 0-100% (a two-file model went 70 GB -> 0 -> up
+    again). Only while the download step runs; later steps are not a download."""
+    folder, total = job.get("folder"), job.get("total_gb")
+    step = str(prog.get("step") or "")
+    if not folder or not total or not step.startswith("5/"):
+        prog.pop("download", None)
+        return prog
+    done = 0
+    try:
+        for entry in os.scandir(folder):
+            if entry.is_file() and (entry.name.endswith(".gguf") or entry.name.endswith(".part")):
+                done += entry.stat().st_size
+    except OSError:
+        pass
+    if not done:                                        # nothing on disk yet: the log's own line is all there is
+        return prog
+    done_gb = min(done / 1e9, float(total))
+    prog["download"] = {"file": "model files", "done_gb": round(done_gb, 3), "total_gb": float(total),
+                        "remaining_gb": round(max(0.0, float(total) - done_gb), 3),
+                        "percent": min(99, int(100 * done_gb / float(total))) if total else 0}
+    return prog
 
 
 def install_progress(lines: list[str]) -> dict:
@@ -1305,7 +1331,8 @@ class Tools:
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
                 "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
-                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "disk_free_gb": free,
+                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "model_folder": str(have_dir),
+                "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
                 "setup_command": ("START-HERE.bat " if WIN else "./setup.sh ") + " ".join(args),
                 "takes": "about 20-90 minutes, mostly the download; the PC stays usable",
@@ -1342,7 +1369,8 @@ class Tools:
         if ident is None and p.poll() and s.state("install-result").get("job") != job_id:
             raise ToolError("setup did not start: " + " | ".join(read_tail(log_path, 5)))
         s.save_state("install", {"job": job_id, "pid": p.pid, "ident": ident, "log": str(log_path),
-                                 "model": plan["model"], "family": plan["family"],
+                                 "model": plan["model"], "family": plan["family"], "folder": plan.get("model_folder"),
+                                 "total_gb": plan.get("download_gb"),
                                  "started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": args})
         return {"summary": f"Install of {plan['title']} started in the background (about 20-90 minutes, mostly the "
                            f"{plan['download_gb']:.0f} GB download). Call strata_install again to see the progress; "

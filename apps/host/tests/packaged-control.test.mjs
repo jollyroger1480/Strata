@@ -97,6 +97,7 @@ function packagedFixture({ engineUsable = true } = {}) {
   const calls = [];
   const spawned = [];
   const rpc = [];
+  let startFailure = null;
   const control = {
     control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: '0.1.45',
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
@@ -107,7 +108,7 @@ function packagedFixture({ engineUsable = true } = {}) {
         : { usable: false, notice: 'No engine for this PC was found in E:\\c: the component folder holds no engine package. The app never downloads an engine while it starts or serves.', backend: 'cuda', engine: null, components_dir: 'E:\\c' };
     },
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); return {}; },
-    async start(name, options) { calls.push(['start', name, options?.waitSeconds]); return { ok: true, state: 'ready' }; },
+    async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
   };
   const requests = [];
@@ -142,7 +143,7 @@ function packagedFixture({ engineUsable = true } = {}) {
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, spawned, others, rpc, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, spawned, others, rpc, failStart: v => { startFailure = v; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -282,4 +283,31 @@ test('createControl asks the CLI for the engine, models and runtime and reads th
     'runtime stop --profile app-1 --wait 120 --output json',
   ]);
   assert.equal(createControl({ control: null }), null);
+});
+
+test('packaged: the catalog offers no picture reading (app installs have none), and an install asks for none', async () => {
+  const f = packagedFixture();
+  try {
+    const state = await f.native.refresh(true);
+    assert.ok(state.catalog.families[0].sizes.every(s => s.images === false));
+    assert.ok(state.catalog.families.every(fam => fam.images === false));
+    await f.native.plan({ family: 'qwen', model: 'Q2_0', vision: 'yes' });
+    assert.equal(f.rpc.at(-1).arguments.vision, 'no');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: an engine that stops while loading is explained in words, with the engine\'s last line', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    const control = f.native;
+    // the fixture's Control starts fine; make start fail the way Control reports a dead engine
+    f.failStart({ message: 'server_exited', output: { log_tail: 'memory guard: 5.1 GiB free is under the 6 GiB limit' } });
+    const job = await finish(control, control.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'error');
+    assert.match(job.error, /ran low on memory/);
+    assert.match(job.error, /Leave 20% for my work/);
+    assert.match(job.error, /memory guard: 5\.1 GiB free/);
+    assert.doesNotMatch(job.error, /^server_exited$/);
+  } finally { await f.native.close(); f.cleanup(); }
 });

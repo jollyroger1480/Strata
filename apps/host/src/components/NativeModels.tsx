@@ -2,6 +2,7 @@ import { tr } from '../lib/i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Screen } from './layout';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
+import { useDownloadEta } from '../lib/download-eta';
 import { api } from '../lib/client';
 import { go, setSettingsSection, selectRemoteModel, pushToast } from '../lib/store';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
@@ -30,15 +31,23 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         expertSection.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }, [expert]);
     const selectedFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family)) ?? families[0], selectedSize = selectedFamily?.sizes.find(s => s.id === size) ?? selectedFamily?.sizes[0];
     const installed = native?.installed?.models.find(m => m.model === selectedSize?.id);
+    // A model that is already on this PC loads as it was prepared: the page shows its settings, so loading it never asks to download.
+    useEffect(() => { if (installed?.ready) {
+        if (installed.context)
+            setContext(installed.context);
+        if (installed.kv)
+            setKv(installed.kv as typeof kv);
+        setLowRam((installed.lowRamMode ?? 'auto') as typeof lowRam);
+    } }, [installed?.model, installed?.ready, installed?.context, installed?.kv, installed?.lowRamMode]);
     const active = native?.jobs.find(j => j.state === 'running');
     const job = native?.jobs.find(j => j.id === jobId) ?? (!jobId ? native?.jobs.filter(j => ['load', 'install'].includes(j.kind)).at(-1) : undefined);
     const noFit = selectedSize?.on_this_pc === 'does not fit';
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(expert && gpus.length ? { gpus: gpus.join(',') } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, gpus.join(','), expert, multiple]);
     const downloadValues = { ...values, vision: selectedSize?.images ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
     useEffect(() => { if (!native?.catalog || family)
-        return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const f = loadedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
+        return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const have = new Set((native.installed?.models ?? []).filter(m => m.ready).map(m => m.model)); const installedFamily = families.find(f => f.sizes.some(s => have.has(s.id))); const f = loadedFamily ?? installedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
         setFamily(f.family);
-        setSize(f.sizes.find(s => s.id === current?.model || s.model === rec.model)?.id ?? f.sizes[0]?.id ?? '');
+        setSize(f.sizes.find(s => s.id === current?.model)?.id ?? f.sizes.find(s => have.has(s.id))?.id ?? f.sizes.find(s => s.model === rec.model)?.id ?? f.sizes[0]?.id ?? '');
         setContext(('context' in rec ? rec.context : undefined) ?? 32768);
     } }, [native?.catalog]);
     useEffect(() => { if (presetPending.current) {
@@ -102,7 +111,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
 }
 export function NativeProgress({ job }: {
     job: NativeJob;
-}) { const download = job.result?.install?.download; const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
+}) { const download = job.result?.install?.download; const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
     await nativeAction(`operations/${job.id}/cancel`);
 }
 catch (e) {
@@ -110,4 +119,4 @@ catch (e) {
 }
 finally {
     setStopping(false);
-} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? 'Preparing your model' : job.kind === 'load' ? 'Loading model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' ? <Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.step ?? 'Downloading and preparing model files…') : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file)} · {tr(download.percent ?? 0)}%</p></> : null)}<details><summary className="small">{tr("Details")}</summary><p className="small muted">{tr("Completed files are retained. Downloading, packing and loading are separate stages; readiness is confirmed by the engine.")}</p></details>{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }
+} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? 'Preparing your model' : job.kind === 'load' ? 'Loading model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.step ?? 'Downloading and preparing model files…') : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<details><summary className="small">{tr("Details")}</summary><p className="small muted">{tr("Completed files are retained. Downloading, packing and loading are separate stages; readiness is confirmed by the engine.")}</p></details>{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }

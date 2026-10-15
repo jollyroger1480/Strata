@@ -1,5 +1,5 @@
 /** Headroom is a worker/memory budget, not a hard utilisation throttle. */
-export function resourceSettings(config,hardware,profile){
+export function resourceSettings(config,hardware,profile,model={}){
  if(!['work','performance'].includes(profile))throw new Error('Choose a resource preference.');
  const args=[...(config.args??[])];
  const remove=flag=>{for(let at=args.indexOf(flag);at>=0;at=args.indexOf(flag))args.splice(at,2);};
@@ -20,5 +20,13 @@ export function resourceSettings(config,hardware,profile){
  const gpuMemory=(hardware?.gpus??[]).filter(g=>placement.includes(g.index)).map(g=>g.vram_gb).filter(n=>Number.isFinite(n)&&n>0);
  const reserve=profile==='work'&&gpuMemory.length?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety;
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
- return {args,vram_reserve_mib:reserve,ui_resource_baseline:baseline};
+ // RAM: "leave 20% for my work" keeps the model's RAM within 80% of the PC. A model whose experts do not fit there (the
+ // setup rule: experts plus 10 GB) keeps only that many GiB of them in RAM and reads the rest from the model files
+ // (--resident-budget-gib, which implies --mmap-experts). Full performance takes the budget out again.
+ if(baseline.ramBudget)remove('--resident-budget-gib');
+ const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramBudget=false;
+ if(profile==='work'&&ram>0&&arena>0&&!['--resident-experts','--mmap-experts','--resident-budget-gib'].some(f=>args.includes(f))&&ram*.8<arena+10){
+  args.push('--resident-budget-gib',String(Math.max(8,Math.min(Math.floor(ram*.8)-10,Math.floor(arena/1.073741824)))));ramBudget=true;
+ }
+ return {args,vram_reserve_mib:reserve,ui_resource_baseline:{...baseline,ramBudget}};
 }

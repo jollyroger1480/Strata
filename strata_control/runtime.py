@@ -797,6 +797,17 @@ class Host:
             if "error" in result:
                 self.last_error = result["error"]
 
+    def _log_tail(self, limit: int = 4096) -> str | None:
+        """The last line the server wrote (a failed start is explained by it), or None. Bounded read, never raises."""
+        try:
+            with open(self.state_path.parent / f"{self.name}.server.log", "rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - limit))
+                lines = [x.strip() for x in stream.read().decode("utf-8", "replace").splitlines() if x.strip()]
+        except OSError:
+            return None
+        return lines[-1][:300] if lines else None
+
     def _status(self) -> dict:
         child = self.child
         base = {"ok": True, "profile": self.name, "host_pid": os.getpid(),
@@ -809,7 +820,7 @@ class Host:
             return {**base, "state": "stopped"}
         if child.poll() is not None:
             return {**base, "ok": False, "state": "failed", "exit_code": child.returncode,
-                    "error": self.last_error or "server_exited"}
+                    "error": self.last_error or "server_exited", "log_tail": self._log_tail()}
         if self.ready_path is not None:
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
