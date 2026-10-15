@@ -63,11 +63,18 @@ from strata_control import acquisition
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
 # (tools/, data/, serve/) stays in ROOT, inside the app; everything the install writes (run configs, logs, third_party,
-# the data folder beside it) goes to HOME, a per-user folder (STRATA_INSTALL_DIR). In that mode it installs no Python
+# the data folder beside it) goes to home(), a per-user folder (STRATA_INSTALL_DIR). In that mode it installs no Python
 # package and no engine and compiles nothing: it downloads the model files, prepares them with the bundled tools and
-# writes a run config whose engine is "component:strata-engine". Outside that mode HOME is ROOT and nothing changes.
+# writes a run config whose engine is "component:strata-engine". Outside that mode home() is ROOT and nothing changes.
 CONTROL = os.environ.get("STRATA_CONTROL_INSTALL") == "1"
-HOME = Path(os.environ["STRATA_INSTALL_DIR"]).resolve() if CONTROL and os.environ.get("STRATA_INSTALL_DIR") else ROOT
+_CONTROL_HOME = Path(os.environ["STRATA_INSTALL_DIR"]).resolve() if CONTROL and os.environ.get("STRATA_INSTALL_DIR") else None
+
+
+def home() -> Path:
+    """Where an install writes (see above). A function, not a constant, so ROOT stays the one thing a caller can point elsewhere."""
+    return _CONTROL_HOME or ROOT
+
+
 WIN = os.name == "nt"
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
@@ -2031,12 +2038,12 @@ def check_shards(shards):
 
 def get_llama_cpp():
     """llama.cpp at the pinned commit (ggml for the build, gguf-py for the tools, mtmd for images), as a zip: no git."""
-    llama = HOME / "third_party" / "llama.cpp"
+    llama = home() / "third_party" / "llama.cpp"
     if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
         return llama
-    z = HOME / "third_party" / f"llama.cpp-{LLAMA_CPP_COMMIT[:7]}.zip"
+    z = home() / "third_party" / f"llama.cpp-{LLAMA_CPP_COMMIT[:7]}.zip"
     download(LLAMA_CPP_ZIP, z, "llama.cpp source")
-    tmp = HOME / "third_party" / "_unpack"
+    tmp = home() / "third_party" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
         with zipfile.ZipFile(z) as f:
@@ -4414,7 +4421,7 @@ def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
     cands = [Path(p) for p in settings.get("installs", [])]
-    for base in dict.fromkeys((HOME.parent, HOME.parent.parent)):
+    for base in dict.fromkeys((home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
                 if d.is_dir() and d.name.lower().startswith("strata"):
@@ -4426,7 +4433,7 @@ def other_installs(settings: dict) -> list:
     for d in cands:
         try:
             d = d.resolve()
-            if d != HOME and d not in found and (d / "setup.py").is_file():
+            if d != home() and d not in found and (d / "setup.py").is_file():
                 found.append(d)
         except OSError:
             pass
@@ -4494,16 +4501,16 @@ def data_folder(requested: str | None) -> tuple:
     and of earlier Strata folders on the same drive into the data folder, and points their configs there."""
     settings = load_settings()
     dest = Path(requested).expanduser().resolve() if requested else \
-        Path(settings["data_dir"]) if settings.get("data_dir") else HOME.parent / "Strata-data"
+        Path(settings["data_dir"]) if settings.get("data_dir") else home().parent / "Strata-data"
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as e:                                # e.g. no write access next to the Strata folder
-        warn(f"cannot use {dest} for the model files ({e}): keeping them in {HOME}")
-        dest = HOME
+        warn(f"cannot use {dest} for the model files ({e}): keeping them in {home()}")
+        dest = home()
     elsewhere = []
     # #198: the data folder remembered before (a --data-dir to a new place) is a source too, and so is a Strata-data
     # folder nested in any of them (an install that kept its models one level down)
-    sources = [HOME, *other_installs(settings)]
+    sources = [home(), *other_installs(settings)]
     if settings.get("data_dir") and Path(settings["data_dir"]) != dest:
         sources.append(Path(settings["data_dir"]))
     sources += [f / "Strata-data" for f in list(sources) if (f / "Strata-data") != dest]
@@ -4538,7 +4545,7 @@ def data_folder(requested: str | None) -> tuple:
             warn(f"some model files are still in {folder} (in use, or already in {dest})")
         else:
             ok(f"model files from {folder} moved to {dest} (a new copy of Strata finds them there)")
-    installs = [str(HOME)] + [p for p in settings.get("installs", []) if p != str(HOME) and Path(p).is_dir()]
+    installs = [str(home())] + [p for p in settings.get("installs", []) if p != str(home()) and Path(p).is_dir()]
     save_settings({**settings, "data_dir": str(dest), "installs": installs[:20]})
     return dest, elsewhere
 
@@ -4548,7 +4555,7 @@ def data_folder_in_place() -> tuple:
     the settings and nothing else: no folder is created, nothing is moved or copied, no setting is saved.  The run
     configs name their model files, so an install made by an earlier Strata starts from where it is."""
     settings = load_settings()
-    dest = Path(settings["data_dir"]) if settings.get("data_dir") else HOME.parent / "Strata-data"
+    dest = Path(settings["data_dir"]) if settings.get("data_dir") else home().parent / "Strata-data"
     return dest, []
 
 
@@ -4796,7 +4803,7 @@ def model_config(path: Path) -> bool:
 
 
 def installed_configs():
-    return [p for p in sorted(model_config_files(HOME), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p for p in sorted(model_config_files(home()), key=lambda p: p.stat().st_mtime, reverse=True)
             if model_config(p)]
 
 
@@ -5560,11 +5567,11 @@ def write_run_script(model, cfg_path, port, open_browser=True):
     serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
              "--port", str(port)] + (["--open"] if open_browser else [])
     if WIN:
-        script = HOME / f"run-{model.lower()}.bat"
+        script = home() / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
                           " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8")
     else:
-        script = HOME / f"run-{model.lower()}.sh"
+        script = home() / f"run-{model.lower()}.sh"
         script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
                           encoding="utf-8")
         script.chmod(0o755)
@@ -5655,7 +5662,7 @@ def control_engine_step(gpu, vision):
         eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local"}
         ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
     except EC.EngineMissing as e:
-        eng = HOME / "engine"
+        eng = home() / "engine"
         meta = {"version": "99.0.0", "source": "local", "component": "missing"}   # its version is checked when it loads
         warn(f"no engine is installed for this PC yet ({e}). The model is downloaded and prepared now; install the engine "
              "component for your GPU (a later step of the app, or the Terminal) before loading it")
@@ -5960,7 +5967,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
-           "log": str(HOME / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+           "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:
         cfg["cuda"] = 12
     if hip:
@@ -5975,7 +5982,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.browser is not None:
         cfg["open_browser"] = a.browser
     cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
-    cfg_path = HOME / f"strata-{tag.lower()}.json"
+    cfg_path = home() / f"strata-{tag.lower()}.json"
     if vision != "none":
         old_cfg = cfg_path if cfg_path.is_file() else adopted
         vt = vision_tokens(getattr(a, "vision_tokens", None), vision, old_cfg)
@@ -6917,7 +6924,7 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
             env=env)
     # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
-    draft_vocab = a.draft_vocab or saved_draft_vocab(HOME / f"strata-{tag.lower()}.json")
+    draft_vocab = a.draft_vocab or saved_draft_vocab(home() / f"strata-{tag.lower()}.json")
     refresh_draft_vocab(rt, draft_vocab or "cjk")
     ok(f"MTP draft layer: {rt}")
     for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
@@ -7099,7 +7106,7 @@ def main() -> int:
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(HOME / f"strata-{tag.lower()}.log"),
+           "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
@@ -7160,7 +7167,7 @@ def main() -> int:
             cfg["parallel"] = 1
             ok("parallel requests: one at a time (--parallel 1)")
     if vision != "none":
-        old_cfg = HOME / f"strata-{tag.lower()}.json"
+        old_cfg = home() / f"strata-{tag.lower()}.json"
         vt = vision_tokens(a.vision_tokens, vision, old_cfg if old_cfg.is_file() else adopted)
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj),     # the text model, opened vocab-only:
                          "model": str(ready_paths(model, models_dir)["dense"] if ready else shards[0]),
@@ -7171,7 +7178,7 @@ def main() -> int:
         warn("--vision-tokens: images are off for this model, so it is not used")
     if a.images:                                       # only when given: else an earlier "images" is carried over
         cfg["images"] = setup_images(a, gpu, hip, Path(a.models_dir))
-    cfg_path = HOME / f"strata-{tag.lower()}.json"
+    cfg_path = home() / f"strata-{tag.lower()}.json"
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
