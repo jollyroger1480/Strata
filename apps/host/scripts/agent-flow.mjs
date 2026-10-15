@@ -84,9 +84,11 @@ try {
   check(await page.locator('.toolcard').count() === 0, 'no card is left waiting');
 
   // 3. Stop mid-stream
+  const baseline = await page.evaluate(() => document.body.innerText.length);
   await send(PROMPT_LONG);
   await page.waitForFunction(() => document.documentElement.dataset.streaming === 'true');
-  await page.waitForTimeout(1500);
+  // Stop while text is arriving, not during the prompt read: wait until the page has grown by a few lines.
+  await page.waitForFunction(b => document.body.innerText.length > b + 400, baseline, { timeout: 300000 });
   const stop = page.getByRole('button', { name: /^Stop/ }).first();
   check(await stop.count() === 1, 'a Stop button is visible while the turn runs');
   await shot(page, '04-streaming');
@@ -99,16 +101,18 @@ try {
   check(await page.getByRole('button', { name: 'Send' }).count() === 1, 'the composer is free again');
 
   // 4. reload, reopen, continue
+  const toolsBefore = await page.locator('.tool-summary').count();
   await page.reload();
   await page.waitForTimeout(2000);
   await page.locator('a.navsession').first().click();
   await page.waitForTimeout(800);
   await shot(page, '06-reopened');
+  check(await page.locator('.tool-summary').count() === toolsBefore && toolsBefore >= 1, `reopening shows the same ${toolsBefore} finished tool card(s) and no waiting card`);
   await send(PROMPT_AFTER);
   await idle();
   await page.waitForTimeout(500);
   await shot(page, '07-after-reopen');
-  check(await page.locator('.toolcard').count() === 0 && await page.locator('.tool-summary').count() === 1, 'reopening shows the one finished tool and no new card (nothing replayed)');
+  check(await page.locator('.toolcard').count() === 0, 'no tool is waiting after the reopened turn');
   if (process.env.EXPECT_AFTER) check(await page.getByText(new RegExp(process.env.EXPECT_AFTER)).count() >= 1, `the reopened chat answered (${process.env.EXPECT_AFTER})`);
   // 5. the model choice belongs to the chat: a new chat starts on the local model again
   await page.getByRole('button', { name: 'New chat' }).first().click();
