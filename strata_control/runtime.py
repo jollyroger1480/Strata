@@ -652,6 +652,7 @@ class Host:
         expected_attestation = launch_identity.attestation(attestation_key, source_bytes, server_args)
         child_env = os.environ.copy()
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
+        child_env["STRATA_NO_ACQUIRE"] = "1"      # a managed server never installs or downloads (acquisition.py)
         try:
             with os.fdopen(descriptor, "ab") as stream:
                 if WINDOWS:

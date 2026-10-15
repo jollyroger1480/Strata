@@ -5136,8 +5136,9 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
         # Replace this process instead of spawning a child. The Docker image sets STRATA_EXECV=1,
         # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
         # answer the engine with QUIT. Normal Linux starts keep spawning the server as a child.
-        os.execv(cmd[0], cmd)
-    return subprocess.call(cmd)
+        os.execve(cmd[0], cmd, {**os.environ, acquisition.ENV: "1"})
+    # the server and everything it starts are told, too: nothing in a running model installs or downloads
+    return subprocess.call(cmd, env={**os.environ, acquisition.ENV: "1"})
 
 
 # the draft subsets setup copied before (sha256): replaced by the current one, a subset made by hand is kept

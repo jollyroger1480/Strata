@@ -202,7 +202,8 @@ class StartNeverAcquiresTests(unittest.TestCase):
                 st.enter_context(mock.patch.object(subprocess, n, rec.program))
             st.enter_context(mock.patch.object(setup, "gpus", lambda: gpus or []))
             st.enter_context(mock.patch.object(setup, "call_server", create=True))
-            st.enter_context(mock.patch.object(setup.subprocess, "call", lambda cmd, *a, **k: started.append(cmd) or 0))
+            st.enter_context(mock.patch.object(setup.subprocess, "call", lambda cmd, *a, **k: (
+                started.append(cmd), setattr(self, "env_of_start", (k.get("env") or {}).get(acquisition.ENV)), 0)[-1]))
             st.enter_context(contextlib.redirect_stdout(out))
             try:
                 code = setup.main()
@@ -220,6 +221,7 @@ class StartNeverAcquiresTests(unittest.TestCase):
         self.assertEqual(rec.installers(), [])
         self.assertEqual(len(started), 1, text)                        # the server was started
         self.assertIn("server.py", " ".join(started[0]))
+        self.assertEqual(self.env_of_start, "1")                         # the server is told, too
         self.assertIn("is older than this Strata expects", text)
         self.assertIn("UPDATE", text)
 
