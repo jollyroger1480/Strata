@@ -482,5 +482,99 @@ class OtherComponents(UpdaterCase):
         self.assertFalse((self.components / "control" / "0.1.46").exists())
 
 
+class Cli(UpdaterCase):
+    """`strata update`, `strata components update|rollback` against a feed in a folder, with the test key file the way the
+    owner's local setup uses it (STRATA_UPDATE_TRUSTED_KEYS)."""
+
+    def setUp(self):
+        super().setUp()
+        self.pub = self.root / "feed-key.pub.json"
+        self.pub.write_text(json.dumps({"keys": [signing.public_part(self.key)]}))
+        patch = mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": str(self.pub)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(updater, "detect_hardware", return_value=dict(self.hardware))
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(updater, "serving_now", return_value=[])
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def cli(self, *args):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from strata_cli.cli import main
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def common(self):
+        return ["--feed", str(self.release), "--components-dir", str(self.components), "--model-config", str(self.config)]
+
+    def test_check_update_and_rollback_from_the_terminal(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", "--check", *self.common())
+        self.assertEqual(code, 0)
+        self.assertIn("update available: 0.1.45 -> 0.1.46", text)
+        code, text, _ = self.cli("update", "--check", "--json", *self.common())
+        self.assertEqual((code, json.loads(text)["engine"]["status"]), (0, "available"))
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertIn("0.1.45 -> 0.1.46   updated (tested: started, answered one token, stopped)", text)
+        self.assertIn("Saved tuning presets: marked for the short re-check (nothing was deleted).", text)
+        self.assertIn("strata components rollback", text)
+        self.assertEqual(self.resolved(), "0.1.46")
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0)
+        self.assertIn("up to date", text)
+        code, text, _ = self.cli("components", "rollback", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertIn("Engine rolled back: 0.1.46 -> 0.1.45", text)
+        self.assertEqual(self.resolved(), "0.1.45")
+        code, out, _ = self.cli("components", "rollback", "--json", *self.common())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["to"], "0.1.46", "rolling back twice goes forward again")
+
+    def test_a_failed_test_start_exits_6_and_says_the_old_engine_is_unchanged(self):
+        self.install_current()
+        self.publish(("0.1.47", fx.BAD_ENGINE))
+        code, text, err = self.cli("update", *self.common())
+        self.assertEqual(code, 6, text + err)
+        self.assertIn("NOT changed", text)
+        self.assertIn("unchanged", text)
+        self.assertEqual(self.resolved(), "0.1.45")
+
+    def test_jsonl_streams_progress_and_ends_with_the_result(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", "--output", "jsonl", *self.common())
+        records = [json.loads(line) for line in text.splitlines()]
+        self.assertEqual(code, 0)
+        self.assertTrue(any(r.get("event") == "progress" and r["percent"] == 100 for r in records))
+        self.assertTrue(records[-1]["ok"] and records[-1]["results"][0]["status"] == "updated")
+
+    def test_an_untrusted_or_forbidden_update_is_exit_5_and_fetches_nothing(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        with mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": ""}):
+            code, _, err = self.cli("update", *self.common())
+            self.assertEqual(code, 5)
+            self.assertIn("trusts no update key", err)
+        wrong = self.root / "wrong.json"
+        wrong.write_text(json.dumps({"keys": [signing.public_part(fx.make_key())]}))
+        with mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": str(wrong)}):
+            code, _, err = self.cli("update", *self.common())
+            self.assertEqual(code, 5)
+            self.assertIn("does not trust", err)
+        with mock.patch.dict(os.environ, {"STRATA_NO_ACQUIRE": "1"}):
+            code, _, err = self.cli("update", *self.common())
+            self.assertEqual(code, 5)
+            self.assertIn("STRATA_NO_ACQUIRE", err)
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertEqual(self.archive_requests(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

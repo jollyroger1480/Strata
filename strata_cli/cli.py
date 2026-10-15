@@ -134,6 +134,8 @@ def parser() -> argparse.ArgumentParser:
                                    help="the component folder (default: STRATA_COMPONENTS_DIR or the per-user folder)")
     components_engine.add_argument("--full", action="store_true", help="hash every file, not only the entrypoint")
     components_engine.add_argument("--output", choices=("human", "json"), default="human")
+    from strata_cli import update_cmd
+    update_parsers = update_cmd.add_parsers(sp, components_sp)
     models = sp.add_parser("models", help="inspect setup-written local model run configs")
     models_sp = models.add_subparsers(dest="models_command", required=True)
     models_list = models_sp.add_parser("list", help="list local installed-model config candidates")
@@ -449,7 +451,7 @@ def parser() -> argparse.ArgumentParser:
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
                      components_verify, models_list, models_inspect, models_import, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_restart,
-                     *ops_items, bench_run, bench_report, bench_compare, code_sessions):
+                     *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
                               help="suppress human informational output")
@@ -1731,6 +1733,9 @@ def _run(a: argparse.Namespace) -> int:
             return _components_backends(a)
         if a.command == "components" and a.components_command == "engine":
             return _components_engine(a)
+        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback")):
+            from strata_cli import update_cmd
+            return update_cmd.run(a)
         if a.command in ("doctor", "components"):
             return _doctor(a)
         if a.command == "models":

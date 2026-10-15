@@ -300,6 +300,9 @@ def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, tru
 
 def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
     """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
+    if not trusted:
+        raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
+                        "so no update can be verified; nothing was downloaded")
     location = source
     if transfer.kind_of(source) == "path":
         path = transfer._local_path(source)
