@@ -239,3 +239,18 @@ test('a missing or removed connection is a typed error, never another model', { 
   await assert.rejects(r.bridge.runTurn({ chatId: 'chat-gone', message: 'SCRIPT:hello', workspacePath: r.ws, choice: { connectionId: 'nope', modelId: 'm' }, onFrame: () => {} }), err => err.code === 'model-unavailable');
   assert.equal(r.worker.requests.length, 0, 'nothing was sent to the local model instead');
 });
+
+test('A05c Stop pressed while the agent is still starting cancels the start, and nothing reaches the model', { skip }, async t => {
+  const r = await rig(t);
+  const { frames, promise } = r.run('chat-a05c', 'SCRIPT:slow 200');
+  await new Promise(x => setTimeout(x, 150));          // the Harness process takes about two seconds to boot
+  const stopped = await r.bridge.stop('chat-a05c');
+  assert.equal(stopped.stopped, true);
+  const result = await promise;
+  assert.equal(result.cancelled, true);
+  assert.equal(frames.at(-1).finishReason, 'aborted');
+  assert.equal(r.worker.requests.length, 0, 'the model was never asked');
+  // The chat is usable afterwards.
+  const again = r.run('chat-a05c', 'SCRIPT:echo fine'); await again.promise;
+  assert.equal(text(again.frames), 'fine');
+});

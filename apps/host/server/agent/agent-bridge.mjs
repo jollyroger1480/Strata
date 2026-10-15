@@ -173,9 +173,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
    * Run one agent turn for a Strata chat and stream it as frames.
    * `signal` means the client went away: the turn keeps running (that is not Stop).
    */
-  async function runTurn({ chatId, message, workspacePath, choice = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal }) {
-    const c = chat(chatId);
-    if (c.turn) throw new AgentUnavailable('This chat is already running a turn.', 'turn-active');
+  async function runTurn(options) {
+    const c = chat(options.chatId);
+    if (c.turn || c.starting) throw new AgentUnavailable('This chat is already running a turn.', 'turn-active');
+    // From here until the Harness has the prompt, Stop has no session to cancel; it cancels the start.
+    c.starting = true; c.cancelStart = false;
+    try { return await runTurnInner(c, options); } finally { c.starting = false; }
+  }
+
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal }) {
     let send = onFrame;
     signal?.addEventListener('abort', () => { send = () => {}; }, { once: true });
     const emit = frame => { try { send(frame); } catch { send = () => {}; } };
@@ -183,6 +189,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     emit({ type: 'queued', requestId });
     const { rt: runtime, route } = await ensureRuntime(choice, signal);
     const { sessionId, fresh } = await sessionFor(c, workspacePath, runtime);
+    const cancelled = () => { emit({ type: 'done', finishReason: 'aborted', cancelled: true, tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0, model: route.name, contextMax: route.contextWindow }); return { cancelled: true }; };
+    if (c.cancelStart) return cancelled();
 
     if (c.route !== `${route.route}/${route.modelId}` || c.routeGeneration !== runtime.generation) {
       try {
@@ -197,7 +205,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     const projector = new TurnProjector();
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
-      ended: deferred(), follow: null, snapshot: deferred(), finished: false,
+      ended: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
       abortFromRuntime: reason => finishTurn(reason),
     };
     c.turn = turn;
@@ -249,6 +257,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       .catch(e => { finishTurn(e.message); })
       .finally(() => clearTimeout(snapshotTimer.t));
     if (turn.finished) return { error: true };
+    if (turn.stopBeforePrompt || c.cancelStart) { projector.ended = { kind: 'aborted', reason: { kind: 'user' } }; finishTurn(null); return { cancelled: true }; }
 
     let prompt = message;
     if (fresh && history.length) prompt = withEarlierConversation(history, message);
@@ -257,6 +266,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     } catch (e) {
       finishTurn(`The agent did not accept the message: ${e.message}`);
       return { error: true };
+    }
+    turn.prompted = true;
+    if (turn.stopBeforePrompt) {
+      // Stop landed in the instant between 'prompt sent' and 'prompt accepted'. A cancel before the turn
+      // starts arms nothing, so wait for the turn to be ours, then cancel it.
+      for (let i = 0; i < 100 && !turn.live && !turn.finished; i++) await new Promise(r => setTimeout(r, 50));
+      if (!turn.finished) await runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
     }
 
     // Wait for the turn, or for the client to leave. Leaving does not stop the turn.
@@ -294,8 +310,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
   async function stop(chatId, { waitMs = 20_000 } = {}) {
     const c = chats.get(chatId);
     const turn = c?.turn;
+    if (!turn && c?.starting) { c.cancelStart = true; return { stopped: true, ended: 'cancelled-before-start', ms: 0 }; }
     if (!turn || !rt) return { stopped: false, reason: 'no active turn' };
     const t0 = Date.now();
+    if (!turn.prompted) {
+      // The Harness has not been given the prompt yet, so there is nothing to cancel there.
+      turn.stopBeforePrompt = true;
+      const early = await Promise.race([turn.ended.promise, new Promise(r => setTimeout(() => r(null), 100))]);
+      if (early) return { stopped: true, ended: early.reason?.kind ?? 'aborted', ms: Date.now() - t0 };
+    }
     await rt.gw.rpc('session/cancel', { request: { sessionId: turn.sessionId } });
     let timer; const result = await Promise.race([turn.ended.promise, new Promise(r => { timer = after(waitMs, () => r(null)); })]);
     clearTimeout(timer);
