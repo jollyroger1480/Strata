@@ -568,6 +568,8 @@ class ComponentStore:
         are kept under `partial/` and a ranged request picks up where it stopped. The result is
         verified by the caller before anything is unpacked.
         """
+        from strata_control import acquisition
+        acquisition.require(f"the download of {artifact.name}", "strata install")
         import urllib.error
         import urllib.request
         partial = self.root / "partial" / artifact.name
