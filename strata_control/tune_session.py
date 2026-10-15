@@ -119,7 +119,8 @@ def parse_facts(text: str) -> dict[str, Any]:
     if "workers" not in facts and "cpu_threads" in facts:
         facts["workers"] = facts["cpu_threads"]
     low = text.lower()
-    facts["resident_ram"] = bool(re.search(r"resident[- ](?:ram|experts)|low-ram mode|resident ram", low))
+    # the engine's low-RAM resident mode (--resident-experts) says so in its log; "resident experts" alone is the GPU cache's own wording
+    facts["resident_ram"] = bool(re.search(r"resident ram mode|resident complement|resident [\d.]+ gib, pinned|low-ram mode", low))
     facts["hybrid_experts"] = "hybrid experts" in low or "hybrid:" in low
     facts["unknown_argument"] = bool(re.search(r"unknown argument|unrecognized (?:argument|option)", low))
     return facts

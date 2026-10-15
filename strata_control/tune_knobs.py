@@ -193,7 +193,7 @@ class Context:
 def condition_holds(name: str, ctx: Context) -> bool:
     f = ctx.facts
     return {
-        "resident_ram": bool(f.get("resident_ram")),
+        "resident_ram": bool(f.get("resident_ram")) or "--resident-experts" in ctx.base_args,
         "one_gpu": ctx.gpu_count <= 1,
         "two_gpus": ctx.gpu_count == 2,
         "hybrid_cpu": ctx.hybrid_cpu,
@@ -214,7 +214,7 @@ def machine_classes(ctx: Context) -> list[str]:
         return classes
     if ctx.backend == "sycl":
         return ["G"]
-    if ctx.facts.get("resident_ram") or (ctx.ram_gib and ctx.model_gib and ctx.ram_gib - ctx.model_gib < 12):
+    if condition_holds("resident_ram", ctx) or (ctx.ram_gib and ctx.model_gib and ctx.ram_gib - ctx.model_gib < 12):
         classes.append("A")
     classes.append("B" if ctx.vram_mib >= 24000 else "C")
     if ctx.hybrid_cpu:
