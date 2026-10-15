@@ -19,6 +19,7 @@
 #include "ggml-common-tq.h"   // APR trellis types (agention llama.cpp fork)
 #include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -3150,6 +3151,7 @@ void hadamard_bad_block(const char* what, int block, int64_t width) {
                          "(hadamard.txt's block and the expert widths disagree)\n", what, block, (long long) width);
     std::exit(1);
 }
+constexpr int64_t kHadamardMaxRows = 65535;   // gridDim.y
 bool hadamard_block_ok(int block, int64_t width) {
     return block >= 2 && block <= 1024 && (block & (block - 1)) == 0 && width % block == 0;
 }
@@ -3158,17 +3160,25 @@ bool hadamard_block_ok(int block, int64_t width) {
 void hadamard_rows(const float* x, float* y, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
     if (rows <= 0) return;
     if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows", block, width);
-    hadamard_rows_kernel<float><<<dim3((unsigned) (width / block), (unsigned) rows), block, block * sizeof(float),
-                                  (cudaStream_t) stream>>>(x, y, width, signs, 1.0f / std::sqrt((float) block));
+    // gridDim.y is limited to 65535: a prompt chunk's T * K rows (16K tokens x 10 experts) go up in slices
+    for (int64_t r0 = 0; r0 < rows; r0 += kHadamardMaxRows) {
+        const int64_t n = std::min<int64_t>(kHadamardMaxRows, rows - r0);
+        hadamard_rows_kernel<float><<<dim3((unsigned) (width / block), (unsigned) n), block, block * sizeof(float),
+                                      (cudaStream_t) stream>>>(x + r0 * width, y + r0 * width, width, signs,
+                                                               1.0f / std::sqrt((float) block));
+    }
     check("hadamard_rows");
 }
 
 void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
     if (rows <= 0) return;
     if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows_f16", block, width);
-    hadamard_rows_kernel<__half><<<dim3((unsigned) (width / block), (unsigned) rows), block, block * sizeof(float),
-                                   (cudaStream_t) stream>>>((const __half*) x, (__half*) x, width, signs,
-                                                            1.0f / std::sqrt((float) block));
+    for (int64_t r0 = 0; r0 < rows; r0 += kHadamardMaxRows) {   // gridDim.y <= 65535, as in hadamard_rows
+        const int64_t n = std::min<int64_t>(kHadamardMaxRows, rows - r0);
+        hadamard_rows_kernel<__half><<<dim3((unsigned) (width / block), (unsigned) n), block, block * sizeof(float),
+                                       (cudaStream_t) stream>>>((const __half*) x + r0 * width, (__half*) x + r0 * width,
+                                                                width, signs, 1.0f / std::sqrt((float) block));
+    }
     check("hadamard_rows_f16");
 }
 
