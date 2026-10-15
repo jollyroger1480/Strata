@@ -19,6 +19,7 @@ import { api, onEvent, streamPost, type StreamEvent } from './client';
 import type {
   Workspace,
   ChatMessage,
+  ToolCall,
   EngineConfig,
   Hardware,
   ModelLibrary,
@@ -93,6 +94,8 @@ export interface AppState {
   sessions: Session[];
   activeSession: string | null;
   streaming: boolean;
+  /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
+  liveChats: number;
   toasts: Toast[];
   /** Files the model has been granted read access to, and when. */
   touchedPaths: Record<string, string>;
@@ -222,7 +225,8 @@ let state: AppState = {
   imageModels: null,
   runtime: null,
   providers: null,
-  remoteModel: (() => { try { return JSON.parse(localStorage.getItem('strata.remote-model.v1') ?? 'null') as RemoteModelSelection | null; } catch { return null; } })(),
+  /** The open chat's API model, or null for the local model (the default for every chat). */
+  remoteModel: null,
   engine: null,
   serving: null,
   monitor: null,
@@ -236,6 +240,7 @@ let state: AppState = {
   sessions: loadSessions(),
   activeSession: null,
   streaming: false,
+  liveChats: 0,
   toasts: [],
   touchedPaths: (() => {
     try {
@@ -250,9 +255,18 @@ let state: AppState = {
 
 const listeners = new Set<() => void>();
 
+/** Chats with a turn in flight: the abort handle, and whether the host is running it as an agent turn. */
+const liveTurns = new Map<string, { abort: AbortController; agent: boolean }>();
+
 function set(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
+  const before = state.activeSession;
   const next = typeof patch === 'function' ? patch(state) : patch;
   state = { ...state, ...next };
+  // Opening another chat shows that chat's model choice and whether that chat is mid-turn.
+  if (state.activeSession !== before) {
+    const chosen = state.sessions.find(s => s.id === state.activeSession)?.preferences?.remoteModel ?? null;
+    state = { ...state, remoteModel: 'remoteModel' in next ? state.remoteModel : chosen, streaming: !!state.activeSession && liveTurns.has(state.activeSession) };
+  }
   for (const l of listeners) l();
 }
 
@@ -276,18 +290,19 @@ export function setConfigDraft(configDraft: string | null) {
 export function setNavOpen(navOpen: boolean) { set({ navOpen }); }
 export function setSettingsSection(settingsSection: AppState['settingsSection']) { set({ settingsSection }); }
 
+/** Choose the open chat's model: an API model, or null for the local one. Other chats keep theirs. */
 export function selectRemoteModel(remoteModel: RemoteModelSelection | null) {
   if (state.streaming) return;
   if (remoteModel && !state.providers?.connections.some(c => c.id === remoteModel.connectionId && c.models.some(m => m.id === remoteModel.modelId))) return;
   set({ remoteModel });
-  try { localStorage.setItem('strata.remote-model.v1', JSON.stringify(remoteModel)); } catch { /* Selection works without persistence. */ }
+  const id = state.activeSession;
+  if (id) patchSession(id, s => ({ ...s, preferences: { ...s.preferences, remoteModel } }));
+  try { localStorage.removeItem('strata.remote-model.v1'); } catch { /* The old global choice is retired. */ }
 }
 function applyProviders(providers: ModelProviders) {
+  // A chat whose API model was removed keeps its choice: the next send says the model is gone, rather
+  // than quietly answering from the local model.
   set({ providers });
-  if (state.remoteModel && !providers.connections.some(c => c.id === state.remoteModel!.connectionId && c.models.some(m => m.id === state.remoteModel!.modelId))) {
-    set({ remoteModel: null });
-    try { localStorage.removeItem('strata.remote-model.v1'); } catch { /* In-memory selection was cleared. */ }
-  }
 }
 export async function saveModelConnection(draft: ModelConnectionDraft) {
   applyProviders(await api.post<ModelProviders>('/api/model-providers', draft));
@@ -302,7 +317,7 @@ function libraryResponse(data: ModelLibrary): ModelLibrary {
 }
 
 export function lifecycleStatus(s = state) {
-  return lifecyclePolicy({ connected: s.connection === 'live', streaming: !!s.streaming, stats: s.serving?.stats, busy: s.busy });
+  return lifecyclePolicy({ connected: s.connection === 'live', streaming: !!s.streaming || s.liveChats > 0, stats: s.serving?.stats, busy: s.busy });
 }
 export function lifecycleAvailable(): boolean {
   const result = lifecycleStatus();
@@ -958,6 +973,7 @@ export function newSession(): Session {
     workspace: state.workspaces.find(w => w.id === state.activeWorkspace)?.path ?? state.workspacePath,
     tokensIn: 0,
     tokensOut: 0,
+    ...(state.activeSession === null && state.remoteModel ? { preferences: { remoteModel: state.remoteModel } } : {}),
   };
   const sessions = [session, ...state.sessions];
   persistSessions(sessions);
@@ -1100,13 +1116,30 @@ function startTimeSkipDemo(prompt: string) {
   go('chat', sessionId);
 }
 
-let chatAbort: AbortController | null = null;
+function markTurn(sessionId: string, turn: { abort: AbortController; agent: boolean } | null) {
+  if (turn) liveTurns.set(sessionId, turn); else liveTurns.delete(sessionId);
+  set({ streaming: !!state.activeSession && liveTurns.has(state.activeSession), liveChats: liveTurns.size });
+  document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
+}
 
+/**
+ * Stop the open chat's turn. The host is asked first: for an agent turn it cancels exactly this chat's
+ * Harness session and answers only once the turn has ended, and the stream then closes by itself with
+ * what was produced. For any other turn the host reports nothing to stop and the request is aborted.
+ */
 export function stopStreaming() {
-  chatAbort?.abort();
-  chatAbort = null;
-  set({ streaming: false });
-  document.documentElement.dataset.streaming = 'false';
+  const id = state.activeSession;
+  const turn = id ? liveTurns.get(id) : undefined;
+  if (!id || !turn) return;
+  const abort = () => { turn.abort.abort(); };
+  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
+    result => {
+      if (!result.stopped) abort();
+      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
+      else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000);
+    },
+    abort,
+  );
 }
 
 /**
@@ -1263,10 +1296,10 @@ export async function sendMessage(text: string) {
     messages: [...s.messages, userMsg, assistantMsg],
   }));
 
-  set({ streaming: true });
+  const turnAbort = new AbortController();
+  markTurn(sessionId, { abort: turnAbort, agent: false });
   // Read by the router to skip view transitions mid-stream, and by CSS to keep
   // the transcript still while tokens arrive.
-  document.documentElement.dataset.streaming = 'true';
 
   const patchAssistant = (fn: (m: ChatMessage) => ChatMessage) =>
     patchSession(sessionId, (s) => ({
@@ -1275,7 +1308,6 @@ export async function sendMessage(text: string) {
       messages: s.messages.map((m) => (m.id === assistantId ? fn(m) : m)),
     }));
 
-  chatAbort = new AbortController();
   const started = performance.now();
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
@@ -1297,12 +1329,24 @@ export async function sendMessage(text: string) {
       },
       (frame) => {
         const type = frame.type as string;
+        if (type === 'start' && frame.agent === true) { const turn = liveTurns.get(sessionId); if (turn) turn.agent = true; }
         if (type === 'queued') {
           patchAssistant(m => ({ ...m, requestId: String(frame.requestId) }));
         } else if (type === 'start') {
           patchAssistant((m) => ({ ...m, demo: frame.demo === true, remoteModel: frame.remoteModel === true, requestId: typeof frame.requestId === 'string' ? frame.requestId : m.requestId, model: String(frame.model), contextMax: Number(frame.contextMax), skillsUsed: Array.isArray(frame.skills) ? frame.skills.map(String) : [] }));
         } else if (type === 'reasoning') {
           patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? '') }));
+        } else if (type === 'notice') {
+          // The host says why this chat is not using the agent. One toast per reason per page load.
+          const code = String(frame.code ?? 'notice');
+          if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', String(frame.message ?? '')); }
+        } else if (type === 'agent-tool') {
+          const tool = frame.tool as ToolCall;
+          patchAssistant(m => {
+            const existing = m.tools?.find(t => t.id === tool.id);
+            const next: ToolCall = { ...existing, ...tool, live: true };
+            return { ...m, tools: existing ? m.tools!.map(t => t.id === tool.id ? next : t) : [...(m.tools ?? []), next] };
+          });
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
@@ -1342,7 +1386,7 @@ export async function sendMessage(text: string) {
           }));
         }
       },
-      chatAbort.signal,
+      turnAbort.signal,
     );
   } catch (err) {
     if ((err as Error).name !== 'AbortError') {
@@ -1356,13 +1400,29 @@ export async function sendMessage(text: string) {
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
-    chatAbort = null;
-    set({ streaming: false });
-    document.documentElement.dataset.streaming = 'false';
+    markTurn(sessionId, null);
   }
 }
 
 /* -------------------------------------------------------------- tool grants */
+
+const noticed = new Set<string>();
+
+/**
+ * Approve or deny a tool the agent asked about. The answer goes to the host, which hands it to the
+ * Harness approval for exactly this chat and call; the card then follows what the Harness reports
+ * (running, done, denied). The card shows the choice straight away and goes back if the host refuses.
+ */
+function answerAgentTool(sessionId: string, messageId: string, tool: ToolCall, approved: boolean) {
+  const setState = (state_: ToolCall['state'], result?: string) => patchSession(sessionId, s => ({
+    ...s, messages: s.messages.map(m => m.id === messageId ? { ...m, tools: (m.tools ?? []).map(t => t.id === tool.id ? { ...t, state: state_, ...(result !== undefined ? { result } : {}) } : t) } : m),
+  }));
+  setState(approved ? 'running' : 'denied');
+  api.post('/api/chat/approval', { sessionId, toolId: tool.id, decision: approved ? 'approve' : 'deny' }).catch(error => {
+    setState('proposed');
+    pushToast('error', 'That answer was not delivered', error instanceof Error ? error.message : undefined);
+  });
+}
 
 /**
  * Approving a tool in the design build resolves locally: there is no tool
@@ -1372,6 +1432,8 @@ export async function sendMessage(text: string) {
 export function resolveTool(messageId: string, toolId: string, approved: boolean) {
   const sessionId = state.activeSession;
   if (!sessionId) return;
+  const tool = state.sessions.find(s => s.id === sessionId)?.messages.find(m => m.id === messageId)?.tools?.find(t => t.id === toolId);
+  if (tool?.live) { answerAgentTool(sessionId, messageId, tool, approved); return; }
 
   patchSession(sessionId, (s) => ({
     ...s,
@@ -1413,7 +1475,27 @@ export function bootOnce() {
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
   for (const session of state.sessions) for (const run of session.timeSkips ?? []) scheduleTimeSkip(session.id, run);
   void bootstrap();
+  void reconcileAgentTools();
 }
+
+/**
+ * After a reload, a tool card the browser remembers as waiting or running may belong to a turn that no
+ * longer exists. Cards whose approval the host still holds stay answerable; the rest are marked as
+ * interrupted so nothing looks like it is still working.
+ */
+async function reconcileAgentTools() {
+  const open = (t: ToolCall) => t.live && (t.state === 'proposed' || t.state === 'running');
+  for (const session of state.sessions) {
+    if (!session.messages.some(m => m.tools?.some(open))) continue;
+    let waiting = new Set<string>();
+    try {
+      const r = await api.get<{ pending: { callId: string }[] }>(`/api/agent/pending?chatId=${encodeURIComponent(session.id)}`);
+      waiting = new Set(r.pending.map(p => p.callId));
+    } catch { /* The host is unreachable; leave the cards for the next load. */ continue; }
+    patchSession(session.id, sess => ({ ...sess, messages: sess.messages.map(m => m.tools?.some(open) ? { ...m, tools: m.tools.map(t => open(t) && !waiting.has(t.id) ? { ...t, state: 'error' as const, result: 'The page closed before this finished. Check the workspace to see what it did.' } : t) } : m) }));
+  }
+}
+
 
 export function setContrast(contrast: 'standard' | 'increased') { set({ contrast }); savePrefs(); }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state.theme === 'system') applyPrefs(); });

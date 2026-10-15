@@ -355,6 +355,8 @@ export interface ToolCall {
   state: ToolState;
   result?: string;
   durationMs?: number;
+  /** Reported by the agent runtime: an approval answers a real request. Absent for design-build examples. */
+  live?: boolean;
 }
 
 /** A folder the model may read, and that sessions are grouped under. */
@@ -384,7 +386,7 @@ export interface Session {
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; mode?: ChatMode; useTools?:boolean };
+  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; mode?: ChatMode; useTools?:boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;
