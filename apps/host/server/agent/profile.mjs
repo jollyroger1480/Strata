@@ -100,8 +100,8 @@ export function localOutputBudget(context) {
 }
 
 /**
- * The thinking levels the chat's Reasoning menu offers, as wire values for a local Strata model. `off` sends enable_thinking false;
- * the rest send enable_thinking true plus the effort (the server reads both; "Max" is the highest effort it has).
+ * The thinking levels the chat's Reasoning menu offers, as wire values for a local Strata model. `off` sends
+ * chat_template_kwargs.enable_thinking false; the rest send it true plus reasoning_effort (the server maps high and max to its top level).
  */
 export const LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'medium', high: 'high', max: 'high' });
 /** The menu's words to the Harness's level names. */
@@ -140,8 +140,9 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
       api: 'openai-completions',
       baseURL: inst.baseUrl,
       apiKeyEnv: keyEnv,
-      // `qwen` thinking format: enable_thinking true/false plus reasoning_effort, which the Strata server reads.
-      compat: { supportsStore: false, thinkingFormat: 'qwen', supportsReasoningEffort: true },
+      // The Strata server reads the thinking level from `chat_template_kwargs` (enable_thinking, reasoning_effort) or from a top-level
+      // reasoning_effort; a top-level `enable_thinking` (pi-ai's `qwen` format) is ignored, so the model went on thinking with the menu on Off.
+      compat: { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } },
       models: [{
         id: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, maxTokens: localOutputBudget(context),
         input: inst.vision ? ['text', 'image'] : ['text'],

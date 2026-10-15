@@ -233,16 +233,18 @@ test('the output budget is not the old 8192, and the Reasoning menu reaches the 
     await bridge.runTurn({ chatId, message: 'SCRIPT:echo hi', workspacePath: ws, mode: 'bypass', thinking, onFrame: () => {} });
     return worker.requests.find(r => r.toolNames.length).params;
   };
+  const ctk = p => p.chat_template_kwargs ?? {};
   const off = await ask('think-off', 'Off');
-  assert.equal(off.enable_thinking, false);
+  assert.equal(ctk(off).enable_thinking, false); assert.equal(ctk(off).reasoning_effort, undefined);
+  assert.equal(off.enable_thinking, undefined, 'a top-level enable_thinking is the field the Strata server ignores');
   assert.ok(off.max_completion_tokens > 40000, `budget ${off.max_completion_tokens} (the window minus the prompt, never the old 8192)`);
   const high = await ask('think-high', 'High');
-  assert.equal(high.enable_thinking, true); assert.equal(high.reasoning_effort, 'high');
+  assert.equal(ctk(high).enable_thinking, true); assert.equal(ctk(high).reasoning_effort, 'high');
   const low = await ask('think-low', 'Low');
-  assert.equal(low.enable_thinking, true); assert.equal(low.reasoning_effort, 'low');
+  assert.equal(ctk(low).enable_thinking, true); assert.equal(ctk(low).reasoning_effort, 'low');
   const max = await ask('think-max', 'Max');
-  assert.equal(max.enable_thinking, true); assert.equal(max.reasoning_effort, 'high');
+  assert.equal(ctk(max).enable_thinking, true); assert.equal(ctk(max).reasoning_effort, 'high');
   // the same chat switching its level between turns
-  assert.equal((await ask('think-off', 'High')).enable_thinking, true);
-  assert.equal((await ask('think-off', 'Off')).enable_thinking, false);
+  assert.equal(ctk(await ask('think-off', 'High')).enable_thinking, true);
+  assert.equal(ctk(await ask('think-off', 'Off')).enable_thinking, false);
 });

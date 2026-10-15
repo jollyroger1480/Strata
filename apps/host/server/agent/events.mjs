@@ -97,6 +97,12 @@ export function withPlain(raw) {
  * sentence says only what is known.
  */
 export function outcomeText(tool, text) {
+  if (tool === 'pwsh' || tool === 'bash') {
+    // In the read-only modes PowerShell runs in Constrained Language Mode and complains about the Harness's own output-encoding line:
+    // noise appended after a command that worked. It says nothing about the command, so it is not shown.
+    text = text.replace(/\r?\n?\[stderr\]\r?\n(?:Cannot create type\. Only core types are supported in this language mode\.[\s\S]*?CannotCreateTypeConstrainedLanguage\s*)+$/, '');
+    if (!text.trim()) text = '(no output)';
+  }
   if ((tool === 'pwsh' || tool === 'bash') && /^\(no output\)$/.test(text.trim())) return 'The command finished without any error. It printed nothing, so there is nothing more to show.';
   return text;
 }
