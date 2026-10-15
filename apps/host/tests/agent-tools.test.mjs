@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
@@ -186,3 +186,37 @@ test('Manual refuses to start when the gate is not loaded (it would be an open s
   t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
   await assert.rejects(bridge.runTurn({ chatId: 'x', message: 'SCRIPT:echo hi', workspacePath: join(dir, 'ws'), mode: 'manual', onFrame: () => {} }), error => error.code === 'mode-unavailable' && /asks before changing/.test(error.message) && !/sandbox/i.test(error.message));
 });
+
+test('a tool server set up for the model is connected to the agent: its tools are offered, Manual asks before using them, and its secret never reaches a file', { skip }, async (t) => {
+  const worker = await startScriptedWorker({});
+  const dir = mkdtempSync(join(tmpdir(), 'strata-mcp-'));
+  const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const mcpServers = { demo: { command: process.execPath, args: [fwd(join(import.meta.dirname, 'helpers', 'mini-mcp.mjs'))], env: { DEMO_TOKEN: 'tok-123456-secret' } }, off: { command: 'x', disabled: true } };
+  const local = [{ id: 'i', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2, mcpServers }];
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+  t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
+  const frames = [];
+  await bridge.runTurn({ chatId: 'mcp-bypass', message: `SCRIPT:call mcp__demo__shout ${JSON.stringify({ text: 'hello' })}`, workspacePath: ws, mode: 'bypass', onFrame: f => frames.push(f) });
+  assert.ok([...worker.requests].reverse().find(q => q.toolNames.length).toolNames.includes('mcp__demo__shout'));
+  assert.ok(![...worker.requests].some(q => q.toolNames.some(n => n.startsWith('mcp__off'))), 'a disabled server is not connected');
+  const card = cards(frames).at(-1);
+  assert.equal(card.state, 'done'); assert.match(card.result, /HELLO\|token:set/, 'the secret reached the server through the environment');
+  assert.equal(card.scope, 'connected');
+  // Manual: a connected tool has unknown effects, so it asks first
+  const manual = [];
+  await bridge.runTurn({
+    chatId: 'mcp-manual', message: `SCRIPT:call mcp__demo__shout ${JSON.stringify({ text: 'ask me' })}`, workspacePath: ws, mode: 'manual',
+    onFrame: f => { manual.push(f); if (f.type === 'agent-tool' && f.tool.state === 'proposed') void bridge.approve({ chatId: 'mcp-manual', callId: f.tool.id, decision: 'approve' }); },
+  });
+  assert.deepEqual(cards(manual).map(c => c.state), ['running', 'proposed', 'running', 'done']);
+  assert.match(cards(manual)[1].effect, /Use the connected tool demo \/ shout/);
+  // the secret is in the environment of the agent only: never in the profile file
+  const files = JSON.stringify(readdirDeep(join(dir, 'agent')).filter(f => f.endsWith('.yml')).map(f => readFileSync(f, 'utf8')));
+  assert.ok(files.includes('process.env.STRATA_MCP_0_E_DEMO_TOKEN') && !files.includes('tok-123456-secret'));
+});
+
+function readdirDeep(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) out.push(...readdirDeep(p)); else out.push(p); }
+  return out;
+}

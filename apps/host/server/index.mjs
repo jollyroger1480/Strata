@@ -94,6 +94,8 @@ const agent = createAgentBridge({
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
     // The engine's request slots: helper agents never outnumber them.
     slots: i.metrics?.live?.slots?.length || i.parallel || 1,
+    // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
+    mcpServers: i.mcpServers,
   })),
   connections: () => modelProviders.withSecrets(),
   log: line => console.log(line),
