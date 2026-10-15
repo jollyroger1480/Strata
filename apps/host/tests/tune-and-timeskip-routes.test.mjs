@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -83,9 +83,9 @@ test('the tuning plan comes from the engine binary and excludes what it cannot a
   // A stub engine that accepts exactly two of the flags the static table knows about. The plan must
   // offer only those two, and must name each exclusion.
   const dir = await mkdtemp(join(tmpdir(), 'strata-tune-stub-'));
-  const engine = join(dir, 'strata');
-  await writeFile(engine, '#!/bin/sh\necho "usage:" >&2\necho "  --kv KV" >&2\necho "  --ple-io MODE" >&2\nexit 0\n');
-  await chmod(engine, 0o755);
+  // A Python stub, run by Strata Control as [python, stub.py] on every OS (a #! script is WinError 193 on Windows).
+  const engine = join(dir, 'strata-stub.py');
+  await writeFile(engine, 'import sys\nfor line in ("usage:", "  --kv KV", "  --ple-io MODE"):\n    print(line, file=sys.stderr)\n');
 
   const { child, base } = await startHost();
   try {

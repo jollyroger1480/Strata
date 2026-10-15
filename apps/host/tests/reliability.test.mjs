@@ -1,3 +1,4 @@
+import { ROOMY_HOST } from './helpers/hardware.mjs';
 /** Host regressions use a disposable demo home. No browser automation or model downloads. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -37,7 +38,7 @@ test('setup, config and lifecycle preserve truthful outcomes in the demo host', 
   const home = await mkdtemp(join(tmpdir(), 'strata-reliability-'));
   const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
-  const host = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, STRATA_HOME:home,STRATA_MODELS_DIR:join(home,'models'), STRATA_PORT: String(port), STRATA_REAL_ENGINE: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const host = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, STRATA_HOME:home,STRATA_MODELS_DIR:join(home,'models'), STRATA_PORT: String(port), STRATA_REAL_ENGINE: '0', STRATA_TEST_HARDWARE: ROOMY_HOST }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = ''; host.stdout.on('data', d => logs += d); host.stderr.on('data', d => logs += d);
   const base = `http://127.0.0.1:${port}`;
   async function call(path, method = 'GET', body) {
