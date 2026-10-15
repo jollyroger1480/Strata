@@ -395,7 +395,7 @@ constexpr int RG = 4, RPG = S / RG;
 constexpr int CB = 32, NCB = S / CB;  // value columns per block kernel / blocks per head
 // v100/gdn-chunk: Volta-only (sm_70), inside the experimental build.  Main's recurrence kernels above are
 // untouched for every other architecture; the chain-split is dispatched only when the device is cc 7.0.
-#if defined(STRATA_EXPERIMENTAL_SM60) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700)
+#if defined(STRATA_EXPERIMENTAL_SM60)
 // v100/gdn-chunk: the same recurrence with WARP-LOCAL reductions - no __syncthreads at all.  gdn_rec_cols_*'
 // per-token shape is two cross-warp reductions (k^T W and q^T W) behind two barriers each (six barriers per
 // token in the pipelined kernel); here a warp owns 8 columns and the 4 row-groups are lanes within the warp,
@@ -613,7 +613,7 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
 // cycles before the barriers); the split keeps the load pattern, the barriers and the (S, h_v, S) state
 // layout untouched.  FP32-level, NOT bit-exact - the four partial sums group the 32 products differently -
 // so it is opt-in by measured benefit (STRATA_GDN_REC_WARP=2; gdn_chunk_parity bounds the error).
-#if defined(STRATA_EXPERIMENTAL_SM60) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700)
+#if defined(STRATA_EXPERIMENTAL_SM60)
 __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_fast_kernel(float* __restrict__ state,
                                                                         const float* __restrict__ h,
                                                                         const float* __restrict__ gate,
@@ -2116,7 +2116,7 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
     (void) variant;   // the quad recurrence kernels are AMD-only
 #endif
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
-#if defined(STRATA_EXPERIMENTAL_SM60) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700)   // the kernels exist in the host pass and the sm_70 device pass only
+#if defined(STRATA_EXPERIMENTAL_SM60)
     // v100/gdn-chunk: the chunked recurrence (src/prefill/gdn_chunk.cu) on Volta, where the token chain is the
     // cost.  STRATA_GDN_CHUNK=0 forces the recurrence, =1 forces the chunked path (the parity test's A/B switch);
     // unset: cc == 7.0 only, every other architecture keeps the recurrence bit-for-bit as before.  Read per call

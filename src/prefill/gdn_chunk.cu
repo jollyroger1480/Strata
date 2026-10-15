@@ -223,13 +223,14 @@ __global__ void __launch_bounds__(128) gdn_chunk_fwd_kernel(float* __restrict__ 
 //
 // Precision: the FP16 staging is the reference's "f32 -> f16 暂存" (10-bit mantissa on the operands);
 // accumulations, the solve and the state are f32.  FP32-level, not bit-exact - see gdn_chunk_parity.
-#if !defined(__HIPCC__) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
-namespace wmma = ::nvcuda::wmma;
+#if !defined(__HIPCC__)
 
 __global__ void __launch_bounds__(128) gdn_chunk_wmma_kernel(float* __restrict__ state, float* __restrict__ oc,
                                                              const float* __restrict__ h,
                                                              const float* __restrict__ beta,
                                                              const float* __restrict__ gcum, int nchunks) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700   // named in every device pass of a multi-arch build; only sm_70+ has wmma
+    namespace wmma = ::nvcuda::wmma;
     // smem (84.5 KB, opt-in):  Ks/Qs the chunk's k and q rows f16; W16 the state slice f16 (U's operand);
     //  Ug[128][32] f32 aliasing the 64x64 Gram scratch and then U = [K;Q] W;  As/Ps f16;  dlt f32 + f16.
     extern __shared__ __align__(1024) unsigned char smem[];
@@ -439,8 +440,9 @@ __global__ void __launch_bounds__(128) gdn_chunk_wmma_kernel(float* __restrict__
         const int r = i / NS, j = i % NS;
         state[(size_t) r * HV * S + (size_t) hh * S + j0 + j] = Ug[i];
     }
+#endif
 }
-#endif  // !HIPCC && __CUDA_ARCH__ >= 700
+#endif  // !HIPCC
 
 // The grow-only workspace, one per (thread, device): a layer split runs the chunked recurrence on more than
 // one card, and each card's pointers are only valid on that card - a single per-thread buffer would hand a
@@ -532,7 +534,7 @@ void gdn_chunk_recurrence(float* state, const float* h, const float* gate, const
     (void) state; (void) h; (void) gate; (void) beta; (void) oc; (void) T; (void) stream;
     std::fprintf(stderr, "gdn_chunk_recurrence: not built for HIP\n");
     std::exit(1);
-#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700   // the sm_60 device pass of a multi-arch build has no wmma kernel to name
+#else
     if (T <= 0) return;
     const int64_t T64 = T - T % CH;
     if (T64 <= 0) return;
