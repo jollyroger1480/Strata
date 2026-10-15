@@ -46,3 +46,15 @@ export function nativeMonitorData(native:NativeState,inventory:Hardware|null,sel
   totals:{tokensIn:tokenTotal('prompt_tokens'),tokensOut:tokenTotal('output_tokens'),requests:tokenTotal('requests'),avgTps:NaN,since:selected?.loadedAt??instances[0]?.loadedAt??new Date().toISOString(),ttftMs:NaN,cachedTokens:tokenTotal('reused'),uncachedTokens:tokenTotal('prompt_tokens')-tokenTotal('reused'),promptMs:hasReading(tokenTotal('prompt_ms'))?tokenTotal('prompt_ms'):undefined,decodeMs:hasReading(tokenTotal('decode_ms'))?tokenTotal('decode_ms'):undefined}
  };
 }
+
+/** GPU temperature, load, VRAM, power and PCIe come from the engine's metrics while a model runs. With no model loaded (or an engine that
+ *  reports none of them) the host's own sensors fill in: nvidia-smi, or the AMD/Intel sysfs readings the host probes itself. */
+export function withHostSensors(live:MonitorState,host:MonitorState|null):MonitorState{
+ const s=host?.hardware,h=live.hardware;if(!s||!h)return live;
+ const empty=(g:GpuReading)=>![g.utilizationPct,g.temperatureC,g.memoryUsedGb,g.powerW].some(hasReading);
+ const pick=<T,>(a:T,b:T)=>hasReading(a as unknown)?a:b;
+ return {...live,hardware:{...h,
+  gpus:(h.gpus??[]).map(g=>{const sensor=s.gpus?.find(x=>x.id===g.id);return sensor&&empty(g)?{...g,...sensor}:g;}),
+  gpuLoad:pick(h.gpuLoad,s.gpuLoad),vramUsedGb:pick(h.vramUsedGb,s.vramUsedGb),vramTotalGb:pick(h.vramTotalGb,s.vramTotalGb),gpuTempC:pick(h.gpuTempC,s.gpuTempC),
+  powerW:pick(h.powerW,s.powerW),powerLimitW:pick(h.powerLimitW,s.powerLimitW),pcieRxMbs:pick(h.pcieRxMbs,s.pcieRxMbs)}};
+}

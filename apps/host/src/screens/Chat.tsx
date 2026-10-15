@@ -566,7 +566,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
 
       <div className="st-bubble">
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(m.content ? (<Markdown text={m.timeSkipId ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.content ? (<Markdown text={m.timeSkipId ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />

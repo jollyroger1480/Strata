@@ -715,3 +715,15 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-image-reading input[type=checkbox]:checked:after,.native-gpu-options input[type=checkbox]:checked:after{opacity:1}
 .native-image-reading input[type=checkbox]:focus-visible,.native-gpu-options input[type=checkbox]:focus-visible{outline:2px solid var(--st-accent);outline-offset:3px}
 .native-image-reading input[type=checkbox]:disabled,.native-gpu-options input[type=checkbox]:disabled{opacity:.5;cursor:default}
+/* Manage models: the downloaded models as a short list. Same surface, line and pill tokens as the settings version rows. */
+.native-manage { display:grid; gap:16px; min-width:min(560px,100%); }
+.native-manage-list { display:grid; gap:10px; }
+.native-manage-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:14px; padding:14px 16px; border:1px solid var(--st-line); border-radius:var(--st-r-md,12px); background:var(--st-surface); }
+.native-manage-row[data-selected] { border-color:var(--st-accent); background:var(--st-accent-surface); }
+.native-manage-name { display:grid; gap:2px; min-width:0; }
+.native-manage-name strong { font-size:var(--st-fs-md); overflow-wrap:anywhere; }
+.native-manage-name small { color:var(--st-ink-muted); font-size:var(--st-fs-sm); }
+.native-manage-actions { display:flex; gap:8px; }
+.native-manage-empty { padding:24px 8px; text-align:center; }
+.native-manage-foot { padding-top:12px; border-top:1px solid var(--st-line-soft); }
+@media(max-width:600px){ .native-manage-row { grid-template-columns:1fr; } }

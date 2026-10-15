@@ -1,3 +1,4 @@
+import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
@@ -136,11 +137,11 @@ export interface Prefs {
 const PREFS_DEFAULTS: Prefs = {
   language: 'en',
   fontFamily: '',
-  theme: 'light',
+  theme: 'system',
   contrast: 'standard',
   rail: false,
   focus: false,
-  contentFontSize: 16,
+  contentFontSize: 14,
   density: 'comfortable',
   motion: 'system',
   transparency: 'translucent',
@@ -187,7 +188,7 @@ function loadPrefs(): Prefs {
         ...parsed,
         language: validLanguage(parsed.language) ? parsed.language : 'en',
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily.slice(0,128).replace(/[\x00-\x1f]/g,'') : '',
-        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 16)),
+        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 14)),
       };
     } catch {
       /* fall through to the next key */
@@ -1324,6 +1325,7 @@ export async function sendMessage(text: string) {
         images:await Promise.all(pictures.map(photoData)),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'High',
+        thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
         // So a skill narrowed to another workspace does not fire here.
@@ -1341,7 +1343,7 @@ export async function sendMessage(text: string) {
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
-          if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', String(frame.message ?? '')); }
+          if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -1352,7 +1354,7 @@ export async function sendMessage(text: string) {
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); const count=Math.max(1,Math.ceil(content.length/4)); const seconds=Math.max(.1,(performance.now()-started)/1000); return {...m,content,tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),tps:count/seconds,usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=m.content+String(frame.text??''); const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
         } else if (type === 'artifacts' && Array.isArray(frame.artifacts)) {
           patchAssistant(m => ({ ...m, artifacts: frame.artifacts as PreviewArtifact[] }));
         } else if(type==='native-tool'){
@@ -1368,7 +1370,7 @@ export async function sendMessage(text: string) {
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
           }));
         } else if (type === 'error') {
-          patchAssistant((m) => ({ ...m, error: String(frame.message ?? 'Engine error'), streaming: false }));
+          patchAssistant((m) => ({ ...m, error: plainFailure(String(frame.message ?? 'Engine error')).message, streaming: false }));
         } else if (type === 'done') {
           patchSession(sessionId, (sess) => ({
             ...sess,

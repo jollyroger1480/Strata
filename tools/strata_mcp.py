@@ -43,6 +43,9 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this se
 VERSION = "0.1.0"
 WIN = os.name == "nt"
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+# The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
+# .venv and installs no package (setup.py's own CONTROL mode).
+CONTROL = os.environ.get("STRATA_CONTROL_INSTALL") == "1"
 DEFAULT_PORT = 8080
 STATE_DIR = ".strata-mcp"                             # in the Strata folder (git-ignored)
 
@@ -404,15 +407,18 @@ def system_folders() -> list[Path]:
 class Strata:
     """One Strata folder: what is installed there, the PC, and the processes this server started."""
 
-    def __init__(self, root: Path | str = DEFAULT_ROOT):
+    def __init__(self, root: Path | str = DEFAULT_ROOT, src: Path | str | None = None):
         self.root = Path(root).resolve()
+        # where setup.py, tools/ and serve/ are (the app: inside Strata Control); `root` is where the installs live
+        self.src = Path(src).resolve() if src else self.root
         self.state_dir = self.root / STATE_DIR
         self.lock = threading.Lock()                    # install / start / stop one at a time
         self.children: list[subprocess.Popen] = []      # reaped now and then (no zombies on POSIX)
         self._setup = None
         self._setup_tried = False
         self._hw_cache = None
-        self.python_override: str | None = None         # tests: the interpreter that runs setup / the server
+        # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
+        self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
 
     # ---- setup.py's own tables and logic
@@ -422,7 +428,9 @@ class Strata:
         if not self._setup_tried:
             self._setup_tried = True
             try:
-                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.root / "setup.py")
+                if str(self.src) not in sys.path:
+                    sys.path.insert(0, str(self.src))   # setup.py imports strata_control
+                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.src / "setup.py")
                 mod = importlib.util.module_from_spec(spec)
                 real = sys.stdout
                 sys.stdout = sys.stderr                 # nothing it prints may reach the protocol stream
@@ -528,7 +536,77 @@ class Strata:
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
                 "ready": not missing and bool(cfg), "missing_files": missing[:3],
+                "disk_gb": self.removal_plan(path)["gb"], "disk_bytes": self.removal_plan(path)["bytes"],
                 "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))}
+
+    # ---- what a model owns on disk (Delete, and the per-model disk usage in Storage)
+    FILE_FLAGS = ("--native", "--ple-gguf", "--embd-gguf", "--native-dense-gguf")
+    DIR_FLAGS = ("--pack", "--mtp")
+
+    def model_paths(self, cfg: dict) -> tuple[list, list]:
+        """(the GGUF files, the folders) a run config names: --native/--ple-gguf/... and --pack/--mtp, plus any other .gguf."""
+        a = [x for x in (cfg.get("args") or []) if isinstance(x, str)]
+        files = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.FILE_FLAGS]
+        files += [Path(x) for x in a if x.lower().endswith(".gguf") and Path(x) not in files]
+        dirs = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.DIR_FLAGS]
+        return files, dirs
+
+    @staticmethod
+    def tree_bytes(path: Path) -> int:
+        if path.is_file():
+            try:
+                return path.stat().st_size
+            except OSError:
+                return 0
+        total = 0
+        for base, _d, names in os.walk(path):
+            for n in names:
+                try:
+                    total += os.stat(os.path.join(base, n)).st_size
+                except OSError:
+                    pass
+        return total
+
+    def removal_plan(self, config: Path) -> dict:
+        """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
+        (the shared MTP draft, a shared PLE shard) is kept; so is anything outside Strata's own folders."""
+        cfg = self.read_config(config)
+        files, dirs = self.model_paths(cfg)
+        used_files, used_dirs = set(), set()
+        for other in self.configs():
+            if norm(other) == norm(config):
+                continue
+            f, d = self.model_paths(self.read_config(other))
+            used_files |= {norm(x) for x in f}
+            used_dirs |= {norm(x) for x in d}
+        remove, keep = [], []
+
+        def shared(p: Path, is_dir: bool) -> bool:
+            n = norm(p)
+            if n in used_files or n in used_dirs or any(is_inside(u, n) for u in used_files | used_dirs) and is_dir:
+                return True
+            return any(is_inside(n, u) for u in used_dirs)
+
+        for p, is_dir in [(x, False) for x in files] + [(x, True) for x in dirs]:
+            if not p.exists():
+                continue
+            if not self.allowed(p):
+                keep.append({"path": str(p), "reason": "outside Strata's folders"})
+            elif shared(p, is_dir):
+                keep.append({"path": str(p), "reason": "another installed model still uses it"})
+            else:
+                remove.append({"path": str(p), "kind": "folder" if is_dir else "file", "bytes": self.tree_bytes(p)})
+                if not is_dir:
+                    for extra in (p.with_name(p.name + ".done"), p.with_name(p.name + ".part")):
+                        if extra.exists():
+                            remove.append({"path": str(extra), "kind": "file", "bytes": self.tree_bytes(extra)})
+        tag = config.stem[len("strata-"):]
+        for extra in (config, config.with_name(config.name + ".bak"), config.with_name(f"strata-{tag}.log"),
+                      self.root / f"run-{tag}.bat", self.root / f"run-{tag}.sh"):
+            if extra.exists():
+                remove.append({"path": str(extra), "kind": "file", "bytes": self.tree_bytes(extra)})
+        total = sum(x["bytes"] for x in remove)
+        return {"model": tag, "remove": remove, "keep": keep, "bytes": total, "gb": round(total / 1e9, 2)}
 
     def find_config(self, model: str | None) -> Path:
         have = self.configs()
@@ -839,6 +917,7 @@ class Strata:
         log_path = Path(j.get("log", ""))
         tail = read_tail(log_path, 400) if log_path.name else []
         prog = install_progress(tail)
+        prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
                "log": str(log_path), **prog}
         if not running:
@@ -852,6 +931,35 @@ class Strata:
             out["result"] = "running"
         out["last_lines"] = tail[-12:]
         return out
+
+
+def combined_progress(prog: dict, job: dict) -> dict:
+    """One total for the whole model: the bytes of all its files (finished, partial and the one in flight, read from the
+    model's folder) over the download size, instead of each file's own 0-100% (a two-file model went 70 GB -> 0 -> up
+    again). Only while the download step runs; later steps are not a download."""
+    folder, total = job.get("folder"), job.get("total_gb")
+    step = str(prog.get("step") or "")
+    if not folder or not total or not step.startswith("5/"):
+        prog.pop("download", None)
+        return prog
+    done = 0
+    try:
+        for entry in os.scandir(folder):
+            if entry.is_file() and (entry.name.endswith(".gguf") or entry.name.endswith(".part")):
+                done += entry.stat().st_size
+    except OSError:
+        pass
+    if not done:                                        # nothing on disk yet: the log's own line is all there is
+        return prog
+    done_gb = min(done / 1e9, float(total))
+    prog["download"] = {"file": "model files", "done_gb": round(done_gb, 3), "total_gb": float(total),
+                        "remaining_gb": round(max(0.0, float(total) - done_gb), 3),
+                        "percent": min(99, int(100 * done_gb / float(total))) if total else 0}
+    # The parts of the whole job, for a progress bar that sums them (the job that fetches the engine adds its own part):
+    # {kind, name, done_gb, total_gb, state}
+    prog["parts"] = [{"kind": "model", "name": "Model files", "done_gb": prog["download"]["done_gb"],
+                      "total_gb": float(total), "state": "downloading"}]
+    return prog
 
 
 def install_progress(lines: list[str]) -> dict:
@@ -970,6 +1078,13 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                         "Read-only.",
          "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
          "annotations": ro},
+        {"name": "strata_remove", "title": "Delete an installed model",
+         "description": "Delete an installed model's own files (its model GGUFs, its pack folder, its run config) and nothing "
+                        "another installed model still uses (a shared MTP draft or PLE file). Without confirm=true it only "
+                        "returns the plan (what would be removed and how big, what is kept). Stop the model first.",
+         "inputSchema": {"type": "object", "additionalProperties": False, "required": ["model"],
+                         "properties": {"model": installed_model, "confirm": {"type": "boolean"}}},
+         "annotations": {"readOnlyHint": False, "destructiveHint": True}},
         {"name": "strata_install", "title": "Install Strata",
          "description": "Install a Strata model on this PC by running Strata's setup non-interactively in the "
                         "background (Python packages, the engine, a 58-111 GB model download, preparation, start "
@@ -1008,6 +1123,9 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                          "Strata folder). Only the current data folder, a folder inside the Strata "
                                          "folder, or a new absolute path whose last folder is named Strata... "
                                          "(e.g. D:\\Strata-data) outside system folders"},
+             "gguf_dir": {"type": "string", "maxLength": 260,
+                          "description": "a folder that already holds this model's GGUF files under their original names: setup "
+                                         "checks them (size and SHA-256) and does not download them again"},
              "confirm": {"type": "boolean", "description": "true = really start the install (after the user agreed "
                                                            "to the plan and the download size)"},
              "cancel": {"type": "boolean", "description": "true = stop the install in progress"}}},
@@ -1149,6 +1267,39 @@ class Tools:
                             "gpus": [{k: g.get(k) for k in ("index", "name", "vram_gb", "usable")}
                                      for g in hw.get("gpus", [])]}}
 
+    # ---- strata_remove
+    def strata_remove(self, model=None, confirm=False) -> dict:
+        s = self.s
+        config = s.find_config(model)
+        plan = s.removal_plan(config)
+        if not confirm:
+            return {"summary": f"Plan: delete {plan['model']} ({plan['gb']:.1f} GB). Nothing was done yet.", "plan": plan}
+        with s.lock:
+            job = s.install_job()
+            if job and job["running"]:
+                raise ToolError("an install is running: wait for it to finish or stop it first")
+            tracked = s.tracked_server()
+            if tracked and not tracked.get("ended") and tracked.get("model") == plan["model"]:
+                raise ToolError("this model is running: stop it first")
+            failed = []
+            for item in sorted(plan["remove"], key=lambda x: (x["path"] == str(config), x["path"])):
+                p = Path(item["path"])
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    else:
+                        p.unlink()
+                except OSError as e:
+                    failed.append(f"{p.name}: {e}")
+            files, dirs = s.model_paths(s.read_config(config)) if config.exists() else ([], [])
+            for p in {x.parent for x in [Path(i["path"]) for i in plan["remove"]] if x.suffix == ".gguf"}:
+                try:
+                    p.rmdir()                           # the model's own folder, when nothing else is in it
+                except OSError:
+                    pass
+        return {"summary": f"Deleted {plan['model']} ({plan['gb']:.1f} GB)" + (f"; could not remove {len(failed)} item(s)" if failed else ""),
+                "plan": plan, "failed": failed}
+
     # ---- strata_install
     def check_data_dir(self, raw: str) -> Path:
         s = self.s
@@ -1177,7 +1328,8 @@ class Tools:
         return p
 
     def strata_install(self, family=None, model=None, context=None, vision=None, kv=None, gpu=None, gpus=None,
-                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False) -> dict:
+                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
+                       gguf_dir=None) -> dict:
         s = self.s
         with s.lock:
             job = s.install_job()
@@ -1208,7 +1360,7 @@ class Tools:
                                 "fix the problem above and call strata_install again with confirm=true (finished "
                                 "steps are skipped)"}
             plan, args = self.install_plan(family, model, context, vision, kv, gpu, gpus, backend, low_ram, port,
-                                           data_dir)
+                                           data_dir, gguf_dir)
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 raise ToolError("Strata is running (started by strata_start): stop it first with strata_stop - setup "
@@ -1222,7 +1374,7 @@ class Tools:
                 raise ToolError(plan["disk_short"])
             return self.launch_install(plan, args)
 
-    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir):
+    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None):
         s = self.s
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
@@ -1272,7 +1424,7 @@ class Tools:
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
-        partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
+        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
         need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
@@ -1287,6 +1439,11 @@ class Tools:
                         ("--data-dir", str(target) if data_dir else None)):
             if v is not None:
                 args += [flag, str(v)]
+        if gguf_dir:
+            local = Path(os.path.expandvars(gguf_dir)).expanduser()
+            if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
+                raise ToolError("gguf_dir must be an existing absolute folder")
+            args += ["--gguf-dir", str(local)]
         if backend in ("cuda", "hip"):
             args += ["--backend", backend]
         fit = None
@@ -1297,7 +1454,8 @@ class Tools:
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
                 "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
-                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "disk_free_gb": free,
+                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "model_folder": str(have_dir),
+                "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
                 "setup_command": ("START-HERE.bat " if WIN else "./setup.sh ") + " ".join(args),
                 "takes": "about 20-90 minutes, mostly the download; the PC stays usable",
@@ -1318,7 +1476,8 @@ class Tools:
         log_path = s.state_dir / "setup.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n===== strata-mcp: install {plan['title']} at {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
-        spec = {"job": job_id, "root": str(s.root), "python": s.run_python(), "base_python": sys.executable,
+        spec = {"job": job_id, "root": str(s.root), "src": str(s.src), "control": CONTROL,
+                "python": s.run_python(), "base_python": sys.executable,
                 "create_venv": s.python_override is None and not s.venv_python().exists(),
                 "args": args, "result": str(s.state_dir / "install-result.json")}
         spec_path = s.state_dir / "install-job.json"
@@ -1333,7 +1492,8 @@ class Tools:
         if ident is None and p.poll() and s.state("install-result").get("job") != job_id:
             raise ToolError("setup did not start: " + " | ".join(read_tail(log_path, 5)))
         s.save_state("install", {"job": job_id, "pid": p.pid, "ident": ident, "log": str(log_path),
-                                 "model": plan["model"], "family": plan["family"],
+                                 "model": plan["model"], "family": plan["family"], "folder": plan.get("model_folder"),
+                                 "total_gb": plan.get("download_gb"),
                                  "started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": args})
         return {"summary": f"Install of {plan['title']} started in the background (about 20-90 minutes, mostly the "
                            f"{plan['download_gb']:.0f} GB download). Call strata_install again to see the progress; "
@@ -1712,6 +1872,7 @@ def install_job(spec_path: str) -> int:
         os.replace(tmp, result)
 
     py = Path(spec["python"])
+    src = Path(spec.get("src") or root)
     try:
         if spec.get("create_venv"):
             venv = root / ".venv"
@@ -1727,10 +1888,18 @@ def install_job(spec_path: str) -> int:
                           "once in a terminal", flush=True)
                     record(exit_code=1, ended=time.strftime("%Y-%m-%d %H:%M:%S"))
                     return 1
-        cmd = [str(py), str(root / "setup.py"), *spec["args"]]
+        cmd = [str(py), str(src / "setup.py"), *spec["args"]]
         print("strata-mcp: running " + " ".join(cmd), flush=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        p = subprocess.Popen(cmd, cwd=str(root), stdin=subprocess.DEVNULL, env=env)
+        if spec.get("control"):                         # the app: the installer's own mode, writing to `root`
+            env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(root), PYTHONNOUSERSITE="1")
+            for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+                env.pop(key, None)
+            # This job is the explicit install the user asked for (it downloads model files and the preparation sources). The
+            # server that started it, and every start or serve, keep STRATA_NO_ACQUIRE; setup.py's CONTROL mode still runs
+            # no pip, git, compiler or engine fetch.
+            env.pop("STRATA_NO_ACQUIRE", None)
+        p = subprocess.Popen(cmd, cwd=str(src if spec.get("control") else root), stdin=subprocess.DEVNULL, env=env)
         record(child_pid=p.pid, child_ident=proc_identity(p.pid))
         rc = p.wait()
     except Exception as e:                              # noqa: BLE001
@@ -1745,6 +1914,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Strata's MCP server (stdio): install, start, check and stop Strata "
                                              "from an AI assistant. See docs/MCP_SERVER.md.")
     ap.add_argument("--root", help="the Strata folder (default: the one this file is in)")
+    ap.add_argument("--src", help="where setup.py, tools/ and serve/ are, when that is not the Strata folder (the app)")
     ap.add_argument("--install-job", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.install_job:
@@ -1753,12 +1923,13 @@ def main(argv=None) -> int:
         log("Python 3.10 or newer is needed")
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
-    if not (root / "setup.py").is_file() or not (root / "serve" / "server.py").is_file():
-        log(f"{root} is not a Strata folder (no setup.py / serve/server.py)")
+    src = Path(a.src).expanduser().resolve() if a.src else root
+    if not (src / "setup.py").is_file() or not (src / "serve" / "server.py").is_file():
+        log(f"{src} is not a Strata folder (no setup.py / serve/server.py)")
         return 2
     out = sys.stdout.buffer
     sys.stdout = sys.stderr                             # stray prints must never corrupt the protocol stream
-    server = McpServer(Strata(root), out)
+    server = McpServer(Strata(root, src), out)
     log(f"ready (Strata folder {root})")
     try:
         server.serve(sys.stdin.buffer)

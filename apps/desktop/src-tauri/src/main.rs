@@ -239,6 +239,22 @@ fn pick_port() -> Result<u16, String> {
     Ok(port)
 }
 
+/// The port the app prefers. The window's origin is `http://127.0.0.1:<port>`, and the browser storage that holds the
+/// theme, text size, language and the chat list belongs to that origin, so a port that changed on every launch lost all
+/// of it. The preferred port is fixed; only when something else holds it does the app fall back to a free one (and that
+/// launch starts with empty storage, as before).
+const PREFERRED_PORT: u16 = 47831;
+
+fn pick_stable_port() -> Result<u16, String> {
+    match TcpListener::bind(("127.0.0.1", PREFERRED_PORT)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(PREFERRED_PORT)
+        }
+        Err(_) => pick_port(),
+    }
+}
+
 /// Locate a bundled resource.
 ///
 /// In a packaged `.app` Tauri places `bundle.resources` under `Contents/Resources`. During
@@ -418,7 +434,7 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     }
     let node = node_binary(&res)?;
 
-    let port = pick_port()?;
+    let port = pick_stable_port()?;
 
     let mut cmd = Command::new(&node);
     cmd.arg(&entry)
@@ -814,6 +830,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_origin_is_stable_unless_the_port_is_taken() {
+        // free (or already ours from a previous run): the same port every launch, so browser storage survives a restart
+        let first = pick_stable_port().unwrap();
+        let second = pick_stable_port().unwrap();
+        assert_eq!(first, second);
+        // held by another program: a different free port, not a failure
+        if first == PREFERRED_PORT {
+            let held = TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).unwrap();
+            let fallback = pick_stable_port().unwrap();
+            assert_ne!(fallback, PREFERRED_PORT);
+            drop(held);
+        }
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("strata-desktop-{name}-{}", std::process::id()));

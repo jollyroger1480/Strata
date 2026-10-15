@@ -6,6 +6,7 @@ import { ContextRing } from './ContextRing';
 import { Popover } from './Popover';
 import { chatMetrics, compactTokens, elapsed } from '../lib/chat-metrics';
 import { useStore } from '../lib/store';
+import { useNative } from '../lib/native';
 import type { Session } from '../lib/types';
 function Chip({ icon, visual, label, title, children }: {
     icon?: IconName;
@@ -46,7 +47,11 @@ export function ChatTelemetry({ session }: {
 }) {
     const monitor = useStore(s => s.monitor);
     const engine = useStore(s => s.engine);
-    const m = chatMetrics(session, monitor, engine ? contextTokens(engine.beginner.contextLength) : undefined);
+    // The context shown is the one the loaded model runs with (the engine's own --max-context), not a catalog or settings default.
+    const native = useNative();
+    const running = native?.instances.find(i => i.id === native.defaultId && i.status === 'ready') ?? native?.instances.find(i => i.status === 'ready');
+    const runningContext = running ? Number(running.metrics?.engine?.max_context) || running.context || undefined : undefined;
+    const m = chatMetrics(session, monitor, runningContext ?? (engine ? contextTokens(engine.beginner.contextLength) : undefined));
     const speed = useCalmSpeed(m.speed, session?.id ?? null, m.streaming);
     if (!m.hasReplies)
         return null;

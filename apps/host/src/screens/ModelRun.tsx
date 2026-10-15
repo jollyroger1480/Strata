@@ -23,6 +23,7 @@ import { applyImageModel, getState, lifecycleStatus, loadRuntimeModel, loadVaria
 import type { ImageModelChoice, RuntimeModels, RuntimeModel } from '../lib/types';
 import { useNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
+import { NativeLocalModel } from '../components/NativeLocalModel';
 import { parseLocation } from '../lib/router';
 type Issue = {
     level: 'error' | 'warn';
@@ -33,6 +34,8 @@ export function ModelRunScreen() {
     const native = useNative();
     const location = parseLocation(window.location.hash), entry = location.param;
     const [other, setOther] = useState(entry === 'local' || entry === 'local-import'), [importFirst, setImportFirst] = useState(entry === 'local-import');
+    if (native && other)
+        return <NativeLocalModel onBack={() => { setOther(false); setImportFirst(false); }}/>;
     if (native && !other)
         return <NativeModels onOtherModels={() => setOther(true)} onImport={() => { setImportFirst(true); setOther(true); }}/>;
     return <><LegacyModelRunScreen importFirst={importFirst} initialVariant={location.query.get('variant') ?? undefined}/>{tr(other ? <button className="st-btn native-return" onClick={() => setOther(false)}>{tr("Strata optimized models")}</button> : null)}</>;

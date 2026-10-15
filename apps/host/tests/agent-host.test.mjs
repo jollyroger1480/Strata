@@ -26,7 +26,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function startHost(t, { home, ws, harness = HARNESS } = {}) {
   const port = await freePort();
-  const env = { ...process.env, STRATA_HOME: home, STRATA_PORT: String(port), STRATA_WORKSPACE: ws, STRATA_REAL_ENGINE: '0' };
+  const env = { ...process.env, STRATA_HOME: home, STRATA_PORT: String(port), STRATA_WORKSPACE: ws, STRATA_REAL_ENGINE: '0', STRATA_COMPONENTS_DIR: join(home, 'components') };
   if (harness) env.STRATA_HARNESS_DIR = harness; else delete env.STRATA_HARNESS_DIR;
   const child = spawn(process.execPath, [HOST], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let log = '';

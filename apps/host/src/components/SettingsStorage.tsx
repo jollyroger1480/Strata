@@ -5,10 +5,12 @@ import { changeModelDirectory, getState, lifecycleStatus, removeVariant, runtime
 import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { sizeGb } from '../lib/format';
 import { useNative } from '../lib/native';
+import { NativeDeleteDialog } from './NativeDelete';
 export function SettingsStorage() {
     const state = useStore(s => s);
     const native = useNative();
     const [selected, setSelected] = useState<string | null>(null);
+    const [nativeDeleting, setNativeDeleting] = useState<string | null>(null);
     const [pending, setPending] = useState(false), [error, setError] = useState('');
     const [editing, setEditing] = useState(false), [directory, setDirectory] = useState('');
     const [directoryPending, setDirectoryPending] = useState(false), [directoryError, setDirectoryError] = useState(''), [notice, setNotice] = useState('');
@@ -95,6 +97,10 @@ export function SettingsStorage() {
             ...versions.map(v => ({ value: v.id, label: `${v.local ? v.name : v.family} · ${v.quant} · ${sizeGb(v.diskGb)}${v.local ? ' · Local' : ''}`, disabled: pickerVersionState(v, library?.loaded ?? null).busy })),
         ]} onChange={id => { setError(''); setSelected(id); }}/>
     </Field>
+    {tr(native?.installed?.models.length ? <Field label={tr("Downloaded models")} hint={tr("{0} on this computer. Choose a version to delete its files.", [sizeGb((native.installed.models).reduce((n, m) => n + (m.diskGb ?? 0), 0))])}>
+      <div className="stack">{tr(native.installed.models.map(m => <div className="row" key={m.model}><span><strong>{tr(m.model_name || m.model)}</strong> <small className="muted">{tr(m.model)} · {tr(sizeGb(m.diskGb ?? 0))}{tr(native.instances.some(i => i.model === m.model) ? <> · {tr('Loaded')}</> : null)}</small></span><Btn size="sm" variant="danger" disabled={!!native.jobs.some(j => j.state === 'running')} onClick={() => setNativeDeleting(m.model)}>{tr("Delete")}</Btn></div>))}</div>
+    </Field> : null)}
+    <NativeDeleteDialog id={nativeDeleting} onClose={() => setNativeDeleting(null)}/>
     <Dialog open={!!selected} compact title={tr(version?.local ? 'Remove from Strata?' : `Delete ${version?.quant ?? 'model version'}?`)} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr("Keep version")}</Btn><Btn variant="danger" disabled={pending || unavailable} onClick={() => void remove()}>{tr(pending ? 'Working…' : version?.local ? 'Remove model' : 'Delete version')}</Btn></>}>
       <p>{tr(version ? `${version.local ? version.name : version.family} · ${version.quant} · ${sizeGb(version.diskGb)}` : 'This version is no longer downloaded.')}</p>
       {tr(version ? <p className="small muted storage-delete-note">{tr(version.local ? `${running ? 'The model will be unloaded and removed from Strata.' : 'The model will be removed from Strata.'} Your original GGUF files stay in their folder.` : `${running ? 'The running model will be unloaded and its files deleted.' : 'Its files will be deleted from this computer.'} You can download it again in Models.`)}</p> : null)}

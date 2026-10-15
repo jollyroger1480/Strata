@@ -11,7 +11,8 @@
       // Set the saved appearance before CSS and logo images are painted.
       try {
         const saved = JSON.parse(localStorage.getItem('strata.prefs.v2') || localStorage.getItem('strata.prefs.v1') || '{}');
-        const theme = saved.theme === 'dark' || (saved.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+        const choice = saved.theme ?? 'system';
+        const theme = choice === 'dark' || (choice === 'system' && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
         document.documentElement.dataset.theme = theme;
         document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#0e1113' : '#f9fafb';
       } catch { document.documentElement.dataset.theme = 'light'; }

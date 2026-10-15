@@ -89,6 +89,14 @@ export function controlEnvironment(control, { env = process.env, components = co
   return result;
 }
 
+/**
+ * The environment of the installer process (tools/strata_mcp.py): Control's, with acquiring still forbidden for the process
+ * itself. Only the install job it starts when the user asks to download a model lifts that for its own children.
+ */
+export function installerEnvironment(control, { env = process.env, installDir, components = componentsDirectory({ env }) } = {}) {
+  return { ...controlEnvironment(control, { env, components }), STRATA_CONTROL_INSTALL: '1', ...(installDir ? { STRATA_INSTALL_DIR: installDir } : {}) };
+}
+
 export class ControlError extends Error {
   constructor(message, { code = 'control_failed', exitCode = null, output = null } = {}) {
     super(message);
@@ -186,6 +194,12 @@ export function createControl({ control = findControl(), env = process.env, run 
       const result = await call(['models', 'list', '--installed', ...(installDir ? ['--install-dir', installDir] : []), '--output', 'json'], { timeoutMs: 60_000 });
       if (result.code !== 0 || !result.json) throw failure(result, 'The installed models could not be read.');
       return result.json;
+    },
+    /** What a local GGUF folder or file holds, without touching it: the model it is, and why it cannot be used when it cannot. */
+    async importPlan(path) {
+      const result = await call(['models', 'import', path, '--plan', '--output', 'json'], { timeoutMs: 120_000 });
+      if (result.json && result.code === 0) return result.json.plan ?? result.json;
+      throw failure(result, 'The files could not be checked.');
     },
     async saveProfile(name, configPath) {
       const listed = await call(['profile', 'list', '--output', 'json'], { timeoutMs: 20_000 });

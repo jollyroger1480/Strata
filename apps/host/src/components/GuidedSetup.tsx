@@ -12,6 +12,7 @@ import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { completeSetup, completeSetupStep, go, newSession, openSetup, selectRemoteModel, setSettingsSection, useStore } from '../lib/store';
 import type { LocalModelFolder, SetupState } from '../lib/types';
 import { downloadCounter, modelFolderLabel, onboardingError } from '../lib/onboarding-download';
+import { installProgress, useDownloadEta } from '../lib/download-eta';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
@@ -22,10 +23,10 @@ export function GuidedSetup() {
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
     const saved = !setup?.complete && !setup?.choices?.onboarding?.manual ? setup?.choices?.onboarding : undefined;
     const [step, setStep] = useState(saved?.manual || setup?.complete ? 1 : saved?.step ?? 1);
-    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation.family ?? native?.catalog?.families[0]?.family ?? '');
+    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation?.family ?? native?.catalog?.families?.[0]?.family ?? '');
     const initialFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family));
-    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
-    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation.context ?? 32768);
+    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation?.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
+    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
     const [vision, setVision] = useState(saved?.vision ?? false), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
     const [installJobId, setInstallJobId] = useState(saved?.installJobId ?? ''), [tuneJobId, setTuneJobId] = useState(saved?.tuneJobId ?? '');
@@ -66,7 +67,7 @@ export function GuidedSetup() {
                 navigate('chat', undefined, { settings: '1' });
             }
             else
-                go(manual ? 'models' : 'chat');
+                go(manual || preparing ? 'models' : 'chat');
         }
         catch (e) {
             leaving.current = false;
@@ -141,7 +142,7 @@ export function GuidedSetup() {
             await persist(4, { tuneJobId: result.id });
         });
     }
-    const progress = installJob?.result?.install?.download;
+    const progress = installProgress(installJob?.result?.install);
     const preparing = installJob?.state === 'running';
     const stopped = installJob && ['error', 'cancelled'].includes(installJob.state);
     useEffect(() => {
@@ -161,6 +162,7 @@ export function GuidedSetup() {
         return () => { cancelled = true; };
     }, [step, plan, preparing, native?.available, version?.id, context, directory]);
     const counter = downloadCounter(plan?.plan?.download_gb ?? version?.download_gb, progress, preparing);
+    const eta = useDownloadEta(preparing ? progress : undefined, installJob?.id);
     const title = step === 1 ? 'State of the art. At home.' : step === 2 ? 'Select the model you want to run.' : step === 3 ? 'Downloading the model...' : tuneJob?.state === 'running' ? 'A little tuning. A better fit.' : 'How you would like to work with Strata?';
     function changeDownloadFolder() { void perform(async () => { await advance(2); setFolderOpen(true); }); }
     return <div className="setup guided-onboarding" data-step={step}>
@@ -183,7 +185,7 @@ export function GuidedSetup() {
     </> : <div className="onboard-engine-connect"><Icon name="models" size={24}/><strong>{tr("Connect your Strata installation")}</strong><Btn onClick={() => void skip(false, 'Engine')}>{tr("Connect engine")}</Btn></div>)}
    </div> : step === 3 ? <div className="onboard-prepare-stage">
     <section className="onboard-download"><div className="onboard-download-identity"><Icon name="models" size={19}/><strong>{tr(selectedFamily?.title)}</strong><span>{tr(version ? catalogVersionLabel(version) : '')}</span><small>{tr(version?.model)}</small></div><OnboardingArt kind="download" progress={progress?.percent ?? 0} counter={counter}/><div className="onboard-download-info">
-     {tr(preparing ? <div><strong className="onboard-download-status">{tr(progress ? 'Downloading model files…' : 'Preparing your model…')}</strong><div className="onboard-progress" data-indeterminate={!progress}>{tr(progress ? <progress max={100} value={progress.percent ?? 0} aria-label={tr("Current file download progress")}/> : <span />)}</div><div className="onboard-progress-meta"><span>{tr(progress ? `${progress.percent ?? 0}% of this file` : 'Getting files ready…')}</span><button disabled={pending} onClick={() => void perform(async () => { await nativeAction(`operations/${installJob!.id}/cancel`); })}>{tr("Stop")}</button></div></div> : <>{tr(stopped ? <OnboardingError message={installJob?.error ?? 'Download stopped. Ready when you are.'} onFolder={changeDownloadFolder}/> : null)}{tr(plan?.plan?.disk_short ? <OnboardingError message={plan.plan.disk_short} onFolder={changeDownloadFolder}/> : null)}</>)}
+     {tr(preparing ? <div><strong className="onboard-download-status">{tr(progress ? 'Downloading model files…' : 'Preparing your model…')}</strong><div className="onboard-progress" data-indeterminate={!progress}>{tr(progress ? <progress max={100} value={progress.percent ?? 0} aria-label={tr("Current file download progress")}/> : <span />)}</div><div className="onboard-progress-meta"><span>{tr(progress ? `${progress.percent ?? 0}%${Number.isFinite(progress.done_gb) && Number.isFinite(progress.total_gb) ? ` · ${progress.done_gb!.toFixed(1)} / ${progress.total_gb!.toFixed(1)} GB` : ''}` : 'Getting files ready…')}</span><div className="onboard-progress-actions">{tr(eta ? <span aria-live="off">{eta}</span> : null)}<button disabled={pending} onClick={() => void perform(async () => { await nativeAction(`operations/${installJob!.id}/cancel`); })}>{tr("Stop")}</button></div></div></div> : <>{tr(stopped ? <OnboardingError message={installJob?.error ?? 'Download stopped. Ready when you are.'} onFolder={changeDownloadFolder}/> : null)}{tr(plan?.plan?.disk_short ? <OnboardingError message={plan.plan.disk_short} onFolder={changeDownloadFolder}/> : null)}</>)}
      <small className="onboard-download-location" title={tr(folder)}><Icon name="folder" size={16}/><span><span>{tr("Save to")}</span><strong>{tr(modelFolderLabel(folder))}</strong></span>{tr(!preparing ? <button type="button" onClick={changeDownloadFolder}>{tr("Change")}</button> : null)}</small>
     </div></section><OnboardingTour page={tour} onChange={setTour}/>
    </div> : <div className="onboard-tune-stage">
