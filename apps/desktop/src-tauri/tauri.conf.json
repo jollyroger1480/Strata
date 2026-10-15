@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Strata",
+  "version": "0.1.0",
+  "identifier": "ai.strata.desktop",
+  "build": {
+    "frontendDist": "../../host/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app",
+      "nsis",
+      "appimage",
+      "deb"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Local AI, tuned to one model.",
+    "longDescription": "Strata runs one local model, tuned to your machine. Desktop and Terminal share the same model inventory, profiles, runtime and agent sessions.",
+    "resources": {
+      "../../host/dist": "host/dist",
+      "../../host/server": "host/server",
+      "../../host/package.json": "host/package.json",
+      "resources/node": "node"
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "entitlements.plist"
+    },
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "languages": [
+          "English"
+        ]
+      }
+    }
+  },
+  "plugins": {}
+}
