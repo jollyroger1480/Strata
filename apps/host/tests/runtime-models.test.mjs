@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRuntimeModels,reservationBudget,rebalanceReservations} from '../server/runtime-models.mjs';
@@ -46,7 +47,7 @@ test('load is rejected when unavailable, unsupported, or native multi-instance c
 
 // Monitor scoping must never carry one model's context or cache into another.
 import {build} from 'esbuild';
-const bundled=await build({entryPoints:[new URL('../src/lib/runtime-models.ts',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'});
+const bundled=await build({entryPoints:[fileURLToPath(new URL('../src/lib/runtime-models.ts',import.meta.url))],bundle:true,write:false,platform:'node',format:'esm'});
 const {scopedMonitor}=await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 test('Monitor keeps per-model requests/context separate and host RAM readings shared',()=>{
  const {service,load}=fixture();const a=load(['gpu-a']).instance,b=load(['gpu-b']).instance;

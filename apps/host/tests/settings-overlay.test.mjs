@@ -1,9 +1,10 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 
-const { outputFiles } = await build({ entryPoints: [new URL('../src/lib/router.ts', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')], bundle: true, write: false, platform: 'node', format: 'cjs' });
+const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/router.ts',import.meta.url))], bundle: true, write: false, platform: 'node', format: 'cjs' });
 const browserWindow = { location: { hash: '#/chat/a' }, matchMedia: () => ({ matches: false }) };
 let transitions = 0;
 const documentStub = { documentElement: { dataset: {} }, startViewTransition: () => { transitions++; return { ready: Promise.resolve(), updateCallbackDone: Promise.resolve(), finished: Promise.resolve() }; } };

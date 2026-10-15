@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,7 +9,7 @@ import { createServer } from 'node:net';
 import { readGGUF } from '../server/gguf.mjs';
 import { browseLocalModels, inspectLocalModel, createLocalModels } from '../server/local-models.mjs';
 import { ggufFixture } from './helpers/local-gguf.mjs';
-const cwd=new URL('..',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1'),pause=ms=>new Promise(r=>setTimeout(r,ms));
+const cwd=fileURLToPath(new URL('..',import.meta.url)),pause=ms=>new Promise(r=>setTimeout(r,ms));
 function fixture(t){const root=mkdtempSync(join(tmpdir(),'strata-local-model-'));t.after(()=>rmSync(root,{recursive:true,force:true}));return root;}
 
 test('bounded reader gets real metadata and rejects fake extensions, partial tensors, unsupported versions and duplicate metadata',t=>{

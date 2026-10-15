@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 /**
  * The tuning and Time-skip client routes.
  *
@@ -20,8 +21,8 @@ import { mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const HOST = new URL('../server/index.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
-const REPO = new URL('../../..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
+const HOST = fileURLToPath(new URL('../server/index.mjs',import.meta.url));
+const REPO = fileURLToPath(new URL('../../..',import.meta.url));
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

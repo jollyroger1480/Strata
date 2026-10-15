@@ -1,8 +1,9 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build, transform } from 'esbuild';
 import { readFile } from 'node:fs/promises';
-const {outputFiles}=await build({entryPoints:[new URL('../src/lib/syntax.ts',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,platform:'node',format:'esm',write:false});
+const {outputFiles}=await build({entryPoints:[fileURLToPath(new URL('../src/lib/syntax.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',write:false});
 const {codeLanguage,highlightedLines}=await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const source=await transform(await readFile(new URL('../src/lib/preview-layout.ts',import.meta.url),'utf8'),{loader:'ts',format:'esm'});
 const {previewWidth,pointerPreviewFraction,DEFAULT_PREVIEW_FRACTION}=await import(`data:text/javascript;base64,${Buffer.from(source.code).toString('base64')}`);

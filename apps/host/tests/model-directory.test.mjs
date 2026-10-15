@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,7 +9,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { locateModelFile } from '../server/model-files.mjs';
 import { createImageModels, IMAGE_CATALOG } from '../server/image-models.mjs';
-const cwd = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
+const cwd = fileURLToPath(new URL('..',import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function fixture(t) { const home=realpathSync(mkdtempSync(join(tmpdir(),'strata-directory-'))); t.after(()=>rmSync(home,{recursive:true,force:true})); return home; }
 

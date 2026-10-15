@@ -1,8 +1,9 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
-const { outputFiles } = await build({ entryPoints: [new URL('../src/lib/commands.ts', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')], bundle: true, write: false, platform: 'node', format: 'cjs', plugins: [{ name: 'test-store', setup(build) { build.onResolve({ filter: /^\.\/store$/ }, () => ({ path: 'store', namespace: 'test-store' })); build.onLoad({ filter: /.*/, namespace: 'test-store' }, () => ({ contents: `
+const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/commands.ts',import.meta.url))], bundle: true, write: false, platform: 'node', format: 'cjs', plugins: [{ name: 'test-store', setup(build) { build.onResolve({ filter: /^\.\/store$/ }, () => ({ path: 'store', namespace: 'test-store' })); build.onLoad({ filter: /.*/, namespace: 'test-store' }, () => ({ contents: `
 export const getState = () => testStore.state;
 export const selectSession = id => { testStore.state.activeSession = id; testStore.calls.push(['select',id]); };
 export const go = (...args) => testStore.calls.push(['go',...args]);

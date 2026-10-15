@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,6 +32,6 @@ test('model deletion requires unloading, deletes files, and preserves installati
     const library=models.remove(id);
     assert.equal(fs.existsSync(file),false);assert.equal(fs.readFileSync(join(folder,'unrelated.txt'),'utf8'),'keep me');assert.equal(store.get().installed[id],undefined);
     assert.equal(library.variants.find(v=>v.id===id).state,'available');
-  `],{cwd:new URL('..',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1'),env:{...process.env,STRATA_HOME:directory,STRATA_MODELS_DIR:join(directory,'models'),STRATA_REAL_ENGINE:'0'},encoding:'utf8'});
+  `],{cwd:fileURLToPath(new URL('..',import.meta.url)),env:{...process.env,STRATA_HOME:directory,STRATA_MODELS_DIR:join(directory,'models'),STRATA_REAL_ENGINE:'0'},encoding:'utf8'});
   assert.equal(result.status,0,result.stderr||result.stdout);
 });
