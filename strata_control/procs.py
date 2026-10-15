@@ -328,7 +328,7 @@ def orphans_of(engine_exe: str) -> list[Ident]:
         return []
     mine = {os.getpid()}
     try:
-        mine.update(q.pid for q in psutil.Process().parents())
+        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1)    # pid 1 adopts orphans: it is not a starter
     except psutil.Error:
         pass
     found = []
@@ -341,7 +341,7 @@ def orphans_of(engine_exe: str) -> list[Ident]:
                 continue
             parent = p.info.get("ppid")
             if parent in mine:
-                continue                              # started by this server (or by one above it: a container's pid 1)
+                continue                              # started by this server (or by a process above it)
             if parent and parent != 1:
                 try:
                     q = psutil.Process(parent)
