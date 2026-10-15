@@ -13,6 +13,7 @@ import { exec } from './util.mjs';
 import { HOME } from './store.mjs';
 import { tarBinary } from './platform-paths.mjs';
 import { nowIso } from './util.mjs';
+import { require as requireAcquisition } from './acquisition.mjs';
 
 const ENGINE_DIR = join(HOME, 'engine');
 const RELEASES = 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8';
@@ -65,6 +66,7 @@ function assetMatcher() {
 }
 
 export async function findRelease() {
+  requireAcquisition('The llama.cpp engine');
   state.status = 'checking';
   state.stage = 'Looking up the current llama.cpp build';
   emit();
@@ -82,6 +84,7 @@ export async function findRelease() {
 }
 
 export async function install({ force = false } = {}) {
+  requireAcquisition('The llama.cpp engine');
   if (running) return running;
 
   running = (async () => {

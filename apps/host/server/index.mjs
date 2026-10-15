@@ -48,6 +48,9 @@ import { checkUpdates } from './updates.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
+import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
+import { forbidden as acquisitionForbidden } from './acquisition.mjs';
+import { timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { validateChatImages } from './chat-images.mjs';
@@ -74,7 +77,10 @@ const WORKSPACE = process.env.STRATA_WORKSPACE ?? process.cwd();
 const hub = new EventHub();
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, changed: value => hub.send('providers', value) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
-const native=createNativeControl({directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+/* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
+const CONTROL = findControl();
+const control = createControl({ control: CONTROL });
+const native=createNativeControl({control,directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
@@ -587,10 +593,10 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
 }
 
 // `HERE` is apps/host/server, so the repository root is three levels up (server -> host -> apps).
-const REPO_ROOT = resolve(HERE, '..', '..', '..');
+const REPO_ROOT = CONTROL ? CONTROL.dir : resolve(HERE, '..', '..', '..');
 // The interpreter that drives the job is the same one the launcher would pick, named explicitly so
 // a packaged run uses the runtime the bundle carries rather than whatever `python3` resolves to.
-const PYTHON = resolvePython({ repo: REPO_ROOT });
+const PYTHON = resolvePython({ repo: REPO_ROOT, control: CONTROL });
 const TS_PYTHON = PYTHON.command;
 const REVISE_SCRIPT = resolve(REPO_ROOT, 'integrations', 'harness', 'revise_once.py');
 // A revision attempt is an agent turn, performed by the Harness through the pinned integration
@@ -712,7 +718,7 @@ taskTimer.unref();
 const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
 const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
 const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, host: '127.0.0.1', port: tunnelPort });
-const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare') });
+const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare'), componentDirectory: join(componentsDirectory(), 'cloudflared') });
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure });
 await cloudflare.inspect();
 
@@ -919,6 +925,28 @@ async function api(req, res, path, method, url) {
     });
   }
 
+  // --- Strata Control: what the installed app runs on, and what it will not do ---------------------
+  if (path === '/api/control/status' && method === 'GET') {
+    const engine = control ? await control.engine().catch(e => ({ usable: false, notice: e.message })) : null;
+    return json(res, 200, {
+      packaged: process.env.STRATA_PACKAGED === '1',
+      control: CONTROL ? { dir: CONTROL.dir, python: CONTROL.python, version: control.version, bundle: CONTROL.bundle } : null,
+      engine,
+      componentsDir: componentsDirectory(),
+      acquisition: { forbidden: acquisitionForbidden(), env: process.env.STRATA_NO_ACQUIRE ?? null },
+    });
+  }
+  // The shell asks for a clean stop (engines this app started are stopped through Control) before it ends the process.
+  if (path === '/api/control/shutdown' && method === 'POST') {
+    const token = process.env.STRATA_SHUTDOWN_TOKEN ?? '';
+    const given = String(req.headers['x-strata-shutdown'] ?? '');
+    const same = token.length >= 32 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
+    if (!same) return error(res, 403, 'Not allowed.');
+    json(res, 202, { stopping: true });
+    setImmediate(() => void shutdown());
+    return;
+  }
+
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
   if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:native.state().version??setupState().app.version, engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
 
@@ -1123,7 +1151,7 @@ async function api(req, res, path, method, url) {
       const result = await engineInstall.install({ force: url.searchParams.get('force') === '1' });
       return json(res, 200, result);
     } catch (err) {
-      return error(res, 500, err.message, engineInstall.status());
+      return error(res, err.status ?? 500, err.message, { ...engineInstall.status(), error: err.message });
     }
   }
   if (path === '/api/engine/export' && method === 'GET') return json(res, 200, await engine.exportConfig());
@@ -1619,7 +1647,7 @@ let stopping=false;
 const shutdown = async () => {
   if(stopping)return;stopping=true;
   clearInterval(taskTimer);tasks.close();
-  const timeout=setTimeout(()=>process.exit(0),10000);timeout.unref();
+  const timeout=setTimeout(()=>process.exit(0),control?75000:10000);timeout.unref();   // stopping an engine through Control can take a while
   server.close();server.closeAllConnections?.();
   await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
