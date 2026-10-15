@@ -18,6 +18,7 @@
 #include "strata/platform/memory.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/core/batch_telemetry.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -10209,6 +10210,19 @@ int main(int argc, char** argv) {
         bool in_prompt_read = false;   // batch_step runs between a prompt's chunks: the adaptive tier stands still then
         int64_t bt_a_rounds0 = 0, bt_a_swapped0 = 0;   // the asynchronous tier's counters when the timed windows began
         Clock::time_point bt_start = Clock::now();
+        const char* batch_telemetry_env = std::getenv("STRATA_BATCH_TELEMETRY");
+        const bool batch_telemetry_enabled = batch_telemetry_env != nullptr &&
+                                             batch_telemetry_env[0] == '1' && batch_telemetry_env[1] == '\0';
+        strata::core::BatchWindowSampler batch_telemetry(batch_telemetry_enabled);
+        auto report_batch_window = [&](int processed_rows, int active_rows, bool idle, Clock::time_point started) {
+            if (!batch_telemetry_enabled) return;
+            const auto sample = batch_telemetry.complete(processed_rows, active_rows, idle, started, Clock::now());
+            if (!sample) return;
+            std::printf("BSTAT %lld %lld %lld %lld\n", (long long) sample->windows,
+                        (long long) sample->processed_rows, (long long) sample->active_rows,
+                        (long long) sample->elapsed_ms);
+            std::fflush(stdout);
+        };
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
@@ -10523,6 +10537,7 @@ int main(int argc, char** argv) {
                 bt_adapt_wait += msd(wa, Clock::now());
             }
             strata::core::progress().busy.store(was_busy);
+            report_batch_window(S, A, !batch_on(), w0);
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
                 const double L = (double) g.n_layers;
@@ -10573,6 +10588,7 @@ int main(int argc, char** argv) {
         // ---- --batch-groups: the slot groups pipelined through the stages (--batch-groups G > 1 with a layer split)
         const int n_pipe = (int) stages.size() + 1;
         const bool piped = o.batch > 0 && o.batch_groups > 1 && n_pipe > 1;
+        strata::core::StageInFlightSampler stage_in_flight(n_pipe, piped && batch_telemetry_enabled);
         if (piped && batch_mtp)   // #1413: said, not silent
             std::fprintf(stderr,
                          "strata generate: WARNING: --batch-groups %d runs the pipelined path, which builds one row per slot: "
@@ -10593,6 +10609,8 @@ int main(int argc, char** argv) {
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
             int S = 0;                      ///< slots in its window: up to its last active one (idle ones cost rows)
+            int active = 0;                  ///< live slots at launch; S can also include idle padding rows
+            Clock::time_point started;       ///< the group window's first stage launch
         };
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
@@ -10622,6 +10640,7 @@ int main(int argc, char** argv) {
                 const int r = vk.batch_poll(win_pool_fn, win_pool_user, err);
                 if (r < 0) { std::printf("ERR %s\n", err.c_str()); return false; }
                 if (r == 0) continue;
+                if (batch_telemetry_enabled) stage_in_flight.complete(k, Clock::now());
                 stage_group[(size_t) k] = -1;
                 PGroup& G = pg[(size_t) gi];
                 if (k + 1 < n_pipe) { G.stage = k + 1; G.since = pipe_tick; continue; }
@@ -10671,6 +10690,7 @@ int main(int argc, char** argv) {
                 }
                 ++bt_windows;
                 G.inflight = false;
+                report_batch_window(G.S, G.active, !pipe_inflight() && !batch_on(), G.started);
             }
             // start waiting groups on free stages, the longest waiting first; a new step on stage 0 round-robin
             for (int k = n_pipe - 1; k >= 0; --k) {
@@ -10692,7 +10712,11 @@ int main(int argc, char** argv) {
                     rr = pick + 1;
                     PGroup& G = pg[(size_t) pick];
                     G.S = 0;
-                    for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) G.S = t + 1;
+                    G.active = 0;
+                    for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) {
+                        G.S = t + 1;
+                        ++G.active;
+                    }
                     for (int t = 0; t < G.S; ++t) {
                         BSlot& sl = bs[(size_t) (pick * GS + t)];
                         G.tok[t] = sl.active ? sl.x : 0;
@@ -10701,11 +10725,13 @@ int main(int argc, char** argv) {
                     }
                     G.inflight = true;
                     G.stage = 0;
+                    if (batch_telemetry_enabled) G.started = Clock::now();
                     drive.d.failed = false;
                     apply_pending(false);
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
+                if (batch_telemetry_enabled) stage_in_flight.launch(k, Clock::now());
                 if (!stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
@@ -10713,6 +10739,15 @@ int main(int argc, char** argv) {
                 stage_group[(size_t) k] = pick;
             }
             if (drive.d.failed) { std::printf("ERR %s\n", drive.d.fail ? drive.d.fail : "the expert pool failed"); return false; }
+            if (batch_telemetry_enabled) {
+                const auto sample = stage_in_flight.sample(Clock::now(), !pipe_inflight() && !batch_on());
+                if (sample) {
+                    std::printf("PSTAT %zu %lld", sample->in_flight_us.size(), (long long) sample->elapsed_us);
+                    for (const int64_t busy : sample->in_flight_us) std::printf(" %lld", (long long) busy);
+                    std::printf("\n");
+                    std::fflush(stdout);
+                }
+            }
             if (!pipe_inflight() && !batch_on() && bt_windows > 0) {   // all idle: the timing line, as batch_step
                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
                 std::fprintf(stderr, "strata batch (pipelined, %d groups of %d): %lld group-steps, %lld rows in %.0f ms = "
