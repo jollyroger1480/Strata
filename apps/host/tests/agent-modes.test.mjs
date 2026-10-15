@@ -60,14 +60,14 @@ test('mode mapping: three presets, the strictest by default, unknown values fall
   assert.deepEqual(Object.keys(MODE_PRESETS), ['manual', 'plan', 'bypass']);
   assert.deepEqual([MODE_PRESETS.manual.sandbox, MODE_PRESETS.manual.approval], ['read-only', 'ask']);
   assert.deepEqual([MODE_PRESETS.plan.sandbox, MODE_PRESETS.plan.approval], ['read-only', 'never']);
-  assert.deepEqual([MODE_PRESETS.bypass.sandbox, MODE_PRESETS.bypass.approval], ['workspace-write', 'never']);
+  assert.deepEqual([MODE_PRESETS.bypass.sandbox, MODE_PRESETS.bypass.approval], ['danger-full-access', 'never']);
   for (const v of ['manual', 'plan', 'bypass']) assert.equal(modeOf(v), v);
   for (const v of [undefined, null, '', 'auto', 'accept-edits', 'danger-full-access', 'constructor']) assert.equal(modeOf(v), 'manual', String(v));
-  // No preset gives full access to the machine, and the profile names our three and nothing else.
+  // Only Bypass gives full access, and the profile names our three and nothing else.
   const entry = JSON.parse(buildProfile({ local: [] }).patch.split('\n').slice(1).join('\n')).find(e => e.id === 'permission');
   assert.deepEqual(Object.keys(entry.config.presets), ['strata-manual', 'strata-plan', 'strata-bypass']);
   assert.equal(entry.config.defaultPreset, 'strata-manual');
-  assert.ok(!Object.values(entry.config.presets).some(p => p.sandbox === 'danger-full-access'));
+  assert.deepEqual(Object.entries(entry.config.presets).filter(([, p]) => p.sandbox === 'danger-full-access').map(([k]) => k), ['strata-bypass']);
 });
 
 test('projection: under "never" no card ever offers Approve; "ask" marks the approved card', () => {
@@ -154,7 +154,7 @@ test('MODE Plan: a write is refused with no question, the file never appears, re
   assert.match(tools(read).at(-1).tool.result, /readable in plan mode/);
 });
 
-test('MODE Bypass: an in-workspace write runs without asking, and full access is still refused', { skip }, async t => {
+test('MODE Bypass is full access: in-workspace and outside writes run without asking', { skip }, async t => {
   const r = await rig(t);
   const frames = await r.run('m-bypass', 'SCRIPT:retrywrite free.txt hello', { mode: 'bypass' });
   assert.ok(!states(frames).includes('proposed'), 'Bypass asks nothing');
@@ -167,11 +167,16 @@ test('MODE Bypass: an in-workspace write runs without asking, and full access is
   assert.ok(!states(shell).includes('proposed'));
   assert.equal(lines(join(r.ws, 'free-shell.txt')), 1);
 
-  // Bypass does not hand out the machine: a call that asks for danger-full-access is refused without a prompt.
+  // Bypass is the Harness's full access with no prompts: a call that asks for danger-full-access runs, in the workspace or outside it.
   const wide = await r.run('m-bypass-wide', 'SCRIPT:tool wide.txt x', { mode: 'bypass' });
-  assert.ok(!states(wide).includes('proposed'));
-  assert.equal(existsSync(join(r.ws, 'wide.txt')), false);
-  assert.equal(states(wide).at(-1), 'denied');
+  assert.ok(!states(wide).includes('proposed'), 'full access asks nothing');
+  assert.equal(lines(join(r.ws, 'wide.txt')), 1);
+  assert.equal(states(wide).at(-1), 'done');
+  const outside = join(r.dir, 'outside-workspace.txt');
+  const out = await r.run('m-bypass-outside', `SCRIPT:tool ${outside} y`, { mode: 'bypass' });
+  assert.ok(!states(out).includes('proposed'));
+  assert.equal(lines(outside), 1, 'a path outside the workspace was written');
+  assert.equal(states(out).at(-1), 'done');
 });
 
 test('MODE the choice follows the chat: it changes on the next turn, keeps the session, and an unknown value is Manual', { skip }, async t => {

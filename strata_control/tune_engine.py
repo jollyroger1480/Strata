@@ -430,8 +430,9 @@ class EngineHarness:
             raise MeasurementError(f"the engine binary is not at {self.engine}")
         started = time.monotonic()
         try:
-            self._proc = subprocess.Popen(
-                self._argv(), cwd=str(self.cwd), env=self.env,
+            from serve import lifeline       # the engine ends with this process, however this process ends
+            self._proc = lifeline.popen(
+                self._argv(), "engine", cwd=str(self.cwd), env=self.env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1)
         except OSError as e:

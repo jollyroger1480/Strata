@@ -29,12 +29,12 @@ export const ASSUMED_API_CONTEXT = 128_000;
  * sandbox mode plus an approval policy; the Harness switches them with its own `/permission` command.
  *   manual  read-only sandbox + ask:   any change is denied by the sandbox until the user approves a one-shot widening
  *   plan    read-only sandbox + never: nothing can change, and the agent is told not to ask
- *   bypass  workspace-write + never:   changes inside the workspace without prompts; anything wider is refused
+ *   bypass  danger-full-access + never: the Harness's own full-access, never-ask bundle (its `danger-full-access` preset)
  */
 export const MODE_PRESETS = Object.freeze({
   manual: { key: 'strata-manual', sandbox: 'read-only', approval: 'ask', name: 'Manual', description: 'Asks before changing a file or running a command that changes anything.' },
   plan: { key: 'strata-plan', sandbox: 'read-only', approval: 'never', name: 'Plan', description: 'Read-only. Nothing is changed and no approval prompts appear.' },
-  bypass: { key: 'strata-bypass', sandbox: 'workspace-write', approval: 'never', name: 'Bypass', description: 'Changes inside the workspace without asking. Nothing outside the workspace.' },
+  bypass: { key: 'strata-bypass', sandbox: 'danger-full-access', approval: 'never', name: 'Bypass', description: 'Full access without approval prompts. Files and commands anywhere on this computer run without asking.' },
 });
 export const DEFAULT_MODE = 'manual';
 /** The preset for a chat's stored mode. Anything unknown (older values such as `auto`) gets the strictest ask-first mode. */

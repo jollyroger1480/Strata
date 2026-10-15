@@ -124,10 +124,17 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.code !== 0) throw failure(result, 'The model profile could not be saved.');
       return result.json;
     },
-    async start(name, { waitSeconds = 300 } = {}) {
-      const result = await call(['runtime', 'start', '--profile', name, '--wait', String(waitSeconds), '--output', 'json'], { timeoutMs: (waitSeconds + 60) * 1000 });
+    // The app owns the engines it starts: `--die-with-pid` makes the owner stop its engine (drained) when this host is
+    // gone, however the host ended (a crash, a kill, the shell's death). A Terminal's `runtime start` has no such tie.
+    async start(name, { waitSeconds = 300, dieWithPid = process.pid, drainSeconds = 15 } = {}) {
+      const result = await call(['runtime', 'start', '--profile', name, '--wait', String(waitSeconds), '--shutdown-timeout', String(drainSeconds), ...(dieWithPid ? ['--die-with-pid', String(dieWithPid)] : []), '--output', 'json'], { timeoutMs: (waitSeconds + 60) * 1000 });
       if (result.code !== 0 || !result.json?.ok) throw failure(result, 'The engine did not start.');
       return result.json;
+    },
+    /** End servers and engines Strata started whose owner is gone (each is re-checked by PID, start time and command line). */
+    async cleanup() {
+      const result = await call(['runtime', 'cleanup', '--output', 'json'], { timeoutMs: 120_000 });
+      return result.json ?? { ok: false, error: result.stderr };
     },
     async status(name) {
       const result = await call(['runtime', 'status', '--profile', name, '--output', 'json'], { timeoutMs: 30_000 });

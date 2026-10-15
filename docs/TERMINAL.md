@@ -56,6 +56,8 @@ python strata.py engine calibrate --profile four-gpu --plan --output json
 python strata.py serve --profile four-gpu --ready-file /absolute/path/strata-ready.json
 ```
 
+`strata serve` is the foreground form: Ctrl+C, a closing terminal, `kill` and a killed parent all end the server and its engine. `strata runtime start` is the background form: a service that keeps serving after the terminal closes and until `strata runtime stop` (`strata runtime cleanup` ends what a lost owner left behind). See [CLOSING.md](CLOSING.md) for every way of ending and what each one does on each OS.
+
 For a saved profile on POSIX, an owner-only local host can keep the server running and provide repeatable rerun commands:
 
 ```sh
