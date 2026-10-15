@@ -173,5 +173,10 @@ def check_state_file(path: Path) -> None:
         raise TransportError("the runtime state file is implausibly large")
     if hasattr(os, "getuid") and st.st_uid != os.getuid():
         raise TransportError("the runtime state file is owned by another user")
-    if st.st_mode & 0o077:
+    if WINDOWS:
+        # NTFS has no mode bits: the promise is a protected ACL naming this user only.
+        from strata_control.private_files import is_private
+        if not is_private(path):
+            raise TransportError("the runtime state file is readable by other users")
+    elif st.st_mode & 0o077:
         raise TransportError("the runtime state file is readable by other users")

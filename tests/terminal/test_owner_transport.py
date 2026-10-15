@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from strata_control import owner_transport as ot  # noqa: E402
+from strata_control.private_files import restrict_to_current_user  # noqa: E402
 
 
 class TestAddressing(unittest.TestCase):
@@ -40,6 +41,7 @@ class TestAddressing(unittest.TestCase):
         else:
             self.assertTrue(addr.endswith(".sock"))
 
+    @unittest.skipIf(ot.WINDOWS, "the Windows address is a placeholder; the listener picks the port")
     def test_address_is_stable_for_the_same_inputs(self):
         d = Path("/tmp/strata-runtime")
         self.assertEqual(ot.address_for(d, "default"), ot.address_for(d, "default"))
@@ -194,7 +196,7 @@ class TestStateFileValidation(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="strata-state-"))
         self.path = self.tmp / "default.json"
         self.path.write_text('{"token": "x"}')
-        os.chmod(self.path, 0o600)
+        restrict_to_current_user(self.path)
 
     def tearDown(self):
         import shutil
@@ -202,6 +204,13 @@ class TestStateFileValidation(unittest.TestCase):
 
     def test_a_private_regular_file_is_accepted(self):
         ot.check_state_file(self.path)
+
+    @unittest.skipUnless(ot.WINDOWS, "NTFS ACLs")
+    def test_a_state_file_with_an_inherited_acl_is_refused(self):
+        other = self.tmp / "inherited.json"
+        other.write_text("{}")  # a fresh file inherits the directory's entries (SYSTEM, Administrators)
+        with self.assertRaises(ot.TransportError):
+            ot.check_state_file(other)
 
     @unittest.skipIf(ot.WINDOWS, "POSIX permission bits")
     def test_a_world_readable_state_file_is_refused(self):
