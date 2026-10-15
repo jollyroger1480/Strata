@@ -159,7 +159,8 @@ def tree_of(app: App, slots=("app-1",)) -> tuple[list[procs.Ident], list[int]]:
         if state:
             pids.add(state["host_pid"])
     for r in procs.records():
-        pids.add(r["pid"])
+        if r.get("profile") in slots:                 # the app's own slots; a Terminal service is not part of the app's tree
+            pids.add(r["pid"])
     for pid in pids:
         token = procs.start_token(pid)
         if token:
@@ -190,6 +191,17 @@ def lease_free() -> bool:
     return True
 
 
+def control(scratch: Scratch, *argv: str, timeout: int = 300) -> dict:
+    py = scratch.install / "control" / "python" / "python.exe"
+    out = subprocess.run([str(py), str(scratch.install / "control" / "strata.py"), *argv, "--output", "json"],
+                         env={**scratch.env, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1"},
+                         capture_output=True, text=True, timeout=timeout)
+    try:
+        return json.loads(out.stdout)
+    except ValueError:
+        return {"ok": False, "raw": out.stdout[-300:] + out.stderr[-300:]}
+
+
 def stop_cli(scratch: Scratch, slot: str) -> dict:
     py = scratch.install / "control" / "python" / "python.exe"
     out = subprocess.run([str(py), str(scratch.install / "control" / "strata.py"), "runtime", "stop", "--profile", slot, "--wait", "30",
@@ -210,6 +222,14 @@ def case(name: str, install: Path, how: str) -> dict:
         try:
             app.wait_up()
             slots = ("app-1", "app-2") if how == "two-engines" else ("app-1",)
+            terminal = None
+            if how == "window-x-terminal-engine":
+                # an engine the Terminal started (its own profile, no tie to the app) must survive the app's close
+                control(scratch, "profile", "create", "terminal-1", "--from-config", str(scratch.models / "strata-stub2.json"))
+                terminal = control(scratch, "runtime", "start", "--profile", "terminal-1", "--wait", "60")
+                if terminal.get("state") != "ready":
+                    raise RuntimeError(f"the Terminal's service did not start: {terminal}")
+                terminal_pids = {r["pid"] for r in procs.records(profile="terminal-1")} | {runtime._read_state("terminal-1")["host_pid"]}
             state = app.load("stub")
             if how == "two-engines":
                 state = app.load("stub2", multiple=True)
@@ -222,7 +242,7 @@ def case(name: str, install: Path, how: str) -> dict:
             t0 = time.monotonic()
             if how == "normal-close":
                 subprocess.run(["taskkill", "/PID", str(app.proc.pid)], capture_output=True)
-            elif how in ("window-x", "two-engines"):
+            elif how in ("window-x", "two-engines", "window-x-terminal-engine"):
                 hwnd = main_window(app.proc.pid)
                 if not hwnd:
                     raise RuntimeError("no main window")
@@ -270,10 +290,22 @@ def case(name: str, install: Path, how: str) -> dict:
                     time.sleep(0.2)
                 if port_open(port):
                     problems.append(f"engine port {port} still open")
-            if not lease_free():
+            if terminal is None and not lease_free():
                 problems.append("lease still held")
             marks = sorted(p.name for p in scratch.mark.iterdir())
-            if how in ("normal-close", "window-x", "two-engines", "second-launch") and not ({"quit", "eof"} & set(marks)):
+            if terminal is not None:
+                status = control(scratch, "runtime", "status", "--profile", "terminal-1")
+                alive_pids = [p for p in terminal_pids if procs.start_token(p)]
+                if status.get("state") != "ready" or len(alive_pids) != len(terminal_pids):
+                    problems.append(f"closing the app disturbed the Terminal's service: {status.get('state')}, alive {alive_pids} of {sorted(terminal_pids)}")
+                note += f"; the Terminal's service is {status.get('state')} after the app closed"
+                stopped = control(scratch, "runtime", "stop", "--profile", "terminal-1", "--wait", "30")
+                if stopped.get("state") != "stopped" or [p for p in terminal_pids if procs.start_token(p)]:
+                    problems.append(f"the Terminal's service did not stop on request: {stopped}")
+                time.sleep(1)
+                if not lease_free():
+                    problems.append("lease still held after the Terminal's service stopped")
+            if how in ("normal-close", "window-x", "two-engines", "second-launch", "window-x-terminal-engine") and not ({"quit", "eof"} & set(marks)):
                 problems.append(f"the engine was not stopped the clean way (marks {marks})")
             seconds = round(time.monotonic() - t0, 1)
             if how == "host-crash":
@@ -305,7 +337,7 @@ def case(name: str, install: Path, how: str) -> dict:
             os.environ.clear(); os.environ.update(saved)
 
 
-SCENARIOS = ["normal-close", "window-x", "kill-app", "host-crash", "second-launch", "two-engines"]
+SCENARIOS = ["normal-close", "window-x", "window-x-terminal-engine", "kill-app", "host-crash", "second-launch", "two-engines"]
 
 
 def main() -> int:
