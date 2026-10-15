@@ -129,7 +129,8 @@ def vram_used_mib() -> int | None:
 class Rig:
     """A throwaway Strata home: state, runtime, profile and (fake or real) engine config."""
 
-    def __init__(self, root: Path, *, real_config: Path | None = None, slow_steps: int = 0):
+    def __init__(self, root: Path, *, real_config: Path | None = None, real_components: Path | None = None,
+                 slow_steps: int = 0):
         self.root = root
         self.real = real_config is not None
         self.port = free_port()
@@ -148,6 +149,8 @@ class Rig:
         for key in ("STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "LOCALAPPDATA", "XDG_STATE_HOME", "STRATA_COMPONENTS_DIR",
                     "STRATA_NO_ACQUIRE", "STRATA_ENGINE_BACKEND", "FAKE_ENGINE_MARK", "FAKE_ENGINE_SLOW_STEPS"):
             os.environ[key] = self.env[key]               # this process reads the same folders (profiles, runtime)
+        if real_components is not None:
+            self.env["STRATA_COMPONENTS_DIR"] = os.environ["STRATA_COMPONENTS_DIR"] = str(real_components)
         if real_config is not None:
             cfg = json.loads(real_config.read_text(encoding="utf-8"))
             cfg.update({"host": "127.0.0.1", "port": self.port})
@@ -174,7 +177,8 @@ class Rig:
         return [sys.executable, str(ROOT / "strata.py"), "serve", "--profile", "app", "--port", str(self.port),
                 "--host", "127.0.0.1", "--shutdown-timeout", "5"]
 
-    def wait_ready(self, proc=None, seconds=240) -> None:
+    def wait_ready(self, proc=None, seconds=None) -> None:
+        seconds = seconds or (480 if self.real else 120)
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if proc is not None and proc.poll() is not None:
@@ -448,11 +452,11 @@ def pty_close_case(rig: Rig, name: str = "serve-terminal-closed", *, vram: bool 
 # --- the detached service (`strata runtime start`) ------------------------------------------------
 
 def runtime_start(rig: Rig, die_with: int | None = None) -> dict:
-    argv = [sys.executable, str(ROOT / "strata.py"), "runtime", "start", "--profile", "app", "--wait", "240",
+    argv = [sys.executable, str(ROOT / "strata.py"), "runtime", "start", "--profile", "app", "--wait", "400" if rig.real else "240",
             "--shutdown-timeout", "5", "--output", "json"]
     if die_with:
         argv += ["--die-with-pid", str(die_with)]
-    out = subprocess.run(argv, cwd=ROOT, env=rig.env, capture_output=True, text=True, timeout=300)
+    out = subprocess.run(argv, cwd=ROOT, env=rig.env, capture_output=True, text=True, timeout=500)
     try:
         return json.loads(out.stdout)
     except ValueError:
@@ -606,12 +610,13 @@ def applicable(name: str) -> bool:
     return name not in WINDOWS_ONLY
 
 
-def run(names: list[str], *, real_config: Path | None = None, vram: bool = False, slow_steps: int = 600) -> list[Result]:
+def run(names: list[str], *, real_config: Path | None = None, real_components: Path | None = None,
+        vram: bool = False, slow_steps: int = 600) -> list[Result]:
     results = []
     for name in names:
         saved = dict(os.environ)                      # a Rig points this process at its own folders; give them back
         with tempfile.TemporaryDirectory(prefix="strata-matrix-") as tmp:
-            rig = Rig(Path(tmp), real_config=real_config, slow_steps=slow_steps if name == "serve-busy-stop" else 0)
+            rig = Rig(Path(tmp), real_config=real_config, real_components=real_components, slow_steps=slow_steps if name == "serve-busy-stop" else 0)
             try:
                 result = SCENARIOS[name](rig, vram)
             except Exception as exc:  # noqa: BLE001
@@ -637,11 +642,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenarios", default="all")
     ap.add_argument("--config", help="a real engine's run config (then no fake engine is used)")
+    ap.add_argument("--components", help="the engine component folder for --config (STRATA_COMPONENTS_DIR)")
     ap.add_argument("--vram", action="store_true", help="check nvidia-smi memory returns")
     ap.add_argument("--report")
     a = ap.parse_args(argv)
     names = [n for n in SCENARIOS if applicable(n)] if a.scenarios == "all" else a.scenarios.split(",")
-    results = run(names, real_config=Path(a.config) if a.config else None, vram=a.vram)
+    results = run(names, real_config=Path(a.config) if a.config else None,
+                  real_components=Path(a.components) if a.components else None, vram=a.vram)
     if a.report:
         Path(a.report).write_text(json.dumps({"platform": sys.platform, "engine": "real" if a.config else "fake",
                                               "results": results}, indent=1), encoding="utf-8")
