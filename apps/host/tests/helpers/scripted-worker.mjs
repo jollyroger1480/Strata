@@ -75,7 +75,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     }
     const [name, args] = [directive?.[1], (directive?.[2] ?? '').trim()];
     // The Harness's session-title request carries the same user text but offers no tools.
-    if (!(body.tools ?? []).length && last.role !== 'tool') return say(['Scripted title']);
+    if (!(body.tools ?? []).length && messages.some(m => /concise title/i.test(text(m)))) return say(['Scripted title']);
     if (name === 'slow') {
       const n = Number(args) || 400;
       return say(Array.from({ length: n }, (_, i) => `w${i} `));

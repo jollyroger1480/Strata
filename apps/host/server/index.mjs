@@ -11,6 +11,7 @@ import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
+import { createAgentBridge } from './agent/agent-bridge.mjs';
 /**
  * Strata engine host.
  *
@@ -74,6 +75,19 @@ const hub = new EventHub();
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, changed: value => hub.send('providers', value) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
 const native=createNativeControl({directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+/* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
+   pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
+   state and the chat falls back to the direct path with a notice, never silently to another model. */
+const agent = createAgentBridge({
+  dataDir: store.DATA_DIR,
+  componentsDir: process.env.STRATA_COMPONENTS_DIR ?? null,
+  localInstances: () => native.readyInstances().map(i => ({
+    id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
+    context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
+  })),
+  connections: () => modelProviders.withSecrets(),
+  log: line => console.log(line),
+});
 let storageChanging = false;
 let modelOperations = 0;
 const requestQueue = new RequestQueue(n => monitor.queueWaiting(n));
@@ -430,6 +444,32 @@ async function runRemoteTurn({ selection, message, history, onFrame, signal, wor
     if (entry) serving.finish(entry.id, { durationMs: Date.now() - started, error: message });
     onFrame({ type: 'error', message, requestId: entry?.id });
     return { error: message };
+  }
+}
+
+/** One agent turn for a chat, streamed to the caller as the NDJSON frames the chat already renders. */
+async function runAgentTurn({ res, controller, chatId, body, message, workspaceId }) {
+  const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
+  const cwd = (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
+  let choice, instance = null;
+  if (body.remoteModel) choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+  else {
+    try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
+    catch (e) { write({ type: 'error', message: e.message }); return; }
+    choice = { instanceId: instance.id };
+  }
+  const started = Date.now();
+  // A turn the engine is serving must be visible to the rest of the host (Serving, unload guards).
+  const entry = instance ? serving.open({ client: 'Strata chat', endpoint: '/agent', model: instance.apiModelId, instanceId: instance.id, gpuIds: instance.gpus.map(String), cancel: () => { void agent.stop(chatId); } }) : null;
+  if (entry) serving.mark(entry.id, { state: 'generating' });
+  const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
+  try {
+    const result = await agent.runTurn({ chatId, message, workspacePath: cwd, choice, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal });
+    if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
+    else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
+  } catch (err) {
+    write({ type: 'error', message: err.message, code: err.code ?? 'AGENT_ERROR' });
+    settle(null, err.message);
   }
 }
 
@@ -1280,6 +1320,27 @@ async function api(req, res, path, method, url) {
     }
   }
 
+  // --- agent --------------------------------------------------------------
+  if (path === '/api/agent/status' && method === 'GET') return json(res, 200, agent.status());
+  if (path === '/api/agent/pending' && method === 'GET') {
+    const chat = new URL(req.url, 'http://x').searchParams.get('chatId') ?? '';
+    return json(res, 200, { pending: agent.pendingFor(chat) });
+  }
+  /* Approve / Deny a tool the agent asked about. The answer reaches the Harness approval for exactly
+     that chat and call; a stale or foreign id is refused. */
+  if (path === '/api/chat/approval' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || typeof b.toolId !== 'string' || !['approve', 'deny'].includes(b.decision)) return error(res, 400, 'sessionId, toolId and decision (approve or deny) are required');
+    try { return json(res, 200, await agent.approve({ chatId: b.sessionId, callId: b.toolId, decision: b.decision })); }
+    catch (e) { return error(res, e.code === 'approval-gone' ? 409 : 400, e.message); }
+  }
+  /* Stop one chat's turn. Resolves once the turn has really ended, not when the cancel was admitted. */
+  if (path === '/api/chat/stop' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string') return error(res, 400, 'sessionId is required');
+    try { return json(res, 200, await agent.stop(b.sessionId)); } catch (e) { return error(res, 502, e.message); }
+  }
+
   // --- chat ---------------------------------------------------------------
   if (path === '/api/chat/stream' && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
@@ -1298,6 +1359,27 @@ async function api(req, res, path, method, url) {
     });
     const controller = new AbortController();
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+
+    /* Agent turn, when the component is there and this request can use it. A client that disappears
+       detaches from the turn (it keeps running in the Harness); Stop is its own request. */
+    const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
+    const agentSkip = process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
+      : body.agent === false ? 'This chat runs without the agent.'
+      : !chatId ? 'This request did not name a chat.'
+      : images.length ? 'The agent does not take attached pictures yet; this message was sent directly.'
+      : !(body.remoteModel || native.hasLive()) ? 'The agent needs a loaded Strata model or an API model.'
+      : null;
+    if (chatId && !agentSkip) {
+      const capability = agent.status();
+      if (capability.state !== 'unavailable') {
+        await runAgentTurn({ res, controller, chatId, body, message, workspaceId });
+        res.end();
+        return undefined;
+      }
+      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason} Chat is running without tools.` })}\n`);
+    } else if (agentSkip && chatId && body.agent !== false && process.env.STRATA_AGENT !== 'off') {
+      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-skipped', message: agentSkip })}\n`);
+    }
 
     await runTurn({
       message,
@@ -1539,7 +1621,7 @@ const shutdown = async () => {
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),10000);timeout.unref();
   server.close();server.closeAllConnections?.();
-  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close()]);
+  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

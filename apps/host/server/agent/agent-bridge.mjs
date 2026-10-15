@@ -262,7 +262,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     // Wait for the turn, or for the client to leave. Leaving does not stop the turn.
     const gone = new Promise(r => signal?.addEventListener('abort', () => r('detached'), { once: true }));
     const outcome = await Promise.race([turn.ended.promise, gone]);
-    if (outcome === 'detached') return { detached: true, sessionId };
+    if (outcome === 'detached') return { detached: true, sessionId, ended: turn.ended.promise.then(r => ({ ...r, tokensOut: projector.tokensOut })) };
     return { sessionId, reason: outcome.reason, tokensIn: projector.tokensIn, tokensOut: projector.tokensOut };
   }
 
