@@ -205,7 +205,7 @@ test('createControl asks the CLI for the engine, models and runtime and reads th
     'models list --installed --install-dir D:\\Strata --output json',
     'profile list --output json',
     'profile create app-1 --from-config C:\\x.json --output json',
-    'runtime start --profile app-1 --wait 300 --output json',
+    `runtime start --profile app-1 --wait 300 --shutdown-timeout 15 --die-with-pid ${process.pid} --output json`,
     'runtime stop --profile app-1 --wait 120 --output json',
   ]);
   assert.equal(createControl({ control: null }), null);

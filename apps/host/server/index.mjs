@@ -1641,18 +1641,30 @@ async function staticFile(req, res, path) {
 
 server.listen(PORT, HOST, () => {
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
+  // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.
+  if (control && process.env.STRATA_PACKAGED === '1') control.cleanup().catch(() => {});
 });
 
 let stopping=false;
 const shutdown = async () => {
   if(stopping)return;stopping=true;
   clearInterval(taskTimer);tasks.close();
-  const timeout=setTimeout(()=>process.exit(0),control?75000:10000);timeout.unref();   // stopping an engine through Control can take a while
+  const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
   await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
 };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+// Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) { try { process.on(signal, shutdown); } catch { /* not on this platform */ } }
+// Started by the desktop shell: when the shell is gone (killed, crashed, logged off) stop what this app started and leave.
+// POSIX re-parents us (ppid changes); Windows keeps the old ppid, so the pid is probed (signal 0 never signals).
+if (process.env.STRATA_EXIT_WITH_PARENT === '1') {
+  const parent = process.ppid;
+  const gone = () => {
+    if (process.ppid !== parent) return true;
+    try { process.kill(parent, 0); return false; } catch (e) { return e.code === 'ESRCH'; }
+  };
+  setInterval(() => { if (gone()) void shutdown(); }, 1000).unref();
+}
 
 export { server, VARIANTS };
