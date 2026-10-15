@@ -1,0 +1,2 @@
+export interface Task { id?: string; title: string; prompt: string; frequency: string; at: string; weekday: number; timeZone: string; enabled: boolean; archived?: boolean; nextRunAt?: string; lastRunAt?: string; status?: string; output?: string; demo?: boolean; error?: string; }
+export const blankTask = (): Task => ({ title:'', prompt:'', frequency:'daily', at:'09:00', weekday:1, timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone, enabled:true });
