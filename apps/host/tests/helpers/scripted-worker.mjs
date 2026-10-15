@@ -60,6 +60,8 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     requests.push({
       at: Date.now(), model: body.model, stream: body.stream === true,
       toolNames: (body.tools ?? []).map(t => t.function?.name),
+      // everything the client sent besides the conversation (sampling, limits, stream options)
+      params: Object.fromEntries(Object.entries(body).filter(([k]) => !['messages', 'tools', 'model'].includes(k))),
       lastRole: last.role, directive: directive?.[1] ?? null, messageCount: messages.length,
       authorization: req.headers.authorization ? 'present' : 'absent',
       authSha: req.headers.authorization ? createHash('sha256').update(req.headers.authorization).digest('hex') : null,
