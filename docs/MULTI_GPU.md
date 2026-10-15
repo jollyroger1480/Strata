@@ -67,6 +67,22 @@ The server checks it before the start and says what is wrong (0.1.39, #644).
 
 **Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Cards whose scores are within 5% of each other (two of the same model) keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
 
+**An unequal pair under `"auto"` (#2644).** The search prices a decode window, and it can give almost every layer to the card it
+rates faster. A card with one or two layers holds a handful of experts and clamps the prompt chunk of the whole pipeline
+(#1616), so the search then asks for at least 3 layers per card - which on a 4060 Ti 16 GB + 3060 12 GB (48 layers, IQ3_S)
+was K=3: the 3060 ran 3 layers, 12 GB idle, 452 tok/s of prefill against 802 at 28 layers on the 3060 (the reporter's sweep of
+`"layer_split"` 12, 18, 24, 28, 32: 582, 693, 762, 802, 803 tok/s; the 3060's 360 GB/s of memory bandwidth against the 4060 Ti's
+288 counts for more than its SMs). On two cards the engine now first asks for a placement in which each card owns at least its
+share of the layers by its room for experts, and the log line says which rule chose the split. Measured on 2x RTX A4000 made
+unequal (stage 0 priced at 0.57 of the speed with 3.7 GiB less room, `STRATA_SPLIT_SPEED_SCALE=0.57` and `--vram-reserve-mib 4400`; 14.5K-token
+prompt, IQ3_XXS, 5 interleaved pairs): the old rule chose K=3 (3 layers on stage 0), the new one K=20; prompt reading 945 -> 1,441 tok/s (+52%,
+5/5 pairs), decode 50.2 -> 65.9 tok/s (+31%, 5/5). Equal cards and three or more GPUs are unchanged.
+On x16 + x4 rigs the link-miss scaling (#2007, from a 4x gap) can also move `auto` off the balanced placement (2x RTX 3090, x16 + x4:
+K=31 with miss cost x4.20, 114-119 tok/s decode against 130-136 at K=27, #2418): `STRATA_SPLIT_UNIFORM=1` (opt-in, with `"gpu_order": "as_given"`)
+prices every link the same, as before 0.1.41.
+Prefill that is flat in the prompt length (no gain from 4K to 16K) is the sign of an idle card; **on an unequal pair sweep
+`"layer_split"` once** - a 4K-only benchmark cannot see it.
+
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
 profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
