@@ -29,3 +29,17 @@ test('a model that fits, or one that already has a RAM mode, is left alone', () 
   assert.equal(resourceSettings(own, pc64, 'work', iq3s).args.includes('--resident-budget-gib'), false);
   assert.equal(resourceSettings(config, pc64, 'work').args.includes('--resident-budget-gib'), false, 'no model size, no change');
 });
+
+test('neither profile reserves less VRAM than the engine\'s safe floor (the driver pages GPU memory below it and decoding collapses)', () => {
+  const card12 = { cpu: { cores: 12 }, ram_gb: 63, gpus: [{ index: 0, vram_gb: 11.9 }] };
+  const card24 = { cpu: { cores: 12 }, ram_gb: 63, gpus: [{ index: 0, vram_gb: 24 }] };
+  for (const profile of ['work', 'performance']) {
+    const lowConfig = { gpu: 0, args: ['--max-context', '32768', '--vram-reserve-mib', '700'] };
+    assert.ok(resourceSettings(lowConfig, card12, profile).vram_reserve_mib >= 1536, `${profile} on 12 GB`);
+    assert.ok(resourceSettings({ gpu: 0, args: [] }, card12, profile).vram_reserve_mib >= 1536, `${profile}, nothing configured`);
+    assert.ok(resourceSettings(lowConfig, card24, profile).vram_reserve_mib >= 1024, `${profile} on 24 GB`);
+  }
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, card12, 'performance').vram_reserve_mib, 1536);
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, card24, 'performance').vram_reserve_mib, 1024);
+  assert.equal(resourceSettings({ gpu: 0, args: [], vram_reserve_mib: 2437 }, card12, 'performance').vram_reserve_mib, 2437, 'a larger reserve of the installation is kept');
+});

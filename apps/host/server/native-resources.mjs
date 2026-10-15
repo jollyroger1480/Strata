@@ -15,9 +15,12 @@ export function resourceSettings(config,hardware,profile,model={}){
   args.push('--pool-workers',String(previous>0?Math.min(previous,workers):workers));
  }
  // Preserve calibrated worker counts and the installation's safety/vision reserve.
- const safety=Math.max(config.vision?2048:700,baseline.reserve);
  const placement=Array.isArray(config.gpu)?config.gpu:[config.gpu??0];
  const gpuMemory=(hardware?.gpus??[]).filter(g=>placement.includes(g.index)).map(g=>g.vram_gb).filter(n=>Number.isFinite(n)&&n>0);
+ /* The engine warns below ~1-1.5 GiB of free VRAM (the driver then pages GPU memory to system RAM and decoding falls to a few tokens a
+    second, #2065), so neither profile may reserve less: 1536 MiB on a card of 16 GB or less, 1024 above; with pictures 2048. */
+ const floor=gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
+ const safety=Math.max(config.vision?2048:floor,baseline.reserve);
  const reserve=profile==='work'&&gpuMemory.length?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety;
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
  // RAM: "leave 20% for my work" keeps the model's RAM within 80% of the PC. A model whose experts do not fit there (the

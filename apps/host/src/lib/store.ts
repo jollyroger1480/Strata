@@ -141,7 +141,7 @@ const PREFS_DEFAULTS: Prefs = {
   contrast: 'standard',
   rail: false,
   focus: false,
-  contentFontSize: 16,
+  contentFontSize: 14,
   density: 'comfortable',
   motion: 'system',
   transparency: 'translucent',
@@ -188,7 +188,7 @@ function loadPrefs(): Prefs {
         ...parsed,
         language: validLanguage(parsed.language) ? parsed.language : 'en',
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily.slice(0,128).replace(/[\x00-\x1f]/g,'') : '',
-        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 16)),
+        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 14)),
       };
     } catch {
       /* fall through to the next key */
@@ -1353,7 +1353,7 @@ export async function sendMessage(text: string) {
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); const count=Math.max(1,Math.ceil(content.length/4)); const seconds=Math.max(.1,(performance.now()-started)/1000); return {...m,content,tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),tps:count/seconds,usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=m.content+String(frame.text??''); const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
         } else if (type === 'artifacts' && Array.isArray(frame.artifacts)) {
           patchAssistant(m => ({ ...m, artifacts: frame.artifacts as PreviewArtifact[] }));
         } else if(type==='native-tool'){

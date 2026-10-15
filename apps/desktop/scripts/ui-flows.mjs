@@ -98,19 +98,23 @@ for line in sys.stdin:
 `;
 writeFileSync(join(control, 'tools', 'strata_mcp.py'), FAKE_INSTALLER);
 
-const FAKE_ENGINE = `import os, sys, json
+const FAKE_ENGINE = `import os, sys, json, time
 from pathlib import Path
 if os.environ.get('FAKE_ENGINE_FAIL'):
     print('memory guard: 5.1 GiB of RAM free is under the 6 GiB limit (limit 63.1 GiB)', flush=True)
     sys.exit(3)
-print('READY 4096 stop', flush=True)
+ctx = '4096'
+if '--max-context' in sys.argv: ctx = sys.argv[sys.argv.index('--max-context') + 1]
+print('READY %s stop' % ctx, flush=True)
 for line in sys.stdin:
     if line.strip() == 'QUIT': break
     if line.startswith(('GEN ', 'BGEN ')):
         slot = int(line.split()[1]) if line.startswith('BGEN ') else None
+        t0 = time.time(); n = 0
         for ch in os.environ.get('FAKE_REPLY', 'a'):
-            print('T %d' % ord(ch), flush=True)
-        print('DONE 1 1 1.0 1.0 length 0 0 0', flush=True)
+            print('T %d' % ord(ch), flush=True); n += 1
+            if os.environ.get('FAKE_TOKEN_DELAY'): time.sleep(float(os.environ['FAKE_TOKEN_DELAY']))
+        print('DONE %d 12 300.0 %.1f length 0 0 0' % (n, max(1.0, (time.time() - t0) * 1000)), flush=True)
         if slot is not None: print(f'BADM {slot} 0', flush=True)
 `;
 
@@ -243,11 +247,22 @@ await scenario('models', { installed: true }, async ({ base, api, browser, shot 
   for (let i = 0; i < 90 && !ready; i++) { const s = (await api('/api/native')).body; ready = s.instances.some(x => x.status === 'ready'); const err = s.instances.find(x => x.status === 'error'); if (err) throw new Error('load failed: ' + err.error); await delay(1000); }
   if (!ready) { const st = (await api('/api/native')).body; console.log('info  jobs', JSON.stringify(st.jobs.map(j => [j.kind, j.state, j.error ?? j.summary])), 'instances', JSON.stringify(st.instances.map(i => [i.status, i.error]))); await shot(page, '2-models-after-click'); }
   check(ready, 'the model loads (a fake engine under the real Control)');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /^Unload$/ }).first().waitFor({ timeout: 30000 }).catch(() => {});
+  await shot(page, '3-models-loaded');
+  check(await page.getByRole('button', { name: /^Unload$/ }).count() > 0, 'after a reload the Models screen shows the model as loaded, with Unload');
+  check(await page.getByRole('button', { name: /^Load model$/ }).count() === 0, 'and no longer offers Load model');
+  await page.getByRole('button', { name: /^Unload$/ }).first().click();
+  let gone = false;
+  for (let i = 0; i < 40 && !gone; i++) { gone = (await api('/api/native')).body.instances.length === 0; await delay(500); }
+  check(gone, 'Unload stops the engine');
+  await page.getByRole('button', { name: /^Load model$/ }).first().waitFor({ timeout: 15000 }).catch(() => {});
+  check(await page.getByRole('button', { name: /^Load model$/ }).count() > 0, 'and Load model is back');
   check(page.problems.length === 0, 'no page error', page.problems.join('; '));
 });
 
 // ------------------------------------------------------------------------------------------------ tune + reading size
-await scenario('tune', { installed: true, env: { FAKE_REPLY: ['I am thinking about it.', '</think>', '', 'Here is a list:', '', '- one', '- two', '', '## Heading', '', 'Some `code` and **bold** text.', '', '| a | b |', '|---|---|', '| 1 | 2 |', '', '```', 'code line', '```', ''].join(String.fromCharCode(10)) } }, async ({ base, api, browser, dirs, shot }) => {
+await scenario('tune', { installed: true, env: { FAKE_TOKEN_DELAY: '0.02', FAKE_REPLY: ['I am thinking about it.', '</think>', '', 'Here is a list:', '', '- one', '- two', '', '## Heading', '', 'Some `code` and **bold** text.', '', '| a | b |', '|---|---|', '| 1 | 2 |', '', '```', 'code line', '```', ''].join(String.fromCharCode(10)) } }, async ({ base, api, browser, dirs, shot }) => {
   const page = await newPage(browser, base);
   await clickText(page, /get started/i);
   await page.getByText(/Choose a version/i).waitFor({ timeout: 30000 });
@@ -272,23 +287,51 @@ await scenario('tune', { installed: true, env: { FAKE_REPLY: ['I am thinking abo
   await page.locator('.st-msg--assistant .st-bubble').first().waitFor({ timeout: 60000 });
   await page.locator('.st-msg--assistant .st-bubble p').first().waitFor({ timeout: 60000 }).catch(async () => console.log('info  reply so far:', JSON.stringify(await page.locator('.st-msg--assistant').first().innerText()).slice(0, 300)));
   await page.waitForFunction(() => !document.querySelector('.st-msg--assistant .caret'), null, { timeout: 90000 }).catch(() => {});
+  // the chat's telemetry chips: speed and context
+  const chips = page.locator('.telemetry__chip');
+  const chipTexts = await chips.allInnerTexts();
+  console.log('info  chips', JSON.stringify(chipTexts));
+  let speedText = '', contextText = '';
+  for (let i = 0; i < await chips.count(); i++) {
+    await chips.nth(i).click();
+    await delay(400);
+    const pop = await page.locator('.telepop').last().innerText().catch(() => '');
+    if (/tok\/s|speed/i.test(pop) && !speedText) speedText = pop;
+    if (/context/i.test(pop) && !contextText) contextText = pop;
+    await page.keyboard.press('Escape');
+  }
+  const tps = Number(speedText.match(/([\d.]+)\s*tok(?:ens)?\/s/)?.[1] ?? NaN);
+  check(tps > 15 && tps < 120, 'the speed shown is the decode speed (the engine paced at ~50 tokens a second)', speedText.replace(/\s+/g, ' ').slice(0, 160));
+  check(/32\.8K|32K|32,768|32768/.test(contextText) && !/128K/.test(contextText), 'the context shown is the one the model runs with (32K), not 128K', contextText.replace(/\s+/g, ' ').slice(0, 160));
   const sizes = [];
-  for (const px of [12, 16, 22]) {
+  for (const px of [12, 14, 16, 22]) {
     await page.evaluate(v => { const k = 'strata.prefs.v2'; const cur = JSON.parse(localStorage.getItem(k) || '{}'); localStorage.setItem(k, JSON.stringify({ ...cur, contentFontSize: v })); }, px);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('.st-msg--assistant .st-bubble').first().waitFor({ timeout: 30000 });
+    await page.screenshot({ path: join(shots, `tune-3-chat-${px}px.png`) });
     sizes.push(await page.evaluate(() => { const b = document.querySelector('.st-msg--assistant .st-bubble'); const t = b.querySelector('p, .md-li, span') ?? b; const u = document.querySelector('.st-msg--user .st-bubble'); const all = {}; for (const el of b.querySelectorAll('*')) { if (!el.childNodes.length || ![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())) continue; all[el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).split(' ')[0] : '')] = parseFloat(getComputedStyle(el).fontSize); } const extra = {}; for (const [k, q] of Object.entries({ reasoning: '.st-msg--assistant .st-collapse__body', codeblock: '.st-msg--assistant .st-code pre', codehead: '.st-msg--assistant .st-code__head' })) { const e = document.querySelector(q); if (e) extra[k] = parseFloat(getComputedStyle(e).fontSize); } Object.assign(all, extra); const chain = []; for (let e = b.querySelector('p'); e && e !== b; e = e.parentElement) chain.push(e.tagName + '.' + String(e.className).split(' ')[0] + '=' + getComputedStyle(e).fontSize); all.chain = chain; globalThis.__all = all; return [parseFloat(getComputedStyle(b).fontSize), parseFloat(getComputedStyle(t).fontSize), parseFloat(getComputedStyle(u).fontSize), all]; }));
   }
   console.log('info  chain', JSON.stringify(await page.evaluate(() => { const el = document.querySelector('.st-msg--assistant .st-bubble p'); const out = []; for (let e = el; e && !e.classList.contains('st-msg'); e = e.parentElement) out.push(e.tagName + '.' + String(e.className).split(' ')[0] + '=' + getComputedStyle(e).fontSize); return out; })));
+  // which visible text does NOT follow the reading size? (same elements at 12 and 22)
+  const survey = async px => { await page.evaluate(v => { const k = 'strata.prefs.v2'; const cur = JSON.parse(localStorage.getItem(k) || '{}'); localStorage.setItem(k, JSON.stringify({ ...cur, contentFontSize: v })); }, px); await page.reload({ waitUntil: 'domcontentloaded' }); await page.locator('.st-msg--assistant .st-bubble').first().waitFor({ timeout: 30000 }); await delay(600);
+    return page.evaluate(() => { const out = {}; for (const el of document.querySelectorAll('main *, .chat *, textarea')) { if (![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()) && el.tagName !== 'TEXTAREA') continue; const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue; const key = el.tagName.toLowerCase() + '.' + String(el.className).split(' ')[0] + ' <' + (el.parentElement?.className ?? '').toString().split(' ')[0] + '>'; out[key] = parseFloat(getComputedStyle(el).fontSize); } return out; }); };
+  const a = await survey(12), b = await survey(22);
+  // a fresh app (nothing saved) uses 14 px
+  await page.evaluate(() => localStorage.removeItem('strata.prefs.v2'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.st-msg--assistant .st-bubble').first().waitFor({ timeout: 30000 });
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.st-msg--assistant .st-bubble')).fontSize) === '14px', 'the default reading size is 14 px');
+  const fixed = Object.keys(a).filter(k => k in b && a[k] === b[k]);
+  console.log('info  text that does not follow the reading size:', JSON.stringify(fixed.map(k => k + '=' + a[k])));
   await shot(page, '2-chat-22px');
   console.log('info  sizes', JSON.stringify(sizes), JSON.stringify(await page.locator('.st-msg--assistant .st-bubble').first().innerHTML()).slice(0, 400));
-  check(sizes[0][1] === 12 && sizes[1][1] === 16 && sizes[2][1] === 22 && sizes[0][2] === 12 && sizes[2][2] === 22, 'the reading size changes the text size of the conversation', JSON.stringify(sizes));
+  check(sizes[0][1] === 12 && sizes[1][1] === 14 && sizes[2][1] === 16 && sizes[3][1] === 22 && sizes[0][2] === 12 && sizes[3][2] === 22, 'the reading size changes the text size of the conversation', JSON.stringify(sizes));
   // the slider itself
   await page.evaluate(() => { location.hash = '#/chat?settings=1'; });
   const slider = page.getByLabel('Reading text size');
   if (await slider.count()) {
     await slider.first().focus();
-    for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowLeft');
+    for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
     await delay(500);
     const now = await page.evaluate(() => getComputedStyle(document.querySelector('.st-msg--assistant .st-bubble') ?? document.body).fontSize);
     check(parseFloat(now) === 18, 'moving the slider changes the conversation text at once', now);

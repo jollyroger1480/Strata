@@ -165,6 +165,16 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
+; Strata's look and words: the app's light surface and ink, short copy, no directory page, straight on to the progress.
+!define MUI_BGCOLOR "F9FAFB"
+!define MUI_TEXTCOLOR "171B1E"
+!define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
+!define MUI_WELCOMEPAGE_TITLE "State of the art. At home."
+!define MUI_WELCOMEPAGE_TEXT "Strata runs AI on your own computer.$\r$\n$\r$\nThis takes about a minute and needs no administrator. You choose your first model inside Strata."
+!define MUI_FINISHPAGE_TITLE "Strata is ready."
+!define MUI_FINISHPAGE_TEXT "Open it to pick your first model. Strata downloads it for you and gets it ready."
+!define MUI_FINISHPAGE_RUN_TEXT "Open Strata"
+
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
@@ -395,7 +405,7 @@ Function PageLeaveReinstall
 FunctionEnd
 
 ; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -415,7 +425,7 @@ Var AppStartMenuFolder
 ;
 ; Don't auto jump to finish page after installation page,
 ; because the installation page has useful info that can be used debug any issues with the installer.
-!define MUI_FINISHPAGE_NOAUTOCLOSE
+; (no NOAUTOCLOSE: welcome, progress, finish)
 ; Use show readme button in the finish page as a button create a desktop shortcut
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"

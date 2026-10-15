@@ -278,6 +278,12 @@ export async function proxyCompletion({ baseUrl, message, history = [], systemPr
   let streaming = true;
   let writing = false;
   let timings=null,finishReason=null;
+  /* The speed shown while it streams is the decode speed of everything generated, reasoning included, from the first token: tokens
+     (one per streamed chunk, or characters / 4 when the server batches) over the time since the first token, never the visible
+     answer over the whole wall time. The engine's own numbers replace it when the answer is done. */
+  let chunks=0,chars=0,lastStats=0;
+  const liveStats=()=>{if(supervised||firstTokenAt===null)return;const now=Date.now();if(now-lastStats<400)return;const seconds=(now-firstTokenAt)/1000;if(seconds<.5)return;lastStats=now;
+   const tokens=chars/Math.max(1,chunks)<8?chunks:Math.ceil(chars/4);onFrame({type:'stats',tokensOut:tokens,tps:Number((tokens/seconds).toFixed(1)),source:'stream'});};
 
   const metricsTicker = supervised
     ? setInterval(() => {
@@ -325,12 +331,16 @@ export async function proxyCompletion({ baseUrl, message, history = [], systemPr
         if (delta.reasoning_content) {
           if (firstTokenAt === null) engine?.beginThinking();
           if (firstTokenAt === null) firstTokenAt = Date.now();
+          chunks++; chars+=delta.reasoning_content.length;
           onFrame({ type: 'reasoning', text: delta.reasoning_content });
+          liveStats();
         }
         if (delta.content) {
           if (!writing) { engine?.beginGenerating(); writing = true; }
           if (firstTokenAt === null) firstTokenAt = Date.now();
+          chunks++; chars+=delta.content.length;
           onFrame({ type: 'delta', text: delta.content });
+          liveStats();
         }
       }
       if (done) break;

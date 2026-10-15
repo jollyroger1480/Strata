@@ -24,7 +24,8 @@
       "deb"
     ],
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "category": "DeveloperTool",
     "shortDescription": "Local AI, tuned to one model.",
@@ -45,6 +46,9 @@
       "nsis": {
         "installMode": "currentUser",
       "template": "nsis/installer.nsi",
+      "headerImage": "nsis/header.bmp",
+      "sidebarImage": "nsis/sidebar.bmp",
+      "installerIcon": "icons/icon.ico",
         "compression": "lzma",
         "languages": [
           "English"
