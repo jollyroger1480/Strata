@@ -13,7 +13,7 @@
 //     the engine is up; the allocation then releases it and retries once (host_alloc_guarded).
 // A reserve that cannot be had is shrunk, then skipped: this never fails a start.
 //
-// Defaults: Windows 640 + 160 MiB; Linux off (the NVIDIA driver there pins past RLIMIT_MEMLOCK and has no such
+// Defaults: Windows CUDA 640 + 160 MiB (not the HIP build); Linux off (the NVIDIA driver there pins past RLIMIT_MEMLOCK and has no such
 // ceiling; checked with a 4 GiB cudaHostRegister under `ulimit -l 1 GiB`).  STRATA_PIN_RESERVE_MIB=N sets the soft
 // reserve (0 = off) on any OS; the hard one is a quarter of it, at least 64 MiB.
 //
@@ -89,7 +89,7 @@ inline void free_locked(State& s, void* p) {
 inline uint64_t soft_reserve_default_mib() {
     if (const char* e = std::getenv("STRATA_PIN_RESERVE_MIB"); e != nullptr && *e != '\0')
         return (uint64_t) std::strtoull(e, nullptr, 10);
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(STRATA_USE_HIP)   // CUDA on Windows (WDDM); the AMD build keeps its pinning as it was
     return 640;
 #else
     return st().sim_budget != 0 ? 640 : 0;   // Linux: only when the test ceiling is on

@@ -192,6 +192,14 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   layer has two (the share otherwise rounds to 0 at 1-2 misses). RTX 3090 + Ryzen 5 5600X: prompt read +5-7 % at 56K-117K
   tokens; decode level alone, +2-3 % with `--adapt-async 1` and `--pcie-frac 0.6`
   ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md)).
+- **Pinned-memory headroom** (Windows CUDA, on by default; `STRATA_PIN_RESERVE_MIB=N`, `0` = off, sets it on any OS): the arena registers
+  slice by slice until the driver refuses one, and on a 64 GB PC that left no page-locked memory at all for the few small buffers the
+  engine allocates after it (the verify window's staging: `verify: mapped staging allocation failed`, exit 1, on Swift 1.5 IQ2_XS). The
+  engine now holds 640 MiB (given back as soon as the arena is placed) and 160 MiB (kept until a required buffer is refused, or READY) while
+  the arena pins, so the arena stops about one layer earlier; a refused required buffer gives both back and tries once more. If that still
+  fails the error ends with `[pinned-memory-exhausted]` and names the `STRATA_ARENA_PIN_GIB` to start with. Linux has no such ceiling
+  (the NVIDIA driver pins past `ulimit -l`), so the reserve is off there. Test knobs: `STRATA_TEST_PIN_BUDGET_MIB=N` makes the engine's own
+  pinned allocations fail beyond N MiB, `STRATA_TEST_PIN_LEFT_KIB=N` lowers that ceiling after the arena to what is charged plus N KiB.
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
   blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
   `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).
