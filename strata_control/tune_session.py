@@ -134,8 +134,7 @@ def failure_kind(text: str, returncode: int | None) -> tuple[str, str]:
     reason = " | ".join(lines[:3])[:300]
     if re.search(r"unknown argument|unrecognized (argument|option)", low):
         return "UNSUPPORTED", reason or "the engine does not accept one of the settings"
-    if re.search(r"out of memory|memory guard|cannot allocate|std::bad_alloc|oom|^killed$|
-killed", low) or returncode in (-9, 137, 3221226505):
+    if re.search(r"out of memory|memory guard|cannot allocate|std::bad_alloc|\boom\b|(?:^|\n)killed(?:\r?\n|$)", low) or returncode in (-9, 137, 3221226505):
         return "OOM", reason or "the engine ran out of memory"
     return "FAIL_BOOT", reason or f"the engine stopped while starting (exit {returncode})"
 
