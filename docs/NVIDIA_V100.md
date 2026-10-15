@@ -102,3 +102,4 @@ None of these is on by default. Each was measured by its contributor on a V100, 
 | `STRATA_ARGMAX_ROWS_SM70=1` | the multi-block greedy pick on sm_7x (#2357), bitwise the one-block pick | +0.7-0.8% decode |
 | `STRATA_GR_NORM_FAST=1` | the register-split hyper-connection norm on CUDA (#2358) | +0.5-0.6% decode |
 | `STRATA_Q8_GATHER_WIDE=0` | turns off the 8-wide int8 KV gather (#1095) that the experimental build uses below compute capability 7.5 | +11% on the gather kernel |
+| `STRATA_GDN_REC_WARP=2` | the chain-split DeltaNet recurrence of the prompt on a V100 (#1098); changes the summation order (FP32 level), so the default stays the pipelined kernel; `1` is the bit-exact sync-free variant, `STRATA_GDN_CHUNK=1` the chunked path | +6-9% on the recurrence |
