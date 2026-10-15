@@ -1047,6 +1047,10 @@ requests' length keeps the long conversation parked. The check runs before `make
 nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
 parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
 conversations keep a slot.
+`--conversation-cache-park-gain N` (opt-in, default 0 = park every turn) parks a conversation again only after it
+advanced N tokens past the copy it would supersede; a turn that grew by a few hundred tokens keeps the older copy
+instead of writing a whole snapshot that the next turn drops. The cost is that a resume from the older copy reads up
+to N tokens again (#2265).
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 RAM headroom remain available: the engine checks before allocation (against the
 snapshot's estimated size, less the K/V it already retains) and again after capture.
