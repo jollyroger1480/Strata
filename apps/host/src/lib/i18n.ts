@@ -1,14 +1,25 @@
-import english from '../locales/en.json';
-import zh from '../locales/zh.json';
-import ja from '../locales/ja.json';
-import de from '../locales/de.json';
-import es from '../locales/es.json';
-import ru from '../locales/ru.json';
-import pt from '../locales/pt.json';
-import ko from '../locales/ko.json';
+import baseEnglish from '../locales/en.json';
+import tune_en from '../locales/tune-en.json';
+import tune_zh from '../locales/tune-zh.json';
+import tune_ja from '../locales/tune-ja.json';
+import tune_de from '../locales/tune-de.json';
+import tune_es from '../locales/tune-es.json';
+import tune_ru from '../locales/tune-ru.json';
+import tune_pt from '../locales/tune-pt.json';
+import tune_ko from '../locales/tune-ko.json';
+import base_zh from '../locales/zh.json';
+import base_ja from '../locales/ja.json';
+import base_de from '../locales/de.json';
+import base_es from '../locales/es.json';
+import base_ru from '../locales/ru.json';
+import base_pt from '../locales/pt.json';
+import base_ko from '../locales/ko.json';
 
 export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'}] as const;
 export type Language=typeof LANGUAGES[number]['value'];
+/* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
+const english:Record<string,string>={...baseEnglish,...tune_en};
+const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh},{...base_ja,...tune_ja},{...base_de,...tune_de},{...base_es,...tune_es},{...base_ru,...tune_ru},{...base_pt,...tune_pt},{...base_ko,...tune_ko}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);
