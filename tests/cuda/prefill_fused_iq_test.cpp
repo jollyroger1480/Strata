@@ -682,10 +682,12 @@ int main(int argc, char** argv) {
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
             if (!fused::native_supported((int) p.gu, (int) p.d)) {
-                // Turing (STRATA_PF_FUSED_SM75=1) sets up the canonical Q2_0 pack's pair only
+                // the canonical Q2_0 pack's Q2_0 gate/up is the Turing opt-in's (STRATA_PF_FUSED_SM75=1), and on Turing that is
+                // the only pair set up: skip what this device does not take (--only=NAME still insists)
+                const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
                 int major = 0;
                 cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-                if (major < 8 && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
+                if ((major < 8 || turing_pair) && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
             }
             if (ref) reference_part(p, s);
