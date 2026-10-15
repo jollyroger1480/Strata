@@ -1,0 +1,486 @@
+"""The component updater end to end against a LOCAL feed: a folder of signed archives served by a loopback HTTP server, stub
+engines behind real schema-2 packages, the real start path for the test start.
+
+Proves: an update downloads (with resume), verifies signature and every hash, installs side by side, test-starts the new
+engine from a staging folder through the owner runtime, and only then switches; a failing test start leaves the old engine
+working; the previous version is kept and can be returned to; saved presets are marked, not touched; models are never
+fetched; nothing runs while an engine serves; and a start/serve process (STRATA_NO_ACQUIRE) cannot reach any of it."""
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from strata_control import acquisition, engine_component as ec, feed as feedmod, preset_marks, signing, updater
+from strata_control.targets import host_platform
+from tests.terminal import update_fixture as fx
+
+PLATFORM = host_platform()
+WINDOWS = os.name == "nt"
+
+
+class UpdaterCase(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="strata-updater-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.components = self.root / "components"
+        self.state_base = self.root / "state"
+        self.release = self.root / "release"
+        self.release.mkdir()
+        for name in ("STRATA_NO_ACQUIRE", "STRATA_API_KEY", "STRATA_REQUIRE_SIGNED_COMPONENTS", "STRATA_UPDATE_TRUSTED_KEYS"):
+            patch = mock.patch.dict(os.environ)
+            patch.start()
+            self.addCleanup(patch.stop)
+            os.environ.pop(name, None)
+        env = mock.patch.dict(os.environ, {
+            "STRATA_PROFILE_DIR": str(self.root / "profiles"), "STRATA_RUNTIME_DIR": str(self.root / "runtime"),
+            "STRATA_COMPONENTS_DIR": str(self.components), "STRATA_ENGINE_BACKEND": "cuda",
+            "FAKE_ENGINE_MARK": str(self.root / "ran.txt")})
+        env.start()
+        self.addCleanup(env.stop)
+        for target, value in ((ec, "cuda_archs_present"), (ec, "nvidia_driver_version")):
+            patch = mock.patch.object(target, value, return_value=["sm_86"] if value == "cuda_archs_present" else "610.47")
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(ec.register_signature_verifier, None)
+        self.key = fx.make_key()
+        self.trusted = fx.trusted_of(self.key)
+        self.hardware = {"platform": PLATFORM, "backend": "cuda", "runtime": None, "nvidia_driver": "610.47",
+                         "cuda_archs": ["sm_86"], "gfx": []}
+        self.models = self.root / "models"
+        self.models.mkdir()
+        (self.models / "model.gguf").write_bytes(b"GGUF" + os.urandom(2048))
+        self.model_digest = hashlib.sha256((self.models / "model.gguf").read_bytes()).hexdigest()
+        self.preset = self.state_base / "tuning" / "presets" / "iq3-128k.json"
+        self.preset.parent.mkdir(parents=True)
+        self.preset.write_text('{"name": "IQ3_S 128K full speed", "settings": {"expert_cache": 1500}}\n')
+        self.preset_bytes = self.preset.read_bytes()
+        self._run_config()
+        self.server = fx.FeedServer(self.release)
+        self.server.__enter__()
+        self.addCleanup(self.server.__exit__)
+        self.sequence = 0
+        self.addCleanup(self._stop_runtime)
+
+    def _stop_runtime(self):
+        from strata_control import runtime
+        try:
+            if runtime._read_state("updtest") is not None:
+                runtime.stop("updtest", timeout=10)
+        except Exception:                                      # noqa: BLE001
+            pass
+
+    def _run_config(self):
+        from tools.strata_tokenizer import BYTE_TO_UNICODE
+        tokenizer = self.root / "tokenizer"
+        tokenizer.mkdir()
+        tokens = [BYTE_TO_UNICODE[i] for i in range(256)] + ["ab", "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
+        (tokenizer / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}))
+        (tokenizer / "merges.txt").write_text("a b")
+        (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
+        self.config = self.root / "run.json"
+        self.config.write_text(json.dumps({"exe": "/some/old/engine", "backend": "cuda", "tokenizer": str(tokenizer), "args": [],
+                                           "cwd": str(self.root), "model_name": "fake", "host": "127.0.0.1", "port": 0}))
+
+    # ------------------------------------------------------------------ helpers
+
+    def install_current(self, version="0.1.45", **kwargs):
+        folder = fx.build_package(self.root / f"inst-{version}", version, **kwargs)
+        target = self.components / "engine" / folder.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(folder, target)
+        return target
+
+    def publish(self, *versions, sequence=None, key=None, **options):
+        """Sign + archive each (version, engine_source[, kwargs]) and write a signed feed. Returns the package folders."""
+        shutil.rmtree(self.release, ignore_errors=True)
+        self.release.mkdir()
+        out = self.release / "engine"
+        out.mkdir()
+        key = key or self.key
+        self.sequence = sequence or self.sequence + 1
+        folders = []
+        for item in versions:
+            version, source, extra = (item + ({},))[:3] if len(item) == 2 else item
+            folder = fx.build_package(self.root / f"pub-{self.sequence}-{version}", version, engine_source=source, key=extra.pop("sign_with", key), **extra)
+            folders.append(folder)
+            from feed_tool import pack_engine
+            pack_engine(folder, out)
+        from feed_tool import build_feed
+        build_feed(self.release, key=key, sequence=self.sequence, engine_dir=out, **options)
+        return folders
+
+    def ctx(self, **over):
+        values = dict(components=self.components, source=self.server.url + "/strata-feed.json", trusted=self.trusted,
+                      hardware=self.hardware, run_config=str(self.config), state_base=self.state_base, poll=0.05,
+                      test_timeout=60, serving=lambda: [], environ=dict(os.environ))
+        values.update(over)
+        events = values.pop("events", None)
+        context = updater.Context(**values)
+        if events is not None:
+            context.emit = events.append
+        return context
+
+    def engine_folders(self):
+        folder = self.components / "engine"
+        return sorted(p.name for p in folder.iterdir() if p.is_dir()) if folder.exists() else []
+
+    def resolved(self):
+        return ec.resolve(self.components, backend="cuda").version
+
+    def assert_user_data_untouched(self):
+        self.assertEqual(self.preset.read_bytes(), self.preset_bytes, "a saved preset must not change")
+        self.assertEqual(hashlib.sha256((self.models / "model.gguf").read_bytes()).hexdigest(), self.model_digest)
+
+    def archive_requests(self):
+        return [r for r in self.server.requests if r[1].endswith((".tar.gz", ".zip"))]
+
+
+class EngineUpdate(UpdaterCase):
+    def test_check_reads_only_the_feed(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        report = updater.check(self.ctx())
+        self.assertEqual(report["engine"]["status"], "available")
+        self.assertEqual((report["engine"]["installed"]["version"], report["engine"]["offered"]["version"]), ("0.1.45", "0.1.46"))
+        self.assertEqual([r[1] for r in self.server.requests], ["/strata-feed.json", "/strata-feed.json.sig"])
+        self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13"])
+
+    def test_update_downloads_verifies_test_starts_then_switches(self):
+        old = self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        events = []
+        out = updater.run_update(self.ctx(events=events), control=False)
+        result = out["results"][0]
+        self.assertEqual((out["exit_code"], result["status"], result["changed"]), (0, "updated", True), out)
+        self.assertEqual(result["test_start"]["mode"], "full")
+        self.assertEqual(self.resolved(), "0.1.46")
+        self.assertEqual(sorted(self.engine_folders()), [f"0.1.45-{PLATFORM}-cuda-cuda13", f"0.1.46-{PLATFORM}-cuda-cuda13"],
+                         "the previous version stays for a manual rollback")
+        # the test start ran the staged copy, not a file in the live folder
+        ran = (self.root / "ran.txt").read_text().splitlines()[0]
+        self.assertIn(os.sep + ".updates" + os.sep + "staging" + os.sep, ran)
+        phases = [e.get("phase") for e in events if e.get("event") == "phase"]
+        self.assertEqual(phases, ["feed", "download", "verify", "verify", "test", "switch", "done"])
+        progress = [e for e in events if e.get("event") == "progress"]
+        self.assertTrue(progress and progress[-1]["percent"] == 100 and progress[-1]["done"] == progress[-1]["total"])
+        self.assertEqual(sorted(p.name for p in (self.components / ".updates" / "staging").iterdir()), [], "staging is cleaned")
+        self.assertEqual(list((self.components / ".updates" / "partial").iterdir()), [], "the archive is removed after the switch")
+        state = json.loads((self.components / ".updates" / "state.json").read_text())
+        self.assertEqual(state["engine"]["previous"], old.name)
+        self.assertEqual(state["feed"]["sequence"], self.sequence)
+        # presets are marked for the short re-check and kept as they were
+        marks = preset_marks.pending(self.state_base)
+        self.assertEqual(len(marks), 1)
+        self.assertEqual((marks[0]["from"]["version"], marks[0]["to"]["version"]), ("0.1.45", "0.1.46"))
+        self.assert_user_data_untouched()
+        # nothing but the feed and the engine archive was requested: no model, no app
+        self.assertEqual({r[1] for r in self.server.requests}, {"/strata-feed.json", "/strata-feed.json.sig", *{r[1] for r in self.archive_requests()}})
+        self.assertEqual(len(self.archive_requests()), 1)
+        # a second update with nothing newer changes nothing and downloads nothing
+        again = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(again["results"][0]["status"], "current")
+        self.assertEqual(len(self.archive_requests()), 1)
+
+    def test_the_next_update_drops_versions_older_than_the_previous_one(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        updater.run_update(self.ctx(), control=False)
+        self.publish(("0.1.47", fx.GOOD_ENGINE))
+        out = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(out["results"][0]["status"], "updated")
+        self.assertEqual(self.engine_folders(), [f"0.1.46-{PLATFORM}-cuda-cuda13", f"0.1.47-{PLATFORM}-cuda-cuda13"])
+        self.assertEqual(self.resolved(), "0.1.47")
+
+    def test_a_failing_test_start_keeps_the_old_engine(self):
+        self.install_current()
+        self.publish(("0.1.47", fx.BAD_ENGINE))
+        out = updater.run_update(self.ctx(), control=False)
+        result = out["results"][0]
+        self.assertEqual((out["exit_code"], result["status"]), (6, "failed"), out)
+        self.assertIn("did not pass its test start", result["error"])
+        self.assertIn("unchanged", result["error"])
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13"], "the failed engine was never put in the live folder")
+        self.assertEqual(sorted(p.name for p in (self.components / ".updates" / "staging").iterdir()), [])
+        self.assertEqual(preset_marks.pending(self.state_base), [])
+        self.assert_user_data_untouched()
+        # it is not offered again until forced, and the archive is not downloaded twice
+        again = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(again["results"][0]["status"], "failed-before", again)
+        self.assertIn("--force", again["results"][0]["note"])
+        forced = updater.run_update(self.ctx(force=True), control=False)
+        self.assertEqual(forced["results"][0]["status"], "failed")
+        self.assertEqual(len(self.archive_requests()), 1, "the verified archive was kept and reused")
+        # a fixed build of the same version is a different manifest and is tried
+        self.publish(("0.1.47", fx.GOOD_ENGINE))
+        fixed = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(fixed["results"][0]["status"], "updated", fixed)
+        self.assertEqual(self.resolved(), "0.1.47")
+
+    def test_an_interrupted_download_resumes(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE, {"padding": 3_000_000}))
+        self.server.cut[".tar.gz"] = 700_000
+        first = updater.run_update(self.ctx(), control=False)
+        self.assertEqual((first["exit_code"], first["results"][0]["status"]), (6, "failed"))
+        self.assertIn("resumes it", first["results"][0]["error"])
+        self.assertEqual(self.resolved(), "0.1.45", "an interrupted update keeps the old engine working")
+        partial = list((self.components / ".updates" / "partial").iterdir())
+        self.assertEqual(len(partial), 1)
+        kept = partial[0].stat().st_size
+        self.assertTrue(0 < kept <= 700_000, kept)
+        second = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(second["results"][0]["status"], "updated", second)
+        ranges = [r[2] for r in self.archive_requests()]
+        self.assertEqual(ranges[0], None)
+        self.assertEqual(ranges[1], f"bytes={kept}-", "the second try asked only for the missing bytes")
+        self.assertEqual(self.resolved(), "0.1.46")
+
+    def test_a_download_that_is_not_the_signed_hash_is_refused(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        archive = next((self.release / "engine").glob("*.tar.gz"))
+        data = bytearray(archive.read_bytes())
+        data[len(data) // 2] ^= 0x55                                  # same size, one byte different
+        archive.write_bytes(bytes(data))
+        out = updater.run_update(self.ctx(), control=False)
+        result = out["results"][0]
+        self.assertEqual((out["exit_code"], result["status"]), (5, "failed"))
+        self.assertIn("SHA-256 in the signed feed", result["error"])
+        self.assertEqual(list((self.components / ".updates" / "partial").iterdir()), [], "bytes that fail the hash are deleted")
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertFalse((self.root / "ran.txt").exists(), "a package that failed its hash must never run")
+
+    def test_a_package_the_feed_did_not_describe_is_refused(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        entry = next((self.release / "engine").glob("*.entry.json"))
+        data = json.loads(entry.read_text())
+        data["manifest_sha256"] = "c" * 64
+        entry.write_text(json.dumps(data))
+        from feed_tool import build_feed
+        build_feed(self.release, key=self.key, sequence=self.sequence + 1, engine_dir=self.release / "engine")
+        out = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(out["exit_code"], 5)
+        self.assertIn("manifest is not the one the signed feed names", out["results"][0]["error"])
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertFalse((self.root / "ran.txt").exists())
+
+    def test_unsigned_and_wrongly_signed_packages_are_refused(self):
+        self.install_current()
+        other = fx.make_key()
+        for label, kind in (("not signed", None), ("trust", other)):
+            with self.subTest(label=label):
+                shutil.rmtree(self.release, ignore_errors=True)
+                self.release.mkdir()
+                self.sequence += 1
+                folder = fx.build_package(self.root / f"x-{self.sequence}", "0.1.46", key=kind)
+                from feed_tool import build_feed, pack_engine
+                (self.release / "engine").mkdir()
+                pack_engine(folder, self.release / "engine")
+                build_feed(self.release, key=self.key, sequence=self.sequence, engine_dir=self.release / "engine")
+                out = updater.run_update(self.ctx(), control=False)
+                self.assertEqual(out["exit_code"], 5, out)
+                self.assertIn(label, out["results"][0]["error"])
+                self.assertEqual(self.resolved(), "0.1.45")
+                self.assertFalse((self.root / "ran.txt").exists())
+
+    def test_a_downgrade_is_never_installed(self):
+        self.install_current("0.1.45")
+        self.publish(("0.1.44", fx.GOOD_ENGINE))
+        out = updater.run_update(self.ctx(), control=False)
+        result = out["results"][0]
+        self.assertEqual((result["status"], result["changed"]), ("current", False))
+        self.assertIn("never downgrades", updater.check(self.ctx())["engine"]["note"])
+        self.assertEqual(self.archive_requests(), [])
+        self.assertEqual(self.resolved(), "0.1.45")
+
+    def test_a_replayed_older_feed_is_refused(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE), sequence=7)
+        self.assertEqual(updater.run_update(self.ctx(), control=False)["results"][0]["status"], "updated")
+        self.publish(("0.1.46", fx.GOOD_ENGINE), sequence=3)
+        with self.assertRaises(feedmod.FeedDowngrade):
+            updater.run_update(self.ctx(), control=False)
+        with self.assertRaises(feedmod.FeedDowngrade):
+            updater.check(self.ctx())
+
+    def test_nothing_is_replaced_while_an_engine_serves(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        out = updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
+        self.assertIn("app-1 is serving", out["results"][0]["error"])
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertFalse((self.root / "ran.txt").exists(), "no test start while another engine serves")
+        # the download was not wasted: the next try reuses the verified archive
+        done = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(done["results"][0]["status"], "updated")
+        self.assertEqual(len(self.archive_requests()), 1)
+
+    def test_waiting_for_the_engine_to_stop(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        answers = [[{"profile": "app-1"}], [{"profile": "app-1"}], [], []]
+        events = []
+        out = updater.run_update(self.ctx(serving=lambda: answers.pop(0) if answers else [], wait=30, events=events), control=False)
+        self.assertEqual(out["results"][0]["status"], "updated", out)
+        self.assertTrue(any(e.get("event") == "waiting" for e in events))
+
+    def test_manual_rollback_returns_to_the_previous_engine_and_is_not_undone_by_the_next_update(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        updater.run_update(self.ctx(), control=False)
+        out = updater.rollback_engine(self.ctx())
+        self.assertEqual((out["status"], out["from"], out["to"]), ("rolled-back", "0.1.46", "0.1.45"))
+        self.assertEqual(self.resolved(), "0.1.45")
+        self.assertEqual(ec.status(self.components, backend="cuda")["pinned"], f"0.1.45-{PLATFORM}-cuda-cuda13")
+        self.assertEqual(preset_marks.pending(self.state_base), [], "back on the engine the presets were measured on: nothing owed")
+        again = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(again["results"][0]["status"], "skipped")
+        self.assertEqual(self.resolved(), "0.1.45")
+        forced = updater.run_update(self.ctx(force=True), control=False)
+        self.assertEqual(forced["results"][0]["status"], "updated", forced)
+        self.assertEqual(self.resolved(), "0.1.46")
+        self.assert_user_data_untouched()
+
+    def test_rollback_without_a_previous_engine_says_so(self):
+        self.install_current()
+        with self.assertRaisesRegex(updater.UpdateError, "no previous engine"):
+            updater.rollback_engine(self.ctx())
+
+    def test_first_run_installs_the_engine_for_this_pc_without_a_model(self):
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        out = updater.run_update(self.ctx(run_config=None), control=False)
+        result = out["results"][0]
+        self.assertEqual((out["exit_code"], result["status"]), (0, "updated"), out)
+        self.assertEqual(result["test_start"]["mode"], "binary-only")
+        self.assertEqual(self.resolved(), "0.1.46")
+        self.assertEqual(preset_marks.pending(self.state_base), [], "no earlier engine, so nothing to re-check")
+
+    def test_a_broken_installed_engine_is_replaced_by_a_good_one(self):
+        folder = self.install_current("0.1.46")
+        library = next(p for p in folder.iterdir() if p.name.startswith(("cudart", "libcudart")))
+        body = bytearray(library.read_bytes())
+        body[5] ^= 0xFF
+        library.write_bytes(bytes(body))
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        self.assertEqual(updater.check(self.ctx())["engine"]["status"], "install")
+        out = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(out["results"][0]["status"], "updated", out)
+        self.assertEqual(self.resolved(), "0.1.46")
+
+    def test_the_package_for_another_gpu_is_not_offered(self):
+        self.publish(("0.1.46", fx.GOOD_ENGINE, {"archs": ("sm_90",)}))
+        out = updater.run_update(self.ctx(hardware={**self.hardware, "cuda_archs": ["sm_61"]}), control=False)
+        self.assertEqual(out["results"][0]["status"], "none-for-this-pc")
+        self.assertIn("sm_61", " ".join(out["results"][0]["reasons"]))
+        self.assertEqual(self.archive_requests(), [])
+
+    def test_a_process_that_forbids_acquiring_cannot_update(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        with mock.patch.dict(os.environ, {"STRATA_NO_ACQUIRE": "1"}):
+            with self.assertRaises(acquisition.AcquisitionRefused):
+                updater.run_update(self.ctx(), control=False)
+            with self.assertRaises(acquisition.AcquisitionRefused):
+                updater.check(self.ctx())
+        self.assertEqual(self.server.requests, [], "not even the feed is read where acquiring is forbidden")
+
+    def test_a_started_engine_check_does_not_import_the_updater(self):
+        """The start path (engine_component, runtime) must not reach the update machinery or the network code."""
+        import subprocess
+        code = ("import sys; import strata_control.engine_component, strata_control.runtime, strata_control.acquisition; "
+                "print(sorted(m for m in sys.modules if m in ('strata_control.updater','strata_control.transfer','strata_control.feed','urllib.request')))")
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(fx.ROOT))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "[]")
+
+
+class OtherComponents(UpdaterCase):
+    def build_with_app(self, version="0.2.0", tamper=False):
+        public, secret = fx.minisign_pair()
+        installer = os.urandom(5000)
+        (self.release / "app").mkdir(parents=True, exist_ok=True)
+        (self.release / "app" / "Strata_setup.bin").write_bytes(installer)
+        sig = fx.minisign_sign(installer + (b"x" if tamper else b""), secret)
+        app = {"version": version, "notes": "Faster starts.", "pub_date": "2026-10-15T00:00:00Z",
+               "platforms": {feedmod.TAURI_TARGETS[PLATFORM]: {"url": "app/Strata_setup.bin", "signature": sig,
+                                                              "sha256": hashlib.sha256(installer).hexdigest(), "size": len(installer)}}}
+        (self.root / "tauri.json").write_text(json.dumps(app))
+        from feed_tool import build_feed
+        (self.release / "engine").mkdir(exist_ok=True)
+        build_feed(self.release, key=self.key, sequence=self.sequence + 1, app_json=self.root / "tauri.json")
+        self.sequence += 1
+        return public, installer
+
+    def test_the_app_installer_is_downloaded_and_its_signature_checked(self):
+        public, installer = self.build_with_app()
+        ctx = self.ctx(app_version="0.1.0", environ={**os.environ, "STRATA_APP_UPDATE_PUBKEY": public})
+        report = updater.check(ctx)
+        self.assertEqual((report["app"]["status"], report["app"]["offered"]), ("available", "0.2.0"))
+        out = updater.run_update(ctx, engine=False, control=False, app=True)
+        result = out["results"][0]
+        self.assertEqual((out["exit_code"], result["status"]), (0, "downloaded"), out)
+        self.assertEqual(Path(result["path"]).read_bytes(), installer)
+        self.assertEqual((self.release / "app" / "latest.json").exists(), True, "the Tauri updater's file is written beside the feed")
+        self.assertEqual(self.engine_folders(), [], "an app-only update downloads 0 engine bytes")
+        self.assertEqual(self.archive_requests(), [])
+        self.assertTrue(all(r[1].startswith(("/strata-feed", "/app/")) for r in self.server.requests))
+
+    def test_an_installer_with_a_bad_signature_is_deleted(self):
+        public, _ = self.build_with_app(tamper=True)
+        ctx = self.ctx(app_version="0.1.0", environ={**os.environ, "STRATA_APP_UPDATE_PUBKEY": public})
+        out = updater.run_update(ctx, engine=False, control=False, app=True)
+        self.assertEqual(out["exit_code"], 5)
+        self.assertIn("signature", out["results"][0]["error"])
+        self.assertFalse((self.components / ".updates" / "app").exists() and any((self.components / ".updates" / "app").iterdir()))
+
+    def test_no_app_key_no_app_download(self):
+        self.build_with_app()
+        ctx = self.ctx(app_version="0.1.0", environ={k: v for k, v in os.environ.items() if k != "STRATA_APP_UPDATE_PUBKEY"})
+        with mock.patch.object(updater, "app_public_key", return_value=None):
+            out = updater.run_update(ctx, engine=False, control=False, app=True)
+        self.assertEqual(out["exit_code"], 5)
+        self.assertEqual([r for r in self.server.requests if r[1].startswith("/app/")], [])
+
+    def test_control_is_staged_run_once_and_pointed_at(self):
+        bundle = self.root / "control-bundle"
+        (bundle / "strata_control").mkdir(parents=True)
+        (bundle / "strata.py").write_text("print('strata 0.1.46 (python stub)')\n")
+        (bundle / "strata_control" / "__init__.py").write_text("")
+        from feed_tool import build_feed, pack_control
+        (self.release / "control").mkdir()
+        pack_control(bundle, self.release / "control", version="0.1.46", platform=PLATFORM)
+        build_feed(self.release, key=self.key, sequence=1, control_dir=self.release / "control")
+        out = updater.run_update(self.ctx(), engine=False, control=True)
+        self.assertEqual(out["results"][0]["status"], "updated", out)
+        active = updater.active_control(self.components)
+        self.assertEqual(active["version"], "0.1.46")
+        self.assertTrue((self.components / "control" / "0.1.46" / "strata.py").is_file())
+        again = updater.run_update(self.ctx(), engine=False, control=True)
+        self.assertEqual(again["results"][0]["status"], "current")
+
+    def test_a_control_that_cannot_run_is_not_switched_to(self):
+        bundle = self.root / "control-bad"
+        bundle.mkdir()
+        (bundle / "strata.py").write_text("import sys; sys.exit(9)\n")
+        from feed_tool import build_feed, pack_control
+        (self.release / "control").mkdir()
+        pack_control(bundle, self.release / "control", version="0.1.46", platform=PLATFORM)
+        build_feed(self.release, key=self.key, sequence=1, control_dir=self.release / "control")
+        out = updater.run_update(self.ctx(), engine=False, control=True)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (6, "failed"))
+        self.assertIsNone(updater.active_control(self.components))
+        self.assertFalse((self.components / "control" / "0.1.46").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

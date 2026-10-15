@@ -58,6 +58,9 @@ COMPONENT_ID = "strata-engine"
 ENV_DIR = "STRATA_COMPONENTS_DIR"
 ENV_BACKEND = "STRATA_ENGINE_BACKEND"
 ENV_REQUIRE_SIGNED = "STRATA_REQUIRE_SIGNED_COMPONENTS"
+#: The updater's state (``strata update``, ``strata components rollback``) lives in the component folder; the only member the
+#: start path reads is ``engine.pinned``: the folder a manual rollback chose, which wins over a newer installed package.
+UPDATE_STATE = Path(".updates") / "state.json"
 
 #: the version of the control/runtime that is asking; the app reads it from VERSION when it has one.
 RUNTIME_VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
@@ -159,6 +162,16 @@ def components_dir(environ=None, *, windows: bool | None = None, home: Path | No
 
 def engine_dir(root: Path | None = None) -> Path:
     return (root or components_dir()) / "engine"
+
+
+def pinned_folder(root: Path | None = None) -> str | None:
+    """The package folder a manual rollback pinned, or None. Read-only; a missing or damaged state file means no pin."""
+    try:
+        data = json.loads(((root or components_dir()) / UPDATE_STATE).read_text(encoding="utf-8-sig"))
+        value = data["engine"]["pinned"]
+        return value if isinstance(value, str) and value and "/" not in value and "\\" not in value else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 # ----------------------------------------------------------------------------------------------- manifest
@@ -499,6 +512,11 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         if broken and len(broken) == len(reasons):       # every package that fits this PC failed its integrity check
             raise EngineIntegrityError("; ".join(broken), base, problems=problems)
         raise EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems)
+    pin = pinned_folder(base)
+    if pin:                                   # a manual rollback: the pinned package wins while it is usable
+        for item in usable:
+            if item.root.name == pin:
+                return item
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
     return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0"))))
 
@@ -536,7 +554,8 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
     report = {"schema_version": 1, "components_dir": str(base), "platform": host_platform(),
               "backend": backend or detected, "backend_source": "requested" if backend else how,
               "installed": [item.to_dict() for item in found], "problems": problems,
-              "engine": None, "usable": False, "notice": None, "acquires": False}
+              "engine": None, "usable": False, "notice": None, "acquires": False,
+              "pinned": pinned_folder(base)}
     try:
         chosen = resolve(base, backend=backend, full=full)
         report["engine"] = chosen.to_dict()
