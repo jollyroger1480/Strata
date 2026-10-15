@@ -15,6 +15,12 @@
 #include <string>
 #include <vector>
 
+// The AVX2 / AVX-512 units (tq_avx2.cpp, tq_avx512.cpp) exist on x86-64 builds only; anything else (arm64: the Metal build)
+// runs the scalar kernel.
+#if defined(__x86_64__) || defined(_M_X64)
+#define STRATA_TQ_X86 1
+#endif
+
 namespace strata::kernels::cpu {
 namespace {
 
@@ -88,11 +94,15 @@ bool tq_supported(int t) noexcept { return t == 144 || t == 145 || t == 146; }
 int tq_kbits(int t) noexcept { return t == 144 ? 8 : t == 145 ? 6 : t == 146 ? 7 : 0; }
 
 bool tq_isa_ok(TqIsa isa) {
+#if defined(STRATA_TQ_X86)
     switch (isa) {
         case TqIsa::avx512: return cpu_avx512_ok();
         case TqIsa::avx2: return cpu_avx2_ok();
         default: return true;
     }
+#else
+    return isa == TqIsa::scalar;   // arm64 (the Metal build): the AVX units are not compiled, the scalar kernel runs
+#endif
 }
 
 TqIsa tq_isa() {
@@ -160,8 +170,10 @@ ActSet& unpack_all(const void* const* act, int n, int nt) {
 void rows_on(TqIsa isa, int kb, const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
              float* const* out, int r0, int r1) {
     switch (isa) {
+#if defined(STRATA_TQ_X86)
         case TqIsa::avx512: tq_detail::tq_rows_avx512(kb, w, row_bytes, n, a, nt, out, r0, r1); break;
         case TqIsa::avx2: tq_detail::tq_rows_avx2(kb, w, row_bytes, n, a, nt, out, r0, r1); break;
+#endif
         default: tq_detail::tq_rows_scalar(kb, w, row_bytes, n, a, nt, out, r0, r1); break;
     }
 }
