@@ -193,7 +193,8 @@ def runtime_action(action: str, profile: str, *, plan: bool = False,
                    if_instance_id: str | None = None,
                    allow_source_switch: bool = False,
                    allow_source_migration: bool = False,
-                   if_source_sha256: str | None = None) -> dict:
+                   if_source_sha256: str | None = None,
+                   die_with_pid: int | None = None) -> dict:
     """Execute one validated owner operation and return its CLI/host result."""
     runtime._name(profile)
     if type(plan) is not bool:
@@ -225,7 +226,8 @@ def runtime_action(action: str, profile: str, *, plan: bool = False,
              "expected_source_sha256": if_source_sha256},
             lambda: runtime.start(profile, wait=wait, shutdown_timeout=shutdown_timeout,
                                   expected_profile_revision=if_profile_revision,
-                                  expected_source_sha256=if_source_sha256))
+                                  expected_source_sha256=if_source_sha256,
+                                  die_with_pid=die_with_pid))
     elif action == "status":
         if plan:
             raise ProfileError("status has no plan")

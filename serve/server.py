@@ -67,7 +67,7 @@ from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
-from serve.winjob import contain  # noqa: E402
+from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -77,12 +77,12 @@ IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
 
 
-def popen(what: str, args: list, **kw):
+def popen(what: str, args: list, role: str = "engine", **kw):
     """#735: subprocess.Popen, but Windows' refusal to start a program (WinError 4551, or 1260 when a policy blocks it:
     Smart App Control on a clean Windows 11 blocks an exe that is not signed) is said in words instead of a bare
     OSError."""
     try:
-        return subprocess.Popen(args, **kw)
+        return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (serve/lifeline.py)
     except OSError as e:
         if getattr(e, "winerror", None) in (4551, 1260):
             raise OSError(f"Windows blocked {what} ({args[0]}): Smart App Control, or an application-control policy, does "
@@ -90,6 +90,21 @@ def popen(what: str, args: list, **kw):
                           "& browser control > Smart App Control settings), or - for the image encoder only - run setup "
                           "with --vision no (see docs/TROUBLESHOOTING.md)") from e
         raise
+
+
+def end_leftover_engines(exe: str) -> None:
+    """Before an engine starts: end the ones a lost server left running (strata_control/procs.py). Only a process
+    this install recorded whose starter is gone, or an orphan of exactly this executable running --serve, and only
+    after its PID, start time and command line are checked again at the moment of the signal. Never raises."""
+    if os.environ.get("STRATA_KEEP_LEFTOVERS") == "1":
+        return
+    try:
+        from strata_control import procs
+        say = lambda text: print(text, flush=True)        # noqa: E731
+        procs.end_leftovers(say=say)
+        procs.end_orphans(exe, say=say)
+    except Exception as e:  # noqa: BLE001 - a failed check must not stop a start
+        print(f"[strata] could not check for engines left by an earlier run: {type(e).__name__}", flush=True)
 
 
 def listen_problem(host: str, port: int, e: OSError) -> str:
@@ -943,10 +958,10 @@ class StrataEngine:
         pin = {}
         if cpus and hasattr(os, "sched_setaffinity"):    # replicas: this engine's own physical cores (serve/replicas.py)
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
+        end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
         self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env, **pin)
-        contain(self.proc)                               # ends with the server, however it ends (Windows)
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
@@ -2343,13 +2358,15 @@ class StrataEngine:
         try:
             if self.proc.poll() is None:
                 try:
-                    self.proc.stdin.write("QUIT\n")
+                    # STOP first: a request still running ends at its next step instead of being waited for (the
+                    # engine reads stdin on its own thread; QUIT behind a long answer would sit in its queue)
+                    self.proc.stdin.write("STOP\nQUIT\n")
                     self.proc.stdin.flush()
                     self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
                     self.proc.wait(timeout=20)
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
-                    self.proc.wait(timeout=20)
+                    self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             try:
@@ -2465,10 +2482,9 @@ class Vision:
     def _start(self):
         args, log, env = self.spawn
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
-        self.proc = popen("the image encoder", args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
                           cwd=self.dir)
-        contain(self.proc)
         try:
             line = self._readline(VISION_READY_S, "the vision encoder did not start")
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
@@ -7364,9 +7380,24 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    # Every ordinary way of being asked to stop takes Ctrl+C's path (QUIT to the engine, then exit): SIGTERM (#96 docker
+    # stop; systemd), SIGHUP (the terminal closed, ssh dropped), and on Windows Ctrl+Break and the console's close,
+    # logoff and shutdown events. They are installed before anything slow starts, so one that arrives while the model
+    # loads is not the default "die at once". SIGINT keeps Python's own handler (a second Ctrl+C stops waiting).
+    termination = "sigint"
+    finished = threading.Event()                        # set when the clean stop is over (a Windows console handler waits for it)
+
+    def request_stop(reason: str):
+        nonlocal termination
+        termination = reason
+        if threading.current_thread() is threading.main_thread():
+            raise KeyboardInterrupt
+        import _thread
+        _thread.interrupt_main()
+    lifeline.install_stop_handlers(request_stop, finished)
     if a.owner_fd is not None:
         try:
-            owner_guard.start(a.owner_fd)
+            owner_guard.start(a.owner_fd, grace=(a.shutdown_timeout or 0) + 40)
         except (OSError, ValueError) as exc:
             ap.error(str(exc))
     if a.shutdown_timeout is not None and not 0 <= a.shutdown_timeout <= 300:
@@ -7742,20 +7773,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                   "       (and set this network to Private in Windows' network settings)", flush=True)
     if a.open and cfg.get("open_browser") is not False:   # #609: the config's "open_browser": false wins (an older
         import webbrowser                                  # run-<model>.bat still passes --open)
-        webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{bound_port}/")
-    # #96: docker stop sends SIGTERM, which Python ignores by default, so the container's PID 1 would be killed after
-    # the grace period with the engine still running. SIGTERM takes Ctrl+C's path below (QUIT to the engine).
-    # SIGINT keeps Python's own handler, so Ctrl+C and a second Ctrl+C work as before.
-    termination = "sigint"
-
-    def on_sigterm(signum, frame):
-        nonlocal termination
-        termination = "sigterm"
-        raise KeyboardInterrupt
-    try:
-        signal.signal(signal.SIGTERM, on_sigterm)
-    except (ValueError, OSError, AttributeError):         # not the main thread
-        pass
+        # on its own thread: webbrowser.open waits for the browser launcher, which on Linux can run for as long as
+        # the browser does, and the main thread must be free to take Ctrl+C and SIGTERM (#1872)
+        threading.Thread(target=webbrowser.open, daemon=True, name="strata-open-browser",
+                         args=(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{bound_port}/",)).start()
     if ready_path is not None or event_sink is not None:
         ready_host = f"[{here}]" if ":" in here and not here.startswith("[") else here
         record = {"schema_version": 1, "instance_id": svc.instance_id, "pid": os.getpid(),
@@ -7816,6 +7837,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         finally:
             if ready_path is not None:
                 ready_file.remove_if_owned(ready_path, svc.instance_id)
+            finished.set()
         if interrupted:
             print("[strata] stopped", flush=True)
     exit_code = (8 if not drained else

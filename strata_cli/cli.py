@@ -178,10 +178,18 @@ def parser() -> argparse.ArgumentParser:
                          help="update an existing install (what UPDATE.bat / update.sh run) instead of setting one up")
     install.add_argument("setup_args", nargs=argparse.REMAINDER,
                          help="options passed to setup.py, e.g. --family qwen --model Q2_0 --yes")
-    runtime = sp.add_parser("runtime", help="manage an owned local Strata server instance")
+    runtime = sp.add_parser(
+        "runtime", help="manage an owned local Strata server instance",
+        description="`runtime start` starts a background service: the engine keeps serving after this terminal "
+                    "closes and until `runtime stop` (or the process named by --die-with-pid ends). "
+                    "`strata serve` is the foreground form: it ends with this terminal.")
     runtime_sp = runtime.add_subparsers(dest="runtime_command", required=True)
-    runtime_start = runtime_sp.add_parser("start", help="start a saved profile under the local owner host")
+    runtime_start = runtime_sp.add_parser(
+        "start", help="start a saved profile as a background service under the local owner host (it keeps "
+                      "serving after this terminal closes; stop it with `runtime stop`)")
     runtime_start.add_argument("--profile", required=True)
+    runtime_start.add_argument("--die-with-pid", type=int, metavar="PID",
+                               help="stop the instance (drained) when this process ends; for an app that owns it")
     runtime_start.add_argument("--plan", action="store_true")
     runtime_start.add_argument("--wait", type=float, default=300)
     runtime_start.add_argument("--shutdown-timeout", type=float, default=30)
@@ -206,6 +214,11 @@ def parser() -> argparse.ArgumentParser:
     runtime_stop.add_argument("--if-owner-id", help="require the owner ID from --plan")
     runtime_stop.add_argument("--if-instance-id", help="require the instance ID from --plan")
     runtime_stop.add_argument("--output", choices=("human", "json"), default="human")
+    runtime_cleanup = runtime_sp.add_parser(
+        "cleanup", help="end servers and engines Strata started whose owner is gone (each is checked by PID, "
+                        "start time and command line first; a running instance is never touched)")
+    runtime_cleanup.add_argument("--profile", help="only this profile's leftovers")
+    runtime_cleanup.add_argument("--output", choices=("human", "json"), default="human")
     runtime_restart = runtime_sp.add_parser("restart", help="drain and rerun an owned saved profile")
     runtime_restart.add_argument("--profile", required=True)
     runtime_restart.add_argument("--plan", action="store_true", help="compare current and saved launch without draining")
@@ -448,7 +461,7 @@ def parser() -> argparse.ArgumentParser:
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
                      components_verify, models_list, models_inspect, models_import, calibrate,
-                     runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_restart,
+                     runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
@@ -1020,8 +1033,20 @@ def _bench(a: argparse.Namespace) -> int:
 def _runtime(a: argparse.Namespace) -> int:
     from strata_control import management
     machine = a.output == "json"
+    if a.runtime_command == "cleanup":
+        from strata_control import runtime
+        result = runtime.cleanup(a.profile)
+        if machine:
+            print(json.dumps({"schema_version": 1, **result}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(f"ended {len(result['ended'])} leftover process(es)" +
+                  (f"; {len(result['stuck'])} would not end" if result["stuck"] else "") +
+                  (f"; {len(result['unverifiable'])} could not be identified here and were left alone"
+                   if result["unverifiable"] else ""))
+        return 0 if result["ok"] else result["exit_code"]
     result = management.runtime_action(
         a.runtime_command, a.profile, plan=getattr(a, "plan", False),
+        die_with_pid=getattr(a, "die_with_pid", None),
         wait=getattr(a, "wait", 300),
         shutdown_timeout=getattr(a, "shutdown_timeout", 30),
         startup_wait=getattr(a, "startup_wait", 300), load=getattr(a, "load", False),
