@@ -15,31 +15,31 @@ import { buildProfile } from '../server/agent/profile.mjs';
 const hw = (gb, n = 1) => ({ gpus: Array.from({ length: n }, (_, i) => ({ index: i, vram_gb: gb })) });
 const cfg = (context, extra = {}) => ({ args: ['--max-context', String(context), '--mtp', '/m', '--spec', '4'], gpu: 0, ...extra });
 
-test('the default is 4 request slots, and the policy is one switch', () => {
+test('the default aims for 4 request slots; the policy is one switch; with no hardware read it is one at a time', () => {
   assert.equal(DEFAULT_SLOTS, 4);
   assert.ok(['fit', 'fixed'].includes(PARALLEL_POLICY));
-  assert.equal(chooseParallel({ config: cfg(32768) }).slots, 4, 'no hardware read: ask for the default, the engine fits what it can');
+  const unknown = chooseParallel({ config: cfg(32768) });
+  assert.equal(unknown.slots, PARALLEL_POLICY === 'fixed' ? 4 : 1, 'nothing to size against: the safe default');
 });
 
-test('sizing: 4 where the card has room, fewer where the slots would crowd out the expert cache, said in plain words', () => {
-  // the slot cost was measured on the 0.1.45 engine: 0.92 GiB per slot at 32K
-  assert.ok(Math.abs(slotGb({ context: 32768 }) * 0.931 - 0.92) < 0.1);
+test('sizing: the slots may take at most a fifth of the expert cache the card would have; said in plain words', () => {
+  // measured on the 0.1.45 engine: 0.92 GiB per slot at 32K; a 12 GB card ends with 5.1 GiB of expert cache
+  assert.ok(Math.abs(slotGb({ context: 32768 }) * 0.931 - 0.92) < 0.03);
   if (PARALLEL_POLICY !== 'fit') return;
-  assert.equal(chooseParallel({ config: cfg(32768), hardware: hw(24) }).slots, 4);
-  assert.equal(chooseParallel({ config: cfg(32768), hardware: hw(16) }).slots, 3);
-  const small = chooseParallel({ config: cfg(32768), hardware: hw(12) });
-  assert.equal(small.slots, 2);
-  assert.match(small.note, /room for 2 requests at once/);
-  assert.match(small.note, /smaller context size leaves room for more/);
-  const tight = chooseParallel({ config: cfg(65536), hardware: hw(12) });
-  assert.equal(tight.slots, 1); assert.match(tight.note, /one at a time/);
-  // two cards share the load
-  assert.equal(chooseParallel({ config: cfg(65536, { gpu: [0, 1] }), hardware: hw(24, 2) }).slots, 4);
-  assert.doesNotMatch(small.note + tight.note, /--|batch|VRAM|GiB|tok/i, 'no engine words');
+  const slots = (gb, context, extra = {}, cards = 1) => chooseParallel({ config: cfg(context, extra), hardware: hw(gb, cards) });
+  assert.deepEqual([12, 16, 20, 24, 32].map(gb => slots(gb, 32768).slots), [1, 1, 2, 3, 4]);
+  assert.deepEqual([12, 24, 32, 48].map(gb => slots(gb, 65536).slots), [1, 1, 2, 4], 'the context is per slot: doubling it halves the slots');
+  assert.equal(slots(24, 65536, { gpu: [0, 1] }, 2).slots, 4, 'two cards share the load');
+  const small = slots(12, 32768);
+  assert.equal(small.slots, 1); assert.match(small.note, /one request at a time/); assert.match(small.note, /Helper agents and a second chat take their turn/);
+  const some = slots(20, 32768);
+  assert.match(some.note, /room for 2 requests at once/); assert.match(some.note, /smaller context size leaves room for more/);
+  assert.equal(slots(32, 32768).note, null, 'no note when the default fits');
+  assert.doesNotMatch(small.note + some.note, /--|batch|VRAM|GiB|tok|cache/i, 'no engine words');
 });
 
 test('batch-mtp is off by default (measured: it does not pay on a 12 GB card); where the policy is on it applies to one card with a draft layer only', () => {
-  const mtp = c => chooseParallel({ config: c, hardware: hw(24) });
+  const mtp = c => chooseParallel({ config: c, hardware: hw(32) });
   assert.equal(BATCH_MTP_POLICY, 'off');
   assert.equal(mtp(cfg(32768)).batchMtp, false);
   const applied = applyParallel(cfg(32768), mtp(cfg(32768)));
@@ -93,7 +93,7 @@ function fixture({ failStarts = 0, config = {} } = {}) {
     async stop(name) { calls.push(['stop', name]); return { ok: true }; },
   };
   const fetcher = async () => Response.json({ status: 'ok' });
-  const native = createNativeControl({ control, directory: data, spawnProcess: () => { throw new Error('the host starts no process'); }, fetcher, requests: () => [] });
+  const native = createNativeControl({ control, hardwareProbe: () => [{ index: 0, vram_gb: 32 }], directory: data, spawnProcess: () => { throw new Error('the host starts no process'); }, fetcher, requests: () => [] });
   return { native, saved, calls, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 const finish = async (native, id) => { for (let i = 0; i < 500; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };

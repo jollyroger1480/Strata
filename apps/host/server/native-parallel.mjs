@@ -23,13 +23,25 @@ export const DEFAULT_SLOTS = 4;
 export const MAX_SLOTS = 8;
 /**
  * THE one-line policy.
- *   'fit'   the default aims for 4 and takes fewer where the slots would take more than SLOT_SHARE of the card's memory
- *           (measured on a 12 GB RTX 3060, 32K: 4 slots took 3.7 GiB, left 0.35 GiB free and cost a single chat 37%)
+ *   'fit'   the default aims for 4 and takes fewer where the slots would eat more than CACHE_LOSS_SHARE of the expert cache
+ *           the card would otherwise have (the owner's choice: "fit to the card")
  *   'fixed' the default is always DEFAULT_SLOTS, whatever the card (the engine still fits what it can)
+ *
+ * Why a cache budget: on a 12 GB RTX 3060 (IQ3_XXS, 32K) the slots' sessions come out of the expert cache. Measured, one request
+ * alone: no slots 61 tok/s (cache 5.1 GiB); 2 slots 41 (cache 3.25 GiB); 4 slots 38 (cache 1.4 GiB). Several requests together
+ * were SLOWER in total than queueing them (52-57 tok/s total queued, against 33-42 in slots). Slots start everyone at once;
+ * they pay off when the cache stays mostly intact.
  */
 export const PARALLEL_POLICY = 'fit';
-/** Share of ALL the graphics memory the slots' sessions may take together under the 'fit' policy. */
-export const SLOT_SHARE = 0.2;
+/** The share of the solo expert cache the slots' sessions may take together under the 'fit' policy. */
+export const CACHE_LOSS_SHARE = 0.2;
+/**
+ * The expert cache a card has with one request at a time is what remains of its memory after the dense weights, the draft layer,
+ * one session, the safety reserve and the prompt path (measured: a 12 GB card ends with 5.1 GiB of cache and 0.35 GiB free, so
+ * about 6.9 GiB goes to everything else; a second card in a layer split about 2 GiB).
+ */
+export const FIRST_CARD_OTHER_GB = 6.9;
+export const NEXT_CARD_OTHER_GB = 2.0;
 /**
  * `--batch-mtp` lets each slot verify draft tokens. Measured on a 12 GB RTX 3060 (docs/BATCHING.md says it pays on larger
  * cards): a lone chat 35.6 tok/s with it against 37.8 without, 2 chats 37.2 against 33.8 together, 4 chats 42.5 against 38.4 -
@@ -81,16 +93,15 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
     return { slots: slots ?? 0, batchMtp: false, explicit: true, requested, note: null, slotGb: slot };
   }
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
-  // Without a hardware read the engine's own fitting is all there is: ask for the default and let it say what it can run.
-  if (!cards.length) return { slots: requested, batchMtp: BATCH_MTP_POLICY === 'on' && facts.mtp && facts.gpus.length === 1, explicit: false, requested, note: null, slotGb: slot };
+  // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).
+  if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };
   const total = cards.reduce((a, b) => a + b, 0);
+  const soloCache = Math.max(0, total - FIRST_CARD_OTHER_GB - NEXT_CARD_OTHER_GB * (cards.length - 1));
   let slots = requested;
-  if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > SLOT_SHARE * total) slots -= 1;
-  const note = slots < requested
-    ? (slots > 1
-      ? `Your graphics card has room for ${slots} requests at once with this context size, so Strata set that. A smaller context size leaves room for more.`
-      : 'Your graphics card has no spare room for several requests at once with this context size, so Strata set it to one at a time. A smaller context size leaves room for more.')
-    : null;
+  if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > CACHE_LOSS_SHARE * soloCache) slots -= 1;
+  const note = slots >= requested ? null
+    : slots > 1 ? `Your graphics card has room for ${slots} requests at once with this context size, so Strata set that. A smaller context size leaves room for more.`
+      : 'Strata set this model to one request at a time: your graphics card is best used that way, because more at once would make every answer slower. Helper agents and a second chat take their turn instead. A smaller context size leaves room for more at once.';
   return { slots, batchMtp: BATCH_MTP_POLICY === 'on' && slots > 1 && facts.mtp && !facts.batchMtp && facts.gpus.length === 1, explicit: false, requested, note, slotGb: slot };
 }
 
