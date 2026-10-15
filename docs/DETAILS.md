@@ -2067,5 +2067,5 @@ unless noted; the gain is small on these two cards and larger on the Turing card
 | `STRATA_PREFILL_GROUP_GATHER=0` (#1107) | turns the short-prompt grouped gather off | n/a | on is 0.6-1.3% faster |
 
 `STRATA_DEQUANT_WIDE` (the wide dequantization of Q4_K / Q5_K / Q6_K / IQ4_XS for the prompt's dense weights) is now on by default on
-sm_86 as well as sm_61: bit-exact, and the time to the first token of a 150 / 300 / 450-token prompt fell 11-15% on the RTX 3060 (5 of 5 pairs each).
+sm_86 as well as sm_61: bit-exact, and the time to the first token of a 150 / 300 / 450-token prompt fell 11-15% on the RTX 3060 and 6-10% on the RTX A4000 (5 of 5 pairs each).
 `STRATA_DEQUANT_WIDE=0` turns it off.
