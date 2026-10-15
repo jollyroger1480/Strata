@@ -1,3 +1,5 @@
+import { plainUpdateError } from './update-messages.mjs';
+
 /** Read-only release checks. Installing/rolling back needs a managed installer. */
 const RELEASES = 'https://api.github.com/repos/Niko1221/Strata/releases?per_page=30';
 const RELEASE_PREFIX = 'https://github.com/Niko1221/Strata/releases/';
@@ -53,18 +55,19 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
   try {
     report = await control.updateCheck({ appVersion });
   } catch (error) {
-    const message = error?.message ?? 'Could not check for updates.';
-    return { checkedAt, strata: { installedVersion: appVersion ?? control.version ?? null, status: 'error', message, canInstall: false }, engine: { installedVersion: null, status: 'error', message, canInstall: false } };
+    const plain = plainUpdateError(error, 'Strata');
+    const message = /update server/.test(plain.headline) ? `${plain.headline} Check your internet connection and try again.` : `Couldn't check for updates. Try again in a moment.`;
+    return { checkedAt, strata: { installedVersion: appVersion ?? control.version ?? null, status: 'error', message, details: plain.details, canInstall: false }, engine: { installedVersion: null, status: 'error', message, details: plain.details, canInstall: false } };
   }
   const mib = bytes => `${Math.round((bytes ?? 0) / (1 << 20))} MB`;
   const engine = report.engine ?? {};
   const installedEngine = engine.installed?.version ?? null;
   const offered = engine.offered?.version ?? null;
   const engineView = { installedVersion: installedEngine, latestVersion: offered ?? undefined, canInstall: engine.status === 'available' || engine.status === 'install' };
-  if (engine.status === 'available') Object.assign(engineView, { status: 'available', message: `Engine ${offered} is available (${mib(engine.download_bytes)}).` });
-  else if (engine.status === 'install') Object.assign(engineView, { status: 'available', message: `No engine is installed yet. The right one for this PC, ${offered} (${mib(engine.download_bytes)}), can be downloaded now.` });
-  else if (engine.status === 'current' || engine.status === 'failed-before' || engine.status === 'skipped') Object.assign(engineView, { status: 'current', message: engine.note ?? 'The engine is up to date.' });
-  else Object.assign(engineView, { status: 'unavailable', message: engine.reasons?.[0] ?? 'The update feed has no engine for this PC.' });
+  if (engine.status === 'available') Object.assign(engineView, { status: 'available', message: `A new engine is available (${mib(engine.download_bytes)}).` });
+  else if (engine.status === 'install') Object.assign(engineView, { status: 'available', message: `This PC needs an engine to run models. Press Update engine to download it (${mib(engine.download_bytes)}).` });
+  else if (engine.status === 'current' || engine.status === 'failed-before' || engine.status === 'skipped') Object.assign(engineView, { status: 'current', message: 'The engine is up to date.', details: engine.note });
+  else Object.assign(engineView, { status: 'unavailable', message: "There isn't an engine for this PC's graphics card yet.", details: (engine.reasons ?? []).join('\n') || undefined });
   const control_ = report.control ?? {};
   const app = report.app ?? {};
   let appNew = app.status === 'available' ? app.offered : null;
@@ -78,7 +81,7 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
   }
   const controlNew = control_.status === 'available' ? control_.offered : null;
   const strata = { installedVersion: appVersion ?? control_.installed ?? control.version ?? null, canInstall: !!(appNew || controlNew) };
-  if (appNew || controlNew) Object.assign(strata, { status: 'available', latestVersion: appNew ?? controlNew, message: `Strata ${appNew ?? controlNew} is available.${appNotes ? ` ${appNotes}` : ''}` });
+  if (appNew || controlNew) Object.assign(strata, { status: 'available', latestVersion: appNew ?? controlNew, message: `A new version of Strata is available.${appNotes ? ` ${appNotes}` : ''}` });
   else Object.assign(strata, { status: 'current', message: 'Strata is up to date.' });
   return { checkedAt, feed: report.feed, strata, engine: engineView, serving: report.serving ?? [] };
 }

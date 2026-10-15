@@ -11,6 +11,7 @@ import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
 import { runtimeVision } from './native-vision.mjs';
 import { createEngineStep } from './engine-step.mjs';
+import { plainError, PHASE_TEXT } from './update-messages.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const safeId=value=>typeof value==='string'&&/^[a-z0-9_-]{1,80}$/i.test(value);
@@ -82,7 +83,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function plan(args){await refresh();if(!snapshot.available)throw new Error(snapshot.error);return tool('strata_install',installArgs(args,false));}
  function installArgs(args,confirm){const allowed=['family','model','context','vision','kv','gpu','gpus','backend','low_ram','port'];const size=snapshot.catalog?.families?.find(f=>f.family===args.family)?.sizes.find(s=>s.model===args.model);const existing=snapshot.installed?.models?.find(m=>m.model===size?.id);const data=nativeDataDirectory(args.data_dir??existing?.dataFolder??preferences.downloadDirectory??modelsDirectory?.());return {...(data?{data_dir:data}:{}),...Object.fromEntries(allowed.filter(k=>args[k]!==undefined).map(k=>[k,args[k]])),confirm};}
 
- function begin(kind,run,metadata={}){if([...jobs.values()].some(j=>j.state==='running'))throw new Error('Finish or cancel the current engine operation first.');const job={id:randomUUID(),kind,state:'running',startedAt:new Date().toISOString(),summary:'Starting…',result:null,error:null,...metadata};for(const [id,old] of jobs)if(jobs.size>=12&&old.state!=='running')jobs.delete(id);jobs.set(job.id,job);emit();void run(job).then(result=>{if(job.state==='running'){Object.assign(job,{state:'done',summary:result?.summary??'Complete',result,finishedAt:new Date().toISOString()});}}).catch(error=>{if(job.state==='running')Object.assign(job,{state:'error',error:error.message,summary:error.message,finishedAt:new Date().toISOString()});}).finally(()=>{if(job.kind.startsWith('update')||job.kind==='rollback')disconnect();lastRead=0;emit();void refresh(true);});return state().jobs.find(j=>j.id===job.id);}
+ function begin(kind,run,metadata={}){if([...jobs.values()].some(j=>j.state==='running'))throw new Error('Finish or cancel the current engine operation first.');const job={id:randomUUID(),kind,state:'running',startedAt:new Date().toISOString(),summary:'Starting…',result:null,error:null,...metadata};for(const [id,old] of jobs)if(jobs.size>=12&&old.state!=='running')jobs.delete(id);jobs.set(job.id,job);emit();void run(job).then(result=>{if(job.state==='running'){Object.assign(job,{state:'done',summary:result?.summary??'Complete',result,finishedAt:new Date().toISOString()});}}).catch(error=>{if(job.state==='running')Object.assign(job,{state:'error',error:error.message,summary:error.message,...(error.details?{details:error.details}:{}),finishedAt:new Date().toISOString()});}).finally(()=>{if(job.kind.startsWith('update')||job.kind==='rollback')disconnect();lastRead=0;emit();void refresh(true);});return state().jobs.find(j=>j.id===job.id);}
  async function watchInstall(job,current){job.summary=current.step??'Resuming preparation status…';job.result={install:current};while(job.state==='running'){await new Promise(r=>setTimeout(r,1500));const result=await tool('strata_install');job.summary=result.summary;job.result=result;emit();if(!result.install?.running){if(result.install?.exit_code!==0)throw new Error(result.install?.error??'Preparation did not finish. Retry to reuse completed files.');return {summary:'Model preparation complete. Load it from Models.'};}}}
  function externalRunning(){return Array.isArray(snapshot.external)?snapshot.external.filter(s=>![...instances.values()].some(i=>i.port===s.port)):[];}
  async function install(job,args){
@@ -111,7 +112,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
      if(engineTask){job.summary='Model files are ready. Finishing the engine for this PC…';emit();await engineTask;publish(result);}
      await refresh(true);
      const note=engineStep?.summaryNote();
-     if(note)return {...result,summary:`Model ready. ${note}`};
+     if(note)return {...result,summary:note};
      if(args.loadAfter){const model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision});}
      return result;
     }
@@ -189,24 +190,28 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(!['update-engine','update-strata','rollback'].includes(job.kind)||typeof control.update!=='function')throw new Error(NO_INSTALL);
   if(instances.size)throw new Error('Unload native models before changing engine files.');
   job.abort=new AbortController();
+  const subject=job.kind==='update-strata'?'Strata':'engine';
+  try{return await componentSteps(job,subject);}catch(error){throw error?.details!==undefined&&error.message?error:plainError(error,subject);}
+ }
+ async function componentSteps(job,subject){
   const onEvent=event=>{
-   if(event.event==='progress'){job.summary=`Downloading ${event.label}: ${event.percent}%`;job.result={install:{step:job.summary,download:{file:event.label,percent:event.percent}}};}
-   else if(event.event==='phase'&&event.message)job.summary=event.message;
-   else if(event.event==='waiting')job.summary=event.message;
+   if(event.event==='progress'){job.summary=`Downloading: ${event.percent}%`;job.result={install:{step:job.summary,download:{file:event.label,percent:event.percent}}};}
+   else if(event.event==='phase'&&PHASE_TEXT[event.phase])job.summary=PHASE_TEXT[event.phase];
+   else if(event.event==='waiting')job.summary='Waiting for the running model to stop…';
    emit();
   };
-  if(job.kind==='rollback'){const done=await control.rollbackEngine();return {summary:`Engine ${done.to} restored. Model files and settings are kept.`,result:done};}
+  if(job.kind==='rollback'){const done=await control.rollbackEngine();return {summary:'The previous engine is back. Your models and settings are unchanged.',result:done};}
   if(job.kind==='update-engine'){const done=await control.update({engine:true,control:false,onEvent,signal:job.abort.signal});return {summary:updateSummary(done),result:done};}
   const done=await control.update({engine:false,control:true,onEvent,signal:job.abort.signal});
   const notes=[updateSummary(done)];
   if(appUpdater){
-   job.summary='Checking the Strata app for updates…';emit();
+   job.summary='Looking for a new version of the app…';emit();
    const verdict=await appUpdater.check();
-   if(verdict.available){await appUpdater.install({signal:job.abort.signal,onProgress:p=>{if(p.total){job.summary=`Downloading Strata ${verdict.version}: ${Math.round(100*p.downloaded/p.total)}%`;job.result={install:{step:job.summary,download:{file:`Strata ${verdict.version}`,percent:Math.round(100*p.downloaded/p.total)}}};emit();}}});notes.push(`Strata ${verdict.version} installed; the app restarts.`);}
+   if(verdict.available){await appUpdater.install({signal:job.abort.signal,onProgress:p=>{if(p.total){job.summary=`Downloading the app update: ${Math.round(100*p.downloaded/p.total)}%`;job.result={install:{step:job.summary,download:{file:'Strata app',percent:Math.round(100*p.downloaded/p.total)}}};emit();}}});notes.push('The app update is installed. Strata will restart.');}
   }
   return {summary:notes.filter(Boolean).join(' '),result:done};
  }
- function updateSummary(done){const r=(done.results??[]).filter(x=>x.status==='updated').map(x=>x.component==='engine'?`Engine ${x.installed_after?.version??''} installed and tested.`:`Control ${x.installed_after??''} installed (takes effect on the next start).`);return r.length?r.join(' '):'Already up to date.';}
+ function updateSummary(done){const r=(done.results??[]).filter(x=>x.status==='updated').map(x=>x.component==='engine'?'The engine is updated and ready.':'Strata is updated. It takes effect the next time you open the app.');return r.length?r.join(' '):'Everything is already up to date.';}
  function execute(cmd,args,cwd){return new Promise((resolve,reject)=>{let output='';const process=spawnProcess(cmd,args,{cwd,stdio:['ignore','pipe','pipe']});process.stdout.on('data',c=>{output+=c;if(output.length>100000)process.kill();});process.stderr.on('data',c=>append('update',c.toString()));process.on('error',reject);process.on('exit',code=>code===0?resolve(output):reject(new Error('Git could not update this installation. Open diagnostics.')));});}
  function writeModelConfig(path,next){copyFileSync(path,path+'.bak');chmodSync(path+'.bak',0o600);const temp=path+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,path);}
  async function tune(job,args){

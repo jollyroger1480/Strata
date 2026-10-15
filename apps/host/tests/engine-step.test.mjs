@@ -59,8 +59,10 @@ test('a failed engine download keeps the model and says how to retry', async () 
   const part = await step.run();
   assert.equal(part.state, 'failed');
   assert.equal(part.retry, 'Update engine');
-  assert.match(part.message, /Your model files are kept/);
-  assert.match(step.summaryNote(), /connection dropped.*Update engine in Settings/);
+  assert.match(part.message, /^Your model is ready\. The engine for this PC couldn't be downloaded\. .*Update engine in Settings/);
+  assert.doesNotMatch(part.message, /dropped|HTTP|exit|sha/i);
+  assert.match(part.details, /connection dropped/, 'the reason is kept for the Details disclosure');
+  assert.equal(step.summaryNote(), part.message);
   const merged = step.merge({ running: false, download: { file: 'm', percent: 100, done_gb: 10, remaining_gb: 0 } });
   assert.equal(merged.download.remaining_gb, 0, 'a failed engine does not leave the progress bar short');
 });
@@ -70,7 +72,8 @@ test('a feed that cannot be reached is a failure only when there is no engine ye
   assert.equal(none.state, 'failed');
   const have = await createEngineStep({ control: control({ usable: true, checkError: 'could not be read' }) }).run();
   assert.equal(have.state, 'skipped');
-  assert.match(have.message, /engine is installed/);
+  assert.match(have.message, /engine for this PC is installed/);
+  assert.match(have.details, /could not be reached/);
 });
 
 test('an engine that is already current downloads nothing; one with no package for this PC is a failure', async () => {
@@ -80,7 +83,8 @@ test('an engine that is already current downloads nothing; one with no package f
   assert.deepEqual(c.calls, ['engine', 'updateCheck']);
   const none = await createEngineStep({ control: control({ usable: false, check: { engine: { status: 'none-for-this-pc', reasons: ['0.1.46 is for linux-x86_64, this PC is windows-x86_64'] } } }) }).run();
   assert.equal(none.state, 'failed');
-  assert.match(none.error, /windows-x86_64/);
+  assert.doesNotMatch(none.message, /windows-x86_64/);
+  assert.match(none.details, /windows-x86_64/);
 });
 
 test('without a component updater the step is skipped and never throws', async () => {

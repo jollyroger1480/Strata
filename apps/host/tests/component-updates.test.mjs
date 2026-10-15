@@ -109,27 +109,31 @@ test('the Settings update check maps the feed to the existing result shape', asy
   let result = await checkComponentUpdates({ control: make(report()), appVersion: '0.1.0' });
   assert.equal(result.engine.status, 'available');
   assert.equal(result.engine.latestVersion, '0.1.46');
-  assert.match(result.engine.message, /0\.1\.46 is available \(505 MB\)/);
+  assert.match(result.engine.message, /new engine is available \(505 MB\)/);
+  assert.doesNotMatch(result.engine.message, /0\.1\.4|sha|exit/i);
   assert.equal(result.engine.canInstall, true);
   assert.equal(result.strata.status, 'current');
   result = await checkComponentUpdates({ control: make(report({ engine: { installed: null, offered: { version: '0.1.46' }, status: 'install', download_bytes: 505 * (1 << 20) } })) });
   assert.equal(result.engine.status, 'available');
-  assert.match(result.engine.message, /No engine is installed yet/);
+  assert.match(result.engine.message, /needs an engine to run models\. Press Update engine/);
   result = await checkComponentUpdates({ control: make(report({ engine: { installed: { version: '0.1.46' }, offered: { version: '0.1.46' }, status: 'current' } })) });
   assert.equal(result.engine.status, 'current');
   result = await checkComponentUpdates({ control: make(report({ engine: { installed: null, offered: null, status: 'none-for-this-pc', reasons: ['0.1.46 is for linux-x86_64, this PC is windows-x86_64'] } })) });
   assert.equal(result.engine.status, 'unavailable');
-  assert.match(result.engine.message, /windows-x86_64/);
+  assert.doesNotMatch(result.engine.message, /windows-x86_64/);
+  assert.match(result.engine.details, /windows-x86_64/, 'the technical reason is kept for the Details disclosure');
   result = await checkComponentUpdates({ control: make(new Error('this build trusts no update key')) });
   assert.equal(result.strata.status, 'error');
   assert.equal(result.engine.status, 'error');
-  assert.match(result.engine.message, /no update key/);
+  assert.doesNotMatch(result.engine.message, /update key/);
+  assert.match(result.engine.details, /no update key/);
+  assert.match(result.engine.message, /Try again/);
   // the app's verdict comes from the shell's updater when the bridge exists
   const appUpdater = { check: async () => ({ available: true, version: '0.2.0', notes: 'Faster starts.' }) };
   result = await checkComponentUpdates({ control: make(report()), appUpdater, appVersion: '0.1.0' });
   assert.equal(result.strata.status, 'available');
   assert.equal(result.strata.latestVersion, '0.2.0');
-  assert.match(result.strata.message, /Faster starts/);
+  assert.match(result.strata.message, /new version of Strata is available\. Faster starts/);
 });
 
 test('the shell bridge client exists only inside the desktop app, speaks to loopback with the token, and polls to the end', async () => {
@@ -199,14 +203,14 @@ test('packaged: "Update engine" runs the explicit component update, shows its pr
     await new Promise(r => setTimeout(r, 5));
     const job = await finish(f.native, started.id);
     assert.equal(job.state, 'done', job.error);
-    assert.match(job.summary, /Engine 0\.1\.46 installed and tested/);
+    assert.match(job.summary, /engine is updated and ready/);
     assert.deepEqual(f.calls[0], ['update', true, false], 'the engine only: Control and the app are not touched by "Update engine"');
     assert.equal(f.spawned.length, 0);
     await f.native.refresh(true);
     assert.equal(f.native.state().capabilities.rollback, true, 'the previous engine the update kept is offered for rollback');
     const back = await finish(f.native, f.native.operation('rollback', {}).id);
     assert.equal(back.state, 'done', back.error);
-    assert.match(back.summary, /Engine 0\.1\.45 restored/);
+    assert.match(back.summary, /previous engine is back/);
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -223,7 +227,7 @@ test('packaged: progress events become the existing job summary and download bar
     }
     await finish(f.native, started.id);
     assert.deepEqual(seen[0], { file: 'engine 0.1.46', percent: 42 });
-    assert.equal(seen[1], 'Downloading engine 0.1.46: 42%');
+    assert.equal(seen[1], 'Downloading: 42%');
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -250,7 +254,7 @@ test('packaged: "Update Strata" updates Control through the feed, then the app t
     assert.equal(job.state, 'done', job.error);
     assert.deepEqual(f.calls.map(c => c[0]), ['update', 'app-install']);
     assert.deepEqual(f.calls[0], ['update', false, true]);
-    assert.match(job.summary, /Strata 0\.2\.0 installed/);
+    assert.match(job.summary, /app update is installed\. Strata will restart/);
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -260,7 +264,7 @@ test('without the shell bridge "Update Strata" still updates Control and says no
     await f.native.refresh(true);
     const job = await finish(f.native, f.native.operation('update-strata', {}).id);
     assert.equal(job.state, 'done', job.error);
-    assert.doesNotMatch(job.summary, /Strata 0\.2\.0/);
+    assert.doesNotMatch(job.summary, /app update is installed/);
   } finally { await f.native.close(); f.cleanup(); }
 });
 
@@ -272,5 +276,37 @@ test('packaged: opening the app, listing models and loading one never reach the 
     assert.equal(load.state, 'done', load.error);
     assert.deepEqual(f.calls, [], 'no update, check or rollback call: downloads happen only when the user presses Update');
     assert.equal(f.spawned.length, 0);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('plain words in the app: codes, hashes and exit codes stay in details, never in the main text', async () => {
+  const { plainUpdateError } = await import('../server/update-messages.mjs');
+  const raw = [
+    'the download of http://x/e.tar.gz was interrupted after 100 of 200 bytes (ConnectionResetError)',
+    'The new engine 0.1.46 did not pass its test start (it did not answer a one-token probe (server_exited))',
+    'http://x/e.tar.gz does not match the SHA-256 in the signed feed; the download was deleted',
+    'this build trusts no update key (update_keys.json is empty)',
+    'app-1 is serving.',
+    'something unexpected: exit 9',
+  ];
+  for (const text of raw) {
+    const plain = plainUpdateError(new Error(text));
+    assert.doesNotMatch(plain.message, /SHA|HTTP|http|exit|0\.1\.|server_exited|\.tar|key|bytes|probe/i, plain.message);
+    assert.equal(plain.details, text);
+    assert.ok(plain.next.length > 0);
+  }
+  assert.match(plainUpdateError(new Error(raw[0])).message, /internet connection/);
+  assert.match(plainUpdateError(new Error(raw[4])).message, /Unload the model/);
+});
+
+test('a failed update job shows plain words and keeps the technical reason as details', async () => {
+  const f = fixture({ update: async () => { throw new Error('the download of http://x/e.tar.gz was interrupted after 1 of 2 bytes (ConnectionResetError)'); } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('update-engine', {}).id);
+    assert.equal(job.state, 'error');
+    assert.match(job.error, /Couldn't reach the update server\. Check your internet connection, then press Update engine in Settings\./);
+    assert.doesNotMatch(job.error, /http|bytes|Reset/);
+    assert.match(job.details, /ConnectionResetError/);
   } finally { await f.native.close(); f.cleanup(); }
 });

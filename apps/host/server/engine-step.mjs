@@ -10,6 +10,8 @@
  * job the user started. Contract: see phaseA-tests/notes-split-s6.md ("Job contract").
  */
 
+import { plainUpdateError, PHASE_TEXT } from './update-messages.mjs';
+
 const GB = 1e9;
 const round = (value, digits = 2) => Math.round(value * 10 ** digits) / 10 ** digits;
 
@@ -17,47 +19,50 @@ export const RETRY = 'Update engine';
 
 export function createEngineStep({ control, signal = null, onChange = () => {} } = {}) {
   const part = { kind: 'engine', name: 'Engine', version: null, state: 'pending', percent: 0, done_gb: 0, total_gb: 0, message: 'Waiting for the model download to start.' };
+  let note = null;
   const set = patch => { Object.assign(part, patch); onChange({ ...part }); };
 
   async function run() {
     if (!control || typeof control.update !== 'function') { set({ state: 'skipped', message: 'This build has no component updater.' }); return { ...part }; }
     try {
-      set({ state: 'checking', message: 'Checking the engine for this PC.' });
+      set({ state: 'checking', message: 'Checking the engine for this PC…' });
       let usable = false;
       try { usable = !!(await control.engine()).usable; } catch { /* treated as not usable */ }
       let report = null;
       try {
         report = await control.updateCheck();
       } catch (error) {
-        if (usable) { set({ state: 'skipped', message: 'The engine is installed; the update feed could not be reached, so it was not checked for a newer one.' }); return { ...part }; }
+        if (usable) { set({ state: 'skipped', message: 'The engine for this PC is installed.', details: 'The update server could not be reached, so a newer engine was not looked for.' }); return { ...part }; }
         throw error;
       }
       const engine = report.engine ?? {};
       const wanted = engine.status === 'install' || engine.status === 'available';
       if (!wanted) {
         if (!usable && engine.status !== 'current') throw new Error(engine.reasons?.[0] ?? 'The update feed has no engine for this PC.');
-        set({ state: 'current', version: engine.installed?.version ?? null, message: 'The engine for this PC is up to date.', percent: 100 });
+        set({ state: 'current', version: engine.installed?.version ?? null, message: 'The engine for this PC is ready.', percent: 100 });
         return { ...part };
       }
       const version = engine.offered?.version ?? null;
-      set({ state: 'downloading', version, name: `Engine ${version ?? ''}`.trim(), total_gb: round((engine.download_bytes ?? 0) / GB), message: `Downloading engine ${version ?? ''} for this PC.` });
+      set({ state: 'downloading', version, name: `Engine ${version ?? ''}`.trim(), total_gb: round((engine.download_bytes ?? 0) / GB), message: 'Downloading the engine for this PC…' });
       const result = await control.update({
         engine: true, control: false, signal,
         onEvent: event => {
           if (event.event === 'progress') {
-            set({ state: 'downloading', percent: event.percent ?? 0, done_gb: round((event.done ?? 0) / GB), total_gb: round((event.total ?? 0) / GB), message: `Downloading engine ${version ?? ''}: ${event.percent ?? 0}%` });
+            set({ state: 'downloading', percent: event.percent ?? 0, done_gb: round((event.done ?? 0) / GB), total_gb: round((event.total ?? 0) / GB), message: `Downloading the engine for this PC: ${event.percent ?? 0}%` });
           } else if (event.event === 'phase') {
             const state = { verify: 'verifying', test: 'testing', switch: 'switching' }[event.phase];
-            if (state) set({ state, message: event.message ?? part.message });
+            if (state) set({ state, message: PHASE_TEXT[event.phase] ?? part.message });
           } else if (event.event === 'waiting') {
-            set({ message: event.message });
+            set({ message: 'Waiting for the model to stop before finishing the engine…' });
           }
         },
       });
       const done = (result.results ?? []).find(r => r.component === 'engine');
-      set({ state: 'done', percent: 100, done_gb: part.total_gb, version: done?.installed_after?.version ?? version, message: `Engine ${done?.installed_after?.version ?? version ?? ''} is installed and tested.`.replace('  ', ' ') });
+      set({ state: 'done', percent: 100, done_gb: part.total_gb, version: done?.installed_after?.version ?? version, message: 'The engine for this PC is ready.' });
     } catch (error) {
-      set({ state: 'failed', error: error?.message ?? String(error), retry: RETRY, message: `The engine for this PC could not be downloaded: ${error?.message ?? error}. Your model files are kept. Press ${RETRY} in Settings to try again.` });
+      const plain = plainUpdateError(error, 'engine');
+      note = `Your model is ready. The engine for this PC couldn't be downloaded. ${plain.next}`;
+      set({ state: 'failed', error: plain.headline, details: plain.details, retry: RETRY, message: note });
     }
     return { ...part };
   }
@@ -87,7 +92,7 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
 
   /** What to tell the user when the model is ready but the engine is not. Null when all is well. */
   function summaryNote() {
-    return part.state === 'failed' ? `The engine for this PC could not be downloaded: ${part.error}. Press ${RETRY} in Settings to retry.` : null;
+    return part.state === 'failed' ? note : null;
   }
 
   return { run, merge, summaryNote, part: () => ({ ...part }) };
