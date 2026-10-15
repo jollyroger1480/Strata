@@ -35,6 +35,47 @@ ALLOWED_SETTINGS = {"--pcie-frac", "--spec-min-p", "--pool-workers",
                     "--adapt-every", "--adapt-swaps", "--adapt-decay"}
 
 
+def _full_folder(name: str):
+    """`setup` and `tools.calibrate` belong to a full Strata folder; the Terminal archive carries neither (it never
+    installs or builds). Use them when they are importable, or when STRATA_INSTALL_DIR names a folder that has both;
+    otherwise refuse in words instead of a traceback."""
+    import importlib
+    import sys
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        pass
+    raw = os.environ.get("STRATA_INSTALL_DIR")
+    if raw:
+        folder = Path(raw).expanduser()
+        if (folder / "setup.py").is_file() and (folder / "tools" / "calibrate.py").is_file():
+            if str(folder) not in sys.path:
+                sys.path.append(str(folder))
+            try:
+                return importlib.import_module(name)
+            except ImportError:
+                pass
+    raise ProfileError(
+        "engine calibrate needs a full Strata folder (setup.py and tools/calibrate.py); this terminal archive has "
+        "neither. Set STRATA_INSTALL_DIR to such a folder, or use `strata tune run --mode api` to tune from the "
+        "archive", 5) from None
+
+
+def _tools_available() -> bool:
+    """False in the Terminal archive without STRATA_INSTALL_DIR: `--measure` would be refused (see `_full_folder`)."""
+    import importlib.util
+    try:
+        if importlib.util.find_spec("setup") and importlib.util.find_spec("tools.calibrate"):
+            return True
+    except (ImportError, ValueError):
+        pass
+    raw = os.environ.get("STRATA_INSTALL_DIR")
+    if raw:
+        folder = Path(raw).expanduser()
+        return (folder / "setup.py").is_file() and (folder / "tools" / "calibrate.py").is_file()
+    return False
+
+
 def _digest(path: Path) -> str:
     result = hashlib.sha256()
     with path.open("rb") as stream:
@@ -59,6 +100,7 @@ def preview(ref: str) -> dict:
             "source_config": str(path), "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
             "model_name": cfg.get("model_name"), "backend": cfg.get("backend") or "unverified",
             "devices_selected": cfg.get("gpu"), "tool": "tools/calibrate.py",
+            "tool_available": _tools_available(),
             "estimated_minutes": [15, 30], "requires_exclusive_engine": True,
             "settings_measured": ["--pcie-frac", "--spec-min-p", "--pool-workers",
                                   "--adapt-every", "--adapt-swaps", "--adapt-decay"],
@@ -95,12 +137,11 @@ def _runtime_cfg(cfg: dict, profile: dict | None) -> dict:
 
 
 def _hardware_key(cfg: dict) -> str:
-    import setup
-    return setup.hardware_key(cfg)
+    return _full_folder("setup").hardware_key(cfg)
 
 
 def _identity(path: Path, cfg: dict, profile: dict | None, revision: str | None) -> dict:
-    import tools.calibrate as cal
+    cal = _full_folder("tools.calibrate")
     engine = _resolved(cfg["exe"], cfg, path)
     components = inspect_components(path, profile_id=profile["id"] if profile else None)
     if not components["ok"]:
@@ -249,7 +290,7 @@ def _measure_locked(ref: str, path: Path, profile: dict | None, revision: str | 
     if output.exists() or output.is_symlink():
         raise ProfileError("calibration report path already exists", 2)
     identity = _identity(path, cfg, profile, revision)
-    from tools import calibrate as cal
+    cal = _full_folder("tools.calibrate")
     execute = runner or cal.run
     runner_cfg = _runtime_cfg(cfg, profile)
     runner_cfg["exe"] = str(_resolved(cfg["exe"], cfg, path))
@@ -317,7 +358,7 @@ def load_report(path: Path) -> dict:
 def review(ref: str, report_path: Path) -> dict:
     path, profile, revision, cfg = _target(ref)
     report = load_report(report_path)
-    from tools import calibrate as cal
+    cal = _full_folder("tools.calibrate")
     reasons = []
     if report["source_config"] != str(path):
         reasons.append("source_config_mismatch")
@@ -343,7 +384,7 @@ def _smoke(cfg: dict, source_path: Path) -> int:
     """Start the candidate and require at least one generated token before writing it."""
     import strata_tokenizer as st
     from serve.server import StrataEngine, child_env, engine_args
-    from tools import calibrate as cal
+    cal = _full_folder("tools.calibrate")
     tokdir = _resolved(cfg["tokenizer"], cfg, source_path)
     vocab = json.loads((tokdir / "vocab.json").read_text(encoding="utf-8"))
     tokens = [None] * len(vocab)
@@ -378,8 +419,7 @@ def _replace_bytes(path: Path, payload: bytes) -> None:
 
 def _settings_candidate(hardware_key: str, result: dict) -> tuple[Path, bytes | None, bytes]:
     """Prepare setup's remembered calibration without accepting a corrupt store."""
-    import setup
-    target = setup.settings_path()
+    target = _full_folder("setup").settings_path()
     try:
         previous = target.read_bytes()
         settings = json.loads(previous.decode("utf-8"))
@@ -473,8 +513,7 @@ def _load_application(path: Path, report: dict) -> dict:
             data["before_config_sha256"] != report["identity"].get("source_sha256"):
         raise ProfileError("calibration application record has an unsupported shape", 5)
     try:
-        import setup
-        if data["settings_path"] != str(setup.settings_path()):
+        if data["settings_path"] != str(_full_folder("setup").settings_path()):
             raise ProfileError("setup settings path changed since calibration apply", 5)
     except (OSError, ValueError):
         raise ProfileError("setup settings path is unavailable", 5) from None

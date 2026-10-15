@@ -107,7 +107,15 @@ class ApiHarness:
             return ""
         try:
             text = Path(self._log.name).read_text(encoding="utf-8", errors="replace")
-            return f"; log: {text[-limit:].strip()}" if text.strip() else ""
+            if not text.strip():
+                return ""
+            # The engine prints its reason first and a usage dump after it, so the last 500 characters of a
+            # rejected flag are the middle of the usage text. Name the reason line(s) before the tail.
+            reasons = [line.strip() for line in text.splitlines()
+                       if re.search(r"unknown argument|unrecognized|invalid value|error|refus|is required|cannot|failed",
+                                    line, re.IGNORECASE)][:3]
+            lead = f"; reason: {' | '.join(reasons)[:300]}" if reasons else ""
+            return f"{lead}; log: {text[-limit:].strip()}"
         except OSError:
             return ""
 

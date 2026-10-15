@@ -400,6 +400,9 @@ class EngineHarness:
         self.args = dict(args)
         self.workload = {**DEFAULT_WORKLOAD, **(workload or {})}
         self.cwd = Path(cwd) if cwd else Path.cwd()
+        if env is None:
+            from strata_control.tuning import engine_env
+            env = engine_env(self.engine)       # an engine package's own folder first on the library path
         self.env = env
         self.boot_timeout_s = boot_timeout_s
         self.request_timeout_s = request_timeout_s
@@ -410,12 +413,10 @@ class EngineHarness:
         self._context: int | None = None
 
     def _argv(self) -> list[str]:
-        from strata_control.tuning import engine_command
+        from strata_control.tuning import engine_command, flag_argv
         argv = [*engine_command(self.engine), "--serve"]
         for flag, value in self.args.items():
-            argv.append(flag)
-            if value not in ("1", "0", "true", "false", ""):
-                argv.append(str(value))
+            argv.extend(flag_argv(flag, value))
         return argv
 
     def __enter__(self) -> "EngineHarness":

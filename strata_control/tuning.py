@@ -118,6 +118,20 @@ DIMENSIONS: tuple[Dimension, ...] = (
               benchmark_only=True),
 )
 
+#: Flags that take no value: on when present, off when absent. A candidate records them as "1" / "0".
+BOOLEAN_FLAGS = frozenset(flag for _d in DIMENSIONS if all(isinstance(v, bool) for v in _d.values) for flag in _d.flags)
+
+
+def flag_argv(flag: str, value: Any) -> list[str]:
+    """One candidate setting as engine argv. A boolean flag is `--flag` when on and nothing when off; it never
+    gets a value ("--kv-grow 0" is "unknown argument: 0" to the engine, and a bare "--kv-grow" meaning off enabled it)."""
+    if flag in BOOLEAN_FLAGS or isinstance(value, bool):
+        return [flag] if value in (True, "1", "true", "True") else []
+    if value is None or value == "":
+        return [flag]
+    return [flag, str(value)]
+
+
 #: Dimensions a backend must never be offered, with the reason kept for the report.
 def _why_excluded(dim: Dimension, backend: str) -> str | None:
     if backend in dim.backends:
@@ -170,6 +184,21 @@ def engine_command(engine: Path | str) -> list[str]:
     return [sys.executable, path] if path.lower().endswith(".py") else [path]
 
 
+def engine_env(engine: Path | str) -> dict[str, str] | None:
+    """The environment to run an engine with, or None for the caller's own.
+
+    An engine package (`engine-component.json` beside the binary) carries its GPU runtime libraries in its own
+    folder, and `serve` puts that folder first on the library path. A tuning run that starts the same binary must
+    too, or it cannot even print `--help` ("error while loading shared libraries")."""
+    folder = Path(engine).resolve().parent
+    if not (folder / "engine-component.json").is_file():
+        return None
+    var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+    env = dict(os.environ)
+    env[var] = os.pathsep.join([str(folder)] + ([env[var]] if env.get(var) else []))
+    return env
+
+
 def engine_flag_inventory(engine: Path) -> list[str] | None:
     """Read the flags an engine binary documents, or None when it cannot be run here.
 
@@ -180,7 +209,8 @@ def engine_flag_inventory(engine: Path) -> list[str] | None:
     at all.
     """
     try:
-        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, timeout=20)
+        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, timeout=20,
+                              env=engine_env(engine))
     except (OSError, subprocess.SubprocessError):
         return None
     import re

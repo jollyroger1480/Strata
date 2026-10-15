@@ -1302,6 +1302,17 @@ def _reopen_run(store, data: dict):
     return run
 
 
+def _engine_arg(value: str, backend: str) -> Path:
+    """`--engine` is a path, or `component:strata-engine` for the engine package installed for this PC."""
+    from strata_control import engine_component
+    if engine_component.is_reference(value):
+        try:
+            return Path(engine_component.expand(value, {"backend": backend}))
+        except engine_component.EngineMissing as exc:
+            raise ProfileError(str(exc), 5) from None
+    return Path(value)
+
+
 def _tune(a: argparse.Namespace) -> int:
     """Engine tuning: a bounded search that returns a recommendation, never an automatic change.
 
@@ -1383,7 +1394,7 @@ def _tune(a: argparse.Namespace) -> int:
         return _tune_rollback(a, store_root=state_root())
 
     # plan
-    engine = Path(a.engine)
+    engine = _engine_arg(a.engine, a.backend)
     plan = tuning.plan_tuning(engine, a.backend, a.model, a.objective,
                               {"note": "the workload is supplied by the measurement harness"},
                               hold=a.hold, max_trials=a.trials, total_time_s=a.total_time,
@@ -1426,7 +1437,7 @@ def _tune_run(a: argparse.Namespace, *, store_root: Path) -> int:
     """
     from strata_control import tune_engine, tuning
 
-    engine = Path(a.engine)
+    engine = _engine_arg(a.engine, a.backend)
     if not engine.exists():
         return _error(f"no engine binary at {engine}", 2, a.output == "json")
 
