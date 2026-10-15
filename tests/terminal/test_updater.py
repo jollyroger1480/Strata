@@ -406,6 +406,32 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(done.stdout.strip(), "[]")
 
 
+class LazyModel(UpdaterCase):
+    """A server that is "ready" with its model unloaded has not generated anything yet; the test start forces the load and the probe."""
+
+    def run_default(self, started, verified):
+        from strata_control import runtime
+        self.install_current()
+        folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        with mock.patch.object(runtime, "start", return_value=started), mock.patch.object(runtime, "verify", return_value=verified) as verify,                 mock.patch.object(runtime, "stop", return_value={}):
+            result = updater.default_test_start(stage, component, self.ctx())
+        return result, verify
+
+    def test_an_unloaded_ready_server_is_made_to_answer_before_the_engine_passes(self):
+        result, verify = self.run_default({"ok": True, "state": "ready", "generation_ready": False},
+                                          {"ok": True, "state": "ready", "generation_ready": True})
+        self.assertEqual(result["generation_ready"], True)
+        self.assertEqual(verify.call_args.kwargs["load"], True)
+
+    def test_an_engine_that_cannot_answer_does_not_pass(self):
+        with self.assertRaisesRegex(updater.TestStartFailed, "one-token probe"):
+            self.run_default({"ok": True, "state": "ready", "generation_ready": False}, {"ok": False, "state": "failed", "error": "probe_generation_no_tokens"})
+
+
 class OtherComponents(UpdaterCase):
     def build_with_app(self, version="0.2.0", tamper=False):
         public, secret = fx.minisign_pair()

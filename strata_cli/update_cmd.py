@@ -117,8 +117,10 @@ def _line(name: str, result: dict) -> str:
             return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated (takes effect on the next start)"
         if status == "current":
             return f"{name:<8}{result.get('installed_before')}   up to date"
+        if status == "not-in-feed":
+            return f"{name:<8}not part of this feed"
         if status == "failed":
-            return f"{name:<8}NOT changed: {result.get('error')}"
+            return f"{name:<8}{result.get('installed_before') or '?'}   NOT changed: {result.get('error')}"
         return f"{name:<8}{status}"
     if status == "downloaded":
         return f"{name:<8}{result.get('version')}   downloaded and verified: {result.get('path')}\n{'':<8}{result.get('note')}"
@@ -141,7 +143,10 @@ def _print_check(report: dict) -> None:
         print(f"           - {reason}")
     if eng.get("note"):
         print(f"           {eng['note']}")
-    print(f"  Control  {ctl['installed'] or '?'}: {ctl['status']}" + (f" ({ctl['offered']})" if ctl["offered"] else ""))
+    if ctl["status"] == "not-in-feed":
+        print("  Control  not part of this feed")
+    else:
+        print(f"  Control  {ctl['installed'] or '?'}: {ctl['status']}" + (f" ({ctl['offered']})" if ctl["offered"] else ""))
     if app["status"] != "not-in-feed":
         print(f"  App      {app['installed'] or 'unknown'} -> {app['offered']}: {app['status']}")
     if report.get("serving"):

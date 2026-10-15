@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod updater;
+
 /// The running App Host, kept so it can be stopped on exit.
 struct HostProcess(Mutex<Option<Child>>);
 
@@ -275,6 +277,9 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     apply_runtime_policy(&mut cmd, &res);
+    // The signed app updater (Tauri) is reached by the host through a token-protected loopback bridge.
+    let bridge = updater::start(app, random_token());
+    updater::apply_env(&mut cmd, app, bridge.as_ref());
     let token = random_token();
     cmd.env("STRATA_SHUTDOWN_TOKEN", &token);
     *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
@@ -591,6 +596,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(HostProcess(Mutex::new(None)))
         .manage(HostPort(Mutex::new(None)))
         .manage(ShutdownToken(Mutex::new(None)))

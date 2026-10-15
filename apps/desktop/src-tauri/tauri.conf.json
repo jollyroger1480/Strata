@@ -51,5 +51,15 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE-WITH-THE-OWNERS-TAURI-UPDATER-PUBLIC-KEY",
+      "endpoints": [
+        "https://github.com/Niko1221/Strata/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }

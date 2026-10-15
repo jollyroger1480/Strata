@@ -539,6 +539,30 @@ def binary_smoke(component: ec.EngineComponent, timeout: float = 60) -> dict:
             "output": done.stdout.strip()[:200]}
 
 
+def _log_tail(sandbox: Path, component: ec.EngineComponent) -> str:
+    log = sandbox / "engine.log"
+    try:
+        lines = log.read_text(errors="replace").splitlines()[-3:]
+    except OSError:
+        return ""
+    return " | " + " ".join(lines)[:300] if lines else ""
+
+
+def _keep_log(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> None:
+    """The engine's log from the test start (the last 64 KiB), kept in ``.updates/logs`` so a failed update can be read afterwards."""
+    log = sandbox / "engine.log"
+    try:
+        data = log.read_bytes()[-65536:]
+        target = updates_dir(ctx.components) / "logs"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"test-start-{component.version}.log").write_bytes(data)
+        logs = sorted(target.glob("test-start-*.log"), key=lambda p: p.stat().st_mtime)
+        for old in logs[:-5]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
     """Start the staged engine through the real start path (owner runtime, `component:strata-engine`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
@@ -570,16 +594,19 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
             started = None
             try:
                 started = runtime.start(name, wait=min(ctx.test_timeout, 600), shutdown_timeout=20)
-                if not started.get("ok") or started.get("state") != "ready":
-                    log = Path(sandbox / "engine.log")
-                    tail = ""
-                    if log.exists():
-                        tail = " | " + " ".join(log.read_text(errors="replace").splitlines()[-3:])[:300]
+                if started.get("ok") and started.get("state") == "ready" and started.get("generation_ready") is not True:
+                    # a server that loads its model on the first request is "ready" without having generated anything:
+                    # force the load and the one-token probe, because that is what the new engine has to be able to do
+                    started = {**started, **runtime.verify(name, timeout=min(ctx.test_timeout, 600), load=True)}
+                if not started.get("ok") or started.get("state") != "ready" or started.get("generation_ready") is not True:
                     raise TestStartFailed(component.version,
-                                          f"it did not become ready ({started.get('error') or started.get('state')}){tail}")
+                                          f"it did not answer a one-token probe ({started.get('error') or started.get('state')})"
+                                          + _log_tail(sandbox, component))
+                _keep_log(sandbox, component, ctx)
                 return {"mode": "full", "model": cfg.get("model_name") or source.stem, "state": started["state"],
-                        "detail": "started, answered a one-token probe, stopped"}
+                        "generation_ready": True, "detail": "started, answered a one-token probe, stopped"}
             except TestStartFailed:
+                _keep_log(sandbox, component, ctx)
                 raise
             except Exception as exc:                    # noqa: BLE001
                 raise TestStartFailed(component.version, f"{type(exc).__name__}: {exc}") from None
@@ -911,6 +938,18 @@ def update_app(ctx: Context, feed: feedmod.Feed) -> dict:
 
 # ---------------------------------------------------------------------------------------------- the one command
 
+def _installed_before(name: str, ctx: Context):
+    """What was installed when a step failed, for the report: the engine's view, Control's version, or nothing."""
+    try:
+        if name == "engine":
+            return _engine_view(installed_engine(ctx.components, ctx.hardware)[0])
+        if name == "control":
+            return (active_control(ctx.components) or {}).get("version") or ec.runtime_version()
+    except Exception:                                   # noqa: BLE001 - reporting only
+        pass
+    return None
+
+
 def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: bool = False) -> dict:
     """`strata update`: the feed once, then the engine, Control and (if asked) the app installer, each reported separately.
     A component that fails does not undo one that succeeded; the exit code is the worst one."""
@@ -927,7 +966,8 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
             try:
                 results.append(step())
             except UpdateError as exc:
-                results.append({"component": name, "status": "failed", "changed": False, "error": str(exc), "exit_code": exc.exit_code})
+                results.append({"component": name, "status": "failed", "changed": False, "error": str(exc), "exit_code": exc.exit_code,
+                                "installed_before": _installed_before(name, ctx)})
                 failure = failure or exc
         if any(r.get("component") == "engine" and r.get("status") == "updated" for r in results):
             state.data.get("last_check", {}).pop("engine", None)
