@@ -1583,8 +1583,9 @@ computed on the CPU that moves the hit rate. Measured on Linux with the config s
 A4000, 65K context, KV 8-bit, 5 rounds of fresh engine starts, medians): GPU encoder vs CPU encoder, chat decode 31.1 vs 32.6 tok/s
 (P100, +4.8%) and 46.0 vs 48.4 (A4000, +5.2%), 4K prompt 315.5 vs 316.0 and 1,022 vs 1,053 tok/s, 16K prompt unchanged / +0.8%;
 expert slots 3,819 vs 4,522 (P100), 4,686 vs 5,435 (A4000). The "elastic" encoder (`"vision": {"elastic": true}` with
-`"vram_elastic": true`; it frees the encoder after 120 s idle, but turns `--kv-grow` off) gave the CPU encoder's text speed (32.5, 47.7
-tok/s) and 2.7 s per picture once loaded (first picture 4.5-5.8 s). A report on an RTX 4080 SUPER under Windows measured 35-44% of decode and
+`"vram_elastic": true`; it frees the encoder after 120 s idle, but turns `--kv-grow` off) gave the CPU encoder's text speed at 65K context (32.5, 47.7
+tok/s) and 2.7 s per picture once loaded (first picture 4.5-5.8 s); at 196K context with q4_0 KV (where it cannot keep `--kv-grow`) it did not
+(A4000: GPU 44.7, CPU 47.4, elastic 44.9 tok/s; +6% for the CPU encoder). A report on an RTX 4080 SUPER under Windows measured 35-44% of decode and
 36-62% of prompt speed with the GPU encoder (VRAM free 61 MiB); that size did not reproduce on the Linux cards, so it may come from
 Windows' VRAM management when the card is full (not measured by us). A picture on the CPU encoder takes 4-6 s (a 300-token picture) against 2.7 s on the P100's
 GPU encoder (1.7 s on the A4000). Since 0.1.45 setup gives "images: yes" the CPU encoder on an NVIDIA card under 24 GB (pictures read at up to
