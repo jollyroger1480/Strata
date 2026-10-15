@@ -87,3 +87,19 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
 Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `BUILD.json` and `LICENSE*`. The build id
 defaults to the checkout's commit (`-dirty` when the tree has changes). It prints the size, file count and the SHA-256 of
 the manifest file (which holds every file's hash), used as the package's digest in notes.
+
+## What each target's package holds (S1, local, unpublished)
+
+| Package | Built on | Contents | Notes |
+|---|---|---|---|
+| `windows-x86_64` cuda, variant `cuda13` | the owner PC, the same cmake line as the release zips (CUDA 13.0, `75;86;89;120` real + `120` PTX, `STRATA_PORTABLE=ON`) | `strata.exe`, `strata_kq.dll`, `strata-vision.exe` (reused, unchanged since 0.1.44), `BUILD.json` | `min_driver` nvidia 580.65 |
+| `windows-x86_64` cuda, variant `cuda12` | the owner PC (CUDA 12.9, `60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same four files | experimental, `min_driver` nvidia 575.51; the CUDA 13 build wins when both fit |
+| `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | no Windows AMD test machine yet |
+| `linux-x86_64` cuda | a Linux box with the CUDA toolkit | `strata`, `libstrata_kq.so`, `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
+| `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs | |
+| `linux-x86_64` sycl | a box with oneAPI DPC++ | `strata` (JIT from SPIR-V), libsycl, the Unified Runtime adapters, MKL SYCL libraries | the Level Zero loader and compute runtime are the PC's driver |
+| `macos-arm64` metal | an Apple Silicon Mac | `strata`, `metal/kernels/*.metal`, `metal/engine-msl/*.metal`, `metal/ggml-common.h`, `metal/data/*.bin` | the Metal engine compiles its kernel sources when it starts; since S1 it finds them beside the executable (`metal/src/resource_path.h`: environment variable, then `<exe dir>/metal/`, then the compiled-in source path) |
+
+`packaging/collect_libs.py` gathers the Linux libraries (an `ldd` closure with the dlopen'd extras named, kernel data filtered by
+GPU architecture) into the folder `package_engine.py` packages; libraries the distribution provides are listed in
+`SYSTEM-LIBS.txt` inside the package so a missing one can be named on a target PC.
