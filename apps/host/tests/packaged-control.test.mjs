@@ -97,7 +97,7 @@ function packagedFixture({ engineUsable = true } = {}) {
   const calls = [];
   const spawned = [];
   const rpc = [];
-  let startFailure = null;
+  let startFailure = null, startFailureLeft = Infinity;
   const control = {
     control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: '0.1.45',
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
@@ -109,7 +109,7 @@ function packagedFixture({ engineUsable = true } = {}) {
     },
     async importPlan(path) { calls.push(['importPlan', path]); return { file_set_status: 'plausible', candidate_selection: { family: 'qwen', model: 'IQ3_S' }, file_count: 2, total_bytes: 1e9, issues: [] }; },
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); return {}; },
-    async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
+    async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure && startFailureLeft-- > 0) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
   };
   const requests = [];
@@ -145,7 +145,7 @@ function packagedFixture({ engineUsable = true } = {}) {
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, spawned, others, rpc, failStart: v => { startFailure = v; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -306,6 +306,48 @@ test('packaged: an engine that stops while loading keeps the code and the last e
     const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
     assert.equal(job.state, 'error');
     assert.match(job.error, /^server_exited: memory guard: 5\.1 GiB free/);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: a start that died because Windows ran out of locked memory is tried once more with a smaller pin, said in plain words, and the saved settings stay as they were', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'server_exited', output: { log_tail: 'verify: mapped staging allocation failed [pinned-memory-exhausted] the OS gave no more page-locked memory; start again with STRATA_ARENA_PIN_GIB=26 (pin less of the expert arena)' } }, 1);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 2, 'one try and exactly one more');
+    assert.match(job.result.summary, /ready, after a second try: Windows would not lock as much memory/);
+    assert.match(job.details[0], /pinned-memory-exhausted/);
+    assert.match(job.details[1], /STRATA_ARENA_PIN_GIB=26/);
+    const instance = f.native.state().instances[0];
+    assert.equal(instance.status, 'ready');
+    const saved = JSON.parse(readFileSync(join(f.install, 'strata-iq2_xs.json'), 'utf8'));
+    assert.equal(saved.env, undefined, 'the safer setting is for this start only; the model config is not changed');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: the second try is the last one: a second failure is reported with both, and nothing loops', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'server_exited', output: { log_tail: 'mapped staging allocation failed [pinned-memory-exhausted]' } });
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'error');
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 2);
+    assert.match(job.error, /after one automatic second try/);
+    assert.match(job.error, /the first stop was/);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: retrySafer false keeps the single try', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'server_exited', output: { log_tail: 'mapped staging allocation failed [pinned-memory-exhausted]' } });
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs', retrySafer: false }).id);
+    assert.equal(job.state, 'error');
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 1);
   } finally { await f.native.close(); f.cleanup(); }
 });
 
