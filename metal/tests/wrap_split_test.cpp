@@ -84,8 +84,7 @@ int main(int argc, char** argv) {
     check(bad_enc == 0, "encode(): " + std::to_string(starts.size()) + " offsets, both ends of each range read right");
     // run_icb is a bench path (rt_bench only; the engine encodes with run/run_graph).  On the M4 it reads wrong at some
     // offsets of a single buffer too (--factor 0.9, no PR code involved), so it is reported, not counted.
-    std::printf("note run_icb(): %d of %zu offsets read wrong%s
-", bad_icb, starts.size(), split ? "" : " (single buffer)");
+    std::printf("note run_icb(): %d of %zu offsets read wrong%s\n", bad_icb, starts.size(), split ? "" : " (single buffer)");
     cx.free(W);
     cx.free(dst);
     cx.free(par);
