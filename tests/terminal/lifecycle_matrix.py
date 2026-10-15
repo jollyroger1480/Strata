@@ -619,34 +619,92 @@ def runtime_case(rig: Rig, name: str, what: str, *, vram: bool = False) -> Resul
                 pass
 
 
-def monitor_quit_case(rig: Rig) -> Result:
-    """The Textual monitor starts no engine: quitting it, or killing it, leaves a service started elsewhere alone and
-    leaves no process of its own."""
+def windows_press(pid: int, text: str) -> None:
+    """Type `text` into the console `pid` is attached to (what a person at the keyboard does)."""
+    code = (
+        "import ctypes, sys\n"
+        "from ctypes import wintypes\n"
+        "k = ctypes.windll.kernel32\n"
+        "class Key(ctypes.Structure):\n"
+        "    _fields_ = [('down', wintypes.BOOL), ('repeat', wintypes.WORD), ('vk', wintypes.WORD), ('scan', wintypes.WORD),\n"
+        "                ('char', wintypes.WCHAR), ('state', wintypes.DWORD)]\n"
+        "class Rec(ctypes.Structure):\n"
+        "    _fields_ = [('kind', wintypes.WORD), ('pad', wintypes.WORD), ('key', Key)]\n"
+        "k.FreeConsole()\n"
+        f"assert k.AttachConsole({pid}), 'AttachConsole failed'\n"
+        "k.CreateFileW.restype = wintypes.HANDLE\n"
+        "h = k.CreateFileW('CONIN$', 0xC0000000, 3, None, 3, 0, None)\n"
+        "recs = []\n"
+        "for ch in sys.argv[1]:\n"
+        "    for down in (1, 0):\n"
+        "        recs.append(Rec(1, 0, Key(down, 1, ord(ch.upper()), 0, ch, 0)))\n"
+        "arr = (Rec * len(recs))(*recs)\n"
+        "n = wintypes.DWORD()\n"
+        "assert k.WriteConsoleInputW(h, arr, len(recs), ctypes.byref(n)), 'WriteConsoleInput failed'\n"
+    )
+    subprocess.run([sys.executable, "-c", code, text], creationflags=subprocess.DETACHED_PROCESS, check=True, timeout=30)
+
+
+def monitor_case(rig: Rig, how: str) -> Result:
+    """The Textual monitor starts no engine. Quitting it (`q`) or killing it ends the monitor and leaves a service
+    started elsewhere untouched; nothing of the monitor is left behind."""
     rig.clear_marks()
     started = runtime_start(rig)
     if started.get("state") != "ready":
         raise RuntimeError(f"not ready: {started}")
     owner = owner_pid(rig)
     service = rig.tree(owner)
-    monitor = subprocess.Popen([sys.executable, str(ROOT / "strata.py"), "monitor", "--url",
-                                f"http://127.0.0.1:{rig.port}"], cwd=ROOT, env=rig.env, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    time.sleep(3)
-    mine = rig.tree(monitor.pid)
+    argv = [sys.executable, str(ROOT / "strata.py"), "monitor", "--url", f"http://127.0.0.1:{rig.port}"]
+    env = {**rig.env, "TERM": "xterm-256color", "COLUMNS": "120", "LINES": "40"}
+    master = child = None
+    if WINDOWS:
+        info = subprocess.STARTUPINFO()
+        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        info.wShowWindow = 7
+        monitor = subprocess.Popen(argv, cwd=ROOT, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=info)
+        pid, alive = monitor.pid, lambda: monitor.poll() is None
+    else:
+        import pty
+        child, master = pty.fork()
+        if child == 0:
+            os.chdir(ROOT)
+            _default_signals()
+            os.execve(sys.executable, argv, env)
+        pid = child
+
+        def alive():
+            done, _ = os.waitpid(child, os.WNOHANG)
+            return not done
     problems = []
-    kill_hard(monitor.pid)
-    monitor.wait(timeout=15)
-    if rig.survivors(mine):
-        problems.append("monitor processes left")
+    time.sleep(4)
+    if not alive():
+        problems.append("the monitor did not stay up (is Textual installed here?)")
+    mine = rig.tree(pid)
+    if how == "quit":
+        if WINDOWS:
+            windows_press(pid, "q")
+        else:
+            os.write(master, b"q")
+    else:
+        kill_hard(pid)
+    deadline = time.monotonic() + 15
+    while alive() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if alive():
+        problems.append(f"the monitor did not end on '{how}'")
+    if master is not None:
+        os.close(master)
+    left = rig.wait_gone(mine, 15)
+    if left:
+        problems.append(f"monitor processes left: {left}")
     if not port_open(rig.port) or rig.survivors(service) != [f"{i.pid} {' '.join(i.cmd)[:90]}" for i in service
                                                            if procs.start_token(i.pid) == i.token]:
-        problems.append("killing the monitor disturbed the service")
+        problems.append("the monitor's end disturbed the service")
     runtime_stop(rig)
     left = rig.wait_gone(service, 45)
     if left:
         problems.append(f"service left after stop: {left}")
-    return Result(name="monitor-killed-leaves-service-alone", ok=not problems, problems=problems, marks=rig.marks(), note="")
+    return Result(name=f"monitor-{how}-leaves-service-alone", ok=not problems, problems=problems, marks=rig.marks(), note="")
 
 
 SCENARIOS = {
@@ -669,7 +727,8 @@ SCENARIOS = {
     "runtime-server-killed": lambda rig, v: runtime_case(rig, "runtime-server-killed", "server-killed", vram=v),
     "runtime-die-with": lambda rig, v: runtime_case(rig, "runtime-die-with", "die-with", vram=v),
     # the TUI
-    "monitor-killed": lambda rig, v: monitor_quit_case(rig),
+    "monitor-quit": lambda rig, v: monitor_case(rig, "quit"),
+    "monitor-killed": lambda rig, v: monitor_case(rig, "kill"),
 }
 POSIX_ONLY = {"serve-sigterm", "serve-sighup", "serve-terminal-closed", "serve-nohup-keeps-serving"}
 WINDOWS_ONLY = {"serve-ctrl-break", "serve-console-close"}
