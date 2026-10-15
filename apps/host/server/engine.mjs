@@ -193,7 +193,7 @@ export async function reset() {
 }
 
 export async function restart() {
-  if (process.env.STRATA_REAL_ENGINE !== '1') throw new Error('Restart is unavailable in demo mode. Save settings for the next load.');
+  if (process.env.STRATA_REAL_ENGINE !== '1') throw new Error('Restart is unavailable with the example engine. Save settings for the next load.');
   const s = getStore();
   const id = supervisor.status().modelId ?? s.loaded;
   const v = id ? variant(id) : null;

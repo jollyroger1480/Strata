@@ -29,7 +29,7 @@ export function SettingsStorage() {
             const result = await changeModelDirectory(path, true);
             const count = result.library.variants.filter(v => ['installed', 'loaded'].includes(v.state)).length + result.imageModels.variants.filter(v => v.state === 'installed').length;
             setEditing(false);
-            setNotice(`${count} ${count === 1 ? 'version' : 'versions'} found${result.library.mode === 'simulated' ? ' in this demo library' : ''}. Future downloads will use this folder.`);
+            setNotice(`${count} ${count === 1 ? 'version' : 'versions'} found${result.library.mode === 'simulated' ? ' in this example library' : ''}. Future downloads will use this folder.`);
         }
         catch (e) {
             setDirectoryError((e as Error).message);

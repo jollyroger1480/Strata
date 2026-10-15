@@ -213,7 +213,7 @@ export function TuningScreen() {
     {tr(moreOpen ? <FloatingMenu anchor={moreRef.current} title={tr("More actions")} onClose={closeMore}>
       <button role="menuitem" className="menu__item" disabled={pending || !doc} onClick={() => { closeMore(); resetDraft(); }}>{tr("Recommended defaults")}</button>
       <button role="menuitem" className="menu__item" disabled={!connected || pending} onClick={() => { closeMore(); void check().catch(e => setIssues([{ level: 'error', message: e.message }])); }}>{tr("Validate draft")}</button>
-      <button role="menuitem" className="menu__item" disabled={!doc || invalid} onClick={() => { closeMore(); setTestOpen(true); }}>{tr("Preview test \u00B7 Demo")}</button>
+      <button role="menuitem" className="menu__item" disabled={!doc || invalid} onClick={() => { closeMore(); setTestOpen(true); }}>{tr("Preview test \u00B7 Example")}</button>
     </FloatingMenu> : null)}
     <DemoTest open={testOpen} onClose={() => setTestOpen(false)} experience={experience}/>
     <AutoTune open={tuneOpen} onClose={() => setTuneOpen(false)} onDone={() => { resetDraft(); setTuneOpen(false); }}/>

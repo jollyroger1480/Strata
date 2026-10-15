@@ -48,7 +48,7 @@ export function TaskEditor({ task, assistant = false, onClose, onSaved }: {
             }>('/api/tasks/draft', { description, timeZone: editor.timeZone }); setEditor({ ...editor, ...draft.draft }); setSuggestion(true); })}>{tr(pending ? 'Drafting…' : 'Suggest a task')}</Btn></div> : <>
           <label className="input-field"><span>{tr("Name")}</span><input className="st-input" maxLength={120} disabled={pending} value={editor.title} onChange={e => setEditor({ ...editor, title: e.target.value })}/></label>
           <label className="input-field"><span>{tr("Instructions")}</span><textarea className="st-input task-instructions" rows={5} maxLength={12000} placeholder={tr("Example: Review this project and summarize what changed.")} disabled={pending} value={editor.prompt} onChange={e => setEditor({ ...editor, prompt: e.target.value })}/></label>
-          {tr(assistant ? <p className="xs muted">{tr(library?.mode === 'simulated' ? 'Demo suggestion. ' : '')}{tr("Review the instructions, then choose a schedule.")}</p> : null)}
+          {tr(assistant ? <p className="xs muted">{tr(library?.mode === 'simulated' ? 'Example suggestion. ' : '')}{tr("Review the instructions, then choose a schedule.")}</p> : null)}
         </>)}
       </> : <>
         <div className="task-schedule-summary"><strong>{editor.title}</strong><p className="small muted">{editor.prompt}</p></div>

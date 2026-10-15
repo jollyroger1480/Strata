@@ -566,7 +566,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
 
       <div className="st-bubble">
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(m.content ? (<Markdown text={m.timeSkipId ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This demo uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This demo uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.content ? (<Markdown text={m.timeSkipId ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />
@@ -574,7 +574,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
       </div>
 
-      {tr(m.timeSkipId ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow the demo')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
+      {tr(m.timeSkipId ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 
@@ -588,7 +588,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
               {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void navigator.clipboard.writeText(m.content)}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
-              {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Demo' : '')}</p> : null)}
+              {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
             </MessageMenu>
           </span>
         </div>) : null)}
@@ -622,13 +622,13 @@ function ToolCard({ messageId, tool: t }: {
     const scope = SCOPE[t.scope];
     const pending = t.state === 'proposed';
     if (!pending && t.state !== 'running')
-        return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{t.name}<span>·</span><Icon name={t.state === 'denied' ? 'x' : 'check'} size={14}/>{tr(t.state === 'done' && t.scope !== 'read' ? 'Approved' : t.state === 'denied' ? 'Denied' : t.state === 'done' ? 'Done' : t.state)}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
+        return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{t.name}<span>·</span><Icon name={t.state === 'denied' ? 'x' : 'check'} size={14}/>{tr(t.state === 'done' && t.scope !== 'read' ? (t.live && !t.approved ? 'Ran' : 'Approved') : t.state === 'denied' ? 'Denied' : t.state === 'done' ? 'Done' : t.state)}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
     return <section className="toolcard toolcard--compact" data-state={t.state} aria-label={t.name}>
     <details className="toolcard__disclosure">
       <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{t.name}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>
       <div className="toolcard__body"><code className="toolcard__preview">{t.preview}</code><p className="small muted">{tr(t.effect)}</p>{tr(t.result ? <p className="small">{t.result}</p> : null)}</div>
     </details>
-    {tr(pending ? <div className="toolcard__quick-actions"><span className="xs muted">{tr(t.live ? "Needs your approval" : "Demo approval")}</span><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" icon="check" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div> : <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>)}
+    {tr(pending ? <div className="toolcard__quick-actions"><span className="xs muted">{tr("Needs your approval")}</span><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" icon="check" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div> : <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>)}
   </section>;
 }
 export { cx };

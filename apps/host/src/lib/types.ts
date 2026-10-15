@@ -357,6 +357,8 @@ export interface ToolCall {
   durationMs?: number;
   /** Reported by the agent runtime: an approval answers a real request. Absent for design-build examples. */
   live?: boolean;
+  /** The person approved this call. A finished card without it was never asked about. */
+  approved?: boolean;
 }
 
 /** A folder the model may read, and that sessions are grouped under. */

@@ -738,7 +738,7 @@ export async function installVariant(id: string) {
     const library = libraryResponse(await api.post<ModelLibrary>(`/api/models/${id}/install`));
     set({ library });
     const complete = library.variants.find(v => v.id === id)?.state === 'installed';
-    pushToast(complete ? 'success' : 'info', complete ? 'Files installed' : library.mode === 'simulated' ? 'Demo installation started' : 'Download started', complete ? 'Load the model to start a request.' : 'Progress is shown in Models.');
+    pushToast(complete ? 'success' : 'info', complete ? 'Files installed' : library.mode === 'simulated' ? 'Example installation started' : 'Download started', complete ? 'Load the model to start a request.' : 'Progress is shown in Models.');
     return true;
   } catch (err) {
     pushToast('error', 'Download failed', err instanceof Error ? err.message : undefined);
@@ -761,7 +761,7 @@ export async function loadVariant(id: string) {
     set({ library });
     const model = library.variants.find(v => v.id === id);
     if (library.loaded !== id || model?.state !== 'loaded') throw new Error(model?.error ?? 'The model did not finish loading.');
-    pushToast('success', library.mode === 'simulated' ? 'Demo model ready' : 'Model loaded', library.mode === 'simulated' ? 'Responses use the demo engine.' : 'Ready for a request.');
+    pushToast('success', library.mode === 'simulated' ? 'Example model ready' : 'Model loaded', library.mode === 'simulated' ? 'Answers are simulated samples, not from a real model.' : 'Ready for a request.');
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'The model did not load.';
@@ -789,7 +789,7 @@ export async function unloadModel() {
     set({runtime});
     set({ library });
     if (previousInstance?runtime.instances.some(i=>i.id===previousInstance):library.loaded!==null) throw new Error('The engine still reports this model instance as loaded.');
-    pushToast('info', 'Model unloaded', library.mode === 'simulated' ? 'Demo load state cleared.' : 'Model memory released.');
+    pushToast('info', 'Model unloaded', library.mode === 'simulated' ? 'Example load state cleared.' : 'Model memory released.');
     return true;
   } catch (err) { pushToast('error', 'Unload failed', err instanceof Error ? err.message : String(err)); return false; }
   finally { set(s => ({ busy: { ...s.busy, unload: false } })); }
@@ -801,7 +801,7 @@ export async function removeVariant(id: string) {
   try { const library = libraryResponse(await api.del<ModelLibrary>(`/api/models/${id}`)); set({ library });
     const remaining = library.variants.find(v => v.id === id);
     if (remaining && remaining.state !== 'available') throw new Error('The model files were not removed.');
-    pushToast('success', local ? 'Local model removed' : 'Files removed', local ? 'The original GGUF files are kept.' : library.mode === 'simulated' ? 'Demo install state cleared.' : 'Model files removed from disk.'); return true;
+    pushToast('success', local ? 'Local model removed' : 'Files removed', local ? 'The original GGUF files are kept.' : library.mode === 'simulated' ? 'Example install state cleared.' : 'Model files removed from disk.'); return true;
   } catch (e) { pushToast('error', 'Remove failed', e instanceof Error ? e.message : String(e)); return false; }
 }
 
@@ -828,7 +828,7 @@ export async function saveEngine(patch: Partial<EngineConfig> | Record<string, u
 }
 
 export async function restartEngine() {
-  if (state.library?.mode === 'simulated') { pushToast('info', 'Restart unavailable in demo mode', 'Save settings for the next load.'); return false; }
+  if (state.library?.mode === 'simulated') { pushToast('info', 'Restart unavailable with the example engine', 'Save settings for the next load.'); return false; }
   if (!lifecycleAvailable()) return false;
   set((s) => ({ busy: { ...s.busy, restart: true }, actionError: null }));
   try {
@@ -1075,7 +1075,7 @@ function scheduleTimeSkip(sessionId: string, run: TimeSkipRun) {
     if (!current || current.startedAt !== run.startedAt || !session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant')) return;
     patchSession(sessionId, s => ({ ...s, updatedAt: new Date().toISOString(),
       timeSkips: s.timeSkips?.map(r => r.id === run.id ? { ...r, completedAt: run.startedAt + TIME_SKIP_DURATION } : r),
-      messages: s.messages.map(m => m.timeSkipId === run.id && m.role === 'assistant' ? { ...m, content: 'The updated result is ready. Switch between Original and Updated, or compare them side by side. This demo uses sample outputs and simulated checks.' } : m),
+      messages: s.messages.map(m => m.timeSkipId === run.id && m.role === 'assistant' ? { ...m, content: 'The updated result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.' } : m),
     }));
   }, Math.max(0, run.startedAt + TIME_SKIP_DURATION - Date.now())));
 }
@@ -1085,7 +1085,7 @@ export function replayTimeSkip(sessionId: string, runId: string) {
   if (!run) return;
   const next = { ...run, startedAt: Date.now(), completedAt: undefined, retainedVersion: undefined };
   patchSession(sessionId, s => ({ ...s, timeSkips: s.timeSkips?.map(r => r.id === runId ? next : r),
-    messages: s.messages.map(m => m.timeSkipId === runId && m.role === 'assistant' ? { ...m, content: 'Revising the saved draft. Follow the result in the sidebar. This demo uses sample outputs and simulated checks.' } : m),
+    messages: s.messages.map(m => m.timeSkipId === runId && m.role === 'assistant' ? { ...m, content: 'Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.' } : m),
   }));
   scheduleTimeSkip(sessionId, next);
 }
@@ -1109,7 +1109,7 @@ function startTimeSkipDemo(prompt: string) {
     timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: `/time-skip ${prompt}`, timeSkipId: run.id },
-      { id: uid('m'), role: 'assistant', at, example: true, timeSkipId: run.id, content: 'Revising the saved draft. Follow the result in the sidebar. This demo uses sample outputs and simulated checks; it doesn’t run your model.' },
+      { id: uid('m'), role: 'assistant', at, example: true, timeSkipId: run.id, content: 'Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks; it doesn’t run your model.' },
     ],
   }));
   scheduleTimeSkip(sessionId, run);
@@ -1324,6 +1324,8 @@ export async function sendMessage(text: string) {
         images:await Promise.all(pictures.map(photoData)),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'High',
+        // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
+        mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
         // So a skill narrowed to another workspace does not fire here.
         workspaceId: state.activeWorkspace,
       },
@@ -1447,7 +1449,7 @@ export function resolveTool(messageId: string, toolId: string, approved: boolean
                     ...t,
                     state: approved ? 'done' : 'denied',
                     durationMs: undefined,
-                    result: approved ? 'Demo approval recorded. No file, command, or write was executed.' : 'Demo approval denied. Nothing ran.',
+                    result: approved ? 'Approval recorded. Nothing was executed.' : 'Denied. Nothing ran.',
                   }
                 : t,
             ),

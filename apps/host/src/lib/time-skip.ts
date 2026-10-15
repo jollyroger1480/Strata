@@ -182,7 +182,7 @@ export function timeSkipDocuments(prompt: string): Record<TimeSkipVersion | 'rev
 }
 
 export function timeSkipDocumentMarkdown(document: TimeSkipDocument) {
-  return `# ${document.title}\n\n${document.image ? `![${document.image.alt}](${document.image.url})` : document.code ? `\`\`\`html\n${document.code}\n\`\`\`` : document.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n## Success check\n\n${document.successCheck}\n\n*Time-skip demo · sample output, simulated checks.*`;
+  return `# ${document.title}\n\n${document.image ? `![${document.image.alt}](${document.image.url})` : document.code ? `\`\`\`html\n${document.code}\n\`\`\`` : document.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n## Success check\n\n${document.successCheck}\n\n*Time-skip example · sample output, simulated checks.*`;
 }
 
 export function timeSkipExample(prompt: string) {

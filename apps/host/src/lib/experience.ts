@@ -119,7 +119,7 @@ export function estimate(v: ModelVariant | undefined, hw: Hardware | null, confi
 export const FIT_TEXT = { comfortable: 'Comfortable fit · estimated', tight: 'Memory may be tight', 'too-large': 'Exceeds memory budget', unknown: 'Fit unknown', unsupported: 'Context not supported' };
 export function speedText(range: Range | null) { return range ? `${Math.round(range.low).toLocaleString(localeTag())}–${Math.round(range.high).toLocaleString(localeTag())}` : 'Not estimated'; }
 export function durationText(tokens: number, range: Range | null) { return range ? `${(tokens / range.high).toFixed(1)}–${(tokens / range.low).toFixed(1)} s` : 'Not estimated'; }
-export function sourceText(e: Experience) { return e.source === 'demo' ? 'Demo estimate' : e.source === 'estimated' ? 'Estimated' : e.source === 'measured' ? 'Measured' : 'Unavailable'; }
+export function sourceText(e: Experience) { return e.source === 'demo' ? 'Illustrative estimate' : e.source === 'estimated' ? 'Estimated' : e.source === 'measured' ? 'Measured' : 'Unavailable'; }
 export interface Recommendation {
     unavailableReason?: 'hardware' | 'fit';
     profile: Profile;
@@ -143,7 +143,7 @@ export function recommend(variants: ModelVariant[], hw: Hardware | null, config:
         if (!chosen)
             return { profile: id, unavailableReason: !hw ? 'hardware' : 'fit', provisional: true, explanation: !hw ? 'Check your computer to assess model fit.' : id === 'agentic' ? 'No approved agent candidate fits this setup. Try Balanced or review a shorter context.' : 'No compatible model fits this context and memory budget. Review a shorter context.' };
         const provisional = chosen.experience.source !== 'measured' || id === 'balanced' && !chosen.variant.catalog?.review.startsWith('Reviewed');
-        const explanation = demo ? 'Demo selection using illustrative speeds and catalog preferences. Agent approval is simulated; this is not a production recommendation.' : id === 'balanced' ? `Catalog preference among fitting models. ${metadata(chosen.variant).review}.` : chosen.experience.source === 'unavailable' ? 'Provisional fit-based option; speed has not been established. No fastest-model claim.' : `Highest supported ${id === 'agentic' ? 'prompt-reading' : 'answer-speed'} lower bound among comparable, fitting candidates. ${metadata(chosen.variant).review}.`;
+        const explanation = demo ? 'Example selection using illustrative speeds and catalog preferences. Agent approval is simulated; this is not a production recommendation.' : id === 'balanced' ? `Catalog preference among fitting models. ${metadata(chosen.variant).review}.` : chosen.experience.source === 'unavailable' ? 'Provisional fit-based option; speed has not been established. No fastest-model claim.' : `Highest supported ${id === 'agentic' ? 'prompt-reading' : 'answer-speed'} lower bound among comparable, fitting candidates. ${metadata(chosen.variant).review}.`;
         return { profile: id, ...chosen, provisional, explanation };
     });
 }
