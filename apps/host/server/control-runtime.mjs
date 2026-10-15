@@ -31,32 +31,62 @@ export function componentsDirectory({ env = process.env, platform = process.plat
 }
 
 /**
- * Is there a Control component to use? STRATA_CONTROL_DIR names it; otherwise it is the `control` folder beside
- * `host` in an installed app. Returns null in a source checkout (the host then keeps its older paths).
+ * A Control that the component updater installed (`strata update` writes `<components>/control/active.json` after the new
+ * bundle ran once). Null when there is none.
  */
-export function findControl({ env = process.env, platform = process.platform, exists = existsSync, hostDir = resolve(HERE, '..') } = {}) {
-  const candidates = [env.STRATA_CONTROL_DIR, join(hostDir, '..', 'control')].filter(Boolean).map(p => resolve(p));
-  for (const dir of candidates) {
-    const python = bundledPython(dir, platform);
-    if (exists(python) && exists(join(dir, 'strata.py')) && exists(join(dir, 'strata_control'))) {
-      let bundle = null;
-      try { bundle = JSON.parse(readFileSync(join(dir, 'BUNDLE.json'), 'utf8').replace(/^﻿/, '')); } catch { /* optional */ }
-      return { dir, python, cli: join(dir, 'strata.py'), bundle };
-    }
+export function updatedControlDirectory({ env = process.env, platform = process.platform, components = null } = {}) {
+  try {
+    const base = components ?? componentsDirectory({ env, platform });
+    const pointer = JSON.parse(readFileSync(join(base, 'control', 'active.json'), 'utf8').replace(/^﻿/, ''));
+    if (typeof pointer?.folder !== 'string' || !/^[\w.+-]+$/.test(pointer.folder)) return null;
+    return { dir: join(base, 'control', pointer.folder), version: typeof pointer.version === 'string' ? pointer.version : null };
+  } catch { return null; }
+}
+
+const versionKey = value => String(value ?? '').split('.').map(part => Number.parseInt(part, 10) || 0);
+function newer(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+  return false;
+}
+
+/**
+ * Is there a Control component to use? STRATA_CONTROL_DIR names one (the Tauri shell sets it to the bundled one), the
+ * `control` folder beside `host` is the installed app's, and `<components>/control/active.json` is one the component
+ * updater installed. Each must be whole; the newest version wins, so an app update that ships a newer Control is never
+ * held back by an older updated one, and an updated Control is never lost to an older bundled one. A tie goes to the first
+ * in that order. Returns null in a source checkout (the host then keeps its older paths).
+ */
+export function findControl({ env = process.env, platform = process.platform, exists = existsSync, hostDir = resolve(HERE, '..'), components = null } = {}) {
+  const updated = updatedControlDirectory({ env, platform, components });
+  const candidates = [{ dir: env.STRATA_CONTROL_DIR }, { dir: join(hostDir, '..', 'control') }, ...(updated ? [updated] : [])]
+    .filter(c => c.dir).map(c => ({ ...c, dir: resolve(c.dir) }));
+  let best = null;
+  for (const candidate of candidates) {
+    const python = bundledPython(candidate.dir, platform);
+    if (!(exists(python) && exists(join(candidate.dir, 'strata.py')) && exists(join(candidate.dir, 'strata_control')))) continue;
+    let bundle = null;
+    try { bundle = JSON.parse(readFileSync(join(candidate.dir, 'BUNDLE.json'), 'utf8').replace(/^﻿/, '')); } catch { /* optional */ }
+    const found = { dir: candidate.dir, python, cli: join(candidate.dir, 'strata.py'), bundle, key: versionKey(bundle?.version ?? candidate.version) };
+    if (!best || newer(found.key, best.key)) best = found;
   }
-  return null;
+  if (!best) return null;
+  const { key, ...control } = best;
+  return control;
 }
 
 /** The environment Control runs in: nothing from the user's Python, and acquiring forbidden. */
-export function controlEnvironment(control, { env = process.env, components = componentsDirectory({ env }) } = {}) {
+export function controlEnvironment(control, { env = process.env, components = componentsDirectory({ env }), acquire = false } = {}) {
   const next = { ...env };
   for (const key of ['PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'VIRTUAL_ENV', 'STRATA_PYTHON', 'STRATA_NATIVE_PYTHON', 'STRATA_API_KEY']) delete next[key];
-  return {
+  const result = {
     ...next,
     PYTHONNOUSERSITE: '1', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
     STRATA_NO_ACQUIRE: '1', STRATA_COMPONENTS_DIR: components,
     ...(control?.dir ? { STRATA_CONTROL_DIR: control.dir } : {}),
   };
+  // Only the explicit update step (`strata update`) may acquire; every other Control process keeps the switch on.
+  if (acquire) delete result.STRATA_NO_ACQUIRE;
+  return result;
 }
 
 export class ControlError extends Error {
@@ -70,25 +100,43 @@ export class ControlError extends Error {
 }
 
 /** Run one CLI command of Control. Resolves { code, json, text, stderr }; rejects only if it cannot start or times out. */
-export function runCli(control, args, { env = process.env, timeoutMs = 60_000, spawnProcess = spawn, components } = {}) {
+export function runCli(control, args, { env = process.env, timeoutMs = 60_000, spawnProcess = spawn, components, acquire = false, onLine = null, signal = null } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawnProcess(control.python, [control.cli, ...args], {
       cwd: control.dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: controlEnvironment(control, { env, ...(components ? { components } : {}) }),
+      env: controlEnvironment(control, { env, acquire, ...(components ? { components } : {}) }),
     });
-    let out = '', err = '', done = false;
+    if (signal) {
+      if (signal.aborted) { try { child.kill(); } catch { /* gone */ } }
+      else signal.addEventListener('abort', () => { try { child.kill(); } catch { /* gone */ } }, { once: true });
+    }
+    let out = '', err = '', done = false, pending = '';
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(alarm); fn(value); };
     const alarm = setTimeout(() => {
       try { child.kill(); } catch { /* already gone */ }
       finish(reject, new ControlError(`Strata Control did not answer within ${Math.round(timeoutMs / 1000)} s (${args.slice(0, 2).join(' ')}).`, { code: 'control_timeout' }));
     }, timeoutMs);
-    child.stdout.on('data', c => { out += c; if (out.length > 4_000_000) child.kill(); });
+    child.stdout.on('data', c => {
+      out += c; if (out.length > 4_000_000) child.kill();
+      if (onLine) {                                       // JSON lines (--output jsonl): each complete line is one event
+        pending += c;
+        let at;
+        while ((at = pending.indexOf('\n')) >= 0) {
+          const line = pending.slice(0, at).trim(); pending = pending.slice(at + 1);
+          if (!line.startsWith('{')) continue;
+          try { onLine(JSON.parse(line)); } catch { /* not an event */ }
+        }
+      }
+    });
     child.stderr.on('data', c => { err += c; if (err.length > 200_000) err = err.slice(-100_000); });
     child.on('error', e => finish(reject, new ControlError(`Strata Control could not start: ${e.message}`, { code: 'control_missing' })));
     child.on('close', code => {
       let json = null;
       const text = out.trim();
-      if (text) { try { json = JSON.parse(text.slice(text.indexOf('{'))); } catch { /* not JSON: caller reads text */ } }
+      if (onLine) {                                       // the last line is the result record
+        const last = text.split(/\r?\n/).filter(line => line.startsWith('{')).pop();
+        if (last) { try { json = JSON.parse(last); } catch { /* not JSON */ } }
+      } else if (text) { try { json = JSON.parse(text.slice(text.indexOf('{'))); } catch { /* not JSON: caller reads text */ } }
       finish(resolveRun, { code, json, text, stderr: err.trim() });
     });
   });
@@ -102,9 +150,33 @@ const failure = (result, fallback) => new ControlError(
 export function createControl({ control = findControl(), env = process.env, run = null } = {}) {
   if (!control) return null;
   const call = run ?? ((args, options) => runCli(control, args, { env, ...options }));
+  const feedArgs = feed => (feed ? ['--feed', feed] : []);
   return {
     control,
     version: control.bundle?.version ?? null,
+    /**
+     * The explicit update step. These are the only calls that let Control reach the network: `acquire` removes
+     * STRATA_NO_ACQUIRE for that one process. Starting, serving, listing and rolling back never do.
+     */
+    async updateCheck({ feed = env.STRATA_UPDATE_FEED ?? null, appVersion = env.STRATA_APP_VERSION ?? null } = {}) {
+      const result = await call(['update', '--check', '--output', 'json', ...feedArgs(feed), ...(appVersion ? ['--app-version', appVersion] : [])], { timeoutMs: 90_000, acquire: true });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The update check failed.');
+    },
+    async update({ feed = env.STRATA_UPDATE_FEED ?? null, engine = true, control: withControl = true, appVersion = env.STRATA_APP_VERSION ?? null, force = false, onEvent = null, signal = null } = {}) {
+      const args = ['update', '--output', 'jsonl', ...feedArgs(feed), ...(engine ? [] : ['--no-engine']), ...(withControl ? [] : ['--no-control']),
+        ...(appVersion ? ['--app-version', appVersion] : []), ...(force ? ['--force'] : [])];
+      const result = await call(args, { timeoutMs: 3 * 3600_000, acquire: true, onLine: onEvent ?? (() => {}), signal });
+      if (result.json?.ok) return result.json;
+      const failed = result.json?.results?.find?.(r => r.status === 'failed');
+      if (failed) throw Object.assign(new ControlError(failed.error, { exitCode: failed.exit_code ?? result.code, output: result.json }), { code: result.code === 7 ? 'engine_serving' : 'update_failed' });
+      throw failure(result, 'The update failed.');
+    },
+    async rollbackEngine() {
+      const result = await call(['components', 'rollback', '--output', 'json'], { timeoutMs: 120_000 });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The engine could not be rolled back.');
+    },
     async engine({ backend = null } = {}) {
       const result = await call(['components', 'engine', '--output', 'json', ...(backend ? ['--backend', backend] : [])], { timeoutMs: 30_000 });
       if (result.json) return result.json;                  // exit 5 still carries the report and the notice

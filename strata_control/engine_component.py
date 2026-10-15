@@ -175,6 +175,18 @@ def cached_notice(root: Path | None = None) -> str | None:
     return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
 
 
+def previous_folder(root: Path | None = None) -> str | None:
+    """The package folder the last update kept as the version to roll back to, if it is still installed."""
+    base = root or components_dir()
+    try:
+        value = json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig"))["engine"]["previous"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if isinstance(value, str) and value and "/" not in value and "\\" not in value and (engine_dir(base) / value / MANIFEST).is_file():
+        return value
+    return None
+
+
 def pinned_folder(root: Path | None = None) -> str | None:
     """The package folder a manual rollback pinned, or None. Read-only; a missing or damaged state file means no pin."""
     try:
@@ -566,7 +578,7 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
               "backend": backend or detected, "backend_source": "requested" if backend else how,
               "installed": [item.to_dict() for item in found], "problems": problems,
               "engine": None, "usable": False, "notice": None, "acquires": False,
-              "pinned": pinned_folder(base)}
+              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base)}
     try:
         chosen = resolve(base, backend=backend, full=full)
         report["engine"] = chosen.to_dict()

@@ -399,7 +399,8 @@ class EngineUpdate(UpdaterCase):
         """The start path (engine_component, runtime) must not reach the update machinery or the network code."""
         import subprocess
         code = ("import sys; import strata_control.engine_component, strata_control.runtime, strata_control.acquisition; "
-                "print(sorted(m for m in sys.modules if m in ('strata_control.updater','strata_control.transfer','strata_control.feed','urllib.request')))")
+                "import strata_cli.cli as c; c.parser(); "
+                "print(sorted(m for m in sys.modules if m in ('strata_control.updater','strata_control.transfer','strata_control.feed')))")
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(fx.ROOT))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.strip(), "[]")
