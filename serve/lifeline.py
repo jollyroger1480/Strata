@@ -277,7 +277,8 @@ _console_handler = None            # the ctypes callback must stay referenced fo
 def install_stop_handlers(request_stop, finished: threading.Event | None = None) -> None:
     """Make every ordinary way a server is asked to end take the clean path (`request_stop(reason)`).
 
-    * POSIX: SIGTERM (docker stop, systemd, `kill`), SIGHUP (the terminal closed, the ssh connection dropped).
+    * POSIX: SIGTERM (docker stop, systemd, `kill`), SIGHUP (the terminal closed, the ssh connection dropped; not when it
+      was ignored at start, which is what `nohup` does on purpose).
       SIGINT keeps Python's own handler (Ctrl+C, and a second Ctrl+C to stop waiting).
     * Windows: SIGBREAK, and the console's close, logoff and shutdown events. Those arrive on a thread of their own and
       the system ends the process a few seconds after the handler returns, so the handler waits for `finished` (up to
@@ -292,6 +293,9 @@ def install_stop_handlers(request_stop, finished: threading.Event | None = None)
         if sig is None:
             continue
         try:
+            # `nohup strata serve ... &` asks to outlive its terminal: a hangup that is ignored at start stays ignored
+            if name == "SIGHUP" and signal.getsignal(sig) == signal.SIG_IGN:
+                continue
             signal.signal(sig, in_main(reason))
         except (ValueError, OSError):                       # not the main thread
             pass

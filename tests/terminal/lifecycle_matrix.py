@@ -244,6 +244,11 @@ class Rig:
 
 # ------------------------------------------------------------------------------------------- actions
 
+def _default_signals() -> None:
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
+
+
 def spawn_serve(rig: Rig, *, new_console: bool = False, session: bool = True) -> subprocess.Popen:
     log = open(rig.root / "serve.log", "ab")
     kw: dict = {}
@@ -256,6 +261,7 @@ def spawn_serve(rig: Rig, *, new_console: bool = False, session: bool = True) ->
             kw["startupinfo"] = info
     elif session:
         kw["start_new_session"] = True                         # its own process group, like a job in a shell
+        kw["preexec_fn"] = _default_signals                    # a harness started in the background inherits "ignore"
     proc = subprocess.Popen(rig.serve_argv(), cwd=ROOT, env=rig.env, stdin=subprocess.DEVNULL, stdout=log,
                             stderr=subprocess.STDOUT, **kw)
     log.close()
@@ -298,6 +304,7 @@ def pty_close(rig: Rig):
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(ROOT)
+        _default_signals()
         os.execve(sys.executable, rig.serve_argv(), rig.env)
     return pid, master
 
@@ -434,6 +441,47 @@ def busy_sigterm(rig, proc):
     if rig.real:
         time.sleep(4)                               # the real engine is reading the prompt / generating by now
     (sigterm if not WINDOWS else win_ctrl_break)(rig, proc)
+
+
+def nohup_case(rig: Rig, name: str = "serve-nohup-keeps-serving", *, vram: bool = False) -> Result:
+    """`nohup strata serve &` asks to outlive its terminal: a hangup that was ignored at start is still ignored, and the
+    server stops on SIGTERM as usual. (An ordinary server stops on SIGHUP: serve-sighup.)"""
+    rig.clear_marks()
+    before = vram_used_mib() if vram else None
+    log = open(rig.root / "serve.log", "ab")
+
+    def ignore_hangup():
+        _default_signals()
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    proc = subprocess.Popen(rig.serve_argv(), cwd=ROOT, env=rig.env, stdin=subprocess.DEVNULL, stdout=log,
+                            stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=ignore_hangup)
+    log.close()
+    try:
+        rig.wait_ready(proc)
+        idents = rig.tree(proc.pid)
+        idents += [i for i in rig.engine_idents() if i.pid not in {x.pid for x in idents}]
+        during = vram_used_mib() if vram else None
+        os.killpg(proc.pid, signal.SIGHUP)                  # the terminal closes
+        time.sleep(3)
+        problems = []
+        if proc.poll() is not None or not port_open(rig.port):
+            problems.append("the server stopped on a hangup it was told to ignore")
+        t0 = time.monotonic()
+        os.kill(proc.pid, signal.SIGTERM)
+        out = finish(rig, name, idents, expect_graceful=True, vram_before=before, vram=vram, vram_during=during)
+        out["seconds"] = round(time.monotonic() - t0, 1)
+        out["problems"] = problems + out["problems"]
+        out["ok"] = not out["problems"]
+        return out
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        for i in rig.tree(proc.pid):
+            if procs.start_token(i.pid) == i.token:
+                try:
+                    psutil.Process(i.pid).kill()
+                except psutil.Error:
+                    pass
 
 
 def pty_close_case(rig: Rig, name: str = "serve-terminal-closed", *, vram: bool = False) -> Result:
@@ -613,6 +661,7 @@ SCENARIOS = {
     "serve-kill-parent": lambda rig, v: serve_case(rig, "serve-kill-parent", kill9_parent, graceful=None, vram=v),
     "serve-busy-stop": lambda rig, v: serve_case(rig, "serve-busy-stop", busy_sigterm, graceful=True, vram=v),
     "serve-terminal-closed": lambda rig, v: pty_close_case(rig, vram=v),
+    "serve-nohup-keeps-serving": lambda rig, v: nohup_case(rig, vram=v),
     # `strata runtime start` (a background service by design)
     "runtime-stop": lambda rig, v: runtime_case(rig, "runtime-stop", "stop", vram=v),
     "runtime-survives-terminal": lambda rig, v: runtime_case(rig, "runtime-survives-terminal", "terminal-gone", vram=v),
@@ -622,7 +671,7 @@ SCENARIOS = {
     # the TUI
     "monitor-killed": lambda rig, v: monitor_quit_case(rig),
 }
-POSIX_ONLY = {"serve-sigterm", "serve-sighup", "serve-terminal-closed"}
+POSIX_ONLY = {"serve-sigterm", "serve-sighup", "serve-terminal-closed", "serve-nohup-keeps-serving"}
 WINDOWS_ONLY = {"serve-ctrl-break", "serve-console-close"}
 
 
