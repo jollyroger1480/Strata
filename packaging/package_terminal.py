@@ -1,60 +1,94 @@
 #!/usr/bin/env python3
-"""Build the self-contained Strata Terminal distribution.
+"""Build the self-contained Strata Terminal distribution for Windows x64, Linux x86_64 or macOS arm64.
 
-The requirement this exists for (checklist P04): a user installs the terminal without Desktop, and
-needs no development checkout, no system Python, no pip and no compiler. So the archive carries its
-own Python runtime and its own dependencies, and the `strata` launcher prefers them.
+The requirement this exists for (checklist P04, and the owner's rule that starting or serving never fetches Python
+packages from the internet): a user installs the terminal without Desktop, and needs no development checkout, no
+system Python, no pip run, no compiler. So the archive carries its own Python runtime and its own dependencies, and
+the `strata` launchers prefer them.
 
 What goes in
 ------------
-* a pinned **standalone CPython**, downloaded and SHA-256-verified against the same pin `setup.sh`
-  uses, so the terminal and the installer cannot drift apart;
-* the runtime dependencies from `requirements.txt`, installed *into* that interpreter;
-* the application: `strata.py`, `strata_control`, `strata_cli`, `serve`, `data` and the docs the
-  CLI references;
-* the analysis-only tooling under `tools/` that the terminal paths import. Everything else under
-  `tools/` is engine installation and preparation work and is deliberately excluded — the serving
-  import boundary must not pull it in.
+* a pinned **standalone CPython 3.12.15** (python-build-standalone 20261009, `install_only`), downloaded at BUILD
+  time and SHA-256-verified against the pin below (the digests are the ones in that release's SHA256SUMS, the Mac one
+  is also what `setup.sh` pins), so the terminal and the installer cannot drift apart;
+* the runtime wheels from the target's lock, `packaging/locks/runtime-<target>-cp312.txt` (made by
+  `packaging/lock_wheels.py`), installed into that interpreter with
+  `pip install --require-hashes --no-deps --only-binary=:all:` at BUILD time only: every package, direct or
+  transitive, is named with an exact version and the SHA-256 of the wheel(s) accepted, so nothing else can land in
+  the bundle. pip itself is the one the interpreter shipped with (not upgraded);
+* the application: `strata.py`, `strata_control`, `strata_cli`, `serve`, a `VERSION` file and the docs the CLI
+  references;
+* the read-only tooling under `tools/` that the terminal paths import. Everything else under `tools/` is engine
+  installation and preparation work and is deliberately excluded: the serving import graph must not pull it in
+  (tests/terminal/test_no_acquisition.py checks that);
+* launchers: `bin/strata.cmd` and `bin/strata.ps1` (Windows), `bin/strata` (Linux, macOS).
 
 What does NOT go in
 -------------------
-* the engine binary. That is a separate, independently versioned component
-  (`packaging/README.md`), and a terminal distribution that bundled one would be wrong for every
-  machine except the one it was built on;
+* the engine binary. That is a separate, independently versioned component (`packaging/README.md`);
 * model weights or prepared data;
 * `node_modules` or the UI. The terminal does not need a browser.
 
 Usage
 -----
-    python packaging/package_terminal.py --out release/artifacts
-    python packaging/package_terminal.py --out /tmp/x --skip-deps   # for a fast layout check
+    python packaging/package_terminal.py --out release/artifacts                    # the host's target
+    python packaging/package_terminal.py --out /tmp/x --target linux-x86_64        # on a Linux x86_64 host
+    python packaging/package_terminal.py --out /tmp/x --skip-deps                  # layout check only
+
+An archive for a target must be built on that target: the lock is installed with the bundled interpreter, which runs
+only there. `packaging/smoke_terminal.py <archive>` extracts one into a clean environment and runs it.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LOCKS = ROOT / "packaging" / "locks"
 
-#: The standalone CPython pin, identical to `setup.sh`'s. Two places, one value: a terminal built
-#: from one and an installer built from the other must be the same interpreter.
-PYTHON_PIN = {
-    "url": ("https://github.com/astral-sh/python-build-standalone/releases/download/20261009/"
-            "cpython-3.12.15%2B20261009-aarch64-apple-darwin-install_only.tar.gz"),
-    "sha256": "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8",
-    "target": "darwin-arm64",
+PBS_RELEASE = "20261009"
+PYTHON_VERSION = "3.12.15"
+PBS_BASE = f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_RELEASE}/"
+
+#: The standalone CPython pins, one per target, from the release's SHA256SUMS. `darwin-arm64` is also what
+#: `setup.sh` pins: a terminal built from one and an installer built from the other are the same interpreter.
+PYTHON_PINS = {
+    "windows-x86_64": {
+        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "sha256": "194c8f0d9e0de6f1c4576e5dfa67819a48c764be87608b74b8ad43387a57b93b",
+        "python": "python/python.exe", "archive": "zip",
+    },
+    "linux-x86_64": {
+        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-unknown-linux-gnu-install_only.tar.gz",
+        "sha256": "5864001bf969db329fadc2b654c4878c6027d170c6bd77e28f88666260bcaf63",
+        "python": "python/bin/python3", "archive": "tar.gz",
+    },
+    "darwin-arm64": {
+        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz",
+        "sha256": "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8",
+        "python": "python/bin/python3", "archive": "tar.gz",
+    },
 }
+for _pin in PYTHON_PINS.values():
+    _pin["url"] = PBS_BASE + _pin["file"].replace("+", "%2B")
 
-#: The application, as (source relative to ROOT, destination relative to the archive root).
+#: Kept for callers of the Mac-only script: the macOS pin.
+PYTHON_PIN = {**PYTHON_PINS["darwin-arm64"], "target": "darwin-arm64"}
+
+#: The application, as paths relative to ROOT (copied to the same place in the archive).
 PAYLOAD = (
     "strata.py",
     "strata_control",
@@ -65,13 +99,26 @@ PAYLOAD = (
     "docs/MANAGEMENT_PROTOCOL.md",
 )
 
-#: `tools/` modules the terminal paths import. Adding one here is a deliberate act: this list is what
-#: keeps installation/preparation code out of the serving import graph.
+#: `tools/` modules the terminal paths import. Adding one here is a deliberate act: this list is what keeps
+#: installation/preparation code out of the serving import graph.
 TOOLS_SUBSET = (
     "strata_tokenizer.py",
+    "gguf_reader.py",
 )
 
-EXCLUDES = ("__pycache__", "*.pyc", ".DS_Store", "*.egg-info")
+#: packages the bundle must import after the install (the API server's and the CLI's).
+PROBE = "import jinja2, yaml, regex, psutil, requests, numpy, PIL, tqdm; print('deps ok')"
+
+
+def host_target() -> str:
+    machine = platform.machine().lower()
+    if sys.platform == "win32" and machine in ("amd64", "x86_64"):
+        return "windows-x86_64"
+    if sys.platform.startswith("linux") and machine in ("x86_64", "amd64"):
+        return "linux-x86_64"
+    if sys.platform == "darwin" and machine in ("arm64", "aarch64"):
+        return "darwin-arm64"
+    raise SystemExit(f"no terminal target for {sys.platform}/{machine}")
 
 
 def sha256(path: Path) -> str:
@@ -82,46 +129,130 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def fetch_python(cache: Path) -> Path:
-    """Download the pinned interpreter once, verifying the digest before it is used."""
-    archive = cache / "cpython-standalone.tar.gz"
+def fetch_python(target: str, cache: Path) -> Path:
+    """Download the pinned interpreter once (build time), verifying the digest before it is used."""
+    pin = PYTHON_PINS[target]
+    archive = cache / pin["file"].replace("+", "_")
     if not archive.exists():
-        print(f"fetching the pinned CPython from {PYTHON_PIN['url']}")
-        urllib.request.urlretrieve(PYTHON_PIN["url"], archive)
+        print(f"fetching the pinned CPython from {pin['url']}")
+        part = archive.with_suffix(archive.suffix + ".part")
+        urllib.request.urlretrieve(pin["url"], part)
+        part.replace(archive)
     got = sha256(archive)
-    if got != PYTHON_PIN["sha256"]:
+    if got != pin["sha256"]:
+        archive.unlink(missing_ok=True)
         raise SystemExit(
-            f"the CPython download does not match its pin\n  expected {PYTHON_PIN['sha256']}\n"
+            f"the CPython download does not match its pin\n  expected {pin['sha256']}\n"
             f"  got      {got}\nRefusing to package an unverified interpreter.")
     return archive
 
 
 def ignore(_directory: str, names: list[str]) -> set[str]:
-    out = set()
-    for name in names:
-        if name in ("__pycache__", ".DS_Store") or name.endswith(".pyc"):
-            out.add(name)
+    return {n for n in names if n in ("__pycache__", ".DS_Store") or n.endswith(".pyc")}
+
+
+def lock_for(target: str) -> Path:
+    path = LOCKS / f"runtime-{target}-cp312.txt"
+    if not path.is_file():
+        raise SystemExit(f"no lock for {target}: {path} (run packaging/lock_wheels.py --target {target})")
+    return path
+
+
+def lock_names(lock: Path) -> dict[str, str]:
+    out = {}
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", line)
+        if m:
+            out[re.sub(r"[-_.]+", "-", m.group(1)).lower()] = m.group(2)
     return out
 
 
+def install_locked(py: Path, lock: Path, root: Path) -> dict[str, str]:
+    """pip install --require-hashes into the bundled interpreter, then check what is there is exactly the lock."""
+    env = {**os.environ, "PIP_NO_INPUT": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1",
+           "PIP_CONFIG_FILE": os.devnull}
+    for name in ("PYTHONHOME", "PYTHONPATH", "PIP_REQUIRE_VIRTUALENV", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
+        env.pop(name, None)
+    subprocess.run([str(py), "-m", "pip", "install", "--isolated", "--no-cache-dir", "--no-warn-script-location",
+                    "--require-hashes", "--no-deps", "--only-binary=:all:", "-r", str(lock)],
+                   check=True, cwd=str(root), env=env)
+    subprocess.run([str(py), "-m", "pip", "check"], check=True, cwd=str(root), env=env)
+    listed = subprocess.run([str(py), "-m", "pip", "list", "--format=json", "--isolated"], check=True,
+                            cwd=str(root), env=env, capture_output=True, text=True).stdout
+    have = {re.sub(r"[-_.]+", "-", d["name"]).lower(): d["version"] for d in json.loads(listed)}
+    want = lock_names(lock)
+    extra = {k: v for k, v in have.items() if k not in want and k not in ("pip", "setuptools", "wheel")}
+    wrong = {k: (want[k], have.get(k)) for k in want if have.get(k) != want[k]}
+    if extra or wrong:
+        raise SystemExit(f"the bundle does not match its lock: extra {extra}, wrong/missing {wrong}")
+    return have
+
+
+def drop_build_path_launchers(root: Path, staging: Path, target: str) -> list[str]:
+    """pip writes console-script launchers that name the build-time interpreter by absolute path: they break the
+    moment the archive is extracted elsewhere. `python -m <module>` and the `strata` launchers replace them."""
+    gone = []
+    if target.startswith("windows"):
+        scripts = root / "python" / "Scripts"
+        if scripts.is_dir():
+            for f in sorted(scripts.iterdir()):
+                gone.append(f.name)
+            shutil.rmtree(scripts)
+        return gone
+    needle = str(staging).encode()
+    bindir = root / "python" / "bin"
+    for f in sorted(bindir.iterdir()):
+        if f.is_symlink() or not f.is_file():
+            continue
+        with f.open("rb") as fh:
+            head = fh.read(512)
+        if head.startswith(b"#!") and needle in head.split(b"\n", 1)[0]:
+            gone.append(f.name)
+            f.unlink()
+    return gone
+
+
+def write_archive(root: Path, name: str, out_dir: Path, kind: str) -> Path:
+    if kind == "zip":
+        path = out_dir / f"{name}.zip"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for p in sorted(root.rglob("*")):
+                if p.is_dir():
+                    continue
+                zf.write(p, Path(name, p.relative_to(root)).as_posix())
+        return path
+    path = out_dir / f"{name}.tar.gz"
+    with tarfile.open(path, "w:gz") as tf:
+        tf.add(root, arcname=name)
+    return path
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="directory to write the archive into")
+    ap.add_argument("--target", choices=sorted(PYTHON_PINS), default=None,
+                    help="windows-x86_64, linux-x86_64 or darwin-arm64 (default: this machine's)")
     ap.add_argument("--version", default=None, help="version label (default: read from the source)")
     ap.add_argument("--skip-deps", action="store_true",
-                    help="skip pip install (layout checks only; the result is NOT distributable)")
+                    help="skip the locked install (layout checks only; the result is NOT distributable)")
     ap.add_argument("--keep-staging", action="store_true")
+    ap.add_argument("--cache", default=None, help="where the pinned interpreter archive is cached")
     args = ap.parse_args()
 
+    target = args.target or host_target()
+    if not args.skip_deps and target != host_target():
+        raise SystemExit(f"{target} must be built on {target} (this is {host_target()}): the locked install runs the "
+                         "bundled interpreter. Use --skip-deps for a layout check.")
+    pin = PYTHON_PINS[target]
     version = args.version or _source_version()
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    name = f"strata-terminal-{version}-{PYTHON_PIN['target']}"
+    name = f"strata-terminal-{version}-{target}"
 
-    cache = Path(tempfile.gettempdir()) / "strata-packaging-cache"
+    cache = Path(args.cache) if args.cache else Path(tempfile.gettempdir()) / "strata-packaging-cache"
     cache.mkdir(parents=True, exist_ok=True)
-    archive = fetch_python(cache)
+    archive = fetch_python(target, cache)
+    lock = lock_for(target)
 
     staging = Path(tempfile.mkdtemp(prefix="strata-terminal-build-"))
     root = staging / name
@@ -130,8 +261,7 @@ def main() -> int:
         print("unpacking the interpreter")
         with tarfile.open(archive) as tf:
             tf.extractall(root)
-        # python-build-standalone extracts to `python/`; the launcher looks in exactly that place.
-        py = root / "python" / "bin" / "python3"
+        py = root / pin["python"]
         if not py.exists():
             raise SystemExit(f"the archive did not produce {py}")
 
@@ -150,41 +280,40 @@ def main() -> int:
         tools_dir.mkdir(exist_ok=True)
         for item in TOOLS_SUBSET:
             src = ROOT / "tools" / item
-            if src.exists():
-                shutil.copy2(src, tools_dir / item)
+            if not src.exists():
+                raise SystemExit(f"missing tools module: {item}")
+            shutil.copy2(src, tools_dir / item)
+        (root / "VERSION").write_text(version + "\n", encoding="utf-8")
 
-        # The launcher goes in `bin/`, and `strata.py` sits one level up, which is the layout
-        # `bin/strata` already understands.
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)
-        launcher = bin_dir / "strata"
-        shutil.copy2(ROOT / "bin" / "strata", launcher)
-        launcher.chmod(0o755)
+        launchers = ["strata.cmd", "strata.ps1"] if target.startswith("windows") else ["strata"]
+        for launcher in launchers:
+            shutil.copy2(ROOT / "bin" / launcher, bin_dir / launcher)
+            if launcher == "strata":
+                (bin_dir / launcher).chmod(0o755)
 
+        installed: dict[str, str] = {}
+        removed: list[str] = []
         if not args.skip_deps:
-            print("installing the runtime dependencies into the bundled interpreter")
-            subprocess.run([str(py), "-m", "pip", "install", "--quiet", "--no-warn-script-location",
-                            "--upgrade", "pip"], check=True)
-            subprocess.run([str(py), "-m", "pip", "install", "--quiet", "--no-warn-script-location",
-                            "-r", str(root / "requirements.txt")], check=True)
-            # A packaged tree must not carry pip's cache or the tests of its dependencies.
-            for junk in ("python/lib/python3.12/site-packages/pip",):
-                shutil.rmtree(root / junk, ignore_errors=True)
+            print("installing the locked runtime wheels into the bundled interpreter (build time only)")
+            installed = install_locked(py, lock, root)
+            removed = drop_build_path_launchers(root, staging, target)
+            # nothing the bundle writes while it is built may stay: compiled files are rebuilt on first use
+            for cache_dir in list(root.rglob("__pycache__")):
+                shutil.rmtree(cache_dir, ignore_errors=True)
 
-        # Prove the interpreter works from where it now sits, before claiming the artifact is good.
-        probe = subprocess.run(
-            [str(py), "-c", "import jinja2, yaml, regex, psutil; print('deps ok')"],
-            capture_output=True, text=True, cwd=str(root))
+        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        for k in ("PYTHONHOME", "PYTHONPATH"):
+            env.pop(k, None)
+        probe = subprocess.run([str(py), "-c", PROBE], capture_output=True, text=True, cwd=str(root), env=env)
         print("  " + (probe.stdout.strip() or probe.stderr.strip()[:200]))
+        if not args.skip_deps and probe.returncode != 0:
+            raise SystemExit("the bundled interpreter cannot import the runtime packages")
 
-        readme = root / "README.txt"
-        readme.write_text(_readme(version), encoding="utf-8")
+        (root / "README.txt").write_text(_readme(version, target), encoding="utf-8")
 
-        archive_path = out_dir / f"{name}.tar.gz"
-        print(f"writing {archive_path}")
-        with tarfile.open(archive_path, "w:gz") as tf:
-            tf.add(root, arcname=name)
-
+        archive_path = write_archive(root, name, out_dir, pin["archive"])
         digest = sha256(archive_path)
         size = archive_path.stat().st_size
         print(f"\n{archive_path}")
@@ -192,17 +321,22 @@ def main() -> int:
         print(f"  sha256 {digest}")
 
         manifest = out_dir / f"{name}.manifest.json"
-        import json
         manifest.write_text(json.dumps({
             "name": name,
             "version": version,
+            "target": target,
+            "archive": archive_path.name,
             "bytes": size,
             "sha256": digest,
-            "python": {"url": PYTHON_PIN["url"], "sha256": PYTHON_PIN["sha256"],
-                       "target": PYTHON_PIN["target"]},
+            "python": {"version": PYTHON_VERSION, "build": PBS_RELEASE, "url": pin["url"], "sha256": pin["sha256"],
+                       "target": target},
+            "lock": {"file": lock.relative_to(ROOT).as_posix(), "sha256": sha256(lock),
+                     "install": "pip install --require-hashes --no-deps --only-binary=:all: (build time only)"},
+            "installed": installed,
+            "launchers_removed": removed,
             "payload": list(PAYLOAD),
             "tools_subset": list(TOOLS_SUBSET),
-            "excludes": ("engine binary", "model weights", "prepared data", "UI", "node_modules"),
+            "excludes": ["engine binary", "model weights", "prepared data", "UI", "node_modules"],
             "deps_installed": not args.skip_deps,
         }, indent=2) + "\n", encoding="utf-8")
         print(f"  manifest {manifest}")
@@ -217,54 +351,68 @@ def main() -> int:
 def _source_version() -> str:
     """The version the source reports, so the artifact name cannot disagree with the code."""
     text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")
-    import re
-    # `project(strata VERSION 0.1.44.1 LANGUAGES C CXX ...)` — the version is a dotted triple and
-    # must be read as one. Taking "everything after VERSION" yields "0.1.44.1.LANGUAGES.CXX".
+    # `project(strata VERSION 0.1.44.1 LANGUAGES C CXX ...)` - the version is a dotted run of numbers and must be
+    # read as one. Taking "everything after VERSION" yields "0.1.44.1.LANGUAGES.CXX".
     m = re.search(r"^\s*project\([^)]*?VERSION\s+([0-9]+(?:\.[0-9]+)+)", text, re.MULTILINE)
     return m.group(1) if m else "0.0.0"
 
 
-def _readme(version: str) -> str:
-    return f"""Strata Terminal {version}
-{'=' * (17 + len(version))}
+def _readme(version: str, target: str) -> str:
+    win = target.startswith("windows")
+    ext = "zip" if win else "tar.gz"
+    stem = f"strata-terminal-{version}-{target}"
+    if win:
+        install = f"""    Expand-Archive {stem}.zip .
+    cd {stem}
+    .\\bin\\strata.cmd --help
 
-This is the terminal distribution. It carries its own Python runtime and its own dependencies, so
-you do not need Python, pip, Node, a compiler or a development checkout.
+Put `bin\\` on your PATH to get the `strata` command everywhere (cmd.exe and PowerShell):
 
-Install
--------
-    tar xzf strata-terminal-{version}-{PYTHON_PIN['target']}.tar.gz
-    cd strata-terminal-{version}-{PYTHON_PIN['target']}
+    setx PATH "%PATH%;%CD%\\bin"
+"""
+    else:
+        install = f"""    tar xzf {stem}.tar.gz
+    cd {stem}
     ./bin/strata --help
 
 Put `bin/` on your PATH to get the `strata` command everywhere:
 
-    echo "export PATH=\\"$PWD/bin:$PATH\\"" >> ~/.zshrc
+    echo "export PATH=\\"$PWD/bin:$PATH\\"" >> ~/.profile
+"""
+    return f"""Strata Terminal {version} ({target})
+{'=' * (len(version) + len(target) + 18)}
 
+This is the terminal distribution. It carries its own Python {PYTHON_VERSION} and its own packages, so you do not
+need Python, pip, Node, a compiler or a development checkout. Starting and serving never install or download
+anything; if something is missing, the error names the command that installs it.
+
+Install
+-------
+{install}
 What it does NOT include
 ------------------------
-The **engine** is a separate, independently versioned component and is not bundled: the right engine
-package depends on your OS, CPU and GPU, and shipping one machine's build to another would be
-wrong. Point Strata at an engine with `STRATA_ENGINE`, or install one through the desktop app or
-`setup.sh`. Model weights are likewise not included.
+The **engine** is a separate, independently versioned component and is not bundled: the right engine package
+depends on your OS, CPU and GPU. Install one with SETUP / `strata install` from a full Strata folder, or point
+Strata at one with STRATA_ENGINE. Model weights are likewise not included.
 
 Useful commands
 ---------------
-    strata status                     one read-only telemetry snapshot
-    strata monitor                    the six-view terminal monitor
+    strata --version                  the version and the interpreter it runs on
     strata doctor                     read-only component inventory
-    strata timeskip run --help        retain a good result, revise it, check it, decide
-    strata tune plan --help           what a tuning sweep would search, and why not
-    strata serve --help               start the inference server in the foreground
+    strata profile list               saved serving profiles
+    strata status                     one read-only telemetry snapshot
+    strata monitor                    the terminal monitor
+    strata serve --profile NAME       start the inference server in the foreground
+    strata serve --engine mock ...    a scripted engine for client tests (no GPU, no model)
+    strata runtime start|status|stop  run a profile as a managed background instance
 
-Serving, `status` and `monitor` do not need the agent runtime or the tuning packages. The opt-in
-terminal TUI additionally needs `textual` (see requirements-monitor.txt).
+Existing installs are found in place: the run configs (strata-<model>.json) and the data folder remembered in
+settings.json are used where they are; nothing is copied or moved.
 
 Verification
 ------------
-The archive's manifest records the SHA-256 of the bundle and of the pinned interpreter it carries.
-`bin/strata` prefers the bundled interpreter and falls back to a Python 3.10+ on PATH, so the
-distribution still runs if the bundled runtime is removed.
+The manifest next to the archive records the SHA-256 of the archive, of the pinned interpreter and of the package
+lock it was built from. The launcher prefers the bundled interpreter and ignores the user's site-packages.
 """
 
 

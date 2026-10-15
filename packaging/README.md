@@ -91,12 +91,16 @@ Linux targets were added**, so the added targets do not affect the macOS artifac
 * No font or asset redistribution evidence has been gathered (D05). The app currently ships the
   brand assets from the supplied UI ZIP, which is fine for an internal candidate and not sufficient
   for redistribution.
-* The terminal distribution **does** now bundle a private Python runtime and its dependencies
-  (42 MB, built by `package_terminal.py`), and was verified running from a moved directory in a
-  clean environment with no usable system Python. What remains is per-platform work: the current
-  archive is `darwin-arm64` only. `PYTHON_PIN` in that script needs the matching
-  python-build-standalone archive and digest for each target, and the launcher already prefers a
-  bundled runtime, so a Linux or Windows archive is a pin change plus a build on that OS.
+* The terminal distribution bundles a private Python runtime and its dependencies for `windows-x86_64`,
+  `linux-x86_64` and `darwin-arm64` (`package_terminal.py --target ...`, built on the target OS). The interpreter is
+  the pinned python-build-standalone CPython 3.12.15 (digest-checked at build time); the packages come from
+  `packaging/locks/runtime-<target>-cp312.txt`, installed with `pip install --require-hashes --no-deps
+  --only-binary=:all:` at BUILD time only (`lock_wheels.py` makes the lock; review its diff when a pin changes).
+  Wrappers: `bin/strata.cmd` / `bin/strata.ps1` on Windows, `bin/strata` on POSIX; START-HERE.bat, SETUP.bat,
+  UPDATE.bat, setup.sh and update.sh use a `python/` folder beside them when there is one.
+  `smoke_terminal.py <archive>` extracts an archive into a clean environment (a path with a space, a PATH with no
+  Python) and runs `--version`, `doctor`, `profile list`, `install` and `serve --engine mock`. The macOS archive
+  predates the lock: build it again on a Mac to get the hash-pinned install (the lock is already here).
 * `.gitignore` coverage for build output was added late. `apps/desktop/src-tauri/target` and the
   Node sidecar were briefly committed, which left ~324 MB in the git object store. The files are
   untracked now and the ignore rules are in place, but the history is not rewritten: that is a

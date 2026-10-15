@@ -125,4 +125,9 @@ PROBE
     ;;
 esac
 
+# The private runtime must not see the user's site-packages, PYTHONHOME or PYTHONPATH.
+case $PY in
+  "$HERE"/../python/*|"$HERE"/python/*) PYTHONNOUSERSITE=1; export PYTHONNOUSERSITE; unset PYTHONHOME PYTHONPATH ;;
+esac
+
 exec "$PY" "$APP/strata.py" "$@"

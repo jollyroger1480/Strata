@@ -27,11 +27,27 @@ from strata_cli.client import ClientError, Endpoint
 from strata_cli import monitor_commands
 
 
+class _VersionAction(argparse.Action):
+    """--version on one line: argparse's own version action wraps the text at the terminal width, and a path to the
+    interpreter is the thing a user (and the packaging smoke test) wants to read back whole."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        import strata_cli
+        sys.stdout.write(f"strata {strata_cli.version()} (python {sys.version.split()[0]} at {sys.executable})\n")
+        parser.exit()
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="strata", description="Strata serving and terminal clients")
+    import strata_cli
+    ap.add_argument("--version", action=_VersionAction, nargs=0,
+                    help="print the version and the interpreter this terminal runs on")
     sp = ap.add_subparsers(dest="command", required=True)
     serve = sp.add_parser("serve", help="start the existing Strata inference server in the foreground")
     serve.add_argument("--profile", "--config", dest="config", required=True, metavar="CONFIG.json")
+    serve.add_argument("--engine", choices=("strata", "mock"), default="strata",
+                       help="strata: the engine in the run config (default); mock: a scripted engine for client tests, "
+                            "no GPU and no model")
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
     serve.add_argument("--parallel", type=int, help="requested concurrent engine slots")
@@ -574,7 +590,7 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
         raise ProfileError("the inference API key is invalid", 5) from None
     if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
         raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
-    server_args = ["--engine", "strata", "--config", str(path), "--host", str(host),
+    server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
     if cli is not None:
         server_args += ["--shutdown-timeout", str(cli.shutdown_timeout)]
