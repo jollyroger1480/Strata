@@ -85,7 +85,7 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true } = {}) {
+function packagedFixture({ engineUsable = true, updater = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
@@ -111,6 +111,7 @@ function packagedFixture({ engineUsable = true } = {}) {
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); return {}; },
     async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure && startFailureLeft-- > 0) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
+    ...(updater ? { async updateCheck() { calls.push(['updateCheck']); return updater.report; }, async update(options) { calls.push(['update', options.engine, options.control]); return updater.update(options); } } : {}),
   };
   const requests = [];
   const fetcher = async url => { calls.push(['fetch', url.replace(/:\d+/, ':PORT')]); return Response.json({ status: 'ok' }); };
@@ -404,4 +405,30 @@ test('packaged: a local GGUF folder is checked by Control, then installed from w
     await f.native.plan({ family: 'qwen', model: 'IQ3_S', gguf_dir: 'D:/models/iq3s' });
     assert.equal(f.rpc.at(-1).arguments.gguf_dir, 'D:/models/iq3s');
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: the install job also fetches the engine through Control (merge of the model progress and the engine step); a failed engine keeps the model and says so', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
+  const f = packagedFixture({ engineUsable: false, updater: { report, async update(options) {
+    options.onEvent({ event: 'progress', phase: 'download', percent: 50, done: 2.5e8, total: 5e8 });
+    return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.46' } }] };
+  } } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(job.result.install.engine.state, 'done');
+    assert.deepEqual(job.result.install.parts.map(p => p.kind), ['model', 'engine']);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'update'), [['update', true, false]], 'the engine only, from this install job');
+    assert.equal(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).length, 0);
+  } finally { await f.native.close(); f.cleanup(); }
+  const g = packagedFixture({ engineUsable: false, updater: { report, async update() { throw new Error('the download of http://x/e.tar.gz was interrupted after 100 of 200 bytes (ConnectionResetError)'); } } });
+  try {
+    await g.native.refresh(true);
+    const job = await finish(g.native, g.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.match(job.summary, /Your model is ready\. The engine for this PC couldn't be downloaded/);
+    assert.equal(job.result.install.engine.state, 'failed');
+    assert.doesNotMatch(job.summary, /http|ConnectionReset|bytes/);
+  } finally { await g.native.close(); g.cleanup(); }
 });

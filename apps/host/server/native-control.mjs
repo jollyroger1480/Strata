@@ -145,9 +145,10 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
      if(engineTask){job.summary='Model files are ready. Finishing the engine for this PC…';emit();await engineTask;publish(result);}
      await refresh(true);
      const note=engineStep?.summaryNote();
-     if(note)return {...result,summary:note};
+     const finalResult=engineStep?job.result:result;
+     if(note)return {...finalResult,summary:note};
      if(args.loadAfter){const model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision});}
-     return result;
+     return finalResult;
     }
    }
   }catch(error){job.engineAbort?.abort();throw error;}
