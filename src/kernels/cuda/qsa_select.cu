@@ -1375,6 +1375,24 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_halve_kernel(co
     }
 }
 
+// #1825: the prompt path's thread-per-head scorer (bitwise the warp kernel's scores).  Default: Turing with
+// STRATA_SM75_PERF=1 (the P100 gain measured here is +1..3% at 30-60K tokens, under the 3% bar for a new default);
+// STRATA_SCORES_THREAD=1 turns it on, =0 off, on any CUDA card
+bool scores_thread_on() {
+    static const int env = [] { const char* v = std::getenv("STRATA_SCORES_THREAD"); return v ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
+    if (env >= 0) return env != 0;
+    static int ok[64] = {};   // 0 unknown, 1 yes, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (ok[dev] == 0) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        ok[dev] = strata::sm75_default(major, minor) ? 1 : 2;   // Turing, STRATA_SM75_PERF=1
+    }
+    return ok[dev] == 1;
+}
+
 bool scores_halve_on() {
     static const int env = [] { const char* v = std::getenv("STRATA_SCORES_HALVE"); return v ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
     if (env >= 0) return env != 0;
@@ -1429,10 +1447,9 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     }
     const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
 #if !defined(__HIPCC__)
-    // prompt calls (an active-block count): the thread-per-head kernel, the same bits.  STRATA_SCORES_THREAD=0: the warp
-    // kernel below
-    static const bool thread = [] { const char* v = std::getenv("STRATA_SCORES_THREAD"); return v == nullptr || std::atoi(v) != 0; }();
-    if (thread && active_blocks > 0) {
+    // prompt calls (an active-block count): the thread-per-head kernel, the same bits (opt-in: scores_thread_on); else the
+    // warp kernel below
+    if (active_blocks > 0 && scores_thread_on()) {
         const dim3 tgrid((unsigned) ((reach + TS_BR - 1) / TS_BR), (unsigned) ((nq + TS_Q - 1) / TS_Q));
         block_scores_thread_kernel<<<tgrid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks, reach,
                                                                              scores);
