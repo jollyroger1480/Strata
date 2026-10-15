@@ -1187,6 +1187,9 @@ bool d_covered(int t) {
         ;
 }
 
+#if defined(__HIPCC__)
+int host_astages() { return ASTAGES; }   // (#2145 defines it for CUDA above; HIP keeps the one depth)
+#endif
 template <int T, bool GU>
 void launch(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Tables& tb, const void* act,
             const int32_t* src, void* out, float* dm, cudaStream_t s) {
