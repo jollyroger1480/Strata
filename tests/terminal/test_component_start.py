@@ -133,6 +133,24 @@ class ComponentStart(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse((self.root / "ran.txt").exists(), "a changed package must not run")
 
+    def test_the_package_folder_is_first_on_the_library_path(self):
+        from serve import server
+        folder = install_fake_engine(self.components)
+        cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
+        self.assertEqual(Path(cfg["exe"]).parent.resolve(), folder.resolve())
+        self.assertEqual(cfg["lib_dirs"][0], str(folder / ("engine.cmd" if WINDOWS else "engine")).rsplit(os.sep, 1)[0])
+        self.assertEqual(cfg["lib_dirs"][1:], ["/other"])
+        env = server.child_env(cfg)
+        var = "PATH" if WINDOWS else "LD_LIBRARY_PATH"
+        self.assertTrue(env[var].startswith(str(folder)))
+        plain = {"exe": "/some/where/strata", "args": []}
+        self.assertIs(server.with_component_engine(plain), plain)
+        with self.assertRaises(SystemExit) as caught:
+            for entry in (folder / "engine.cmd", folder / "engine"):
+                entry.unlink(missing_ok=True)
+            server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda"})
+        self.assertEqual(caught.exception.code, 5)
+
     def test_doctor_names_the_missing_engine(self):
         from strata_control.doctor import inspect
         report = inspect(self.config)

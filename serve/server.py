@@ -7260,6 +7260,17 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def with_component_engine(cfg: dict) -> dict:
+    """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
+    the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
+    if not engine_component.is_reference(cfg.get("exe")):
+        return cfg
+    cfg = dict(cfg)
+    cfg["exe"] = _component_exe(cfg["exe"], cfg)
+    cfg["lib_dirs"] = [str(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    return cfg
+
+
 def _component_exe(reference: str, cfg: dict) -> str:
     """The engine a run config names as "component:strata-engine". No engine for this PC is a clear notice and exit 5;
     the server never goes looking on the internet for one (strata_control/engine_component.py)."""
@@ -7455,6 +7466,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
+        cfg = with_component_engine(cfg)
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
