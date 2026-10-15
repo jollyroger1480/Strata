@@ -293,7 +293,11 @@ class BenchTests(unittest.TestCase):
                            "timed out"))
             with mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": environment["STRATA_PROFILE_DIR"]}):
                 self.assertEqual(benchmarking.benchmark_activity("local", output), "active")
-                process.kill()
+                if os.name == "nt":
+                    # a venv's python.exe is a launcher that runs the real interpreter as its child
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+                else:
+                    process.kill()
                 process.wait(timeout=5)
                 self.assertEqual(benchmarking.benchmark_activity("local", output), "ended")
         finally:
