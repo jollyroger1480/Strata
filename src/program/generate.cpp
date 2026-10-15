@@ -4293,11 +4293,14 @@ int main(int argc, char** argv) {
         };
         bool gate_on = true;   // off only when no placement can start (below): then the best one is kept and a warning said
         int64_t min_stage_layers = 1;   // #1616: 3 in the second pass below, when the first pick has a one- or two-layer stage
+        std::vector<int64_t> stage_floors;   // #2644: each stage's share of the room, in the share pass below (empty: off)
         // #1428: 2 and 3 GPUs - every placement priced, kept (a few hundred) so the near-tie warning below can name the
         // best placement that is really a different one (not the neighbour one layer over)
         std::vector<std::pair<double, std::vector<int64_t>>> priced;
         auto consider = [&]() {
             if (min_stage_layers > 1 && strata::program::split_rules::smallest_stage(at, g.n_layers) < min_stage_layers)
+                return;
+            if (!stage_floors.empty() && strata::program::split_rules::below_floors(at, g.n_layers, stage_floors))
                 return;
             double hm = 0;
             int64_t held = 0;
@@ -4394,6 +4397,7 @@ int main(int argc, char** argv) {
                                           (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
                         if (min_stage_layers > 1 &&
                             strata::program::split_rules::smallest_stage({k1, k2, k3}, L) < min_stage_layers) continue;
+                        if (!stage_floors.empty() && strata::program::split_rules::below_floors({k1, k2, k3}, L, stage_floors)) continue;
                         ++tried;
                         const double mx = stage_max({k1, k2, k3});
                         if (!(ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps))) continue;
@@ -4435,28 +4439,57 @@ int main(int argc, char** argv) {
             strata::program::split_rules::has_tiny_stage(best, g.n_layers)) {
             const std::vector<int64_t> first = best;
             const double first_ms = best_ms;
-            best.clear();
-            best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
-            min_stage_layers = strata::program::split_rules::kMinStageLayers;
-            search();
-            min_stage_layers = 1;
             auto fmt = [](const std::vector<int64_t>& v) {
                 std::string s;
                 for (const int64_t k : v) s += (s.empty() ? "" : ",") + std::to_string(k);
                 return s;
             };
-            if (best.empty()) {
-                best = first; best_ms = first_ms;
-                std::fprintf(stderr, "strata generate: layer split auto: K=%s gives a stage fewer than %lld layers (a "
-                                     "tiny expert cache clamps the prompt chunk, #1616), but no placement with at least "
-                                     "that many layers can start; keeping it\n", fmt(first).c_str(),
-                             (long long) strata::program::split_rules::kMinStageLayers);
-            } else {
-                std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
-                                     "(a tiny expert cache there clamps the prompt chunk of every card, #1616); chose "
-                                     "K=%s instead (%.1f ms per decode window, not %.1f)\n", fmt(first).c_str(),
-                             (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
-                             first_ms);
+            // ---- #2644 (two GPUs): first a placement in which each stage owns at least its share of the layers by its room for
+            // experts.  The three-layer rule below lands on its own edge when the card that is predicted slower has little
+            // room (4060 Ti 16 GB + 3060 12 GB: K=3, the 3060 idle, -44% prefill).  The rooms are read at the even split
+            // (a session and a later stage's weights depend on the range).
+            bool share_pick = false;
+            if (ns == 2) {
+                std::vector<int64_t> rooms((size_t) ns);
+                for (int i = 0; i < ns; ++i)
+                    rooms[(size_t) i] = stage_left(i, g.n_layers * i / ns, g.n_layers * (i + 1) / ns);
+                const std::vector<int64_t> floors = strata::program::split_rules::share_floors(rooms, g.n_layers);
+                if (strata::program::split_rules::floors_exceed_minimum(floors)) {
+                    best.clear();
+                    best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
+                    stage_floors = floors;
+                    search();
+                    stage_floors.clear();
+                    share_pick = !best.empty();
+                    if (share_pick)
+                        std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
+                                             "(a tiny expert cache there clamps the prompt chunk of every card, #1616) and "
+                                             "leave that card idle; chose K=%s instead, which gives each card at least its "
+                                             "share of the layers by its room for experts (%.1f ms per decode window, not %.1f; "
+                                             "--layer-split N sets it by hand, #2644)\n", fmt(first).c_str(),
+                                     (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
+                                     first_ms);
+                }
+            }
+            if (!share_pick) {
+                best.clear();
+                best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
+                min_stage_layers = strata::program::split_rules::kMinStageLayers;
+                search();
+                min_stage_layers = 1;
+                if (best.empty()) {
+                    best = first; best_ms = first_ms;
+                    std::fprintf(stderr, "strata generate: layer split auto: K=%s gives a stage fewer than %lld layers (a "
+                                         "tiny expert cache clamps the prompt chunk, #1616), but no placement with at least "
+                                         "that many layers can start; keeping it\n", fmt(first).c_str(),
+                                 (long long) strata::program::split_rules::kMinStageLayers);
+                } else {
+                    std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
+                                         "(a tiny expert cache there clamps the prompt chunk of every card, #1616); chose "
+                                         "K=%s instead (%.1f ms per decode window, not %.1f)\n", fmt(first).c_str(),
+                                 (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
+                                 first_ms);
+                }
             }
         }
         // ---- no startable placement: fall back to proportional, and if that too is impossible, say what is short
