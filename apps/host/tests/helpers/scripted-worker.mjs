@@ -15,6 +15,7 @@
  *                                   wider access, so the approval gate is exercised
  *   SCRIPT:plain <file> <text>      the same call without the escalation (no approval needed)
  *   SCRIPT:echo <text>              replies with <text>
+ *   SCRIPT:ask                      one ask_user_question call (the agent asking the person something)
  *   SCRIPT:envdump <file>           one shell call that writes the shell's environment to <file>
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
@@ -81,6 +82,11 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       return say(Array.from({ length: n }, (_, i) => `w${i} `));
     }
     if (name === 'echo') return say([args]);
+    if (name === 'ask') {
+      send({ role: 'assistant', content: '' });
+      send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }) } }] });
+      return finish('tool_calls', 20);
+    }
     if (name === 'tool' || name === 'plain' || name === 'envdump') {
       const [file, ...rest] = args.split(/\s+/);
       const shell = (body.tools ?? []).find(t => ['bash', 'pwsh'].includes(t.function?.name))?.function?.name ?? 'bash';

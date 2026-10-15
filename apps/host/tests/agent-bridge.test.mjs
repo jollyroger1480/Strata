@@ -283,3 +283,15 @@ test('a leftover agent from a host that died is stopped at the next start, and a
   await new Promise(x => setTimeout(x, 300));
   assert.equal(bystander.exitCode, null, 'an unrelated process is left alone');
 });
+
+test('a question the agent asks the person does not hang the turn: it is declared unanswerable and the model carries on', { skip }, async t => {
+  const r = await rig(t);
+  const { frames, promise } = r.run('chat-ask', 'SCRIPT:ask');
+  const result = await Promise.race([promise, new Promise(x => setTimeout(() => x('hung'), 30_000))]);
+  assert.notEqual(result, 'hung', 'the turn must not wait forever for an answerer that does not exist');
+  assert.equal(frames.at(-1).type, 'done');
+  const card = frames.filter(f => f.type === 'agent-tool').at(-1).tool;
+  assert.equal(card.name, 'ask_user_question');
+  assert.equal(card.state, 'error', 'the tool reports that no one could answer');
+  assert.match(text(frames), /Tool finished/, 'the model got the result back and finished');
+});

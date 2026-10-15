@@ -157,6 +157,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       const r = value.request ?? {};
       if (!r.callId) return;
       pending.set(`${value.agentId}:${r.callId}`, { eventId: value.eventId, sessionId: value.agentId, callId: r.callId, tool: r.toolName, reason: r.reason ?? null, at: Date.now(), clientId: runtime.clientId });
+    } else if (value.type === 'waterfall' && value.event === 'user-questions/request') {
+      // The app has no surface for the agent's own questions yet. Declaring that nobody can answer makes
+      // the tool return an error the model reads and carries on from, instead of a turn that waits forever.
+      void runtime.gw.answerEvent({ clientId: runtime.clientId, eventId: value.eventId, outcome: 'next' }).catch(() => {});
     } else if (value.type === 'cancel') {
       for (const [k, v] of pending) if (v.eventId === value.eventId) pending.delete(k);
     }
