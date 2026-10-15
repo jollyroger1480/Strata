@@ -778,7 +778,16 @@ print(r.choices[0].message.content)
   answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
   `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
-  Anthropic's `"thinking": {"budget_tokens": N}` still only chooses the level, as above.
+  Anthropic's `"thinking": {"budget_tokens": N}` chooses the level, as above, and since 0.1.45 is also the budget (a
+  `reasoning_budget_tokens` in the same request wins).
+- **max_tokens counts the thinking, so the answer keeps its room (0.1.45).** A client that caps the whole reply (the
+  desktop agent's harness sends `max_completion_tokens: 8192` on every request) and a task the model thinks long about
+  used to be cut off in the middle of the thinking, with no answer. Now a request with thinking on, no budget of its
+  own and `max_tokens` of 1,024 or more gets one: the thinking is wrapped up when only a quarter of the cap (at least
+  512 tokens) is left, and the model answers in that room (8,192: thinking up to 6,144, answer 2,048). Requests without
+  `max_tokens` (the rest of the context) get a budget of three quarters of it. `"answer_room": false` in
+  `strata-<model>.json` turns it off. Qwen recommends up to 262,144 tokens of reasoning and 131,072 of answer: a client
+  should not cap the reply far below what the context allows.
 - **A reply that ends inside its thinking (#1053, opt-in).** Some turns write a sentence of reasoning and then the
   end-of-turn token with no `</think>`: the content is empty and an agent stops. `"reasoning_close_retry": true` in
   `strata-<model>.json` closes the thinking once (as the thinking budget does) and continues, once per request, only for
