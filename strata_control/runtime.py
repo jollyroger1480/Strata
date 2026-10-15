@@ -380,6 +380,25 @@ def _start_candidate(name: str) -> tuple[dict, str]:
     return plan, digest
 
 
+def _engine_preflight(plan: dict) -> None:
+    """Refuse a start before any process exists when the run config names its engine as a component and the package for this
+    PC is missing or fails its integrity check (every file's SHA-256). The server checks again when it starts the engine; this
+    check makes the refusal the first thing the user sees, with the file named, instead of a log line behind 'server_exited'."""
+    try:
+        cfg = json.loads(Path(plan["source_config"]).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(cfg, dict):
+        return
+    from strata_control import engine_component
+    if not engine_component.is_reference(cfg.get("exe")):
+        return
+    try:
+        engine_component.expand(cfg["exe"], cfg)
+    except engine_component.EngineMissing as exc:
+        raise ProfileError(str(exc), exc.exit_code) from None
+
+
 def _check_start_candidate(name: str, expected_profile_revision: str | None,
                            expected_source_sha256: str | None) -> tuple[dict, str]:
     plan, digest = _start_candidate(name)
@@ -403,6 +422,7 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
             not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source digest must be 64 lowercase hex characters")
     plan, _ = _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
+    _engine_preflight(plan)
     _, _, log_path = _paths(name)
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     if hasattr(os, "O_NOFOLLOW"):

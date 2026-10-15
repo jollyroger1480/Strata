@@ -156,12 +156,13 @@ class ComponentStart(unittest.TestCase):
         body[100] ^= 0xFF                                       # same size; only the full hash sees it
         (folder / library).write_bytes(bytes(body))
         code, result = self._cli("runtime", "start", "--profile", "app", "--wait", "20", "--shutdown-timeout", "2")
-        self.assertNotEqual(code, 0)
+        self.assertEqual(code, 5, result)                      # the refusal is the first thing the user sees: no host, no server
+        self.assertFalse(result["ok"])
         self.assertFalse((self.root / "ran.txt").exists(), "a package with a changed library must not run")
-        log = self.root / "runtime" / "app.server.log"
-        text = (log.read_text(errors="replace") if log.exists() else "") + json.dumps(result)
-        self.assertIn("integrity check", text)
-        self.assertIn(library, text)
+        self.assertIn("integrity check", json.dumps(result))
+        self.assertIn(library, json.dumps(result))
+        self.assertIn("not started", json.dumps(result))
+        self.assertIsNone(runtime._read_state("app"), "no runtime host may exist after the refusal")
 
     def test_no_engine_is_a_notice_and_starts_nothing(self):
         code, result = self._cli("runtime", "start", "--profile", "app", "--wait", "20", "--shutdown-timeout", "2")
