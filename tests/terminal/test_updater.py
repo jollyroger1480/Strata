@@ -358,7 +358,8 @@ class EngineUpdate(UpdaterCase):
 
     def test_first_run_installs_the_engine_for_this_pc_without_a_model(self):
         self.publish(("0.1.46", fx.GOOD_ENGINE))
-        out = updater.run_update(self.ctx(run_config=None), control=False)
+        with mock.patch.object(updater, "discover_run_config", return_value=None):          # whatever this machine has installed
+            out = updater.run_update(self.ctx(run_config=None), control=False)
         result = out["results"][0]
         self.assertEqual((out["exit_code"], result["status"]), (0, "updated"), out)
         self.assertEqual(result["test_start"]["mode"], "binary-only")
