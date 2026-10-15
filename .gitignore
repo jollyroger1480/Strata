@@ -64,3 +64,17 @@ build-vision-cuda12.bat
 
 # local Windows HIP packaging output
 dist-hip/
+
+# Terminal / Desktop split: local venvs, build output and archives never enter git
+.terminal-venv/
+.terminal-test-venv/
+node_modules/
+*.dmg
+/release/artifacts/
+/apps/host/dist/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/resources/node/*
+!/apps/desktop/src-tauri/resources/node/.gitignore
+# screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
+/apps/host/docs/evidence/
+/apps/host/docs/checkpoints/
