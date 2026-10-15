@@ -113,6 +113,56 @@ class ComponentStart(unittest.TestCase):
             time.sleep(0.05)
         self.assertIsNone(runtime._read_state("app"))
 
+    def test_a_packaged_stub_engine_starts_and_a_changed_library_does_not(self):
+        """The package is made by packaging/package_engine.py (schema 2: archs, min_driver, build_id), the start hashes
+        every file: one flipped byte in a library the stub never loads still refuses the start, and no engine runs."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packaging"))
+        import package_engine
+        src = self.root / "stub-src"
+        src.mkdir()
+        (src / "engine_main.py").write_text(FAKE_ENGINE, encoding="utf-8")
+        if WINDOWS:
+            entry = "strata.cmd"
+            (src / entry).write_bytes(f'@echo off\r\n"{sys.executable}" "%~dp0engine_main.py" %*\r\n'.encode())
+            library = "cudart64_13.dll"
+        else:
+            entry = "strata"
+            (src / entry).write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/engine_main.py" "$@"\n')
+            library = "libcudart.so.13"
+        (src / library).write_bytes(b"a runtime library the stub never loads " * 200)
+        (src / "BUILD.json").write_text(json.dumps({"version": "0.1.45"}))
+        out = self.components / "engine"
+        out.mkdir()
+        folder = package_engine.build(src, "cuda", "0.1.45", components.host_platform(), out, entry=entry,
+                                      archs=("sm_86", "compute_89"), min_driver={"nvidia": "580.65"},
+                                      build_id="stub-1", variant="cuda13", include=["engine_main.py"])
+        patches = (mock.patch.object(ec, "cuda_archs_present", return_value=["sm_86"]),
+                   mock.patch.object(ec, "nvidia_driver_version", return_value="610.47"))
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        code, started = self._cli("runtime", "start", "--profile", "app", "--wait", "30", "--shutdown-timeout", "2")
+        log = self.root / "runtime" / "app.server.log"
+        self.assertEqual(code, 0, (started, log.read_text(errors="replace")[-1500:] if log.exists() else "no server log"))
+        self.assertEqual(started["state"], "ready")
+        self.assertEqual(Path((self.root / "ran.txt").read_text().splitlines()[0]).resolve(),
+                         (folder / "engine_main.py").resolve())
+        self.assertEqual(self._cli("runtime", "stop", "--profile", "app", "--wait", "20")[1]["state"], "stopped")
+        deadline = time.monotonic() + 5
+        while runtime._read_state("app") is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        (self.root / "ran.txt").unlink()
+        body = bytearray((folder / library).read_bytes())
+        body[100] ^= 0xFF                                       # same size; only the full hash sees it
+        (folder / library).write_bytes(bytes(body))
+        code, result = self._cli("runtime", "start", "--profile", "app", "--wait", "20", "--shutdown-timeout", "2")
+        self.assertNotEqual(code, 0)
+        self.assertFalse((self.root / "ran.txt").exists(), "a package with a changed library must not run")
+        log = self.root / "runtime" / "app.server.log"
+        text = (log.read_text(errors="replace") if log.exists() else "") + json.dumps(result)
+        self.assertIn("integrity check", text)
+        self.assertIn(library, text)
+
     def test_no_engine_is_a_notice_and_starts_nothing(self):
         code, result = self._cli("runtime", "start", "--profile", "app", "--wait", "20", "--shutdown-timeout", "2")
         self.assertNotEqual(code, 0)
