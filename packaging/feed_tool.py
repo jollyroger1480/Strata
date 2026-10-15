@@ -115,15 +115,27 @@ def _write_archive(files: list[tuple[str, Path]], archive: Path, fmt: str, entry
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             info.mtime = 0
+            if info.issym():                              # a Control bundle's Python has relative symlinks; engines have none
+                tar.addfile(info)
+                continue
             info.mode = _mode(path, rel, entrypoint)
             with path.open("rb") as stream:
                 tar.addfile(info, stream)
 
 
-def _tree(folder: Path) -> list[tuple[str, Path]]:
+def _tree(folder: Path, *, links: bool = False) -> list[tuple[str, Path]]:
+    """Regular files under `folder`; with `links` also the symbolic links, which must be relative and stay inside it."""
     found = []
+    root = folder.resolve()
     for path in sorted(folder.rglob("*")):
-        if path.is_file() and not path.is_symlink():
+        if path.is_symlink():
+            if not links:
+                continue
+            target = os.readlink(path)
+            if os.path.isabs(target) or not (path.parent / target).resolve().is_relative_to(root):
+                raise SystemExit(f"{path} is a symbolic link that leaves the package ({target}); a package may only link inside itself")
+            found.append((path.relative_to(folder).as_posix(), path))
+        elif path.is_file():
             found.append((path.relative_to(folder).as_posix(), path))
     return found
 
@@ -149,8 +161,8 @@ def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str
 def pack_control(folder: Path, out: Path, *, version: str, platform: str, fmt: str = "tar.gz",
                  entry_file: str = "strata.py", url_prefix: str = "control/") -> dict:
     folder = Path(folder)
-    files = _tree(folder)
-    installed = sum(p.stat().st_size for _, p in files)
+    files = _tree(folder, links=True)
+    installed = sum(p.stat().st_size for _, p in files if not p.is_symlink())
     name = f"strata-control-{version}-{platform}.{fmt}"
     archive = Path(out) / name
     _write_archive(files, archive, fmt, entry_file)

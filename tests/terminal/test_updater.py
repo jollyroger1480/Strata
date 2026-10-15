@@ -509,6 +509,49 @@ class OtherComponents(UpdaterCase):
         self.assertIsNone(updater.active_control(self.components))
         self.assertFalse((self.components / "control" / "0.1.46").exists())
 
+    @unittest.skipIf(WINDOWS, "symbolic links need no privilege only on POSIX")
+    def test_a_control_bundle_may_link_inside_itself_and_nowhere_else(self):
+        bundle = self.root / "control-links"
+        (bundle / "python" / "lib").mkdir(parents=True)
+        (bundle / "strata.py").write_text("print('strata 0.1.46 (stub)')\n")
+        (bundle / "python" / "lib" / "libpython3.12.so").write_bytes(b"lib")
+        os.symlink("libpython3.12.so", bundle / "python" / "lib" / "libpython3.so")
+        from feed_tool import build_feed, pack_control
+        (self.release / "control").mkdir()
+        entry = pack_control(bundle, self.release / "control", version="0.1.46", platform=PLATFORM)
+        build_feed(self.release, key=self.key, sequence=1, control_dir=self.release / "control")
+        out = updater.run_update(self.ctx(), engine=False, control=True)
+        self.assertEqual(out["results"][0]["status"], "updated", out)
+        link = self.components / "control" / "0.1.46" / "python" / "lib" / "libpython3.so"
+        self.assertTrue(link.is_symlink() and os.readlink(link) == "libpython3.12.so")
+        self.assertEqual(link.read_bytes(), b"lib")
+
+    @unittest.skipIf(WINDOWS, "symbolic links need no privilege only on POSIX")
+    def test_a_control_archive_with_a_link_out_of_the_package_is_refused(self):
+        import tarfile
+        from feed_tool import build_feed
+        (self.release / "control").mkdir()
+        archive = self.release / "control" / "evil.tar.gz"
+        good = self.root / "strata.py"
+        good.write_text("print('strata 0.1.46')\n")
+        for target in ("/etc/passwd", "../../outside", "a/../../../outside"):
+            with self.subTest(target=target):
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(good, arcname="strata.py")
+                    info = tarfile.TarInfo("python/evil")
+                    info.type, info.linkname = tarfile.SYMTYPE, target
+                    tar.addfile(info)
+                data = archive.read_bytes()
+                (self.release / "control" / "evil.entry.json").write_text(json.dumps({
+                    "version": "0.1.46", "platform": PLATFORM, "format": "tar.gz", "url": "control/evil.tar.gz", "size": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(), "installed_bytes": 100, "entry": "strata.py"}))
+                build_feed(self.release, key=self.key, sequence=self.sequence + 1, control_dir=self.release / "control")
+                self.sequence += 1
+                out = updater.run_update(self.ctx(), engine=False, control=True)
+                self.assertEqual(out["exit_code"], 5, out)
+                self.assertRegex(out["results"][0]["error"], "symbolic link")
+                self.assertIsNone(updater.active_control(self.components))
+
 
 class Cli(UpdaterCase):
     """`strata update`, `strata components update|rollback` against a feed in a folder, with the test key file the way the

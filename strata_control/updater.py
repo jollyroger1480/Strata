@@ -296,9 +296,52 @@ def _archive_size(archive: Path, fmt: str) -> int:
         return sum(m.size for m in tar.getmembers() if m.isfile())
 
 
-def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int) -> None:
+def _extract_with_links(archive: Path, destination: Path, fmt: str) -> None:
+    """Like `components.safe_extract`, but a relative symbolic link that stays inside `destination` is allowed. A Control bundle's
+    Python needs them (libpython, terminfo). Every name is checked before anything is written; hard links, devices, absolute
+    links and links that leave the folder are refused."""
+    mode = {"tar.gz": "r:gz", "tar.xz": "r:xz"}.get(fmt)
+    if mode is None:
+        raise components.ComponentError(f"links are only unpacked from tar archives, not {fmt}")
+    root = destination.resolve()
+    with tarfile.open(archive, mode) as tar:
+        members = tar.getmembers()
+        for m in members:
+            components._check_member_within(destination, m.name)
+            if m.isdir() or m.isfile():
+                continue
+            if not m.issym():
+                raise components.UnsafeArchive(f"the archive contains a member that is not a file or a symbolic link ({m.name!r})")
+            link = m.linkname.replace("\\", "/")
+            if not link or link.startswith("/") or re.match(r"^[A-Za-z]:", link):
+                raise components.UnsafeArchive(f"the archive has an absolute symbolic link ({m.name!r})")
+            resolved = (destination / m.name).parent.joinpath(link).resolve()
+            if resolved != root and root not in resolved.parents:
+                raise components.UnsafeArchive(f"the symbolic link {m.name!r} leaves the package")
+        destination.mkdir(parents=True, exist_ok=True)
+        links = []
+        for m in members:
+            target = components._check_member_within(destination, m.name)
+            if m.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif m.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = tar.extractfile(m)
+                with target.open("wb") as out:
+                    shutil.copyfileobj(source, out)
+                if m.mode & 0o111:
+                    target.chmod(0o755)
+            else:
+                links.append((target, m.linkname))
+        for target, linkname in links:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(linkname, target)
+
+
+def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int, *, allow_links: bool = False) -> None:
     """Unpack into a fresh folder. The archive's own total size must not exceed what the signed feed declared, so a package
-    cannot grow into a disk-filling bomb; names and links are checked by `components.safe_extract` before anything is written."""
+    cannot grow into a disk-filling bomb; names and links are checked by `components.safe_extract` before anything is written
+    (an engine package may not contain links; a Control bundle may contain relative links that stay inside it)."""
     try:
         total = _archive_size(archive, fmt)
     except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError) as exc:
@@ -308,7 +351,10 @@ def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int) ->
     if destination.exists():
         shutil.rmtree(destination, ignore_errors=True)
     try:
-        components.safe_extract(archive, destination, fmt=fmt)
+        if allow_links:
+            _extract_with_links(archive, destination, fmt)
+        else:
+            components.safe_extract(archive, destination, fmt=fmt)
     except components.ComponentError as exc:
         shutil.rmtree(destination, ignore_errors=True)
         raise UpdateError(f"the archive was refused: {exc}", 5) from None
@@ -830,7 +876,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     stage = updates_dir(root) / "staging" / ("control-" + uuid.uuid4().hex[:8])
     try:
         ctx.say("verify", f"Unpacking Control {pkg.version}", component="control")
-        extract(archive, stage, pkg.format, pkg.installed_bytes)
+        extract(archive, stage, pkg.format, pkg.installed_bytes, allow_links=pkg.format != "zip")
         entry = stage / pkg.entry
         if not entry.is_file():
             raise UpdateError(f"the Control package has no {pkg.entry}", 5)
