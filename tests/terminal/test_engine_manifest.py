@@ -198,6 +198,15 @@ class Start(unittest.TestCase):
         with self.assertRaises(ec.EngineIntegrityError):
             self.start()
 
+    def test_two_builds_of_one_version_prefer_the_newer_driver_when_both_fit(self):
+        other = make_source(self.root / "src3")
+        old = package_engine.build(other, "cuda", "0.1.45", HERE, self.out, archs=("sm_86",),
+                                   min_driver={"nvidia": "575.51"}, build_id="b-12", variant="cuda12")
+        self.assertEqual(old.name, f"0.1.45-{HERE}-cuda-cuda12")
+        self.assertEqual(ec.read_manifest(old).variant, "cuda12")
+        self.assertEqual(Path(self.start(driver="610.0")).parent.resolve(), self.folder.resolve())    # 580.65 build wins
+        self.assertEqual(Path(self.start(driver="576.0")).parent.resolve(), old.resolve())            # only the CUDA 12 one fits
+
     def test_a_good_package_does_not_hide_a_tampered_one(self):
         newer = package_engine.build(make_source(self.root / "src2"), "cuda", "0.1.46", HERE, self.out,
                                      archs=("sm_86",), build_id="b2")

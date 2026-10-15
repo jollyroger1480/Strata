@@ -82,7 +82,8 @@ def select(src: Path, entrypoint: str, *, tree: bool, include: list[str]) -> lis
 
 def build(src: Path, backend: str, version: str, target: str, out: Path, *, entry: str | None = None,
           archs: tuple[str, ...] = (), min_driver: dict | None = None, build_id: str | None = None,
-          min_runtime: str | None = None, notes: str = "", tree: bool = False, include: list[str] | None = None) -> Path:
+          min_runtime: str | None = None, notes: str = "", tree: bool = False, include: list[str] | None = None,
+          variant: str = "") -> Path:
     if backend not in BACKEND_MATRIX:
         raise SystemExit(f"unknown backend {backend!r}")
     if backend != "cpu" and not archs:
@@ -90,7 +91,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
     entrypoint = entry or ("strata.exe" if target.startswith("windows") else "strata")
     if not (src / entrypoint).is_file():
         raise SystemExit(f"{src / entrypoint} does not exist")
-    folder = out / f"{version}-{target}-{backend}"
+    folder = out / (f"{version}-{target}-{backend}" + (f"-{variant}" if variant else ""))
     if folder.exists():
         raise SystemExit(f"{folder} already exists; remove it first (packages are immutable)")
     staging = out / f".{folder.name}.partial"
@@ -108,6 +109,8 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
                     "version": version, "platform": target, "backend": backend, "archs": list(archs),
                     "min_driver": dict(min_driver or {}), "build_id": build_id or git_build_id(),
                     "entrypoint": entrypoint, "files": files, "signature": None}
+        if variant:
+            manifest["variant"] = variant
         if min_runtime:
             manifest["min_runtime"] = min_runtime
         if notes:
@@ -141,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="sm_86 (code for that card), compute_89 (PTX), gfx1201, ...; repeat for several")
     ap.add_argument("--min-driver", action="append", default=[], metavar="VENDOR=VERSION",
                     help="the oldest driver, e.g. nvidia=580.65; repeat for several vendors")
+    ap.add_argument("--variant", default="", help="tag when one backend has several builds (cuda13, cuda12); goes in the folder name")
     ap.add_argument("--build-id", default=None, help="default: the source commit of this checkout")
     ap.add_argument("--min-runtime", default=None)
     ap.add_argument("--notes", default="")
@@ -168,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     folder = build(a.src, a.backend, a.version, a.platform or host_platform(), a.out, entry=a.entrypoint,
                    archs=tuple(a.arch), min_driver=drivers, build_id=a.build_id, min_runtime=a.min_runtime,
-                   notes=a.notes, tree=a.tree, include=a.include)
+                   notes=a.notes, tree=a.tree, include=a.include, variant=a.variant)
     entries = [p for p in folder.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in entries)
     print(f"{folder}  ({total / (1 << 20):.1f} MiB, {len(entries)} files, manifest sha256 {package_sha256(folder)})")

@@ -123,6 +123,7 @@ class EngineComponent:
     notes: str = ""
     min_driver: dict = field(default_factory=dict)       # {"nvidia": "580.65"}: the oldest driver the build runs on
     build_id: str = ""                                    # which engine build this is (source commit + toolkit)
+    variant: str = ""                                     # optional tag when one backend has several builds (cuda13, cuda12)
     signature: dict | None = None                         # S6: {"alg", "key_id", "value"} over signing_payload()
     raw: dict = field(default_factory=dict, repr=False)   # the manifest as read, for the signature check
 
@@ -138,7 +139,7 @@ class EngineComponent:
         return {"id": self.id, "version": self.version, "platform": self.platform, "backend": self.backend,
                 "entrypoint": self.entrypoint, "exe": str(self.exe), "root": str(self.root),
                 "min_runtime": self.min_runtime, "archs": list(self.archs), "min_driver": dict(self.min_driver),
-                "build_id": self.build_id, "signed": bool(self.signature), "file_count": len(self.files), "bytes": sum(item[2] for item in self.files)}
+                "build_id": self.build_id, "variant": self.variant, "signed": bool(self.signature), "file_count": len(self.files), "bytes": sum(item[2] for item in self.files)}
 
 
 # ----------------------------------------------------------------------------------------------- where
@@ -233,7 +234,8 @@ def read_manifest(folder: Path) -> EngineComponent:
         id=data["id"], version=data["version"], platform=data["platform"], backend=data["backend"],
         entrypoint=entry, files=tuple(parsed), root=folder, min_runtime=data.get("min_runtime"),
         archs=tuple(archs), notes=str(data.get("notes") or ""), min_driver=dict(driver),
-        build_id=str(data.get("build_id") or ""), signature=signature, raw=data)
+        build_id=str(data.get("build_id") or ""), variant=str(data.get("variant") or ""), signature=signature,
+        raw=data)
 
 
 # ----------------------------------------------------------------------------------------------- signature (S6)
@@ -497,7 +499,8 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         if broken and len(broken) == len(reasons):       # every package that fits this PC failed its integrity check
             raise EngineIntegrityError("; ".join(broken), base, problems=problems)
         raise EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems)
-    return max(usable, key=lambda item: _version_key(item.version))
+    # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
+    return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0"))))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the

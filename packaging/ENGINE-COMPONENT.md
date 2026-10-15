@@ -6,7 +6,7 @@ Metal. Control (`strata_control/engine_component.py`) reads it, checks it, and o
 
 ## Folder
 
-    <components>/engine/<version>-<platform>-<backend>/
+    <components>/engine/<version>-<platform>-<backend>[-<variant>]/
         engine-component.json
         strata | strata.exe              the entrypoint
         lib*.so* | *.dll | *.dylib       the GPU runtime libraries it loads from beside itself
@@ -28,6 +28,7 @@ A package folder is immutable: a new build is a new folder.
 | `archs` | list of strings | what the build contains. CUDA: `sm_86` (machine code for that card), `compute_89` (PTX, runs on that generation or newer). HIP: `gfx1201`. SYCL and Metal: a descriptive tag (`intel-arc`, `apple-gpu`). Required for every non-`cpu` backend. Enforced for CUDA against `nvidia-smi` compute capability; recorded for the others |
 | `min_driver` | `{vendor: version}` | the oldest driver the build runs on, e.g. `{"nvidia": "580.65"}`. Enforced for NVIDIA where `nvidia-smi` answers; an unreadable driver is not a refusal |
 | `build_id` | string | which engine build this is: source commit and toolkit, e.g. `be885026f96a-cuda13.0`. Required |
+| `variant` | string, optional | tag when one backend has several builds on a platform (`cuda13`, `cuda12`); goes in the folder name. With equal versions the build that needs the newer driver is preferred (CUDA 13 over CUDA 12) when both fit the card |
 | `min_runtime` | string, optional | the oldest Control that may start it |
 | `entrypoint` | string | relative path of the binary; must be in `files` |
 | `files` | list | `{path, sha256, bytes}` for **every** file of the package except the manifest; paths are plain relative POSIX paths that stay inside the folder; no duplicates |
@@ -80,7 +81,7 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
 
     python packaging/package_engine.py --src <build folder> --backend cuda --version 0.1.45 \
         --out <components>/engine --arch sm_86 --arch compute_89 --min-driver nvidia=580.65 \
-        [--build-id <id>] [--platform linux-x86_64] [--include 'rocm/**' --include strata-vision.exe | --tree]
+        [--build-id <id>] [--variant cuda13] [--platform linux-x86_64] [--include 'rocm/**' --include strata-vision.exe | --tree]
     python packaging/package_engine.py --verify <package folder>       # full hash check
 
 Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `BUILD.json` and `LICENSE*`. The build id
