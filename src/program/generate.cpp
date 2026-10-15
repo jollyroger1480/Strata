@@ -4048,7 +4048,15 @@ int main(int argc, char** argv) {
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
             cudaGetLastError();
-            const double speed = std::max(1.0, (double) sms * (double) khz / 1e6);   // SMs x GHz
+            double speed = std::max(1.0, (double) sms * (double) khz / 1e6);   // SMs x GHz
+            // STRATA_SPLIT_SPEED_SCALE="1,0.55": each stage's speed times this factor (a test seam: an unequal pair, e.g. the
+            // 4060 Ti + 3060 of #2644, on two equal cards); unset = nothing changes.
+            if (const char* sc = std::getenv("STRATA_SPLIT_SPEED_SCALE"); sc != nullptr && *sc) {
+                const char* p = sc;
+                for (int k = 0; k < i && p != nullptr; ++k) { p = std::strchr(p, ','); if (p) ++p; }
+                const double f = p != nullptr ? std::atof(p) : 0.0;
+                if (f > 0.0) speed = std::max(1.0, speed * f);
+            }
             layer_ms[(size_t) i] = 0.33 * (84.0 * 2.617) / speed;
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d %d SMs at %.2f GHz -> %.2f ms per layer, "
                                  "%.2f GiB free before its session carve\n", dev, sms, khz / 1e6, layer_ms[(size_t) i],
