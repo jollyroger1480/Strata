@@ -3,6 +3,7 @@ import { createCloudflare } from './cloudflare.mjs';
 import { createConnectorInstaller } from './cloudflared-install.mjs';
 import { openArtifact } from './artifacts.mjs';
 import { saveSnapshot } from './snapshot.mjs';
+import { chooseFolder, typedFolder, TYPE_A_PATH } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { migrateSetup } from './setup.mjs';
@@ -22,7 +23,7 @@ import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirS
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, extname, join, normalize, resolve } from 'node:path';
+import { basename, extname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hardware from './hardware.mjs';
@@ -1240,11 +1241,12 @@ async function api(req, res, path, method, url) {
      looks like a skill, copy it into the workspace's skills directory. */
   if (path === '/api/skills/add' && method === 'POST') {
     try {
-      const { stdout } = await execFileAsync('osascript', [
-        '-e',
-        'POSIX path of (choose folder with prompt "Choose a skill folder (it should contain SKILL.md)")',
-      ]);
-      const chosen = stdout.trim().replace(/\/$/, '');
+      // The dialog is the normal path; a typed `path` in the body stands in where none exists.
+      const typed = await typedFolder((await readBody(req)).path, { isAbsolute });
+      const picked = typed ? { path: typed } : await chooseFolder('Choose a skill folder (it should contain SKILL.md)');
+      if (picked.unavailable) return error(res, 501, `${TYPE_A_PATH} ${picked.reason}`);
+      if (picked.cancelled) return json(res, 200, { cancelled: true });
+      const chosen = picked.path;
       const base = basename(chosen);
       const mdPath = join(chosen, 'SKILL.md');
       if (!existsSync(mdPath)) {
@@ -1257,22 +1259,21 @@ async function api(req, res, path, method, url) {
       mkdirSync(join(WORKSPACE, 'skills'), { recursive: true });
       cpSync(chosen, dest, { recursive: true });
       return json(res, 200, { added: base });
-    } catch {
-      // Dismissing the dialog is an exit code, not a failure.
-      return json(res, 200, { cancelled: true });
+    } catch (e) {
+      // Dismissing the dialog is { cancelled: true } above; anything thrown here is a real problem.
+      return error(res, 400, e.message);
     }
   }
 
   if (path === '/api/workspaces/pick' && method === 'POST') {
     try {
-      const { stdout } = await execFileAsync('osascript', [
-        '-e',
-        'POSIX path of (choose folder with prompt "Choose a folder for Strata")',
-      ]);
-      return json(res, 200, { path: stdout.trim().replace(/\/$/, '') });
-    } catch {
-      // Dismissing the dialog is an exit code, not a failure.
-      return json(res, 200, { cancelled: true });
+      const typed = await typedFolder((await readBody(req)).path, { isAbsolute });
+      const picked = typed ? { path: typed } : await chooseFolder('Choose a folder for Strata');
+      if (picked.unavailable) return error(res, 501, `${TYPE_A_PATH} ${picked.reason}`);
+      if (picked.cancelled) return json(res, 200, { cancelled: true });
+      return json(res, 200, { path: picked.path });
+    } catch (e) {
+      return error(res, 400, e.message);
     }
   }
 
