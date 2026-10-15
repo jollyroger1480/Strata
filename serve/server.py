@@ -1835,6 +1835,7 @@ class StrataEngine:
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
+    TURN_ID = 248045        # <|im_start|>: the engine's default --turn-token (its turn checkpoint sits at the last one)
 
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
@@ -1844,18 +1845,30 @@ class StrataEngine:
         if not free:
             return None
         gs = getattr(self, "slot_gs", 0)
-        if gs:
-            # pipelined groups: the engine keeps no pipelined slot as a conversation cache, so nothing is worth keeping
-            # free for a next turn.  A group's window spans its slots up to its last busy one, so first fill a hole
-            # below a busy slot of the same group (it costs no extra row), then follow the spreading order
+        if gs > 1:
+            # pipelined groups of several slots: the engine keeps no idle slot below a busy one as a conversation cache
+            # (its pad row writes the slot), so nothing is worth keeping free for a next turn.  A group's window spans
+            # its slots up to its last busy one, so first fill a hole below a busy slot of the same group (it costs no
+            # extra row), then follow the spreading order
             # (reported on #793: least-recently-used picks left leading holes, [_ B], that cost a whole row each)
             def fills_hole(b):
                 g0 = b - b % gs
                 return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
             return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
         def held_prefix(b):
+            # what of `prompt` the slot's cache serves: the slot's whole held stream (the prompt and what it decoded)
+            # when this prompt continues it, else its turn checkpoint - the engine takes one at the last <|im_start|> of
+            # a prompt (the next request of the chat renders the history again, but not the reply it decoded or the
+            # assistant header), so a prompt that agrees with the held tokens up to there is that chat's next turn
+            # too (#2518: it was only found by the engine's own source search, after pick_slot had sent it to another
+            # slot and the request in that slot had overwritten the chat whose cache the next one needed)
             h = self.slot_held[b]
-            return len(h) if h and len(h) < len(prompt) and prompt[:len(h)] == h else 0
+            if not h:
+                return 0
+            if len(h) < len(prompt) and prompt[:len(h)] == h:
+                return len(h)
+            k = len(h) - 1 - h[::-1].index(self.TURN_ID) if self.TURN_ID in h else 0
+            return k if 0 < k < len(prompt) and prompt[:k] == h[:k] else 0
         best = max(free, key=held_prefix)
         # without --batch-groups a held prefix of any length is taken, as before
         if held_prefix(best) >= (self.SLOT_PREFIX_MIN if self.slot_groups > 1 else 1):
