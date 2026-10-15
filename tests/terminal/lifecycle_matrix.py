@@ -321,10 +321,8 @@ def finish(rig: Rig, name: str, idents, *, expect_graceful: bool | None, note: s
     if not rig.lease_free():
         problems.append("lease still held")
     marks = rig.marks()
-    if expect_graceful is True and not ({"quit", "eof"} & set(marks)):
+    if expect_graceful is True and not rig.real and not ({"quit", "eof"} & set(marks)):
         problems.append(f"engine was not asked to quit (marks {marks})")
-    if expect_graceful is True and rig.real is False and "quit" not in marks and "eof" not in marks:
-        problems.append("no graceful stop seen")
     if vram and vram_before is not None:
         deadline = time.monotonic() + 30
         used = vram_used_mib()
@@ -355,6 +353,8 @@ def serve_case(rig: Rig, name: str, action, *, graceful: bool | None, vram: bool
         out["seconds"] = round(time.monotonic() - t0, 1)
         text = (rig.root / "serve.log").read_text(errors="replace") if (rig.root / "serve.log").exists() else ""
         out["stopped"] = "[strata] stopped" in text
+        if graceful is True and not out["stopped"]:
+            out["problems"].append("the server did not print its clean-stop line"); out["ok"] = False
         return out
     finally:
         if proc.poll() is None:
@@ -407,7 +407,7 @@ def busy_sigterm(rig, proc):
 
     def ask():
         try:
-            body = json.dumps({"model": "fake", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 200,
+            body = json.dumps({"model": "fake", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4000 if rig.real else 200,
                                "stream": True}).encode()
             req = urllib.request.Request(f"http://127.0.0.1:{rig.port}/v1/chat/completions", data=body,
                                          headers={"content-type": "application/json"})
@@ -418,8 +418,10 @@ def busy_sigterm(rig, proc):
     threading.Thread(target=ask, daemon=True).start()
     started.wait(5)
     deadline = time.monotonic() + 10
-    while "busy" not in rig.marks() and time.monotonic() < deadline:
+    while not rig.real and "busy" not in rig.marks() and time.monotonic() < deadline:
         time.sleep(0.1)
+    if rig.real:
+        time.sleep(4)                               # the real engine is reading the prompt / generating by now
     (sigterm if not WINDOWS else win_ctrl_break)(rig, proc)
 
 
