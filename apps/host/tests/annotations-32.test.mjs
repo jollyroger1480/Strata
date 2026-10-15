@@ -8,7 +8,7 @@ import { parseCpuTopology, parseWindowsProcessors, parseNvidiaDevices, parseNvid
 import { CONTEXT_TOKENS, expertParams } from '../server/catalog.mjs';
 import { buildArgs } from '../server/supervisor.mjs';
 async function loadTs(path) {
- const result=await build({entryPoints:[new URL(path,import.meta.url).pathname],bundle:true,write:false,platform:'node',format:'esm'}); const code=result.outputFiles[0].text;
+ const result=await build({entryPoints:[new URL(path,import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'}); const code=result.outputFiles[0].text;
  return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 }
 const {usageDashboard,calendarDays}=await loadTs('../src/lib/usage-dashboard.ts');

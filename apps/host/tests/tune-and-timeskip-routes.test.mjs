@@ -20,8 +20,8 @@ import { mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const HOST = new URL('../server/index.mjs', import.meta.url).pathname;
-const REPO = new URL('../../..', import.meta.url).pathname;
+const HOST = new URL('../server/index.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
+const REPO = new URL('../../..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

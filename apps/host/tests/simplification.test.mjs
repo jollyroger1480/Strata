@@ -36,7 +36,7 @@ test('shared lifecycle policy blocks queued, active, disconnected and unknown st
 test('blocked lifecycle writes do not change config; save-only still works', async () => {
   const { build } = await import('esbuild');
   const { createRequire } = await import('node:module');
-  const { outputFiles } = await build({entryPoints:[new URL('../src/lib/store.ts',import.meta.url).pathname],bundle:true,write:false,platform:'node',format:'cjs'});
+  const { outputFiles } = await build({entryPoints:[new URL('../src/lib/store.ts',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'cjs'});
   const mod={exports:{}}; new Function('require','module','exports','matchMedia',outputFiles[0].text)(createRequire(import.meta.url),mod,mod.exports,()=>({addEventListener(){},matches:false}));
   const store=mod.exports; const originalFetch=globalThis.fetch; const requests=[];
   globalThis.fetch=async (url, options) => {requests.push([url,options]); return new Response(JSON.stringify({expert:[],beginner:{contextLength:'recommended'},engine:{running:false}}),{status:200});};

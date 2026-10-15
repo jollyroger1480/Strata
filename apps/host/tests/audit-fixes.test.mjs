@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-async function moduleAt(path) { const result=await build({entryPoints:[new URL(path,import.meta.url).pathname],bundle:true,write:false,platform:'node',format:'esm'}); const code=result.outputFiles[0].text; return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`); }
+async function moduleAt(path) { const result=await build({entryPoints:[new URL(path,import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'}); const code=result.outputFiles[0].text; return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`); }
 const {formatModelName,userError}=await moduleAt('../src/lib/format.ts');
 const {versionFit,recommendedVersion}=await moduleAt('../src/lib/model-versions.ts');
 const {memoryReading}=await moduleAt('../src/lib/hardware-summary.ts');

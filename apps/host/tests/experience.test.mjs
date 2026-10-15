@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-const result=await build({entryPoints:[new URL('../src/lib/experience.ts',import.meta.url).pathname],bundle:true,write:false,platform:'node',format:'esm'});
+const result=await build({entryPoints:[new URL('../src/lib/experience.ts',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'});
 const code=result.outputFiles[0].text;
 const { estimate, recommend, configKey, hardwareKey, groupVariants, DEFAULT_EXECUTION: config } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const hw = { cpu: { model: 'Fixture CPU' }, gpus: [{ name: 'Fixture GPU' }], memory: { totalGb: 32 }, accelerator: { unified: true, backend: 'metal', usableVramGb: 24 } };
