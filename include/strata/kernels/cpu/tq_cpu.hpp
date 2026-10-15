@@ -39,9 +39,9 @@ int tq_kbits(int ggml_type) noexcept;
 TqIsa tq_isa();
 /// Whether this CPU can run `isa` at all (scalar: always).
 bool tq_isa_ok(TqIsa isa);
-/// Whether the engine's native expert rows take these kernels for the trellis types: on an AVX2 or AVX-512 CPU
-/// unless STRATA_NO_TQ_KERNELS=1; the scalar kernel only when STRATA_TQ_ISA=scalar asks for it (otherwise a CPU
-/// without AVX2 keeps ggml-cpu's vec_dot, compiled for the build's floor).
+/// Whether the engine's native expert rows take these kernels for the trellis types: on every CPU unless
+/// STRATA_NO_TQ_KERNELS=1 (AVX-512 or AVX2 where the CPU has them, else the scalar kernel: a ggml from upstream has
+/// no trellis vec_dot to fall back to, and the AVX code is only reached behind tq_isa_ok).
 bool tq_kernels_enabled();
 const char* tq_isa_name(TqIsa isa);
 

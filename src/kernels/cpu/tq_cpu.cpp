@@ -108,7 +108,9 @@ TqIsa tq_isa() {
 bool tq_kernels_enabled() {
     static const bool on = [] {
         if (const char* e = std::getenv("STRATA_NO_TQ_KERNELS"); e != nullptr && std::atoi(e) != 0) return false;
-        return tq_isa() != TqIsa::scalar || env_isa_cap() == 0;
+        // Every CPU runs them: the scalar kernel (baseline x86-64) where there is no AVX2.  A ggml built from upstream
+        // has no vec_dot for the trellis types to fall back to, so a CPU without AVX2 must not be sent there.
+        return true;
     }();
     return on;
 }
