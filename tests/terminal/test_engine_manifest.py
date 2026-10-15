@@ -16,6 +16,7 @@ from strata_control import components, engine_component as ec
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))
+import collect_libs  # noqa: E402
 import package_engine  # noqa: E402
 
 WINDOWS = os.name == "nt"
@@ -143,6 +144,27 @@ class Manifest(unittest.TestCase):
         (folder / LIB).write_bytes(b"x" * (folder / LIB).stat().st_size)
         with contextlib.redirect_stdout(out):
             self.assertEqual(package_engine.main(["--verify", str(folder)]), 1)
+
+
+class CollectLibs(unittest.TestCase):
+    def test_kernel_data_is_filtered_by_arch_and_shared_tables_stay(self):
+        want = "gfx1200,gfx1201"
+        self.assertTrue(collect_libs.arch_wanted("Kernels.so-000-gfx1201.hsaco", want))
+        self.assertTrue(collect_libs.arch_wanted("hipblasltTransform.hsaco", want))
+        self.assertFalse(collect_libs.arch_wanted("TensileLibrary_x_gfx1100.co", want))
+        self.assertTrue(collect_libs.arch_wanted("anything_gfx1100.co", ""))
+
+    def test_elf_check_and_system_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib, text = Path(d) / "libx.so", Path(d) / "gdb.py"
+            lib.write_bytes(collect_libs.ELF_MAGIC + b"rest")
+            text.write_text("print(1)")
+            self.assertTrue(collect_libs.is_elf(lib))
+            self.assertFalse(collect_libs.is_elf(text))
+        self.assertTrue(collect_libs.is_system("/lib/x86_64-linux-gnu/libc.so.6"))
+        self.assertFalse(collect_libs.is_system("/usr/local/cuda/lib64/libcudart.so.13"))
+        self.assertTrue(collect_libs.is_driver("libcuda.so.1"))
+        self.assertFalse(collect_libs.is_driver("libcublas.so.13"))
 
 
 class Arch(unittest.TestCase):
