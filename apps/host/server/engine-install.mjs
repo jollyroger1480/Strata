@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { exec } from './util.mjs';
 import { HOME } from './store.mjs';
+import { tarBinary } from './platform-paths.mjs';
 import { nowIso } from './util.mjs';
 
 const ENGINE_DIR = join(HOME, 'engine');
@@ -153,7 +154,7 @@ export async function install({ force = false } = {}) {
       state.stage = 'Unpacking the engine';
       emit();
 
-      await exec('/usr/bin/tar', ['-xf', archive, '-C', ENGINE_DIR], { timeout: 180_000 });
+      await exec(tarBinary(), ['-xf', archive, '-C', ENGINE_DIR], { timeout: 180_000 });
       rmSync(archive, { force: true });
 
       const binary = findInstalledBinary();

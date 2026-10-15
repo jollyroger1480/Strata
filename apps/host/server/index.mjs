@@ -10,6 +10,7 @@ import { createTaskService, validateTask } from './tasks.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
 import { systemFonts } from './fonts.mjs';
+import { tuningDir } from './platform-paths.mjs';
 /**
  * Strata engine host.
  *
@@ -574,8 +575,7 @@ const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
  */
 function createTuning({ repoRoot, python, pythonArgs = [], env = process.env } = {}) {
   const cli = join(repoRoot, 'strata.py');
-  const stateDir = () => env.STRATA_TUNE_DIR
-    || join(env.XDG_STATE_HOME || join(env.HOME || '.', '.local', 'state'), 'strata', 'tuning');
+  const stateDir = () => tuningDir(env);
 
   function runCli(args) {
     return new Promise((resolve) => {

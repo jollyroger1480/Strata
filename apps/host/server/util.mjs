@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { whichCommand } from './platform-paths.mjs';
 
 export const exec = promisify(execFile);
 export const uid = (prefix = 'id') => `${prefix}_${randomUUID().slice(0, 8)}`;
@@ -50,9 +51,11 @@ export async function probe(cmd, args = [], timeout = 4000) {
   }
 }
 
-export async function which(binary) {
-  const out = await probe('/usr/bin/env', ['which', binary]);
-  return out || null;
+/** Where `binary` is on PATH, or null. `/usr/bin/env which` on POSIX, System32\where.exe on Windows (first match). */
+export async function which(binary, { env = process.env, platform = process.platform, run = probe } = {}) {
+  const { command, args } = whichCommand(binary, env, platform);
+  const out = await run(command, args);
+  return out.split(/\r?\n/)[0].trim() || null;
 }
 
 /** Minimal SSE hub. */

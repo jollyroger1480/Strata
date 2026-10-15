@@ -37,7 +37,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, private_files, profiles, readiness, winproc
+from strata_control import owner_transport, paths, private_files, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
@@ -102,10 +102,8 @@ def runtime_dir() -> Path:
     override = os.environ.get("STRATA_RUNTIME_DIR")
     if override:
         base = Path(override).expanduser()
-    elif WINDOWS:
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Strata" / "runtime"
     else:
-        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "strata" / "runtime"
+        base = paths.state_base() / "runtime"
     if not base.is_absolute():
         raise ProfileError("STRATA_RUNTIME_DIR must be absolute")
     existed = base.exists()

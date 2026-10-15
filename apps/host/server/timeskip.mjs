@@ -20,12 +20,11 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { timeSkipDir } from './platform-paths.mjs';
 
 /** Where runs are recorded. Mirrors the CLI's own default resolution. */
 function stateDir(env = process.env) {
-  if (env.STRATA_TIMESKIP_DIR) return env.STRATA_TIMESKIP_DIR;
-  const base = env.XDG_STATE_HOME || join(env.HOME || '.', '.local', 'state');
-  return join(base, 'strata', 'time-skip');
+  return timeSkipDir(env);
 }
 
 function readRun(root, id) {

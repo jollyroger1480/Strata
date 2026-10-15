@@ -305,7 +305,7 @@ def parser() -> argparse.ArgumentParser:
                              "a fabricated improvement.")
     ts_run.add_argument("--state-dir", default=None,
                         help="where runs are recorded (default: $STRATA_TIMESKIP_DIR or "
-                             "$XDG_STATE_HOME/strata/time-skip)")
+                             "$XDG_STATE_HOME/strata/time-skip, %%LOCALAPPDATA%%\\Strata\\time-skip on Windows)")
     ts_run.add_argument("--output", choices=("human", "json"), default="human")
 
     ts_status = timeskip_sp.add_parser("status", help="read a run's durable state and evidence")
@@ -1131,8 +1131,8 @@ def _timeskip(a: argparse.Namespace) -> int:
         env = os.environ.get("STRATA_TIMESKIP_DIR")
         if env:
             return Path(env)
-        base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-        return Path(base) / "strata" / "time-skip"
+        from strata_control.paths import state_base
+        return state_base() / "time-skip"
 
     store = time_skip.TimeSkipStore(state_root())
 
@@ -1287,8 +1287,8 @@ def _tune(a: argparse.Namespace) -> int:
         env = os.environ.get("STRATA_TUNE_DIR")
         if env:
             return Path(env)
-        base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-        return Path(base) / "strata" / "tuning"
+        from strata_control.paths import state_base
+        return state_base() / "tuning"
 
     if a.tune_command == "list":
         root = state_root()
