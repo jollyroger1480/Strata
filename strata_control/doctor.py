@@ -30,7 +30,7 @@ def _location(raw: str, cfg: dict, config_path: Path) -> Path:
     from strata_control import engine_component
     if engine_component.is_reference(raw):
         try:
-            return Path(engine_component.expand(raw, cfg))
+            return Path(engine_component.expand(raw, cfg, full=False))
         except engine_component.EngineMissing:
             return engine_component.engine_dir() / "(no engine for this PC)"     # reported as missing
     value = Path(raw).expanduser()

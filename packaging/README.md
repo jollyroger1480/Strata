@@ -90,14 +90,16 @@ Terminal) attaches to the same instance.
 (`%LOCALAPPDATA%\Strata\components`, `$XDG_DATA_HOME/strata/components`, or `STRATA_COMPONENTS_DIR`):
 
     components/engine/<version>-<platform>-<backend>/
-        engine-component.json     schema_version, id "strata-engine", version, platform, backend, entrypoint,
-                                  cuda_archs (optional), min_runtime (optional), files [{path, sha256, bytes}]
+        engine-component.json     schema 2: id/name "strata-engine", version, platform, backend, archs, min_driver,
+                                  build_id, min_runtime (optional), entrypoint, files [{path, sha256, bytes}],
+                                  signature (null until S6); full table and the checks in ENGINE-COMPONENT.md
         strata[.exe]  *.dll | *.so   the binary and the GPU runtime libraries beside it
 
 A run config names it as `"exe": "component:strata-engine"`; at start `strata_control/engine_component.py` picks the package
 for this PC (platform, then the backend its GPU needs: nvidia-smi / rocminfo / sycl-ls, or `STRATA_ENGINE_BACKEND`; CUDA
-architectures and `min_runtime` are checked; the newest version wins), checks every file's size and the entrypoint's
-SHA-256 (`strata components engine --full` hashes everything) and puts the package folder first on the library path.
+architectures, `min_driver` and `min_runtime` are checked; the newest version wins), checks every file's size and
+SHA-256 (a start hashes the whole package; a mismatch is `EngineIntegrityError` and nothing starts) and puts the package
+folder first on the library path.
 Nothing matching is `EngineMissing`: exit 5, "No engine for this PC was found in ... The app never downloads an engine
 while it starts or serves", and no fetch. `packaging/package_engine.py` makes a local package from a build folder.
 
