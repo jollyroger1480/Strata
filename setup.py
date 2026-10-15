@@ -71,6 +71,7 @@ HF_REVISIONS = {
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
+    "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
 }
 
 
@@ -244,6 +245,18 @@ NVFP4_REPOS = {
 # the first release engine with NVFP4 experts (a source build of this checkout has them whatever its number says)
 NVFP4_ENGINE = (0, 1, 44)
 
+# agentionai's Gyro files (Qwen3.8-Flash-Next with trellis-coded, Hadamard-rotated experts, TQ2_T / TQK6 / TQK7): one
+# GGUF per size, the n-gram table inside it (hence the 58 / 92 GB downloads for 27.6 / 35 GB of memory).  The engine
+# reads them from 0.1.46 on (ported from agentionai/Strata rc2, MIT); the sizes and SHA-256 are the Hub's LFS pointers
+# of the revision pinned in HF_REVISIONS.  The model's license is Qwen's.
+GYRO_ENGINE = (0, 1, 46)
+GYRO_FILES = {
+    "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf":
+        (58487015808, "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87"),
+    "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf":
+        (91965774272, "7aa36d15131d255179ab6c87fa9c9f81a0b541fc9e81e959d4c3e29eb20feb5f"),
+}
+
 MODELS = {
     # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
     # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
@@ -298,6 +311,17 @@ MODELS = {
     # (the HIP and SYCL engines have no NVFP4 kernels).  Images: both packs keep Qwen's vision tower unquantized, so the
     # original's image encoder (ISTA's mmproj, the same file as for every Flash-Next model) reads pictures for them;
     # checked end to end on an RTX 5070 and an RTX 3060 against IQ3_XXS's answers on the same picture.
+    # Gyro (agentionai): "ram_gb" is the memory the weights need in total, VRAM and RAM together ("mem_total"): Gyro-S
+    # 27.6 GB, Gyro-M 35 GB (the rest of the download is the n-gram table, read from the SSD).  Neither is anyone's
+    # default: setup and the MCP server mention them where the other sizes do not fit.  No images yet (untested).
+    "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
+                        "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
+               "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
+               "file": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": False},
+    "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
+                        "about 20% slower than Q2_0 on 12 GB cards",
+               "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
+               "file": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": False},
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
                        "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
@@ -420,6 +444,16 @@ FAMILIES = {
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS}},
     # MODEL-UPDATE Phase 4: the original model with NVFP4 experts, as ready-made packs (NVFP4_REPOS): the files come
     # as the engine reads them (no GGUF to pack), each size has its own repository ("repo" in MODELS)
+    # agentionai's Gyro quantizations (see GYRO_FILES): after the regular families, never the default
+    "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "by": "Gyro quantizations by agentionai",
+             "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest sizes, for PCs with little memory; "
+                      "58 and 92 GB downloads (the files include the n-gram table)",
+             "hf": hf("agentionai/Qwen3.8-Flash-Next-Gyro-GGUF"), "file": "Qwen3.8-Flash-Next-{q}.gguf", "shards": 1,
+             "tag": "gyro-", "name": "qwen3.8-flash-next-gyro", "vision": False, "pack_args": ["--compat-bf16"],
+             "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"), "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+             "sha256": GYRO_FILES,
+             "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's; the Gyro files are agentionai's quantization): "
+                        "https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF"},
     "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "by": "NVFP4 packs by sergqwer (strata-nvfp4)",
               "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, ~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True,
@@ -2290,14 +2324,20 @@ STRIX_HALO_MIN_GB = 80         # UD-IQ4_XS keeps all of its experts in memory fr
 RECOMMENDED_SIZES = {"qwen": ("IQ3_S",), "swift": ("IQ3_S",), "unsloth": ("UD-Q4_K_XL", "UD-IQ4_XS")}   # owner's pick, 0.1.44
 
 
-def recommended_size(family: str, names: list, ram: float) -> str:
+def mem_have(model: str, ram: float, vram: float = 0.0) -> float:
+    """The memory this PC offers a model, in the unit of its MODELS "ram_gb": RAM, or for a "mem_total" model (Gyro) the
+    VRAM and the RAM together."""
+    return ram + vram if MODELS[model].get("mem_total") else ram
+
+
+def recommended_size(family: str, names: list, ram: float, vram: float = 0.0) -> str:
     """The size the menu pre-selects (and --yes takes): the family's recommended size when this PC's RAM fits it
     (UD-Q4_K_XL before UD-IQ4_XS), else the largest size that fits, else the first.  Recommend, never force: every
     other size stays a choice."""
     for m in RECOMMENDED_SIZES.get(family, ()):
-        if m in names and ram >= MODELS[m]["ram_gb"]:
+        if m in names and mem_have(m, ram, vram) >= MODELS[m]["ram_gb"]:
             return m
-    fitting = [m for m in names if ram >= MODELS[m]["ram_gb"]]
+    fitting = [m for m in names if mem_have(m, ram, vram) >= MODELS[m]["ram_gb"]]
     if fitting:
         return max(fitting, key=lambda m: MODELS[m]["download_gb"])
     return "UD-IQ4_XS" if family == "unsloth" and "UD-IQ4_XS" in names else names[0]
@@ -2378,6 +2418,9 @@ def family_menu_note(family: str, hip: bool, gpu, avx2: bool = True, avx512: boo
                 "expert in RAM" + (f"; {cpu}" if cpu else "") + "]")
     if family == "unsloth" and hip:
         return "   [UD-IQ4_XS is the 4-bit choice on AMD and Intel cards; NVFP4 runs on NVIDIA only]"
+    if family == "gyro":
+        return ("   [for PCs with little memory: VRAM + RAM together 27.6 GB (Gyro-S) or 35 GB (Gyro-M)"
+                + ("; AMD is experimental, not for Intel Arc" if hip else "") + "]")
     return ""
 
 
@@ -6351,7 +6394,7 @@ def main() -> int:
              + ": Strata will run, but most experts stay on the CPU and it will be slow")
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
-    need = min(d["ram_gb"] for d in MODELS.values())
+    need = min(d["ram_gb"] for d in MODELS.values() if not d.get("mem_total"))   # Gyro counts VRAM + RAM: not a RAM floor
     low_ok = low_ram_fits("IQ1_M", ram, low_ram_vram(gpu)) and a.low_ram != "off"   # the smallest model, mapped
     if ram < need - 4 and not a.check and not low_ok:
         # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
@@ -6397,7 +6440,10 @@ def main() -> int:
         say()
         any_fits = False
         for m, d in MODELS.items():
-            verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+            have_gb = mem_have(m, ram, gpu["vram_gb"])
+            verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
+            if d.get("mem_total"):          # Gyro: VRAM + RAM together; the rest of the download is read from the SSD
+                verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
             if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
                 verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
             elif d.get("budget"):
@@ -6416,8 +6462,8 @@ def main() -> int:
             if hip and d.get("repo"):                  # the ready-made NVFP4 packs: no AMD kernels at all
                 verdict = "NVIDIA only (the AMD engine has no NVFP4 kernels)"
             else:
-                any_fits = any_fits or not verdict.startswith("does not fit")
-            say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
+                any_fits = any_fits or (not verdict.startswith("does not fit") and not d.get("mem_total"))
+            say(f"  {m:8s} needs ~{d['ram_gb']} GB {'of VRAM + RAM' if d.get('mem_total') else 'RAM'}: {verdict}")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.
@@ -6474,6 +6520,13 @@ def main() -> int:
     for i, m in enumerate(names, 1):
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        if d.get("mem_total"):             # Gyro: the download includes the n-gram table, the memory figure does not
+            have_gb = mem_have(m, ram, gpu["vram_gb"])
+            fit = "" if have_gb >= d["ram_gb"] else \
+                f"   <- needs {d['ram_gb']} GB of VRAM + RAM together, you have {have_gb:.0f}"
+            say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
+                f"(the n-gram table is in the file), memory {d['ram_gb']} GB{fit}")
+            continue
         if d.get("budget"):
             keeps = (f"~{resident_budget_gib(m, ram)} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
                      else "all")
@@ -6484,7 +6537,7 @@ def main() -> int:
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = str(names.index(installed or recommended_size(family, names, ram)) + 1)
+    rec = str(names.index(installed or recommended_size(family, names, ram, gpu["vram_gb"])) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
     in_budget = bool(MODELS[model].get("budget")) and unsloth_budget(model, ram, gpu, a.resident_budget_gib)
@@ -6538,7 +6591,12 @@ def main() -> int:
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one
     # before RESIDENT_SPLIT_ENGINE, #642)
-    if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
+    if MODELS[model].get("mem_total"):
+        if mem_have(model, ram, gpu["vram_gb"]) < MODELS[model]["ram_gb"]:   # recommend, never force: a warning
+            warn(f"{model} needs {MODELS[model]['ram_gb']} GB of VRAM and RAM together; this PC has "
+                 f"{mem_have(model, ram, gpu['vram_gb']):.0f} GB ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM): it "
+                 "may be slow, run out of memory or not start")
+    elif not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
@@ -6749,17 +6807,18 @@ def main() -> int:
     # ---- 4. the engine
     step(4, "the Strata engine")
     llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
-    if ready and meta.get("source") != "local" and \
+    if (ready or family == "gyro") and meta.get("source") != "local" and \
             tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit()) < MODELS[model]["engine"]:
-        # a ready-made engine from before NVFP4 cannot read these experts: one compiled from this source can
-        warn(f"the ready-made engine {meta.get('version')} has no NVFP4 experts yet: compiling the engine from this source")
+        # a ready-made engine from before NVFP4 / Gyro cannot read these experts: one compiled from this source can
+        warn(f"the ready-made engine {meta.get('version')} has no {'NVFP4' if ready else 'Gyro'} experts yet: compiling "
+             "the engine from this source")
         eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
         meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
     engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
     # checked before the 94-188 GB download
-    if MODELS[model].get("budget") and engine_ver < need_engine:
+    if (MODELS[model].get("budget") or family == "gyro") and engine_ver < need_engine:
         fail(f"{model} needs engine {'.'.join(map(str, need_engine))} or newer; this one is {meta.get('version')}",
              "update Strata (or compile the engine with --build) and run setup again")
     ok(f"engine: {eng / EXE}")

@@ -33,7 +33,7 @@ MAX_IMPORT_SHARDS = 128
 SHARD = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z", re.I)
 SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "qwen/IQ3_S",
                                    "swift/IQ2_XS", "swift/IQ3_XXS", "coder/IQ1_M",
-                                   "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL"})
+                                   "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "gyro/Gyro-S", "gyro/Gyro-M"})
 
 
 def settings_path() -> Path:
