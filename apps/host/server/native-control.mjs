@@ -6,7 +6,7 @@ import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { NATIVE_FIELDS, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv } from './native-settings.mjs';
-import { resourceSettings } from './native-resources.mjs';
+import { resourceSettings, saferStart } from './native-resources.mjs';
 import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
 import { runtimeVision } from './native-vision.mjs';
@@ -153,14 +153,21 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
   const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
-  let proc=null,started=null;
+  let proc=null,started=null,retried=null;
   if(packaged){
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   started=control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300}));
+   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300}));};
+   started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
-   try{await started;}catch(error){const said=humanStartError(error);instance.status='error';instance.error=said;emit();throw new Error(said);}
+   try{await started;}catch(error){const said=humanStartError(error);
+    /* A start that died gets ONE automatic second try with a safer memory setting (never saved, never repeated), unless the caller says no. */
+    const safer=args.retrySafer===false||job.state!=='running'?null:saferStart(cfg,snapshot.hardware,modelArena(args.model),said);
+    if(!safer){instance.status='error';instance.error=said;emit();throw new Error(said);}
+    retried=safer;append(id,`The first start stopped (${said}). Starting once more: ${safer.detail}`);job.summary=safer.words;job.details=[said,`Second try: ${safer.detail}`];instance.notice=safer.words;emit();
+    try{await startWith(safer.config);append(id,'Strata Control reports the engine is ready (second try).');}
+    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=`${said2} (after one automatic second try with a safer setting: ${safer.detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
@@ -169,7 +176,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
-   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();return {summary:`${instance.label} is ready.`,instanceId:id};}}catch{}
+   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}
