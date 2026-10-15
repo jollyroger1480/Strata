@@ -2568,5 +2568,12 @@
   "s2567": "Comprueba que el motor esté conectado y este modelo esté instalado. Después, inténtalo de nuevo.",
   "s2568": "Ejecutado",
   "s2569": "No se permite en este modo. No se ejecutó nada.",
-  "s2570": "Repetir vista previa"
+  "s2570": "Repetir vista previa",
+  "s2571": "Qué puede hacer esta tarea",
+  "s2572": "Solo mirar, no cambiar nada",
+  "s2573": "Detenerse y avisarme antes de cambiar algo",
+  "s2574": "Puede hacer cambios",
+  "s2575": "Tarea terminada",
+  "s2576": "La tarea necesita tu visto bueno",
+  "s2577": "La tarea falló"
 }

@@ -2568,5 +2568,12 @@
   "s2567": "Verifique se o mecanismo está conectado e este modelo está instalado. Depois, tente novamente.",
   "s2568": "Executado",
   "s2569": "Não permitido neste modo. Nada foi executado.",
-  "s2570": "Repetir prévia"
+  "s2570": "Repetir prévia",
+  "s2571": "O que esta tarefa pode fazer",
+  "s2572": "Só olhar, sem alterar nada",
+  "s2573": "Parar e avisar antes de alterar algo",
+  "s2574": "Pode fazer alterações",
+  "s2575": "Tarefa concluída",
+  "s2576": "A tarefa precisa do seu sim",
+  "s2577": "A tarefa falhou"
 }

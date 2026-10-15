@@ -2568,5 +2568,12 @@
   "s2567": "Check that the engine is connected and this model is installed, then try again.",
   "s2568": "Ran",
   "s2569": "Not allowed in this mode. Nothing ran.",
-  "s2570": "Replay preview"
+  "s2570": "Replay preview",
+  "s2571": "What this task may do",
+  "s2572": "Look only, change nothing",
+  "s2573": "Stop and tell me before changing anything",
+  "s2574": "Allowed to make changes",
+  "s2575": "Task finished",
+  "s2576": "Task needs your yes",
+  "s2577": "Task failed"
 }

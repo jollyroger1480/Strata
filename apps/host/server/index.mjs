@@ -7,6 +7,7 @@ import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, typedFolder, TYPE_A_PATH } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
+import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
 import { systemFonts } from './fonts.mjs';
@@ -705,10 +706,21 @@ const timeskip = createTimeSkip({
   env: { ...process.env, STRATA_TIMESKIP_DIR: process.env.STRATA_TIMESKIP_DIR ?? '' },
 });
 
+const runAgentTask = createAgentTaskRunner({
+  agent, workspace: WORKSPACE,
+  // The loaded local model. (STRATA_TASK_REMOTE_MODEL="<connection id>:<model id>" lets a developer or an API-only setup name a saved API model instead.)
+  choice: () => {
+    try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { /* no local model is ready */ }
+    const [connectionId, ...rest] = String(process.env.STRATA_TASK_REMOTE_MODEL ?? '').split(':');
+    return connectionId && rest.length ? { connectionId, modelId: rest.join(':') } : null;
+  },
+});
 const tasks = createTaskService({
   read: () => store.get().tasks ?? [],
   write: records => store.update({ tasks: records }),
+  notify: task => hub.send('task', { id: task.id, title: task.title, status: task.status, attention: task.attention ?? null, error: task.error ?? null }),
   run: async (task, signal) => {
+    if (agent.status().state !== 'unavailable') { const agentResult = await runAgentTask(task, signal); if (agentResult) return agentResult; }
     let text = '', failure = null, demo = !models.REAL;
     await runTurn({ message: task.prompt, signal, client: `Task: ${task.title}`, onFrame: frame => {
       if (frame.type === 'delta') text += frame.text ?? '';
