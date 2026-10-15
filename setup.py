@@ -58,6 +58,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from strata_control import acquisition
+
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
@@ -111,7 +113,7 @@ def ms_endpoint() -> str:
 def reachable(url: str, timeout: float = 5.0) -> bool:
     """Whether `url` answers a HEAD request with success (2xx, after redirects) within `timeout` seconds."""
     try:
-        urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"}),
+        _urlopen(urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"}),
                                timeout=timeout).close()
         return True
     except OSError:                                    # HTTPError too: an error page is not the file
@@ -154,7 +156,7 @@ def ms_meta(repo: str, path: str):
     if repo not in _ms_files:
         try:
             api = f"{ms_endpoint()}/api/v1/models/{repo}/repo/files?Recursive=true"
-            with urllib.request.urlopen(urllib.request.Request(api, headers={"User-Agent": "strata-setup"}),
+            with _urlopen(urllib.request.Request(api, headers={"User-Agent": "strata-setup"}),
                                         timeout=60) as r:
                 files = json.loads(r.read())["Data"]["Files"]
             _ms_files[repo] = {f["Path"]: (int(f.get("Size") or 0), (f.get("Sha256") or "").lower()) for f in files}
@@ -536,7 +538,16 @@ def ask(question, choices, default, yes):
         say(f"  please answer one of: {', '.join(choices)}")
 
 
+def _urlopen(req, timeout=None):
+    """Every network request of this file goes through here: starting and serving never reach the network
+    (strata_control/acquisition.py), only an explicit setup, update or install does."""
+    acquisition.require("a download")
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def run(cmd, cwd=None, env=None, check=True, quiet=False):
+    """An install, build or preparation step (pip, cmake, a package manager, tools/*.py): never part of a start."""
+    acquisition.require("an install or build step (" + Path(str(cmd[0])).name + ")")
     say("  > " + " ".join(str(c) for c in cmd))
     r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env,
                        stdout=subprocess.PIPE if quiet else None, stderr=subprocess.STDOUT if quiet else None,
@@ -1629,6 +1640,7 @@ def download(url, dst: Path, what=None):
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
         return
+    acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
         if not src.exists():
@@ -1649,7 +1661,7 @@ def download(url, dst: Path, what=None):
     for attempt in range(5):
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
-            total = int(urllib.request.urlopen(req, timeout=60).headers.get("Content-Length", 0))
+            total = int(_urlopen(req, timeout=60).headers.get("Content-Length", 0))
             break
         except urllib.error.HTTPError as e:
             if e.code == 404 and hf_unpinned(url) != url:  # #214: the pinned revision is gone from the repository
@@ -1676,7 +1688,7 @@ def download(url, dst: Path, what=None):
             break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
-            with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
+            with _urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
                 if have and r.status != 206:                     # the server ignored the range: start over
                     f.seek(0)
                     f.truncate()
@@ -2081,6 +2093,7 @@ def pip_install(packages, what):
     if not need:
         ok(f"{what} already installed")
         return
+    acquisition.require(what)
     say(f"  Installing {what} ...")
     run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *need])
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
@@ -2200,7 +2213,7 @@ def rocm_wanted(index, listing=None):
         if listing is None:
             try:
                 req = urllib.request.Request(index.rstrip("/") + "/rocm/", headers={"User-Agent": "strata-setup"})
-                with urllib.request.urlopen(req, timeout=30) as r:
+                with _urlopen(req, timeout=30) as r:
                     listing = r.read().decode("utf-8", "replace")
             except (OSError, ValueError):
                 listing = ""
@@ -2843,6 +2856,7 @@ def hip_card(eng: Path, gpu: dict, listed: list[dict]) -> dict:
 def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
     """The ready-made Windows HIP engine (WIN_HIP_ASSET) in engine/, kept between runs; None when it cannot be had
     (not published for this version, no internet) or has no code for the card."""
+    acquisition.require("the ready-made AMD engine")
     eng = ROOT / "engine"
     info = eng / "BUILD.json"
     if info.exists() and (eng / EXE).exists():
@@ -2865,7 +2879,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
             break
         try:
             req = urllib.request.Request(base + WIN_HIP_ASSET, method="HEAD", headers={"User-Agent": "strata-setup"})
-            urllib.request.urlopen(req, timeout=60).close()
+            _urlopen(req, timeout=60).close()
             break
         except OSError as e:
             if i + 1 < len(bases):
@@ -3028,6 +3042,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`).
     gpu["archs"]: every architecture it needs code for (the cards of a layer split), else gpu["arch"].  vision "cpu"
     (#304): the image encoder too, for the CPU (there is no HIP encoder build yet)."""
+    acquisition.require("an engine build")
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
@@ -3359,7 +3374,7 @@ def engine_digest(asset: str, base: str) -> tuple[int, str] | None:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "strata-setup",
                                                    "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with _urlopen(req, timeout=60) as r:
             rel = json.loads(r.read().decode("utf-8"))
     except Exception:
         return None                     # offline, rate-limited, or the release is not there
@@ -3546,6 +3561,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
     """The ready-made engine in engine/ (kept between runs), or None when there is none for this PC.
     updating: called to replace an installed engine, which starts instead when this fails (no compile).
     toolkit 12: the experimental CUDA 12 engine (CUDA12_ASSET) in engine-cuda12/."""
+    acquisition.require("the ready-made engine")
     eng = engine_dir(toolkit)
     asset = CUDA12_ASSET if int(toolkit) == 12 else PREBUILT_ASSET
     info = eng / "BUILD.json"
@@ -3576,7 +3592,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             break
         try:                                           # not published (yet), or no internet: compile instead
             req = urllib.request.Request(base + asset, method="HEAD", headers={"User-Agent": "strata-setup"})
-            urllib.request.urlopen(req, timeout=60).close()
+            _urlopen(req, timeout=60).close()
             break
         except OSError as e:
             if i + 1 < len(bases):                     # #214: this checkout's release is not published (yet)
@@ -3656,6 +3672,33 @@ def update_engine_gpu(toolkit=13):
         pool = [g for g in pool if int(g["arch"]) >= CUDA13_MIN_ARCH] or pool
     g = max(pool, key=lambda x: (round(x["vram_gb"]), -x["index"]))
     return {**g, "count": len(found)}
+
+
+def engine_update_note() -> None:
+    """A start looks at the installed engine(s) and says when UPDATE would replace one; it changes nothing and reaches
+    no network (the engine that is installed starts as it is).  update_installed_engine, below, is what UPDATE.bat /
+    update.sh and a setup run do."""
+    for toolkit in (13, 12):
+        eng = engine_dir(toolkit)
+        info = eng / "BUILD.json"
+        if not info.exists() or not (eng / EXE).exists():
+            continue
+        try:
+            meta = json.loads(info.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
+        need = WIN_HIP_MIN_ENGINE if (meta.get("backend") == "hip" and WIN) else MIN_ENGINE
+        if meta.get("source") == "local":
+            old = meta.get("src") != source_hash(ENGINE_SOURCES) or stale_binary(eng / EXE)
+        elif meta.get("backend") == "hip" and not WIN:
+            old = meta.get("src") != source_hash(ENGINE_SOURCES) or stale_binary(eng / EXE)
+        else:
+            old = ver < need
+        if old:
+            warn(f"the installed engine ({meta.get('version') or 'unknown version'}) is older than this Strata expects: "
+                 "starting it as it is. Starting never updates anything; run "
+                 + ("UPDATE.bat" if WIN else "./update.sh") + " (or `strata install --update`) to update it")
 
 
 def update_installed_engine(url_base, toolkit=None) -> None:
@@ -3751,6 +3794,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
 
 def pip_cuda_libs(toolkit=13) -> None:
     """NVIDIA's cuBLAS and CUDA runtime for a ready-made engine, from pip: CUDA 13's, or the CUDA 12 engine's."""
+    acquisition.require("NVIDIA's CUDA libraries (pip)")
     if int(toolkit) == 12:
         pip_install(CUDA12_WHEELS, "NVIDIA CUDA 12 libraries for the experimental engine (cuBLAS, CUDA runtime; ~0.7 GB)")
     else:
@@ -3800,6 +3844,7 @@ def cuda_apt_repo(osr):
 
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
+    acquisition.require("the compiler and CUDA toolkit")
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
     # #295: Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_60/sm_70; gpu["toolkit"] = 12: the
     # experimental CUDA 12 engine for any cards (--cuda 12, docs/OLDER_GPUS.md)
@@ -3886,6 +3931,7 @@ def install_build_tools(gpu, yes):
 
 
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
+    acquisition.require("a compile (cmake)")
     # The ready-made engine path never calls this function. Keep build helpers out of
     # the normal serving environment, and use already installed tools offline.
     build_packages = requirement_lines(BUILD_REQUIREMENTS) if BUILD_REQUIREMENTS.exists() else BUILD_PACKAGES
@@ -3988,6 +4034,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
     toolkit 12 (default: 12 for a card older than CUDA 13 supports): the experimental CUDA 12 engine, in
     engine-cuda12/ with its own build folders."""
+    acquisition.require("an engine build")
     if toolkit is None:
         toolkit = 12 if min(int(x) for x in gpu.get("archs", [gpu["arch"]])) < CUDA13_MIN_ARCH else 13
     t12 = int(toolkit) == 12
@@ -4470,6 +4517,15 @@ def data_folder(requested: str | None) -> tuple:
     return dest, elsewhere
 
 
+def data_folder_in_place() -> tuple:
+    """(the data folder, []) for a start: where settings.json says the model files are, or the default place.  Reads
+    the settings and nothing else: no folder is created, nothing is moved or copied, no setting is saved.  The run
+    configs name their model files, so an install made by an earlier Strata starts from where it is."""
+    settings = load_settings()
+    dest = Path(settings["data_dir"]) if settings.get("data_dir") else ROOT.parent / "Strata-data"
+    return dest, []
+
+
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
     a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
@@ -4946,6 +5002,14 @@ def settings_summary(cfg: dict, port=None) -> str:
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
+    """Start the model.  Nothing is installed, downloaded or compiled while it starts (strata_control/acquisition.py):
+    what is missing is named with the command that installs it (SETUP / UPDATE / strata install)."""
+    with acquisition.forbidden():
+        return _start(cfg_path, port, gpu, open_browser, yes, layer_split, keep)
+
+
+def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
+           layer_split=None, keep=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
     --vram-reserve-mib)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
@@ -5400,6 +5464,8 @@ def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     missing = [g for g in cards if not (engine_runs_on(g) if tk == 13 else engine_runs_on(g, tk))]
     if not missing:
         return cfg
+    acquisition.require("an engine with code for " + ", ".join(f"{g['name']} (sm_{g['arch']})" for g in missing),
+                        ("START-HERE.bat --setup" if WIN else "./setup.sh --setup") + " (it compiles the engine for these cards)")
     eng = engine_dir(tk)
     info = eng / "BUILD.json"
     meta = json.loads(info.read_text(encoding="utf-8"))
@@ -5436,7 +5502,10 @@ def engine_lib_dirs(eng: Path, toolkit=13) -> list:
 def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """A model on the CUDA 13 engine now has a Pascal / Volta card (a --gpus at start): the model's config moves to
     the experimental CUDA 12 engine (one engine per model; its other models keep theirs)."""
+    acquisition.require("the experimental CUDA 12 engine")
     old = min(int(g["arch"]) for g in cards)
+    acquisition.require("the experimental CUDA 12 engine for sm_%d" % old,
+                        ("START-HERE.bat --setup --cuda 12" if WIN else "./setup.sh --setup --cuda 12"))
     say()
     warn(f"sm_{old} is older than CUDA 13 supports (it dropped Pascal and Volta): this model moves to the experimental "
          "CUDA 12 engine (docs/OLDER_GPUS.md; START-HERE.bat --setup --cuda 13 and newer cards only moves it back)")
@@ -6076,7 +6145,14 @@ def main() -> int:
         else:
             ap.error(f"--gpu takes a GPU number as nvidia-smi numbers them, e.g. --gpu 1 (or --gpus 0,2), not {a.gpu!r}")
     say("Strata - Qwen3.8-Flash-Next on a normal PC (a GPU + system RAM + CPU)")
-    data, elsewhere = data_folder(a.data_dir)          # the model files: in the data folder, found from any copy
+    have = installed_configs()
+    # A plain start of an installed model finds everything where it already is: it creates, moves and copies nothing
+    # (the model paths are in the run config; the data folder is the one settings.json remembers).  Setting up, checking,
+    # tuning and updating look for and gather the model files (data_folder).
+    plain_start = bool(have) and not (a.setup or a.model or a.family or a.check or a.no_start or a.update
+                                      or a.calibrate or a.rollback_engine or a.data_dir)
+    models_dir_given = a.models_dir is not None
+    data, elsewhere = data_folder_in_place() if plain_start else data_folder(a.data_dir)   # the model files
     roots = [data, *elsewhere]
     if a.models_dir is None:
         a.models_dir = str(data / "models")
@@ -6085,7 +6161,6 @@ def main() -> int:
         return rollback_engine(12 if a.cuda == "12" else 13)
 
     # ---- 0. already installed: just start it
-    have = installed_configs()
     if a.update:                                       # #475: UPDATE.bat / update.sh - never starts the model
         return update_install(have, a)
     explicit = a.setup or a.model or a.family or a.check or a.no_start
@@ -6131,8 +6206,7 @@ def main() -> int:
             fail(f"--calibrate: {a.model or a.family} is not installed (installed: {names})",
                  "calibrate an installed model, or set this one up first without --calibrate")
         have = targets
-        if not a.build:
-            update_installed_engine(a.prebuilt)
+        engine_update_note()
         pick_cfg = have[0]
         if len(have) > 1:
             say()
@@ -6147,8 +6221,7 @@ def main() -> int:
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
-        if not a.build:
-            update_installed_engine(a.prebuilt)
+        engine_update_note()
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
@@ -6162,6 +6235,10 @@ def main() -> int:
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+        data, elsewhere = data_folder(a.data_dir)      # "install another model": now the model files are gathered
+        roots = [data, *elsewhere]
+        if not models_dir_given:
+            a.models_dir = str(data / "models")
 
     # ---- 1. the PC
     step(1, "checking your PC")
@@ -7094,6 +7171,9 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except acquisition.AcquisitionRefused as e:         # a start that would have installed something: said, not done
+        say(f"\n  [X]  {e}")
+        sys.exit(e.exit_code)
     except KeyboardInterrupt:
         say("\nstopped.")
         sys.exit(1)

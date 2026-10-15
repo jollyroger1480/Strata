@@ -16,6 +16,8 @@ from pathlib import Path
 
 from strata_control import profiles
 
+ROOT = Path(__file__).resolve().parents[1]
+
 #: Backend families, as the engine package manifest records them. Kept here so the argument parsers
 #: stay declarative without importing the tuning module on every CLI start.
 BACKENDS = ("metal", "cuda", "hip", "sycl", "cpu")
@@ -146,6 +148,13 @@ def parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--out", metavar="REPORT.json", help="new report path for --measure")
     calibrate.add_argument("--exclusive", action="store_true", help="assert all model instances using these devices are stopped")
     calibrate.add_argument("--output", choices=("human", "json"), default="human")
+    install = sp.add_parser(
+        "install",
+        help="the explicit installer: engine, models, Python packages (starting and serving never do this)")
+    install.add_argument("--update", action="store_true",
+                         help="update an existing install (what UPDATE.bat / update.sh run) instead of setting one up")
+    install.add_argument("setup_args", nargs=argparse.REMAINDER,
+                         help="options passed to setup.py, e.g. --family qwen --model Q2_0 --yes")
     runtime = sp.add_parser("runtime", help="manage an owned local Strata server instance")
     runtime_sp = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_start = runtime_sp.add_parser("start", help="start a saved profile under the local owner host")
@@ -1644,10 +1653,26 @@ def _components_backends(a: argparse.Namespace) -> int:
     return 0
 
 
+def _install(a: argparse.Namespace) -> int:
+    """The one place the terminal acquires anything: it hands over to the installer (setup.py) of a full Strata
+    folder, which is where pip, the engine and the models are fetched. A folder without it (the terminal archive)
+    says so and names what to do instead."""
+    installer = Path(os.environ.get("STRATA_INSTALL_DIR") or ROOT) / "setup.py"
+    if not installer.is_file():
+        return _error("this folder has no installer (setup.py). Engines, models and updates are installed from a "
+                      "full Strata folder with SETUP.bat / ./setup.sh and UPDATE.bat / ./update.sh; "
+                      "set STRATA_INSTALL_DIR to that folder to run it from here", 5)
+    extra = [x for x in a.setup_args if x != "--"]
+    return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
+                           cwd=str(installer.parent))
+
+
 def _run(a: argparse.Namespace) -> int:
     try:
         if a.command == "serve":
             return _serve(a)
+        if a.command == "install":
+            return _install(a)
         if a.command == "profile":
             return _profile_command(a)
         if a.command == "components" and a.components_command == "plan":
