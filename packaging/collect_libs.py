@@ -53,6 +53,24 @@ def arch_wanted(name: str, wanted: str) -> bool:
     return not named or bool(named & {w.strip().lower() for w in wanted.split(",") if w.strip()})
 
 
+ELF_MAGIC = bytes([0x7F]) + b"ELF"
+
+
+def is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            return stream.read(4) == ELF_MAGIC
+    except OSError:
+        return False
+
+
+def soname(path: Path) -> str | None:
+    """The library's own name (DT_SONAME), which is the name its users ask the loader for."""
+    done = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True)
+    match = re.search(r"\(SONAME\)\s+Library soname: \[([^\]]+)\]", done.stdout)
+    return match.group(1) if match else None
+
+
 def dependencies(binary: Path, search: list[str]) -> tuple[dict[str, str], list[str]]:
     """{soname: resolved path} and the sonames ldd could not find."""
     env = dict(os.environ)
@@ -111,21 +129,24 @@ def main(argv=None) -> int:
         if not hits:
             print(f"WARNING: --also {pattern!r} matched nothing in {a.search}", file=sys.stderr)
         for hit in hits:
-            if hit.name in copied or not hit.is_file():
+            if not hit.is_file() or not is_elf(hit):
                 continue
             real = hit.resolve()
             if str(real) in copied.values():          # libX.so -> libX.so.1 -> libX.so.1.2.3: one file, one name (the soname)
                 continue
-            shutil.copy2(real, a.out / hit.name)
-            copied[hit.name] = str(real)
-            for name, path in dependencies(a.out / hit.name, a.search)[0].items():
-                if is_driver(name) or name in copied:
+            name = soname(real) or hit.name
+            if name in copied:
+                continue
+            shutil.copy2(real, a.out / name)
+            copied[name] = str(real)
+            for dep, path in dependencies(a.out / name, a.search)[0].items():
+                if is_driver(dep) or dep in copied:
                     continue
                 if is_system(path):
-                    system.add(name)
+                    system.add(dep)
                 else:
-                    shutil.copy2(Path(path).resolve(), a.out / name)
-                    copied[name] = str(Path(path).resolve())
+                    shutil.copy2(Path(path).resolve(), a.out / dep)
+                    copied[dep] = str(Path(path).resolve())
     for spec in a.data:
         src, _, dest = spec.partition("=")
         if not dest:
