@@ -115,6 +115,7 @@ class Procs(unittest.TestCase):
     def test_an_engine_orphan_of_this_executable_is_found_and_a_live_one_is_not(self):
         # an "engine": this interpreter running --serve; its starter is gone after the middle process exits
         code = ("import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)','--serve'],"
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
                 "creationflags=%d); print(p.pid, flush=True)" % NO_WINDOW)
         middle = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
         orphan_pid = int(middle.stdout.split()[0])
