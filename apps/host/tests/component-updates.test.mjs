@@ -188,7 +188,7 @@ function fixture({ withApp = false, update } = {}) {
     check: async () => ({ available: true, version: '0.2.0' }),
     install: async ({ onProgress }) => { calls.push(['app-install']); onProgress({ downloaded: 50, total: 100 }); return { state: 'done' }; },
   } : null;
-  const native = createNativeControl({ control, appUpdater, directory: data, spawnProcess: (...args) => { spawned.push(args); throw new Error('no process may be started by the host in packaged mode'); }, fetcher: async () => Response.json({}), requests: () => [] });
+  const native = createNativeControl({ control, appUpdater, directory: data, spawnProcess: (...args) => { if (!args[1]?.some(a => String(a).endsWith('strata_mcp.py'))) spawned.push(args); throw new Error('no process but the installer tool (Control strata_mcp.py, absent in this fixture) may be started by the host in packaged mode'); }, fetcher: async () => Response.json({}), requests: () => [] });
   return { native, calls, spawned, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
