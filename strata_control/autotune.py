@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from strata_control import tune_knobs, tune_machine
+from strata_control import engine_component, tune_knobs, tune_machine
 from strata_control.tune_session import RequestSet, RunResult, Session, StartFailed
 
 MIN_FREE_RAM_MIB = 3584            # 3.5 GiB left for the system at every start (6.5)
@@ -741,6 +741,12 @@ def context_from_config(cfg: dict[str, Any], *, engine_backend: str | None, opts
     backend = engine_backend or ("cuda" if any(g.get("vendor") == "nvidia" for g in cards) else
                                  "hip" if any(g.get("vendor") == "amd" for g in cards) else "cpu")
     arch = None
+    if backend == "hip":
+        try:
+            archs = engine_component.hip_archs_present()
+            arch = archs[0] if archs else None
+        except Exception:  # noqa: BLE001
+            arch = None
     return tune_knobs.Context(
         backend=backend, family=family or detect_family(args), gpu_count=max(1, len(used)),
         vram_mib=min((g["vram_total_mib"] for g in used if g.get("vram_total_mib")), default=0),
