@@ -836,7 +836,10 @@ mod tests {
         // free (or already ours from a previous run): the same port every launch, so browser storage survives a restart
         let first = pick_stable_port().unwrap();
         let second = pick_stable_port().unwrap();
-        assert_eq!(first, second);
+        if first == PREFERRED_PORT {
+            // (when another program already holds the preferred port, as an installed Strata does on a dev PC, every call falls back to a fresh port)
+            assert_eq!(first, second);
+        }
         // held by another program: a different free port, not a failure
         if first == PREFERRED_PORT {
             let held = TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).unwrap();
