@@ -158,6 +158,18 @@ def validate_dimensions(backend: str,
     return offered, excluded
 
 
+def engine_command(engine: Path | str) -> list[str]:
+    """The argv prefix that runs an engine: the binary itself, or ``[sys.executable, script.py]``.
+
+    A ``.py`` file stands in for the engine in tests and demos (the same READY/PP/T/DONE protocol,
+    no weights). Running it through the current interpreter is what works on every OS: a ``#!`` line
+    is ignored by Windows, which answers WinError 193.
+    """
+    import sys
+    path = str(engine)
+    return [sys.executable, path] if path.lower().endswith(".py") else [path]
+
+
 def engine_flag_inventory(engine: Path) -> list[str] | None:
     """Read the flags an engine binary documents, or None when it cannot be run here.
 
@@ -168,7 +180,7 @@ def engine_flag_inventory(engine: Path) -> list[str] | None:
     at all.
     """
     try:
-        proc = subprocess.run([str(engine), "--help"], capture_output=True, text=True, timeout=20)
+        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return None
     import re

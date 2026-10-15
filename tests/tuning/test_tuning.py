@@ -94,18 +94,16 @@ class TestDimensionValidation(TuningCase):
         then excluded the sweep silently searches nothing — safe, but useless and very hard to
         notice. This test uses a stand-in that prints usage to stderr only.
         """
-        fake = self.tmp / "fake-engine"
-        fake.write_text("#!/bin/sh\necho 'usage:' >&2\necho '  --kv KV' >&2\necho '  --ple-io MODE' >&2\n")
-        fake.chmod(0o755)
+        fake = self.tmp / "fake-engine.py"      # run as [sys.executable, fake]: works on every OS
+        fake.write_text("import sys\nfor line in ('usage:', '  --kv KV', '  --ple-io MODE'):\n    print(line, file=sys.stderr)\n")
         flags = tuning.engine_flag_inventory(fake)
         self.assertIsNotNone(flags, "usage on stderr must still be read")
         self.assertIn("--kv", flags)
         self.assertIn("--ple-io", flags)
 
     def test_flag_inventory_reads_stdout_too(self):
-        fake = self.tmp / "fake-engine-stdout"
-        fake.write_text("#!/bin/sh\necho '  --vram-reserve-mib MIB'\n")
-        fake.chmod(0o755)
+        fake = self.tmp / "fake-engine-stdout.py"
+        fake.write_text("print('  --vram-reserve-mib MIB')\n")
         self.assertIn("--vram-reserve-mib", tuning.engine_flag_inventory(fake))
 
     def test_a_backend_with_dimensions_that_all_need_missing_flags_searches_nothing(self):

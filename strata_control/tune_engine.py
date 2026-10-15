@@ -333,7 +333,8 @@ class EngineHarness:
         self._context: int | None = None
 
     def _argv(self) -> list[str]:
-        argv = [str(self.engine), "--serve"]
+        from strata_control.tuning import engine_command
+        argv = [*engine_command(self.engine), "--serve"]
         for flag, value in self.args.items():
             argv.append(flag)
             if value not in ("1", "0", "true", "false", ""):

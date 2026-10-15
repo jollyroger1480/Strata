@@ -131,6 +131,12 @@ class TestMeasurements(unittest.TestCase):
                          "an unmeasurable prompt rate must be absent, not zero")
 
 
+STUB_PRELUDE = (
+    "import sys\n"
+    "def say(text):\n    print(text, flush=True)\n"
+    "def wait():\n    sys.stdin.readline()\n")
+
+
 class TestEngineHarnessWithAStub(unittest.TestCase):
     """The harness against a stub that speaks the real protocol.
 
@@ -149,24 +155,24 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
     def stub(self, body: str) -> Path:
         """Write a stub engine that speaks the serve protocol.
 
-        Each body is explicit about how it blocks: `read line` waits for the harness to send
-        something, which keeps the process (and therefore the stdout pipe) alive without leaving a
-        child behind. A shell `sleep` child would hold the pipe open after the shell itself exited,
-        so the harness would block on a process it had already killed.
+        The stub is a Python script (the harness starts it as ``[sys.executable, stub.py]``, so it
+        runs the same on every OS; a ``.sh`` stub is WinError 193 on Windows). ``body`` is Python
+        using ``say(text)`` (print a line and flush) and ``wait()`` (block until the harness sends
+        a line). Each body is explicit about how it blocks: ``wait()`` keeps the process, and so the
+        stdout pipe, alive without leaving a child behind.
         """
-        p = self.tmp / "stub-engine"
-        p.write_text("#!/bin/sh\n" + body)
-        p.chmod(p.stat().st_mode | stat.S_IEXEC)
+        p = self.tmp / "stub-engine.py"
+        p.write_text(STUB_PRELUDE + body)
         return p
 
     def test_a_good_response_becomes_a_measurement(self):
         stub = self.stub(
-            'echo "READY 4096 stop"\n'
-            'read line\n'
-            'echo "PP 512 512 200.0 2560.0"\n'
-            'echo "T 1"\necho "T 2"\necho "T 3"\n'
-            'echo "DONE 3 512 200.0 30.0 stop 0 0"\n'
-            'read line\n')
+            'say("READY 4096 stop")\n'
+            'wait()\n'
+            'say("PP 512 512 200.0 2560.0")\n'
+            'say("T 1"); say("T 2"); say("T 3")\n'
+            'say("DONE 3 512 200.0 30.0 stop 0 0")\n'
+            'wait()\n')
         h = te.EngineHarness(stub, {}, workload={"prompt_tokens": 8, "max_new": 3})
         try:
             h.start()
@@ -182,7 +188,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
         # The stub must block *in its own process* with stdout open. A shell `sleep` child would
         # hold the pipe open after the shell exits, so the harness would keep waiting on a process
         # that is already gone -- which made this test hang rather than fail.
-        stub = self.stub('read line\n')
+        stub = self.stub('wait()\n')
         h = te.EngineHarness(stub, {}, boot_timeout_s=1.0)
         try:
             with self.assertRaises(te.MeasurementError) as ctx:
@@ -194,7 +200,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
     def test_an_engine_that_exits_without_ready_is_reported_as_an_early_exit(self):
         # It prints something and *then* dies without READY, which is the realistic shape: the
         # engine got far enough to log, then failed.
-        stub = self.stub('echo "loading weights"\nexit 0\n')
+        stub = self.stub('say("loading weights")\nsys.exit(0)\n')
         h = te.EngineHarness(stub, {}, boot_timeout_s=10.0)
         try:
             with self.assertRaises(te.MeasurementError) as ctx:
@@ -204,7 +210,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
             h.close()
 
     def test_an_engine_that_exits_immediately_reports_the_code(self):
-        stub = self.stub('echo "starting up"\nexit 7\n')
+        stub = self.stub('say("starting up")\nsys.exit(7)\n')
         h = te.EngineHarness(stub, {})
         try:
             with self.assertRaises(te.MeasurementError) as ctx:
@@ -214,7 +220,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
             h.close()
 
     def test_an_error_line_from_the_engine_is_raised_verbatim(self):
-        stub = self.stub('echo "READY 4096 stop"\nread line\necho "ERR out of memory"\nread line\n')
+        stub = self.stub('say("READY 4096 stop")\nwait()\nsay("ERR out of memory")\nwait()\n')
         h = te.EngineHarness(stub, {}, workload={"prompt_tokens": 4, "max_new": 1},
                              request_timeout_s=3.0)
         try:
@@ -225,6 +231,27 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
         finally:
             h.close()
 
+    def test_the_shared_stub_engine_speaks_the_protocol_and_reacts_to_kv(self):
+        """tests/tuning/stub_engine.py is the engine every sweep test uses, on every OS."""
+        stub_path = Path(__file__).with_name("stub_engine.py")
+        speeds = {}
+        for kv in ("int8", "fp16"):
+            h = te.EngineHarness(stub_path, {"--kv": kv}, workload={"prompt_tokens": 8, "max_new": 4})
+            try:
+                h.start()
+                m = h.measure()
+                self.assertEqual(m.produced, 4)
+                speeds[kv] = m.decode_tokens_per_s
+            finally:
+                h.close()
+        self.assertAlmostEqual(speeds["int8"], 80.0)     # 4 tokens in 50 ms
+        self.assertAlmostEqual(speeds["fp16"], 40.0)     # 4 tokens in 100 ms
+
+    def test_a_py_engine_runs_through_the_current_interpreter(self):
+        from strata_control import tuning
+        self.assertEqual(tuning.engine_command(Path("x") / "stub.py"), [sys.executable, str(Path("x") / "stub.py")])
+        self.assertEqual(tuning.engine_command(Path("x") / "strata"), [str(Path("x") / "strata")])
+
     def test_a_missing_binary_is_an_error_before_any_process_starts(self):
         h = te.EngineHarness(self.tmp / "nope", {})
         with self.assertRaises(te.MeasurementError) as ctx:
@@ -232,7 +259,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
         self.assertIn("not at", str(ctx.exception))
 
     def test_the_declared_flags_are_passed_to_the_engine(self):
-        stub = self.stub('echo "READY 4096 stop"\nread line\necho "DONE 1 1 1.0 1.0 stop 0 0"\nread line\n')
+        stub = self.stub('say("READY 4096 stop")\nwait()\nsay("DONE 1 1 1.0 1.0 stop 0 0")\nwait()\n')
         h = te.EngineHarness(stub, {"--kv": "int8", "--kv-grow": "1"})
         argv = h._argv()
         self.assertIn("--kv", argv)
@@ -245,7 +272,7 @@ class TestEngineHarnessWithAStub(unittest.TestCase):
             h.close()
 
     def test_make_measure_returns_the_metric_dict_the_job_expects(self):
-        stub = self.stub('echo "READY 4096 stop"\nread line\necho "T 1"\necho "DONE 1 16 8.0 4.0 stop 0 0"\nread line\n')
+        stub = self.stub('say("READY 4096 stop")\nwait()\nsay("T 1")\nsay("DONE 1 16 8.0 4.0 stop 0 0")\nwait()\n')
         measure = te.make_measure(stub, workload={"prompt_tokens": 4, "max_new": 1})
 
         class C:
