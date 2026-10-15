@@ -50,12 +50,26 @@ fn pick_port() -> Result<u16, String> {
 fn resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(dir) = app.path().resource_dir() {
         if dir.join("host").join("server").join("index.mjs").exists() {
-            return Ok(dir);
+            return Ok(plain_path(dir));
         }
     }
     // development: apps/desktop/src-tauri -> ../../host  and  ./resources
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     Ok(manifest)
+}
+
+/// Tauri returns Windows paths in the verbatim form (`\\?\C:\...`). Node cannot take such a path as
+/// its entry script (`EISDIR ... lstat 'C:'`), so the host died at once and the window sat
+/// unresponsive until the health wait gave up. Use the ordinary drive (or UNC) form.
+fn plain_path(p: PathBuf) -> PathBuf {
+    let text = p.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
 }
 
 /// File name of the bundled Node runtime: `node.exe` on Windows, `node` elsewhere.
@@ -102,11 +116,19 @@ fn hide_console(cmd: &mut Command) {
 fn hide_console(_cmd: &mut Command) {}
 
 /// Wait until the host answers `/api/health`, or give up.
-fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
+fn wait_for_health(
+    port: u16,
+    timeout: Duration,
+    mut exited: impl FnMut() -> Option<String>,
+) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let url = format!("http://127.0.0.1:{port}/api/health");
     let mut last = String::from("no attempt made");
     while Instant::now() < deadline {
+        // A host that already died will never answer: say so now instead of after the timeout.
+        if let Some(why) = exited() {
+            return Err(format!("the Strata App Host stopped before it became healthy: {why}"));
+        }
         match ureq_get_ok(&url) {
             Ok(true) => return Ok(()),
             Ok(false) => last = "the host answered with a non-2xx status".into(),
@@ -194,7 +216,15 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     *app.state::<HostProcess>().0.lock().unwrap() = Some(child);
     *app.state::<HostPort>().0.lock().unwrap() = Some(port);
 
-    wait_for_health(port, Duration::from_secs(60))?;
+    let state_app = app.clone();
+    wait_for_health(port, Duration::from_secs(60), move || {
+        let state = state_app.state::<HostProcess>();
+        let mut guard = state.0.lock().unwrap();
+        match guard.as_mut().map(|c| c.try_wait()) {
+            Some(Ok(Some(status))) => Some(format!("exit status {status}")),
+            _ => None,
+        }
+    })?;
     Ok(port)
 }
 
@@ -210,6 +240,23 @@ fn stop_host(app: &tauri::AppHandle) {
             let _ = child.wait();
         }
     }
+}
+
+/// Where a packaged build keeps `bundle.resources`, found from the executable's own path.
+///
+/// macOS `.app`: `Contents/MacOS/<exe>` -> `Contents/Resources`. Windows NSIS: next to the exe.
+/// Linux deb/AppImage: `<prefix>/bin/<exe>` -> `<prefix>/lib/<productName>`.
+fn packaged_resource_dir(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let mut candidates = vec![dir.to_path_buf()];
+    if let Some(up) = dir.parent() {
+        candidates.push(up.join("Resources"));
+        candidates.push(up.join("lib").join("Strata"));
+        candidates.push(up.join("lib").join("strata-desktop"));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join("host").join("server").join("index.mjs").exists())
 }
 
 /// Parse `--self-test[=path]`; returns the report path when the flag is present.
@@ -240,11 +287,7 @@ fn run_self_test(report_path: &str) -> i32 {
     // Resolve resources the same way the real app does: `Contents/Resources` next to the
     // executable when packaged, the repository layout otherwise.
     let exe = std::env::current_exe().unwrap_or_default();
-    let packaged_res = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("Resources"))
-        .filter(|p| p.join("host").join("server").join("index.mjs").exists());
+    let packaged_res = packaged_resource_dir(&exe);
 
     let res = match packaged_res {
         Some(p) => {
@@ -318,7 +361,10 @@ fn run_self_test(report_path: &str) -> i32 {
         }
     };
 
-    let healthy = wait_for_health(port, Duration::from_secs(45));
+    let healthy = wait_for_health(port, Duration::from_secs(45), || match child.try_wait() {
+        Ok(Some(status)) => Some(format!("exit status {status}")),
+        _ => None,
+    });
     record("host-healthy", healthy.is_ok(), match &healthy {
         Ok(()) => format!("http://127.0.0.1:{port}/api/health answered 2xx"),
         Err(e) => e.clone(),
@@ -447,6 +493,16 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_windows_paths_are_made_plain() {
+        assert_eq!(plain_path(PathBuf::from(r"\\?\C:\a\b")), PathBuf::from(r"C:\a\b"));
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\UNC\srv\share\x")),
+            PathBuf::from(r"\\srv\share\x")
+        );
+        assert_eq!(plain_path(PathBuf::from("/usr/lib/Strata")), PathBuf::from("/usr/lib/Strata"));
+    }
+
+    #[test]
     fn a_bare_node_is_not_taken_for_the_windows_runtime() {
         if !cfg!(windows) {
             return;
@@ -457,5 +513,24 @@ mod tests {
         std::fs::write(dir.join("node"), b"").unwrap();
         assert!(node_binary(&res).is_err());
         let _ = std::fs::remove_dir_all(&res);
+    }
+
+    #[test]
+    fn packaged_resources_are_found_for_each_platform_layout() {
+        let root = scratch("layout");
+        for (exe_rel, res_rel) in [
+            ("Contents/MacOS/strata-desktop", "Contents/Resources"),
+            ("install/strata-desktop.exe", "install"),
+            ("usr/bin/strata-desktop", "usr/lib/Strata"),
+        ] {
+            let exe = root.join(exe_rel);
+            let res = root.join(res_rel);
+            assert!(packaged_resource_dir(&exe).is_none(), "{exe_rel}");
+            let server = res.join("host").join("server");
+            std::fs::create_dir_all(&server).unwrap();
+            std::fs::write(server.join("index.mjs"), b"").unwrap();
+            assert_eq!(packaged_resource_dir(&exe), Some(res), "{exe_rel}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
