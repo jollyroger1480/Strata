@@ -1716,7 +1716,8 @@ def _install(a: argparse.Namespace) -> int:
     if not installer.is_file():
         return _error("this folder has no installer (setup.py). Engines, models and updates are installed from a "
                       "full Strata folder with SETUP.bat / ./setup.sh and UPDATE.bat / ./update.sh; "
-                      "set STRATA_INSTALL_DIR to that folder to run it from here", 5)
+                      "set STRATA_INSTALL_DIR to that folder to run it from here. To update the engine and Control "
+                      "from the signed update feed, run `strata update`", 5)
     extra = [x for x in a.setup_args if x != "--"]
     return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
                            cwd=str(installer.parent))

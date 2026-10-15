@@ -263,3 +263,14 @@ test('without the shell bridge "Update Strata" still updates Control and says no
     assert.doesNotMatch(job.summary, /Strata 0\.2\.0/);
   } finally { await f.native.close(); f.cleanup(); }
 });
+
+test('packaged: opening the app, listing models and loading one never reach the update step', async () => {
+  const f = fixture();
+  try {
+    await f.native.refresh(true);
+    const load = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(load.state, 'done', load.error);
+    assert.deepEqual(f.calls, [], 'no update, check or rollback call: downloads happen only when the user presses Update');
+    assert.equal(f.spawned.length, 0);
+  } finally { await f.native.close(); f.cleanup(); }
+});

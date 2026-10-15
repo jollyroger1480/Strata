@@ -200,3 +200,41 @@ pub fn apply_env(cmd: &mut std::process::Command, app: &AppHandle, bridge: Optio
         cmd.env("STRATA_SHELL_BRIDGE", &bridge.url).env("STRATA_SHELL_TOKEN", &bridge.token);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_comparison_needs_every_byte() {
+        assert!(same("abc123", "abc123"));
+        assert!(!same("abc123", "abc124"));
+        assert!(!same("abc123", "abc12"));
+        assert!(!same("", "x"));
+    }
+
+    #[test]
+    fn progress_reports_idle_until_something_starts() {
+        let idle = Progress::default().json();
+        assert_eq!(idle["state"], "idle");
+        let p = Progress { state: "downloading", downloaded: 10, total: 100, version: Some("0.2.0".into()), error: None };
+        assert_eq!(p.json()["downloaded"], 10);
+        assert_eq!(p.json()["version"], "0.2.0");
+    }
+
+    #[test]
+    fn only_https_or_loopback_endpoints_may_override_the_configured_one() {
+        for (value, ok) in [
+            ("https://updates.example.com/latest.json", true),
+            ("http://127.0.0.1:19080/app/latest.json", true),
+            ("http://localhost:19080/latest.json", true),
+            ("http://example.com/latest.json", false),
+            ("file:///etc/passwd", false),
+        ] {
+            std::env::set_var(ENDPOINT_ENV, value);
+            assert_eq!(endpoint_override().is_some(), ok, "{value}");
+        }
+        std::env::remove_var(ENDPOINT_ENV);
+        assert!(endpoint_override().is_none());
+    }
+}
