@@ -1325,6 +1325,7 @@ export async function sendMessage(text: string) {
         images:await Promise.all(pictures.map(photoData)),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'High',
+        thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
         // So a skill narrowed to another workspace does not fire here.

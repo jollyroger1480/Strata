@@ -2610,5 +2610,7 @@
   "s2609": "Strata kann diese Dateien noch nicht ausführen.",
   "s2610": "Strata führt die Qwen3.8-Flash-Next-Modelle aus. Laden Sie eines unter „Modelle“ herunter oder wählen Sie einen Ordner mit dessen Dateien.",
   "s2611": "Diese Dateien konnten nicht geprüft werden.",
-  "s2612": "Prüfen Sie, ob der Ordner vollständige GGUF-Dateien enthält, und versuchen Sie es erneut."
+  "s2612": "Prüfen Sie, ob der Ordner vollständige GGUF-Dateien enthält, und versuchen Sie es erneut.",
+  "s2613": "Denkbudget",
+  "s2614": "Unbegrenzt"
 }

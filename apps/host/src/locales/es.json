@@ -2610,5 +2610,7 @@
   "s2609": "Strata aún no puede ejecutar estos archivos.",
   "s2610": "Strata ejecuta los modelos Qwen3.8-Flash-Next. Descarga uno en Modelos o elige una carpeta con sus archivos.",
   "s2611": "No se pudieron comprobar estos archivos.",
-  "s2612": "Comprueba que la carpeta tenga archivos GGUF completos e inténtalo de nuevo."
+  "s2612": "Comprueba que la carpeta tenga archivos GGUF completos e inténtalo de nuevo.",
+  "s2613": "Presupuesto de razonamiento",
+  "s2614": "Sin límite"
 }

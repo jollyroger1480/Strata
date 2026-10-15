@@ -20,6 +20,8 @@ const modes: {
     { value: 'bypass', label: 'Bypass permissions', hint: 'Skip permission prompts' },
 ];
 const efforts = ['Off', 'Low', 'Medium', 'High', 'Max'];
+/** The most tokens a reply may spend thinking (the server's reasoning_budget_tokens); 0 = no limit. */
+const THINKING_BUDGETS: [number, string][] = [[0, 'No limit'], [2048, '2K'], [8192, '8K'], [32768, '32K']];
 const textTypes = /\.(txt|md|markdown|csv|tsx?|jsx?|py|json|css|rs|go|sh|html?|ya?ml|toml|xml|log)$/i;
 const photoTypes = /\.(png|jpe?g|webp|gif|svg)$/i;
 export function ComposerControls({ session, onPreview, onAttach, onError, onSlash, streaming, draft, onDraft }: {
@@ -48,6 +50,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     attachLatest.current = onAttach;
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'High';
+    const budget = session?.preferences?.thinkingBudget ?? 0;
     const shortcut = MOD === '⌘' ? '⌘⇧A' : 'Ctrl+Shift+A';
     async function openFile(selected: File | undefined) {
         if (!selected)
@@ -160,7 +163,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
       <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); onSlash(); }}><span className="slash-command-icon" aria-hidden="true">/</span>{tr("Slash commands")}</button>
     </FloatingMenu> : null)}
     {tr(preferences ? <FloatingMenu anchor={preferences === 'mode' ? modeTrigger.current : thinkingTrigger.current} title={tr(preferences === 'mode' ? 'Mode' : 'Reasoning effort')} width={preferences === 'mode' ? 330 : 280} onClose={() => setPreferences(null)}>
-      {tr(preferences === 'mode' ? <>{tr(modes.map((option, index) => <button key={option.value} role="menuitemradio" aria-checked={mode.value === option.value} className="menu__item composer-mode-option" onClick={() => { setChatPreferences(session?.id, { mode: option.value }); setPreferences(null); }}><span><strong>{tr(option.label)}</strong><small>{tr(option.hint)}</small></span>{tr(mode.value === option.value ? <Icon name="check" size={16}/> : null)}<kbd className="menu-shortcut">{tr(index + 1)}</kbd></button>))}</> : <><div className="reasoning-menu-model"><Icon name={apiModel ? 'link' : modelFamilyIcon(loaded?.family)} size={18}/><strong>{tr(apiModel?.name ?? loaded?.family ?? 'No model loaded')}</strong></div><p className="composer-menu-heading">{tr("Reasoning effort")}</p>{tr(efforts.map(option => <button key={option} role="menuitemradio" aria-checked={effort === option} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinking: option }); setPreferences(null); }}>{tr(option)}<span className="spacer"/>{tr(effort === option ? <Icon name="check" size={16}/> : null)}</button>))}</>)}
+      {tr(preferences === 'mode' ? <>{tr(modes.map((option, index) => <button key={option.value} role="menuitemradio" aria-checked={mode.value === option.value} className="menu__item composer-mode-option" onClick={() => { setChatPreferences(session?.id, { mode: option.value }); setPreferences(null); }}><span><strong>{tr(option.label)}</strong><small>{tr(option.hint)}</small></span>{tr(mode.value === option.value ? <Icon name="check" size={16}/> : null)}<kbd className="menu-shortcut">{tr(index + 1)}</kbd></button>))}</> : <><div className="reasoning-menu-model"><Icon name={apiModel ? 'link' : modelFamilyIcon(loaded?.family)} size={18}/><strong>{tr(apiModel?.name ?? loaded?.family ?? 'No model loaded')}</strong></div><p className="composer-menu-heading">{tr("Reasoning effort")}</p>{tr(efforts.map(option => <button key={option} role="menuitemradio" aria-checked={effort === option} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinking: option }); setPreferences(null); }}>{tr(option)}<span className="spacer"/>{tr(effort === option ? <Icon name="check" size={16}/> : null)}</button>))}<p className="composer-menu-heading">{tr("Thinking budget")}</p>{tr(THINKING_BUDGETS.map(([value, label]) => <button key={value} role="menuitemradio" aria-checked={budget === value} disabled={effort === 'Off'} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinkingBudget: value }); setPreferences(null); }}>{tr(label)}<span className="spacer"/>{tr(budget === value ? <Icon name="check" size={16}/> : null)}</button>))}</>)}
     </FloatingMenu> : null)}
 
     <Dialog open={urlOpen} title={tr("Open a website")} onClose={() => setUrlOpen(false)} actions={<><Btn onClick={() => setUrlOpen(false)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!url.trim()} onClick={() => {
