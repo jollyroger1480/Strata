@@ -80,8 +80,8 @@ class EngineMissing(acquisition.AcquisitionRefused):
         RuntimeError.__init__(
             self,
             f"No engine for this PC was found{where}: {reason}. The app never downloads an engine while it "
-            f"starts or serves. Install the engine component for your GPU from the Terminal "
-            f"(`strata install`) or copy an engine package into the component folder.")
+            f"starts or serves. Download the engine for your GPU with Update engine in the app's Settings, or with "
+            f"`strata update` (or `strata install`) in the Terminal, or copy an engine package into the component folder.")
         self.what = "the engine component"
         self.command = "strata install"
 
@@ -99,7 +99,8 @@ class EngineIntegrityError(EngineMissing):
         RuntimeError.__init__(
             self,
             f"The engine package failed its integrity check, so it was not started: {reason}. Repair or reinstall "
-            f"the engine component from the Terminal (`strata install`); the app never downloads one while it runs.")
+            f"the engine component with Update engine in the app's Settings or `strata update` in the Terminal "
+            f"(`strata install` also works); the app never downloads one while it runs.")
         self.what = "the engine component"
         self.command = "strata install"
 
@@ -304,6 +305,14 @@ def verify_signature(component: "EngineComponent", environ=None) -> str:
         if required:
             raise IntegrityProblem("the package is not signed and this PC requires signed components")
         return "unsigned"
+    if _verifier is None:
+        # the keys this build trusts (update_keys.json, plus the explicit test-key file) become the verifier on first use, so
+        # a signed package is verified on every start without anything having to register it first
+        from strata_control import signing
+        try:
+            signing.ensure_component_verifier()
+        except signing.SignatureError as exc:
+            raise IntegrityProblem(f"this PC's update keys cannot be read ({exc})") from None
     if _verifier is None:
         if required:
             raise IntegrityProblem("the package is signed but this build cannot check signatures yet")

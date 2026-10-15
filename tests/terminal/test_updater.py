@@ -406,6 +406,41 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(done.stdout.strip(), "[]")
 
 
+class StartPathSignature(UpdaterCase):
+    """A start verifies a signed package with the keys this build trusts, without anything registering a verifier first."""
+
+    def setUp(self):
+        super().setUp()
+        self.pub = self.root / "feed-key.pub.json"
+        self.pub.write_text(json.dumps({"keys": [signing.public_part(self.key)]}))
+        patch = mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": str(self.pub)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        ec.register_signature_verifier(None)
+
+    def test_signed_packages_verify_and_a_forged_signature_is_refused_on_every_start(self):
+        folder = fx.build_package(self.root / "signed", "0.1.46", key=self.key)
+        target = self.components / "engine" / folder.name
+        target.parent.mkdir(parents=True)
+        shutil.copytree(folder, target)
+        self.assertEqual(ec.verify_signature(ec.read_manifest(target)), "verified")
+        manifest = json.loads((target / ec.MANIFEST).read_text())
+        manifest["notes"] = "changed after signing"
+        (target / ec.MANIFEST).write_text(json.dumps(manifest))
+        ec.register_signature_verifier(None)
+        with self.assertRaises(ec.EngineMissing) as caught:
+            ec.resolve(self.components, backend="cuda")
+        self.assertIn("signature", str(caught.exception))
+
+    def test_without_trusted_keys_a_signed_package_is_unverified_and_required_signing_refuses_it(self):
+        folder = fx.build_package(self.root / "signed", "0.1.46", key=self.key)
+        with mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": ""}):
+            ec.register_signature_verifier(None)
+            self.assertEqual(ec.verify_signature(ec.read_manifest(folder)), "unverified")
+            with self.assertRaises(ec.IntegrityProblem):
+                ec.verify_signature(ec.read_manifest(folder), {ec.ENV_REQUIRE_SIGNED: "1"})
+
+
 class LazyModel(UpdaterCase):
     """A server that is "ready" with its model unloaded has not generated anything yet; the test start forces the load and the probe."""
 

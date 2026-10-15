@@ -58,7 +58,8 @@ In this order, each refusal names the cause; none of them starts anything and no
 
 If a package fails (5) or (4) and no other package fits this PC, the start ends with `EngineIntegrityError`
 (exit code 5): "The engine package failed its integrity check, so it was not started: 0.1.45 linux-x86_64-cuda:
-libcudart.so.13 does not match its recorded SHA-256. Repair or reinstall the engine component from the Terminal". A package
+libcudart.so.13 does not match its recorded SHA-256. Repair or reinstall the engine component with Update engine in the app's
+Settings or `strata update` in the Terminal". A package
 for another GPU or an older driver is `EngineMissing` with its reason. A tampered newer package never falls back silently
 to nothing: a good older package is used and the tampered one is listed under `problems` in `strata components engine`.
 
