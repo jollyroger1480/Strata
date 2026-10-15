@@ -91,6 +91,16 @@ export function withPlain(raw) {
   return plain ? `${plain}\n\nDetails: ${raw.replace(/^Error:\s*/, '')}` : raw;
 }
 
+/**
+ * A command that succeeded and printed nothing says so in words (the card used to show "(no output)" under a "Ran" that could not
+ * tell the person whether anything happened). Opening a folder or a window is not something a command can prove it did, so the
+ * sentence says only what is known.
+ */
+export function outcomeText(tool, text) {
+  if ((tool === 'pwsh' || tool === 'bash') && /^\(no output\)$/.test(text.trim())) return 'The command finished without any error. It printed nothing, so there is nothing more to show.';
+  return text;
+}
+
 /** Text of a tool-result message, bounded. */
 export function resultText(message) {
   const parts = Array.isArray(message?.content) ? message.content : [];
@@ -204,7 +214,7 @@ export class TurnProjector {
         const frame = this.#card(callId, {
           state: denied ? 'denied' : isError ? 'error' : 'done',
           // A card the person (or the mode) refused keeps its plain sentence; the model's own error text ("the user rejected ...") is not for them.
-          result: this.byPolicy.has(callId) ? NOT_IN_MODE : denied ? (entry.card.result ?? 'Denied. Nothing ran.') : isError ? withPlain(resultText(d.message)) : resultText(d.message),
+          result: this.byPolicy.has(callId) ? NOT_IN_MODE : denied ? (entry.card.result ?? 'Denied. Nothing ran.') : isError ? withPlain(resultText(d.message)) : outcomeText(entry.card.name, resultText(d.message)),
           durationMs: Math.max(0, (e.time ?? 0) - entry.calledAt),
         });
         if (frame) out.push(frame);

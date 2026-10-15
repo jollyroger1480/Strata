@@ -29,7 +29,7 @@ test('the gate: only commands that provably just look are allowed without a ques
   for (const ok of ['Get-ChildItem', 'Get-ChildItem -Recurse src | Select-Object -First 5', 'git status', 'git log --oneline -5', 'git diff', 'cat notes.txt', 'ls -la', 'node --version', 'Get-Content a.txt | Select-String needle', 'git branch', 'git remote -v']) {
     assert.equal(isReadOnlyShell(ok), true, ok);
   }
-  for (const bad of ['', 'Set-Content a.txt x', 'echo hi > a.txt', 'Get-ChildItem; Remove-Item a.txt', 'rm -rf x', 'git commit -m x', 'git push', 'git branch -D x', 'git config user.name x', 'git remote add o u', 'curl http://x', 'Get-ChildItem | ForEach-Object { $_ }', 'powershell -Command x', 'node script.js', 'python x.py', 'ls && rm a', 'find . -delete', 'echo $(whoami)', 'Invoke-WebRequest u', 'Start-Process x', 'New-Item a', 'cat a | tee b']) {
+  for (const bad of ['', 'Set-Content a.txt x', 'echo hi > a.txt', 'Get-ChildItem; Remove-Item a.txt', 'rm -rf x', 'git commit -m x', 'git push', 'git branch -D x', 'git config user.name x', 'git remote add o u', 'curl http://x', 'Get-ChildItem | ForEach-Object { $_ }', 'Start-Process explorer.exe', 'explorer.exe C:/Users/x/Downloads', 'ii ~/Downloads', 'Invoke-Item $env:USERPROFILE/Downloads', 'start .', 'open .', 'xdg-open .', 'notepad a.txt', 'powershell -Command x', 'node script.js', 'python x.py', 'ls && rm a', 'find . -delete', 'echo $(whoami)', 'Invoke-WebRequest u', 'Start-Process x', 'New-Item a', 'cat a | tee b']) {
     assert.equal(isReadOnlyShell(bad), false, bad);
   }
   assert.equal(isReadOnlyShell('x'.repeat(700)), false, 'a long command is never trusted');
@@ -220,3 +220,29 @@ function readdirDeep(dir) {
   for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) out.push(...readdirDeep(p)); else out.push(p); }
   return out;
 }
+
+test('the output budget is not the old 8192, and the Reasoning menu reaches the request (off sends enable_thinking false)', { skip }, async (t) => {
+  const worker = await startScriptedWorker({});
+  const dir = mkdtempSync(join(tmpdir(), 'strata-think-'));
+  const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const local = [{ id: 'i', baseUrl: worker.url, modelId: 'scripted-model', context: 65536 }];
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+  t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
+  const ask = async (chatId, thinking) => {
+    worker.requests.length = 0;
+    await bridge.runTurn({ chatId, message: 'SCRIPT:echo hi', workspacePath: ws, mode: 'bypass', thinking, onFrame: () => {} });
+    return worker.requests.find(r => r.toolNames.length).params;
+  };
+  const off = await ask('think-off', 'Off');
+  assert.equal(off.enable_thinking, false);
+  assert.ok(off.max_completion_tokens > 40000, `budget ${off.max_completion_tokens} (the window minus the prompt, never the old 8192)`);
+  const high = await ask('think-high', 'High');
+  assert.equal(high.enable_thinking, true); assert.equal(high.reasoning_effort, 'high');
+  const low = await ask('think-low', 'Low');
+  assert.equal(low.enable_thinking, true); assert.equal(low.reasoning_effort, 'low');
+  const max = await ask('think-max', 'Max');
+  assert.equal(max.enable_thinking, true); assert.equal(max.reasoning_effort, 'high');
+  // the same chat switching its level between turns
+  assert.equal((await ask('think-off', 'High')).enable_thinking, true);
+  assert.equal((await ask('think-off', 'Off')).enable_thinking, false);
+});

@@ -478,7 +478,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
-    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);

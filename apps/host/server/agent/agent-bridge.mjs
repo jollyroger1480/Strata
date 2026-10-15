@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
-import { buildProfile, routeFor, MODE_PRESETS, modeOf } from './profile.mjs';
+import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
 
@@ -238,7 +238,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null }) {
     let send = onFrame;
     signal?.addEventListener('abort', () => { send = () => {}; }, { once: true });
     const emit = frame => { try { send(frame); } catch { send = () => {}; } };
@@ -249,14 +249,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const cancelled = () => { emit({ type: 'done', finishReason: 'aborted', cancelled: true, tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0, model: route.name, contextMax: route.contextWindow }); return { cancelled: true }; };
     if (c.cancelStart) return cancelled();
 
-    if (c.route !== `${route.route}/${route.modelId}` || c.routeGeneration !== runtime.generation) {
+    // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
+    // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
+    const level = effortOf(thinking);
+    const wanted = `${route.route}/${route.modelId}/${level ?? ''}`;
+    if (c.route !== wanted || c.routeGeneration !== runtime.generation) {
+      const select = effort => runtime.gw.rpc('session/selectModel', { request: { sessionId, provider: route.route, model: route.modelId, ...(effort ? { reasoningEffort: effort } : {}) } });
       try {
-        await runtime.gw.rpc('session/selectModel', { request: { sessionId, provider: route.route, model: route.modelId } });
+        try { await select(level); } catch (e) { if (!level || e.code === 'session/not-found') throw e; await select(null); }
       } catch (e) {
         if (e.code === 'session/not-found') { delete sessionMap[c.id]; persist(); }
         throw new AgentUnavailable(`The coding assistant could not use ${route.name}. Pick the model again and retry.`, 'model-unavailable', e.message);
       }
-      c.route = `${route.route}/${route.modelId}`; c.routeGeneration = runtime.generation;
+      c.route = wanted; c.routeGeneration = runtime.generation;
     }
 
     // The chat's permission mode is read once, here, for this whole turn. A change the user makes while the

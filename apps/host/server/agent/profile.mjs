@@ -85,7 +85,29 @@ function fingerprint(provider, secret) {
   return createHash('sha256').update(JSON.stringify(provider)).update('|').update(secret ?? '').digest('hex').slice(0, 16);
 }
 
-/** Output budget that leaves the prompt room: a quarter of the window, between 1K and 8K. */
+/**
+ * Output budget for an API model, whose real limit the app does not know: a quarter of the window, between 1K and 8K.
+ * (A local model has its own, much larger budget: `localOutputBudget`.)
+ */
+/**
+ * Output budget for a LOCAL model: nearly the whole window, so a thinking model is never cut off mid-thought by the app's own
+ * limit (it was 8192, which stopped big coding answers at exactly 8192 tokens). The engine clamps the request to what is left
+ * of the context (`fit_max_tokens`, which the app turns on for the models it loads), so a long prompt never turns this into an error.
+ */
+export function localOutputBudget(context) {
+  const c = Number.isFinite(context) && context > 0 ? context : 32768;
+  return Math.max(8192, c - 4096);
+}
+
+/**
+ * The thinking levels the chat's Reasoning menu offers, as wire values for a local Strata model. `off` sends enable_thinking false;
+ * the rest send enable_thinking true plus the effort (the server reads both; "Max" is the highest effort it has).
+ */
+export const LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'medium', high: 'high', max: 'high' });
+/** The menu's words to the Harness's level names. */
+export const EFFORT_LEVEL = Object.freeze({ off: 'off', low: 'low', medium: 'medium', high: 'high', max: 'max' });
+export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()] ?? null;
+
 export function outputBudget(context) {
   const c = Number.isFinite(context) && context > 0 ? context : 32768;
   return Math.max(1024, Math.min(8192, Math.floor(c / 4)));
@@ -118,10 +140,12 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
       api: 'openai-completions',
       baseURL: inst.baseUrl,
       apiKeyEnv: keyEnv,
-      compat: { supportsStore: false },
+      // `qwen` thinking format: enable_thinking true/false plus reasoning_effort, which the Strata server reads.
+      compat: { supportsStore: false, thinkingFormat: 'qwen', supportsReasoningEffort: true },
       models: [{
-        id: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, maxTokens: outputBudget(context),
+        id: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, maxTokens: localOutputBudget(context),
         input: inst.vision ? ['text', 'image'] : ['text'],
+        reasoning: true, reasoningEfforts: LOCAL_EFFORTS,
       }],
     };
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
