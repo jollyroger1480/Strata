@@ -11070,10 +11070,10 @@ int main(int argc, char** argv) {
             const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
                                     (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
             if (borrow && !pin_sibling && park_worth) {
-                conversations.pin(parked.serial);   // parking the outgoing conversation must not evict the donor
+                conversations.guard(parked.serial);   // parking the outgoing conversation must not evict the donor
                 const bool parked_ok = park_current(0);
-                const bool blocked = conversations.pin_blocked();
-                conversations.unpin();
+                const bool blocked = conversations.guard_blocked();
+                conversations.unguard();
                 if (!parked_ok) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
@@ -11145,7 +11145,7 @@ int main(int argc, char** argv) {
                     strata::core::conversation_snapshot_restore_prefix(*donor, parked.tokens, ss, g,
                                                                        use_mtp ? &mtp.kv_state() : nullptr, err) !=
                         strata::core::ConversationRestore::restored) {
-                    // validated above and pinned while parking: a failure here is fatal, as for a whole restore
+                    // validated above and guarded while parking: a failure here is fatal, as for a whole restore
                     std::printf("ERR restoring a borrowed conversation prefix: %s\n",
                                 err.empty() ? "gone" : err.c_str());
                     return 1;
