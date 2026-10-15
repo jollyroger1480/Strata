@@ -1069,7 +1069,25 @@ def _runtime(a: argparse.Namespace) -> int:
               ("  config/launch verified" if result.get("launch_attested") else "") +
               (f"  {readiness_label}" if readiness_label else "") +
               (f"  {result['error']}" if result.get("error") else ""))
+        if not result["ok"] and a.runtime_command in ("start", "restart", "verify"):
+            for line in _engine_log_hint(a.profile):
+                print(line, file=sys.stderr)
     return 0 if result["ok"] else result.get("exit_code", 6)
+
+
+def _engine_log_hint(profile: str) -> list[str]:
+    """Where the engine wrote why it stopped, and its last lines: "server_exited" alone names nothing to read."""
+    try:
+        path, _saved, _revision = profiles.resolve(profile)
+        log = profiles.read_run_config(path).get("log")
+        if not isinstance(log, str) or not log:
+            return []
+        text = Path(log).expanduser().read_text(encoding="utf-8", errors="replace")
+    except (ProfileError, OSError, ValueError, KeyError):
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    tail = lines[-3:]
+    return [f"engine log: {log}"] + [f"  {line[:300]}" for line in tail]
 
 
 def _ops(a: argparse.Namespace) -> int:

@@ -117,6 +117,27 @@ class HipPackageForAnotherCard(unittest.TestCase):
                 self.assertEqual(ec.resolve(root, backend="hip").backend, "hip")
 
 
+class DeviceAccess(unittest.TestCase):
+    def test_a_render_node_the_user_cannot_open_is_named(self):
+        from strata_control import doctor
+        if not sys.platform.startswith("linux"):
+            self.skipTest("Linux device nodes")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "dri").mkdir()
+            node = Path(d) / "dri" / "renderD128"
+            node.write_text("", encoding="utf-8")
+            os.chmod(node, 0)
+            if os.access(node, os.R_OK):
+                self.skipTest("running as a user that can open anything")
+            issue = doctor._device_access_issue("sycl", d)
+            self.assertEqual(issue["code"], "GPU_DEVICE_ACCESS")
+            self.assertIn("render", issue["message"])
+            os.chmod(node, 0o666)
+            self.assertIsNone(doctor._device_access_issue("sycl", d))
+            self.assertIsNone(doctor._device_access_issue("cuda", d))
+            self.assertIsNone(doctor._device_access_issue("hip", tempfile.gettempdir() + "/none"))
+
+
 class ArchiveContents(unittest.TestCase):
     def test_the_fingerprint_table_models_import_reads_is_in_the_payload(self):
         sys.path.insert(0, str(ROOT / "packaging"))
