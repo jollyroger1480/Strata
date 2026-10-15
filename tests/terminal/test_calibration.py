@@ -35,9 +35,13 @@ class CalibrationFlowTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": str(self.root / "profiles"),
                                            "STRATA_RUNTIME_DIR": str(self.root / "runtime"),
                                            "XDG_CONFIG_HOME": str(self.root / "settings"),
+                                           "APPDATA": str(self.root / "settings"),
                                            "STRATA_API_KEY": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # setup's own answer: <XDG_CONFIG_HOME>/strata/settings.json, or %APPDATA%/Strata/settings.json on Windows
+        self.settings_file = setup.settings_path()
+        self.assertTrue(str(self.settings_file).startswith(str(self.root)), "settings must stay in the temp tree")
         engine = self.root / "strata-engine"
         engine.write_bytes(b"fake engine")
         engine.chmod(0o700)
@@ -361,7 +365,7 @@ class CalibrationFlowTests(unittest.TestCase):
         self.assertEqual(applied["smoke_output_tokens"], 4)
         self.assertEqual(Path(applied["backup"]).read_bytes(), before)
         self.assertIn("--pcie-frac", json.loads(self.config.read_text())["args"])
-        settings = json.loads((self.root / "settings" / "strata" / "settings.json").read_text())
+        settings = json.loads((self.settings_file).read_text())
         self.assertEqual(settings["calibration"]["test-gpu|24GB|test-cpu"]["settings"], report["settings"])
         self.assertFalse(calibration.review("local", report_path)["applicable"])
 
@@ -380,7 +384,7 @@ class CalibrationFlowTests(unittest.TestCase):
         self.assertTrue(restored["changed"])
         self.assertEqual(restored["smoke_output_tokens"], 2)
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertFalse((self.root / "settings" / "strata" / "settings.json").exists())
+        self.assertFalse((self.settings_file).exists())
         self.assertFalse(calibration.review_rollback("local", report_path)["applicable"])
 
     @unittest.skipUnless(os.name == "posix", "managed activity lease is POSIX-only")
@@ -429,7 +433,7 @@ class CalibrationFlowTests(unittest.TestCase):
                                                     smoke=smoke)["changed"])
 
     def test_rollback_restores_existing_settings_exactly(self):
-        settings_path = self.root / "settings" / "strata" / "settings.json"
+        settings_path = self.settings_file
         settings_path.parent.mkdir(parents=True)
         original_settings = b'{"unrelated": "keep", "calibration": {"other-device": {"settings": {}}}}\n'
         settings_path.write_bytes(original_settings)
@@ -447,7 +451,7 @@ class CalibrationFlowTests(unittest.TestCase):
         calibration.measure("local", report_path, exclusive_ack=True, runner=self.fake_result, say=lambda _: None)
         calibration.apply_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 2)
         applied_config = self.config.read_bytes()
-        settings_path = self.root / "settings" / "strata" / "settings.json"
+        settings_path = self.settings_file
         applied_settings = settings_path.read_bytes()
         with self.assertRaisesRegex(profiles.ProfileError, "rollback smoke generation failed"):
             calibration.rollback_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 1 / 0)
@@ -470,7 +474,7 @@ class CalibrationFlowTests(unittest.TestCase):
         calibration.measure("local", report_path, exclusive_ack=True, runner=self.fake_result, say=lambda _: None)
         calibration.apply_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 2)
         applied_config = self.config.read_bytes()
-        settings_path = self.root / "settings" / "strata" / "settings.json"
+        settings_path = self.settings_file
         applied_settings = settings_path.read_bytes()
 
         def smoke(cfg):
@@ -520,7 +524,7 @@ class CalibrationFlowTests(unittest.TestCase):
         calibration.measure("local", report_path, exclusive_ack=True, runner=self.fake_result, say=lambda _: None)
         calibration.apply_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 2)
         current_config = self.config.read_bytes()
-        settings_path = self.root / "settings" / "strata" / "settings.json"
+        settings_path = self.settings_file
         current_settings = settings_path.read_bytes()
         original_replace = calibration._replace_bytes
         failures = 0
@@ -705,7 +709,7 @@ class CalibrationFlowTests(unittest.TestCase):
             with self.assertRaisesRegex(profiles.ProfileError, "config restored"):
                 calibration.apply_result("local", report_path, exclusive_ack=True, smoke=lambda cfg: 2)
         self.assertEqual(self.config.read_bytes(), source)
-        self.assertFalse((self.root / "settings" / "strata" / "settings.json").exists())
+        self.assertFalse((self.settings_file).exists())
 
 
 if __name__ == "__main__":
