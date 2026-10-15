@@ -108,6 +108,7 @@ FALLBACK_FAMILIES = {
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
 }
+GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
@@ -707,10 +708,11 @@ class Strata:
         elif low_fits("IQ1_M"):
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but the GPU's "
                                                  f"{vram:.0f} GB make up for it (setup's low-RAM mode: slower)")
-        elif "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"]:
-            # Gyro (agentionai): only where the sizes above do not fit; the smaller memory total, the 27.6 GB of Gyro-S,
-            # is VRAM + RAM together.  Gyro-M (35 GB) when this PC has that much, else Gyro-S.
-            model = "Gyro-M" if ram + vram >= models["Gyro-M"]["ram_gb"] else "Gyro-S"
+        elif "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"] + GYRO_ROOM_GB:
+            # Gyro (agentionai): only where the sizes above do not fit.  Their memory figure (Gyro-S 27.6 GB, Gyro-M 35 GB)
+            # is VRAM + RAM together and the system needs room beside it, so GYRO_ROOM_GB more is asked for here.
+            # Gyro-M when this PC has that much, else Gyro-S.
+            model = "Gyro-M" if ram + vram >= models["Gyro-M"]["ram_gb"] + GYRO_ROOM_GB else "Gyro-S"
             fam, why = "gyro", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but RAM + VRAM = {ram + vram:.0f} GB "
                                 f"holds {model} ({models[model]['ram_gb']} GB of memory in total; the quality is lower "
                                 "than the 2-3-bit sizes, and it needs the whole download on a fast SSD)")
