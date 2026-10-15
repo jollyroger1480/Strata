@@ -23,6 +23,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -194,6 +195,37 @@ class FileLock:
     def __enter__(self) -> "FileLock":
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+")
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            return self._blocking()
+        return self._polling()
+
+    def _blocking(self) -> "FileLock":
+        """A blocking flock(2), queued in the kernel like `flock -x` (so the other streams' waiters are served in order and
+        a polling tuner is not starved). The wait limit is a timer, not a loop."""
+        import fcntl
+        import signal
+
+        def on_alarm(signum, frame):  # noqa: ANN001
+            raise TimeoutError
+
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return self
+        except OSError:
+            self.log(f"waiting for the lock {self.path}")
+        old = signal.signal(signal.SIGALRM, on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, self.wait_s)
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            return self
+        except TimeoutError:
+            self._fh.close()
+            raise StartFailed("TIMEOUT", f"the lock {self.path} was not free within {int(self.wait_s)} s") from None
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+
+    def _polling(self) -> "FileLock":
         deadline = time.time() + self.wait_s
         told = False
         while True:
