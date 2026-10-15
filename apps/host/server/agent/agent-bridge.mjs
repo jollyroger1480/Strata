@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
-import { HarnessProcess, resolveHarness, redact } from './harness-runtime.mjs';
+import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { buildProfile, routeFor } from './profile.mjs';
 import { TurnProjector } from './events.mjs';
 
@@ -99,11 +99,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     const h = harnessInfo();
     if (!h.ok) throw new AgentUnavailable(h.reason, 'component-missing');
     mkdirSync(home, { recursive: true });
+    const stale = stopStaleAgent(join(root, 'harness.pid'));
+    if (stale) log(`agent · stopped a leftover Harness process (pid ${stale}) from an earlier run`);
     const patchFile = join(root, `profile-${profile.signature}.patch.yml`);
     writeFileSync(patchFile, profile.patch);
     const workdir = join(root, 'run');
     const hp = new HarnessProcess({
-      harness: h, home, patchFile, cwd: workdir, env: profile.env, nodePath, logFile: join(root, 'harness.log'),
+      harness: h, home, patchFile, cwd: workdir, env: profile.env, nodePath, logFile: join(root, 'harness.log'), pidFile: join(root, 'harness.pid'),
       onExit: exit => {
         log(`agent · the Harness process exited (code ${exit.code})`);
         if (rt?.hp === hp) { lastError = 'The agent process stopped.'; rt = null; }

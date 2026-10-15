@@ -254,3 +254,32 @@ test('A05c Stop pressed while the agent is still starting cancels the start, and
   const again = r.run('chat-a05c', 'SCRIPT:echo fine'); await again.promise;
   assert.equal(text(again.frames), 'fine');
 });
+
+test('a leftover agent from a host that died is stopped at the next start, and an unrelated PID is never touched', { skip }, async t => {
+  const { HarnessProcess, stopStaleAgent } = await import('../server/agent/harness-runtime.mjs');
+  const { buildProfile } = await import('../server/agent/profile.mjs');
+  const { writeFileSync } = await import('node:fs');
+  const { spawn } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'strata-stale-'));
+  t.after(() => cleanup(dir));
+  const profile = buildProfile({ local: [{ id: 'x', baseUrl: 'http://127.0.0.1:9/v1', modelId: 'm', context: 8192 }] });
+  const patchFile = join(dir, 'p.patch.yml'); writeFileSync(patchFile, profile.patch);
+  const pidFile = join(dir, 'harness.pid');
+  const hp = new HarnessProcess({ harness: resolveHarness({ env: process.env }), home: join(dir, 'home'), patchFile, cwd: join(dir, 'run'), env: profile.env, pidFile });
+  await hp.start({ timeoutMs: 90_000 });
+  const pid = hp.pid;
+  assert.ok(existsSync(pidFile), 'the agent records its PID');
+  // The host "dies": nothing calls stop(). The next start finds the record.
+  assert.equal(stopStaleAgent(pidFile), pid);
+  for (let i = 0; i < 50 && hp.exited === null; i++) await new Promise(x => setTimeout(x, 100));
+  assert.notEqual(hp.exited, null, 'the leftover agent was stopped');
+  assert.equal(existsSync(pidFile), false);
+
+  // A record that points at some other process must not kill it.
+  const bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  t.after(() => bystander.kill());
+  writeFileSync(pidFile, JSON.stringify({ pid: bystander.pid }));
+  assert.equal(stopStaleAgent(pidFile), null);
+  await new Promise(x => setTimeout(x, 300));
+  assert.equal(bystander.exitCode, null, 'an unrelated process is left alone');
+});

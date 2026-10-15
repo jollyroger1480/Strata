@@ -10,7 +10,7 @@
  * route change while idle), never a way to implement Stop.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const URL_PATTERN = /http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)/;
@@ -55,8 +55,8 @@ export class HarnessProcess {
   exited = null;
   #onExit;
 
-  constructor({ harness, home, patchFile, cwd, env = {}, nodePath = process.execPath, logFile = null, onExit = () => {} }) {
-    Object.assign(this, { harness, home, patchFile, cwd, extraEnv: env, nodePath, logFile });
+  constructor({ harness, home, patchFile, cwd, env = {}, nodePath = process.execPath, logFile = null, pidFile = null, onExit = () => {} }) {
+    Object.assign(this, { harness, home, patchFile, cwd, extraEnv: env, nodePath, logFile, pidFile });
     this.#onExit = onExit;
   }
 
@@ -94,6 +94,7 @@ export class HarnessProcess {
       child.on('error', e => { clearTimeout(timer); reject(e); });
     }).catch(async error => { await this.stop(); throw error; });
     this.info = info;
+    if (this.pidFile) { try { writeFileSync(this.pidFile, JSON.stringify({ pid: child.pid, at: new Date().toISOString() })); } catch { /* the record is a courtesy */ } }
     return info;
   }
 
@@ -110,7 +111,36 @@ export class HarnessProcess {
       setTimeout(() => { if (!this.exited) child.kill('SIGKILL'); }, graceMs).unref();
     }
     await Promise.race([done, new Promise(r => setTimeout(r, graceMs + 2000))]);
+    if (this.pidFile) rmSync(this.pidFile, { force: true });
   }
+}
+
+/** The command line of a running process, or null. Used only to confirm a recorded PID is still our agent. */
+function commandLineOf(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'win32') {
+    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  }
+  const r = spawnSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
+/**
+ * A host that died without stopping its agent leaves the agent running, still holding its sessions'
+ * writer locks, so the next start could not resume a chat. The agent records its PID; at the next start
+ * a recorded PID is stopped only when it is still a `dsh` web launch (never a reused PID).
+ */
+export function stopStaleAgent(pidFile) {
+  if (!existsSync(pidFile)) return null;
+  let pid = null;
+  try { pid = Number(JSON.parse(readFileSync(pidFile, 'utf8')).pid); } catch { /* unreadable record */ }
+  rmSync(pidFile, { force: true });
+  const cmd = commandLineOf(pid);
+  if (!cmd || !/apps[\\/]cli[\\/]lib[\\/]bin\.js/.test(cmd) || !/--profile web/.test(cmd)) return null;
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+  else { try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ } }
+  return pid;
 }
 
 /** Remove any occurrence of a secret value from text bound for a log. */
