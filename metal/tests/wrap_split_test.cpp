@@ -41,13 +41,16 @@ int main(int argc, char** argv) {
     const int lib = cx.compile({"wrap_probe.metal"});
     const mtl::Pipeline pipe = cx.pipeline(lib, "probe_copy");
     mtl::Buffer W = cx.wrap(map, bytes, span);
-    check(W.chunks && W.chunks->size() >= 2, "the file is wrapped as " + std::to_string(W.chunks ? W.chunks->size() : 0) + " chunks");
-    if (!W.chunks) return 1;
-    const size_t stride = W.stride;
-    check(stride == maxlen - span, "stride = maxBufferLength - span");
+    const bool split = (bool) W.chunks;
+    if (factor > 1.0) {
+        check(split && W.chunks->size() >= 2, "the file is wrapped as " + std::to_string(W.chunks ? W.chunks->size() : 0) + " chunks");
+        if (!split) return 1;
+        check(W.stride == maxlen - span, "stride = maxBufferLength - span");
+    }
+    const size_t stride = split ? W.stride : bytes;   // factor <= 1: one buffer, the same reads (a control)
 
     // starts of ranges bound at one offset: the file's start, either side of every chunk boundary, the last range
-    std::vector<size_t> starts = {0, 4096, pg};
+    std::vector<size_t> starts = {0, 4096, pg, bytes / 4 / pg * pg, bytes / 2 / pg * pg};
     for (size_t k = 1; k * stride < bytes; ++k)
         for (long d : {-(long) pg, 0L, (long) pg, 3L * (long) pg}) {
             const long s = (long) (k * stride) + d;
