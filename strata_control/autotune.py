@@ -33,6 +33,7 @@ from strata_control import engine_component, tune_knobs, tune_machine
 from strata_control.tune_session import RequestSet, RunResult, Session, StartFailed
 
 MIN_FREE_RAM_MIB = 3584            # 3.5 GiB left for the system at every start (6.5)
+EARLY_DROP = 0.05                  # a candidate this much slower than its own round's base is dropped after one round (run-to-run noise is 2-8%)
 STAGE_GAP_NOISY = 0.04             # an A/A gap above this: the machine is noisy (6.5)
 
 
@@ -322,7 +323,7 @@ class Tuner:
         long_tokens = 0
         if self.o.use == "coding" and self.o.mode == "thorough":
             long_tokens = min(28000, int(0.8 * self.ctx.context_tokens))
-        return RequestSet(warmups=2 if self.o.mode == "thorough" else 1, decodes=3, decode_tokens=200,
+        return RequestSet(warmups=2 if self.o.mode == "thorough" else 1, decodes=5, decode_tokens=200,
                           pp_tokens=4096 if self.ctx.context_tokens >= 6000 else 1024, long_tokens=long_tokens)
 
     def _run_stages(self) -> None:
@@ -443,7 +444,7 @@ class Tuner:
             for p in list(alive):
                 b, c = round_runs[rnd].get("base"), round_runs[rnd].get(p.arm.id)
                 m_b, m_c = (metric(b, o.use) if b else None), (metric(c, o.use) if c else None)
-                if m_b and m_c and m_c / m_b < 1.0 - o.margin:
+                if m_b and m_c and m_c / m_b < 1.0 - max(o.margin, EARLY_DROP):
                     by_id[p.arm.id].status = "dropped"
                     by_id[p.arm.id].reason = f"slower by {100 * (1 - m_c / m_b):.1f}% in round {rnd + 1}"
                     alive = [x for x in alive if x.arm.id != p.arm.id]
@@ -558,6 +559,8 @@ class Tuner:
             else:
                 r.outcome = "default_confirmed"
                 r.message = "Your current settings are already the fastest we found. Nothing was changed."
+                if r.noise.get("noisy"):
+                    r.message += " (The PC was busy while measuring, so a small gain could be hidden.)"
         r.settings = {"args": chosen_args, "env": chosen_env, "per_request": per_request_chosen}
         cls, fields = "exact", []
         for rep in arms:
