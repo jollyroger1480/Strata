@@ -84,6 +84,13 @@ mod job {
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn GetCurrentProcess() -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
+        fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
+    }
+
+    /// Is this process inside any job object? (The self-test asks, so an installed build proves it is contained.)
+    pub fn current_process_in_a_job() -> bool {
+        let mut result = 0i32;
+        unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut result) != 0 && result != 0 }
     }
 
     pub struct Job(Handle);
@@ -140,6 +147,18 @@ mod job {
 /// process ends, by any route, and that is the moment the job ends what is left in it.
 #[cfg(windows)]
 static APP_JOB: std::sync::OnceLock<job::Job> = std::sync::OnceLock::new();
+
+/// Is the app inside a job object right now? Always false off Windows.
+fn app_is_contained() -> bool {
+    #[cfg(windows)]
+    {
+        job::current_process_in_a_job()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// Put this process (and so everything it starts) in a kill-on-close job. True if it is contained now.
 fn contain_app() -> bool {
@@ -607,6 +626,11 @@ fn run_self_test(report_path: &str) -> i32 {
             return write_self_test_report(report_path, steps, &e);
         }
     };
+
+    // Closing must always end what the app started: on Windows the shell sits in a kill-on-close job object.
+    if cfg!(windows) {
+        record("shell-contained-in-kill-on-close-job", app_is_contained(), "IsProcessInJob".into());
+    }
 
     let port = match pick_port() {
         Ok(p) => p,
