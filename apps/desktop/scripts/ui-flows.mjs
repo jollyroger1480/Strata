@@ -30,7 +30,7 @@ const nodeExe = resolve(args.node ?? join(staged, 'node', process.platform === '
 const work = mkdtempSync(join(tmpdir(), 'strata-ui-flows-'));
 const shots = resolve(args.shots ?? join(work, 'shots'));
 mkdirSync(shots, { recursive: true });
-const only = new Set(String(args.only ?? 'download,models,tune,fail,theme').split(','));
+const only = new Set(String(args.only ?? 'download,models,tune,fail,theme,restart').split(','));
 const isWin = process.platform === 'win32';
 const { chromium } = await import(pathToFileURL(join(repoHost, 'node_modules/playwright-core/index.mjs')).href).catch(() => import('playwright-core'));
 const CHROME = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find(existsSync);
@@ -139,7 +139,7 @@ async function scenario(name, { installed = false, env = {} } = {}, body) {
     if (made.status !== 0) throw new Error('tokenizer fixture: ' + made.stderr);
     writeFileSync(join(dirs.install, 'strata-iq3_s.json'), JSON.stringify({ exe: 'component:strata-engine', backend: 'cuda', tokenizer: tok, args: ['--max-context', '32768', '--pool-workers', '12'], cwd: dir, model_name: 'stub', host: '127.0.0.1', port: 0, kv: 'int8' }));
   }
-  const port = await freePort(), base = `http://127.0.0.1:${port}`;
+  const port = env.FIXED_PORT ? Number(env.FIXED_PORT) : await freePort(), base = `http://127.0.0.1:${port}`;
   const host = spawn(nodeExe, [join(repoHost, 'server', 'index.mjs')], { cwd: repoHost, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     env: { ...baseEnv, STRATA_PORT: String(port), STRATA_DIST: join(repoHost, 'dist'), STRATA_PACKAGED: '1', STRATA_REAL_ENGINE: '1', STRATA_NO_ACQUIRE: '1', STRATA_CONTROL_DIR: control, STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()) } });
   let log = ''; host.stdout.on('data', c => { log += c; }); host.stderr.on('data', c => { log += c; });
@@ -333,6 +333,34 @@ await scenario('fail', { installed: true, env: { FAKE_ENGINE_FAIL: '1' } }, asyn
   await shot(page, '3-tune-error-small-window');
   void api;
 });
+
+// ------------------------------------------------------------------------------------------------ restart
+// The app keeps its theme, text size, language and chat list in the browser's storage, which belongs to the window's origin
+// (127.0.0.1:<port>). The shell now uses the same port every launch: stop the host, start it again on that port, reopen the
+// window with the same browser profile, and everything is still there.
+if (only.has('restart')) {
+  console.log('--- restart');
+  const fixed = await freePort();
+  const profile = join(work, 'browser-profile');
+  const run = async (body) => scenario('restart', { env: { FIXED_PORT: String(fixed) } }, async ctx => {
+    const context = await chromium.launchPersistentContext(profile, { executablePath: CHROME, headless: true, viewport: { width: 1200, height: 800 } });
+    try { await body(context, ctx); } finally { await context.close(); }
+  });
+  only.add('restart');
+  await run(async (context, { base }) => {
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.goto(base, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => { localStorage.setItem('strata.prefs.v2', JSON.stringify({ theme: 'dark', contentFontSize: 19, language: 'de' })); localStorage.setItem('strata.sessions.v1', JSON.stringify([{ id: 'chat-1', title: 'My chat' }])); });
+  });
+  await run(async (context, { base }) => {
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.goto(base, { waitUntil: 'domcontentloaded' });
+    const saved = await page.evaluate(() => ({ prefs: JSON.parse(localStorage.getItem('strata.prefs.v2') || '{}'), chats: localStorage.getItem('strata.sessions.v1'), theme: document.documentElement.dataset.theme }));
+    check(saved.prefs.contentFontSize === 19 && saved.prefs.language === 'de', 'text size and language survive a restart on the same port', JSON.stringify(saved.prefs));
+    check(saved.theme === 'dark', 'the theme survives too', saved.theme);
+    check(/My chat/.test(saved.chats ?? ''), 'and the chat list', saved.chats);
+  });
+}
 
 // ------------------------------------------------------------------------------------------------ theme
 await scenario('theme', {}, async ({ base, browser, shot }) => {

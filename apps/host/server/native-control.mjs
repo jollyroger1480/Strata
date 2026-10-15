@@ -1,7 +1,7 @@
 /** Native Strata control plane. All user actions are explicit; opening the UI only reads state. */
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, copyFileSync, renameSync, unlinkSync, chmodSync, statSync, accessSync, constants } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync, copyFileSync, renameSync, unlinkSync, chmodSync, statSync, accessSync, constants } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
@@ -45,6 +45,16 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  /* A start that ends with `server_exited` carries the engine's last log line with it; the app turns the code into words and
     keeps this text under "Details" (src/lib/plain-errors.ts). */
  function humanStartError(error){const text=String(error?.message??error),tail=error?.output?.log_tail;return tail&&!text.includes(tail)?`${text}: ${tail}`:text;}
+ /* A run config the app's install job wrote names files inside the app's own Control folder (`cwd`, `--expert-profile`). When the
+    app is reinstalled to another folder, or an update moves Control, those absolute paths point at nothing and every installed
+    model breaks. At every read of the installed models, a path that ends up inside a folder called `control` that no longer
+    exists is pointed at the Control this app has now, when the file is there. The config is saved (with a .bak) only then. */
+ function repairControlPaths(dir){if(!packaged||!dir||!existsSync(dir))return;let names=[];try{names=readdirSync(dir).filter(n=>/^strata-[a-z0-9_-]+\.json$/i.test(n));}catch{return;}
+  const here=control.control.dir,inside=/^(.+?[\/]control)(?=[\/]|$)(.*)$/i;
+  const fix=value=>{if(typeof value!=='string')return value;const m=value.match(inside);if(!m||existsSync(value)||resolve(m[1]).toLowerCase()===resolve(here).toLowerCase())return value;const candidate=join(here,m[2]);return existsSync(candidate)?candidate:value;};
+  for(const name of names){const path=join(dir,name),config=readJson(path,null);if(!config||typeof config!=='object')continue;
+   const next={...config,...(config.cwd!==undefined?{cwd:fix(config.cwd)}:{}),...(Array.isArray(config.args)?{args:config.args.map(fix)}:{})};
+   if(JSON.stringify(next)!==JSON.stringify(config)){try{writeModelConfig(path,next);}catch{/* read-only folder: the load reports it */}}}}
  function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;return {...entry,dataFolder,visionEnabled:cfg.ui_vision_enabled??[...instances.values()].some(i=>i.model===entry.model&&i.status==='ready'&&i.vision),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
  function installRoot(){const found=[preferences.installDir,packagedInstall,snapshot.installDir].find(d=>d&&existsSync(d));if(found)return realpathSync(found);mkdirSync(defaultInstall(),{recursive:true});return realpathSync(defaultInstall());}
  function repo(){if(packaged)return installRoot();const path=realpathSync(preferences.repo);if(!existsSync(join(path,'setup.py'))||!existsSync(join(path,'tools/strata_mcp.py'))||!existsSync(join(path,'serve/server.py')))throw new Error('Choose the Strata repository folder containing setup.py and tools/strata_mcp.py.');return path;}
@@ -67,8 +77,10 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  }
  async function controlTool(name){
   if(name==='strata_status'){
+   for(const dir of [preferences.installDir,packagedInstall,installRoot()])repairControlPaths(dir);
    let list=await control.installedModels({installDir:preferences.installDir&&existsSync(preferences.installDir)?preferences.installDir:null});
    if(!preferences.installDir&&!(list.models??[]).length){const own=installRoot();if(realpathSync(list.install_dir)!==own)list=await control.installedModels({installDir:own});}
+   if(!preferences.installDir&&list.install_dir&&![preferences.installDir,packagedInstall,installRoot()].some(d=>d&&resolve(d).toLowerCase()===resolve(list.install_dir).toLowerCase())){repairControlPaths(list.install_dir);list=await control.installedModels({installDir:list.install_dir});}
    packagedInstall=list.install_dir;
    const engine=await control.engine();
    const installer=await mcpCall('strata_status',{hardware:true}).catch(error=>({error:error.message}));
@@ -140,10 +152,10 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(error){const said=humanStartError(error);instance.status='error';instance.error=said;emit();throw new Error(said);}
   } else {
-  proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
-  instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
-  for(const stream of [proc.stdout,proc.stderr])stream.on('data',chunk=>{const lines=chunk.toString().split('\n').filter(Boolean);lines.forEach(line=>append(id,line.replaceAll(key,'[redacted]')));job.summary=lines.at(-1)??job.summary;emit();});
-  proc.on('error',error=>{instance.status='error';instance.error=error.message;emit();});proc.on('exit',code=>{if(instances.has(id)&&instance.status!=='unloading'){instance.status='error';instance.error=`Engine stopped${code===null?'':` (exit ${code})`}. Open diagnostics or reload.`;emit();}});emit();
+  proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
+  instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
+  for(const stream of [proc.stdout,proc.stderr])stream.on('data',chunk=>{const lines=chunk.toString().split('\n').filter(Boolean);lines.forEach(line=>append(id,line.replaceAll(key,'[redacted]')));job.summary=lines.at(-1)??job.summary;emit();});
+  proc.on('error',error=>{instance.status='error';instance.error=error.message;emit();});proc.on('exit',code=>{if(instances.has(id)&&instance.status!=='unloading'){instance.status='error';instance.error=`Engine stopped${code===null?'':` (exit ${code})`}. Open diagnostics or reload.`;emit();}});emit();
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);

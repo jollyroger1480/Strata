@@ -521,7 +521,7 @@ Function .onInit
         StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
-      StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
+      StrCpy $INSTDIR "$LOCALAPPDATA\Programs\${PRODUCTNAME}"
     !endif
 
     Call RestorePreviousInstallLocation
@@ -651,12 +651,29 @@ Section WebView2
   ${EndIf}
 SectionEnd
 
+; STRATA-MIGRATE-BEGIN
+; An earlier build installed the app into %LOCALAPPDATA%\Strata, the folder that also holds the user's data (components, install,
+; procs, runtime, time-skip). Remove only the app files that build put there; everything else stays.
+!macro StrataMigrateOldInstall OLDDIR NEWDIR
+  StrCmp "${OLDDIR}" "${NEWDIR}" +8
+  IfFileExists "${OLDDIR}\strata-desktop.exe" 0 +7
+    Delete "${OLDDIR}\strata-desktop.exe"
+    Delete "${OLDDIR}\uninstall.exe"
+    RMDir /r "${OLDDIR}\host"
+    RMDir /r "${OLDDIR}\node"
+    RMDir /r "${OLDDIR}\control"
+    RMDir "${OLDDIR}"
+!macroend
+; STRATA-MIGRATE-END
+
 Section Install
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
+
+  !insertmacro StrataMigrateOldInstall "$LOCALAPPDATA\${PRODUCTNAME}" "$INSTDIR"
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
@@ -941,6 +958,8 @@ FunctionEnd
 Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
   StrCmp $4 "" restore_done 0
+  ; %LOCALAPPDATA%\Strata holds the user's engines, model configs and tuning: never an app folder
+  StrCmp $4 "$LOCALAPPDATA\${PRODUCTNAME}" restore_done 0
   Push $4
   Push "$LOCALAPPDATA\Temp"
   Call StrIsUnder

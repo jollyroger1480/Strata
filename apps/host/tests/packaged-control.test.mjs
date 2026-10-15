@@ -306,3 +306,25 @@ test('packaged: an engine that stops while loading keeps the code and the last e
     assert.match(job.error, /^server_exited: memory guard: 5\.1 GiB free/);
   } finally { await f.native.close(); f.cleanup(); }
 });
+
+test('packaged: a run config that points into an old Control folder is repaired to this Control (a reinstall or an update moved it)', async () => {
+  const f = packagedFixture();
+  try {
+    const here = join(f.root, 'control');
+    mkdirSync(join(here, 'data'), { recursive: true });
+    writeFileSync(join(here, 'data', 'expert-profile.bin'), 'profile');
+    const path = join(f.install, 'strata-iq2_xs.json');
+    const old = 'C:/Users/Alex/AppData/Local/Temp/strata-life-install/control';
+    writeFileSync(path, JSON.stringify({ exe: 'component:strata-engine', cwd: old, args: ['--pack', 'D:/Strata/packs/x', '--expert-profile', old + '/data/expert-profile.bin', '--max-context', '32768'], model_name: 'x', port: 8080 }));
+    await f.native.refresh(true);
+    const repaired = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(repaired.cwd.toLowerCase(), here.toLowerCase());
+    assert.equal(repaired.args[repaired.args.indexOf('--expert-profile') + 1].toLowerCase(), join(here, 'data', 'expert-profile.bin').toLowerCase());
+    assert.equal(repaired.args[1], 'D:/Strata/packs/x', 'paths outside Control are left alone');
+    assert.ok(existsSync(path + '.bak'), 'the old config is kept');
+    // a config that is already right, or whose new target is not there, is not touched
+    const before = readFileSync(path, 'utf8');
+    await f.native.refresh(true);
+    assert.equal(readFileSync(path, 'utf8'), before);
+  } finally { await f.native.close(); f.cleanup(); }
+});
