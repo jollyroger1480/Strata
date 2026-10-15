@@ -368,7 +368,7 @@ class Tuner:
             n_arms = len(planned)
         else:
             left = int((o.budget_s - self._elapsed()) / max(1.0, self._avg_run()))
-            fixed = (per_arm - 1) + 1 + 2                  # extra base rounds, the final base, a combined-confirm margin
+            fixed = (per_arm - 1) + 1                      # extra base rounds, the final base
             n_arms = min(len(planned), max(0, (left - fixed) // per_arm))
         for p in planned[n_arms:]:
             skipped.append({"id": p.arm.id, "label": p.arm.label, "reason": "left out to stay inside the time you chose"})
