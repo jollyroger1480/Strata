@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { flattenPnpm } from './flatten-pnpm.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -32,6 +33,8 @@ const run = (cmd, argv, cwd, extra = {}) => {
   if (r.status !== 0) { console.error(`${cmd} ${argv.join(' ')} failed (${r.status ?? r.error})`); process.exit(1); }
 };
 
+// The output folder in the repo carries a .gitignore that keeps the staged files out of git: keep it across the clean-up.
+const keepIgnore = existsSync(join(out, '.gitignore')) ? readFileSync(join(out, '.gitignore')) : null;
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 const pnpm = platform === 'win32' ? ['corepack.cmd', ['pnpm']] : ['corepack', ['pnpm']];
@@ -83,6 +86,11 @@ while (queue.length) {
 }
 if (added.length) console.log(`peer packages added: ${added.join(', ')}`);
 
+// --- one real folder per package, no links -------------------------------------------------------------------------------
+// The installer copies files; pnpm's layout is links. See flatten-pnpm.mjs. The two packages the app does not use are never copied.
+const flat = flattenPnpm(out, { skip: /libreoffice-kit|sherpa-onnx/i });
+console.log(`flattened: ${flat.packages} placed (${flat.nested} nested for a second version)`);
+
 // --- prune ------------------------------------------------------------------------------------------------------------
 const OTHER_OS = platform === 'win32' ? /(^|[\\/._-])(darwin|linux|android|freebsd|musl)([\\/._-]|$)/i
   : platform === 'darwin' ? /(^|[\\/._-])(win32|linux|android|freebsd|musl)([\\/._-]|$)/i
@@ -126,6 +134,8 @@ writeFileSync(join(out, 'BUNDLE.json'), JSON.stringify({
   bytes: total.bytes, files: total.files, entry: 'apps/cli/lib/bin.js', builtAt: new Date().toISOString(),
   note: 'Pruned production install (pnpm deploy --prod). No package manager runs on the user\'s PC.',
 }, null, 2));
+
+if (keepIgnore) writeFileSync(join(out, '.gitignore'), keepIgnore);
 
 // --- proof: the staged copy answers --version and boots the web profile once ----------------------------------------
 const bin = join(out, 'apps', 'cli', 'lib', 'bin.js');
