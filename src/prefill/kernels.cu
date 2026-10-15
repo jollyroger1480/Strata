@@ -2129,10 +2129,11 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
     // measured-fast path on Volta; the chunked recurrence is opt-in (STRATA_GDN_CHUNK=1/2) - correct and
     // measured, but slower than this on the V100 (bench/gdn_chunk_bench).  STRATA_GDN_REC_WARP=0 restores
     // the old pipelined kernel bit-for-bit.
-    // STRATA_GDN_REC_WARP: unset -> the chain-split kernel on Volta (measured +6..9%, FP32-level), 0 -> the
-    // old pipelined kernel bit-for-bit, 1 -> the sync-free bit-exact control, 2 -> the chain split forced.
+    // STRATA_GDN_REC_WARP (Volta only, opt-in): unset or 0 -> the pipelined kernel (the default; the chain split changes the
+    // summation order, so it is not the default without a V100 check here), 2 -> the chain-split kernel (measured +6..9%, FP32-level), the
+    // old pipelined kernel bit-for-bit is 0, 1 -> the sync-free bit-exact control.
     const char* warp_v = std::getenv("STRATA_GDN_REC_WARP");
-    const int warp_env = warp_v && *warp_v ? std::atoi(warp_v) : (volta ? 2 : 0);
+    const int warp_env = warp_v && *warp_v ? std::atoi(warp_v) : 0;
     const bool warp_rec = !serial && !chunked && T > 0 && volta && warp_env != 0;
     if (chunked && T >= 64) {
         // the chunked prefix + the recurrence over the tail (< 64 tokens), then the out norm over all of T
