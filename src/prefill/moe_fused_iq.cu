@@ -1153,7 +1153,7 @@ const DevInfo& dev_info() {
     }
     d.ok = setup_one<T_IQ2_XXS, true>(occ) && setup_one<T_IQ2_XS, true>(occ) && setup_one<T_IQ2_S, true>(occ) &&
            setup_one<T_IQ3_XXS, true>(occ) && setup_one<T_IQ3_S, true>(occ) && setup_one<T_IQ4_XS, true>(occ) &&
-           setup_one<T_Q2_0, true>(occ) && setup_one<T_Q2_0, false>(occ) && setup_one<T_IQ4_NL, false>(occ);
+           setup_one<T_Q2_0, false>(occ) && setup_one<T_IQ4_NL, false>(occ);   // (Q2_0 gate/up is the Turing opt-in's only)
     d.occ = d.ok ? occ : 1;
     cudaGetLastError();
 #endif
@@ -1172,7 +1172,7 @@ bool kq_on() {
 bool gu_covered(int t) {
     return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS
 #if !defined(__HIPCC__)
-           || t == T_Q2_0   // the canonical Q2_0 pack's gate/up (native_kernel's 64-value block stages)
+           || (t == T_Q2_0 && dev_info().t75)   // the canonical Q2_0 pack's gate/up: Turing opt-in only (sm_80+ keeps MMQ for it)
 #endif
 #if defined(__HIPCC__)
            || ((t == T_Q4_K || t == T_Q5_K) && kq_on())   // the gfx11 kernels only
