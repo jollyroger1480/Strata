@@ -56,8 +56,8 @@ function prune(dir) {
         rmSync(p, { recursive: true, force: true }); removed++; continue;
       }
       prune(p);
-    } else if (DROP_FILES.test(e.name) && !/^(README|LICENSE|NOTICE)/i.test(e.name) && !/\.d\.ts$/.test(e.name) ? true : false) {
-      if (!/^(LICENSE|THIRD_PARTY|NOTICE)/i.test(e.name)) { rmSync(p, { force: true }); removed++; }
+    } else if (DROP_FILES.test(e.name) && !KEEP_FILES.test(e.name)) {
+      rmSync(p, { force: true }); removed++;
     }
   }
 }
