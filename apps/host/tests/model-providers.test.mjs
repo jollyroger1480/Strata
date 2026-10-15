@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModelProviders, normalizeBaseUrl, PROVIDER_CATALOG } from '../server/model-providers.mjs';
 import { createMockModelApi } from './mock-model-api.mjs';
+import { assertPrivate } from './helpers/assert-private.mjs';
 
 test('connections persist, redact keys, retain unchanged keys, and validate endpoints/models', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'strata-providers-'));
@@ -14,7 +15,7 @@ test('connections persist, redact keys, retain unchanged keys, and validate endp
   const saved = service.save(draft).connections[0];
   assert.equal(saved.baseUrl, 'http://192.168.1.20:1234/v1');
   assert.equal(saved.apiKeySet, true); assert.equal('apiKey' in saved, false);
-  assert.equal(statSync(join(directory, 'model-providers.json')).mode & 0o777, 0o600);
+  assertPrivate(join(directory, 'model-providers.json'));
   service.save({ ...saved, apiKey: '' });
   assert.equal(JSON.parse(readFileSync(join(directory, 'model-providers.json')))[0].apiKey, 'test-key');
   const reopened = createModelProviders({ directory });

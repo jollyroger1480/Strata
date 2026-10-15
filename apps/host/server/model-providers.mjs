@@ -1,7 +1,8 @@
 /** Saved API connections. Secrets never leave the host's private credentials file. */
-import { existsSync, readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { makePrivate } from './private-file.mjs';
 
 export const PROVIDER_CATALOG = [
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', protocol: 'openai-responses' },
@@ -45,13 +46,13 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     // Do not silently erase connections if a credentials file needs repair.
     const saved = JSON.parse(readFileSync(file, 'utf8'));
     if (!Array.isArray(saved)) fail('The model connections file is invalid.');
-    connections = saved; chmodSync(file, 0o600);
+    connections = saved; makePrivate(file);
   }
   function list() { return { catalog: PROVIDER_CATALOG, connections: connections.map(publicConnection) }; }
   function persist(next) {
     const temp = `${file}.${randomUUID()}.tmp`;
     writeFileSync(temp, JSON.stringify(next, null, 2), { mode: 0o600 });
-    renameSync(temp, file); chmodSync(file, 0o600);
+    makePrivate(temp); renameSync(temp, file); makePrivate(file);
     connections = next; changed(list()); return list();
   }
   function draft(body) {
