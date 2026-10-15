@@ -22,10 +22,10 @@ export function GuidedSetup() {
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
     const saved = !setup?.complete && !setup?.choices?.onboarding?.manual ? setup?.choices?.onboarding : undefined;
     const [step, setStep] = useState(saved?.manual || setup?.complete ? 1 : saved?.step ?? 1);
-    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation.family ?? native?.catalog?.families[0]?.family ?? '');
+    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation?.family ?? native?.catalog?.families?.[0]?.family ?? '');
     const initialFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family));
-    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
-    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation.context ?? 32768);
+    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation?.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
+    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
     const [vision, setVision] = useState(saved?.vision ?? false), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
     const [installJobId, setInstallJobId] = useState(saved?.installJobId ?? ''), [tuneJobId, setTuneJobId] = useState(saved?.tuneJobId ?? '');

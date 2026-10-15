@@ -36,10 +36,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(expert && gpus.length ? { gpus: gpus.join(',') } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, gpus.join(','), expert, multiple]);
     const downloadValues = { ...values, vision: selectedSize?.images ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
     useEffect(() => { if (!native?.catalog || family)
-        return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const f = loadedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
+        return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const f = loadedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
         setFamily(f.family);
         setSize(f.sizes.find(s => s.id === current?.model || s.model === rec.model)?.id ?? f.sizes[0]?.id ?? '');
-        setContext(rec.context ?? 32768);
+        setContext(('context' in rec ? rec.context : undefined) ?? 32768);
     } }, [native?.catalog]);
     useEffect(() => { if (presetPending.current) {
         presetPending.current = false;
