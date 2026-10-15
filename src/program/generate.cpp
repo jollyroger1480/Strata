@@ -31,6 +31,7 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
+#include "strata/core/pin_budget.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -5223,8 +5224,16 @@ int main(int argc, char** argv) {
                 arena_src.set_pin_priority(pin_cand, pin_nonres);
             }
         }
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
-                            o.shared_expert_arena)) {
+        // The arena pins until the OS refuses; on Windows that leaves no page-locked memory for the small buffers the
+        // engine allocates after it (the verify window's staging: "mapped staging allocation failed", exit 1).  Keep a
+        // reserve while the arena pins and hand it back after (pin_budget.hpp).
+        strata::core::pin_reserve_take();
+        const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+                                             o.shared_expert_arena);
+        strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
+        strata::core::pin_sim_report("after the expert arena");
+        strata::core::pin_reserve_release_soft();
+        if (!arena_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -10027,6 +10036,8 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
+        strata::core::pin_sim_report("at READY");
+        strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;

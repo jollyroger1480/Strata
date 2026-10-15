@@ -968,6 +968,7 @@ public:
     const std::string& note() const { return note_; }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }
+    uint64_t pinned_arena_bytes() const { return pinned_bytes_; }   ///< what the driver registered (the pinned prefix, or the total by need)
     double load_gib_per_second() const { return gib_per_s_; }
     // Loader fix: the load, split.  `load_seconds()` is the wall clock of the load loop; the other two are
     // sums over the reader threads (see LoadStats), so on their own they say how much of that wall was spent
