@@ -188,13 +188,22 @@ test('A08 over HTTP: two chats stream at the same time without mixing', { skip }
   assert.notEqual(a.find(f => f.type === 'start').sessionId, b.find(f => f.type === 'start').sessionId);
 });
 
+test('/goal over HTTP: shown, set with rounds that stream into the chat, and refused when one is unfinished', { skip }, async t => {
+  const s = await setup(t);
+  const status = frames => frames.filter(f => f.type === 'delta').map(f => f.text).join('');
+  assert.match(status(await s.send('chat-h-goal', '/goal')), /No goal is set/);
+  assert.match(status(await s.send('chat-h-goal', '/goal edit nothing')), /no goal in this chat yet/i);
+  assert.equal((await s.host.status()).activeTurns, 0);
+});
+
 test('without the agent component the chat says so and still uses the model the user chose', async t => {
   const s = await setup(t, { harness: null });
   const status = await s.host.status();
   assert.equal(status.state, 'unavailable'); assert.match(status.reason, /coding assistant/i);
   const frames = await s.send('chat-h-fallback', 'SCRIPT:hello');
   const notice = frames.find(f => f.type === 'notice');
-  assert.equal(notice.code, 'agent-unavailable'); assert.match(notice.message, /without tools/);
+  assert.equal(notice.code, 'agent-unavailable'); assert.match(notice.message, /coding assistant isn.t installed/); assert.match(notice.message, /Chat works without it/);
+  assert.match(notice.details, /agent component/, 'the technical text is kept apart as details');
   assert.equal(frames.filter(f => f.type === 'agent-tool').length, 0);
   assert.match(text(frames), /Hello from the scripted worker/);
   // The direct path used the API model the chat picked, nothing else.
