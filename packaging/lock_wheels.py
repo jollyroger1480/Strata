@@ -9,6 +9,7 @@ packages) by letting pip resolve and download the wheels for the target's tags a
 
     python packaging/lock_wheels.py --target windows-x86_64          # writes packaging/locks/...
     python packaging/lock_wheels.py --target linux-x86_64 --check    # fails when the committed lock differs
+    python packaging/lock_wheels.py --target linux-x86_64 --download wheelhouse/   # exactly the locked wheels
 
 Run it when a pin in requirements.txt changes, review the diff, commit. Building an archive never runs it.
 """
@@ -116,11 +117,30 @@ def build_lock(target: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def download_locked(target: str, dest: Path) -> int:
+    """Fetch exactly the wheels the committed lock names (pip verifies every hash) into `dest`, for a build on a
+    machine with no internet: package_terminal.py --wheelhouse dest. Works from any host for any target."""
+    spec = TARGETS[target]
+    dest.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "pip", "download", "--quiet", "--only-binary=:all:", "--require-hashes", "--no-deps",
+           "--python-version", PYTHON, "--implementation", "cp", "--abi", ABI, "-d", str(dest),
+           "-r", str(lock_path(target))]
+    for p in spec["platforms"]:
+        cmd += ["--platform", p]
+    subprocess.run(cmd, check=True)
+    count = len(list(dest.glob("*.whl")))
+    print(f"{count} wheels in {dest}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", choices=sorted(TARGETS), required=True)
     ap.add_argument("--check", action="store_true", help="compare with the committed lock instead of writing")
+    ap.add_argument("--download", metavar="DIR", help="fetch the locked wheels into DIR (hash-checked) and stop")
     a = ap.parse_args()
+    if a.download:
+        return download_locked(a.target, Path(a.download))
     text = build_lock(a.target)
     path = lock_path(a.target)
     if a.check:

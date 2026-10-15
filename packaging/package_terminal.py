@@ -167,14 +167,17 @@ def lock_names(lock: Path) -> dict[str, str]:
     return out
 
 
-def install_locked(py: Path, lock: Path, root: Path) -> dict[str, str]:
-    """pip install --require-hashes into the bundled interpreter, then check what is there is exactly the lock."""
+def install_locked(py: Path, lock: Path, root: Path, wheelhouse: Path | None = None) -> dict[str, str]:
+    """pip install --require-hashes into the bundled interpreter, then check what is there is exactly the lock.
+    With a wheelhouse (lock_wheels.py --download) nothing is fetched at all: pip reads the wheels from the folder and
+    still checks every hash against the lock."""
     env = {**os.environ, "PIP_NO_INPUT": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1",
            "PIP_CONFIG_FILE": os.devnull}
     for name in ("PYTHONHOME", "PYTHONPATH", "PIP_REQUIRE_VIRTUALENV", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
         env.pop(name, None)
+    source = ["--no-index", "--find-links", str(wheelhouse)] if wheelhouse else []
     subprocess.run([str(py), "-m", "pip", "install", "--isolated", "--no-cache-dir", "--no-warn-script-location",
-                    "--require-hashes", "--no-deps", "--only-binary=:all:", "-r", str(lock)],
+                    "--require-hashes", "--no-deps", "--only-binary=:all:", *source, "-r", str(lock)],
                    check=True, cwd=str(root), env=env)
     subprocess.run([str(py), "-m", "pip", "check"], check=True, cwd=str(root), env=env)
     listed = subprocess.run([str(py), "-m", "pip", "list", "--format=json", "--isolated"], check=True,
@@ -237,6 +240,8 @@ def main() -> int:
                     help="skip the locked install (layout checks only; the result is NOT distributable)")
     ap.add_argument("--keep-staging", action="store_true")
     ap.add_argument("--cache", default=None, help="where the pinned interpreter archive is cached")
+    ap.add_argument("--wheelhouse", default=None,
+                    help="install the locked wheels from this folder (lock_wheels.py --download) and fetch nothing")
     args = ap.parse_args()
 
     target = args.target or host_target()
@@ -297,7 +302,7 @@ def main() -> int:
         removed: list[str] = []
         if not args.skip_deps:
             print("installing the locked runtime wheels into the bundled interpreter (build time only)")
-            installed = install_locked(py, lock, root)
+            installed = install_locked(py, lock, root, Path(args.wheelhouse).resolve() if args.wheelhouse else None)
             removed = drop_build_path_launchers(root, staging, target)
             # nothing the bundle writes while it is built may stay: compiled files are rebuilt on first use
             for cache_dir in list(root.rglob("__pycache__")):
