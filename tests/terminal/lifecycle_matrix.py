@@ -35,6 +35,7 @@ from strata_control import components, engine_component as ec, procs, profiles, 
 
 WINDOWS = os.name == "nt"
 LINUX = sys.platform.startswith("linux")
+BACKEND = "metal" if sys.platform == "darwin" else "cuda"      # the family the fake package claims on this OS
 
 # Control words (STOP) are taken on a thread of their own, as the real engine does; everything else in order.
 FAKE_ENGINE = r'''
@@ -99,7 +100,7 @@ def port_open(port: int) -> bool:
 
 
 def install_fake_engine(components_dir: Path) -> Path:
-    folder = components_dir / "engine" / f"0.1.45-{components.host_platform()}-cuda"
+    folder = components_dir / "engine" / f"0.1.45-{components.host_platform()}-{BACKEND}"
     folder.mkdir(parents=True)
     (folder / "engine_main.py").write_text(FAKE_ENGINE, encoding="utf-8")
     if WINDOWS:
@@ -113,7 +114,7 @@ def install_fake_engine(components_dir: Path) -> Path:
               "bytes": (folder / name).stat().st_size} for name in (entry, "engine_main.py")]
     (folder / ec.MANIFEST).write_text(json.dumps({
         "schema_version": 1, "id": "strata-engine", "version": "0.1.45", "platform": components.host_platform(),
-        "backend": "cuda", "entrypoint": entry, "files": files}), encoding="utf-8")
+        "backend": BACKEND, "entrypoint": entry, "files": files}), encoding="utf-8")
     return folder
 
 
@@ -141,7 +142,7 @@ class Rig:
         self.state = root / "state"
         self.state.mkdir()
         self.env = {**os.environ, "STRATA_PROFILE_DIR": str(root / "profiles"), "STRATA_RUNTIME_DIR": str(root / "runtime"),
-                    "STRATA_COMPONENTS_DIR": str(self.components), "STRATA_ENGINE_BACKEND": "cuda",
+                    "STRATA_COMPONENTS_DIR": str(self.components), "STRATA_ENGINE_BACKEND": BACKEND,
                     "STRATA_NO_ACQUIRE": "1", "FAKE_ENGINE_MARK": str(self.mark), "LOCALAPPDATA": str(self.state),
                     "XDG_STATE_HOME": str(self.state), "PYTHONPATH": str(ROOT), "PYTHONUNBUFFERED": "1",
                     "FAKE_ENGINE_SLOW_STEPS": str(slow_steps)}
@@ -168,7 +169,7 @@ class Rig:
             (tokenizer / "merges.txt").write_text("a b")
             (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
             self.config = root / "run.json"
-            self.config.write_text(json.dumps({"exe": "component:strata-engine", "backend": "cuda",
+            self.config.write_text(json.dumps({"exe": "component:strata-engine", "backend": BACKEND,
                                                "tokenizer": str(tokenizer), "args": [], "cwd": str(root),
                                                "model_name": "fake", "host": "127.0.0.1", "port": self.port}),
                                    encoding="utf-8")
@@ -435,8 +436,11 @@ def pty_close_case(rig: Rig, name: str = "serve-terminal-closed", *, vram: bool 
     pid, master = pty_close(rig)
     try:
         class _P:                                   # just enough of Popen for wait_ready
+            returncode = None
+
             def poll(self_inner):
                 done, _ = os.waitpid(pid, os.WNOHANG)
+                self_inner.returncode = 0 if done else None
                 return 0 if done else None
         rig.wait_ready(_P())
         idents = rig.tree(pid)
