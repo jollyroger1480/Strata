@@ -174,6 +174,10 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_FINISHPAGE_TITLE "Strata is ready."
 !define MUI_FINISHPAGE_TEXT "Open it to pick your first model. Strata downloads it for you and gets it ready."
 !define MUI_FINISHPAGE_RUN_TEXT "Open Strata"
+!define MUI_PAGE_HEADER_TEXT "Installing Strata"
+!define MUI_PAGE_HEADER_SUBTEXT "Copying the app. You can keep working meanwhile."
+BrandingText "Strata"
+ShowInstDetails nevershow
 
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
