@@ -141,7 +141,7 @@ def _print_check(report: dict) -> None:
     print(f"  Engine   {text}")
     for reason in eng.get("reasons") or []:
         print(f"           - {reason}")
-    if eng.get("note"):
+    if eng.get("note") and eng["status"] not in ("failed-before", "skipped", "current"):
         print(f"           {eng['note']}")
     if ctl["status"] == "not-in-feed":
         print("  Control  not part of this feed")
