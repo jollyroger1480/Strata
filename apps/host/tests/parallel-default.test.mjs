@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createNativeControl } from '../server/native-control.mjs';
-import { chooseParallel, applyParallel, withoutParallel, slotGb, DEFAULT_SLOTS, PARALLEL_POLICY, FALLBACK_NOTE } from '../server/native-parallel.mjs';
+import { chooseParallel, applyParallel, withoutParallel, slotGb, DEFAULT_SLOTS, PARALLEL_POLICY, BATCH_MTP_POLICY, FALLBACK_NOTE } from '../server/native-parallel.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
 
 const hw = (gb, n = 1) => ({ gpus: Array.from({ length: n }, (_, i) => ({ index: i, vram_gb: gb })) });
@@ -38,14 +38,17 @@ test('sizing: 4 where the card has room, fewer where the slots would crowd out t
   assert.doesNotMatch(small.note + tight.note, /--|batch|VRAM|GiB|tok/i, 'no engine words');
 });
 
-test('batch-mtp is added where it applies: one card with a draft layer, not on a split, not when already there or one slot', () => {
+test('batch-mtp is off by default (measured: it does not pay on a 12 GB card); where the policy is on it applies to one card with a draft layer only', () => {
   const mtp = c => chooseParallel({ config: c, hardware: hw(24) });
-  assert.equal(mtp(cfg(32768)).batchMtp, true);
-  assert.equal(mtp(cfg(32768, { gpu: [0, 1] })).batchMtp, false, 'measured slower on a split with all experts resident');
-  assert.equal(mtp({ args: ['--max-context', '32768'], gpu: 0 }).batchMtp, false, 'no draft layer, nothing to batch');
-  assert.equal(mtp(cfg(32768, { args: ['--max-context', '32768', '--mtp', '/m', '--batch-mtp'] })).batchMtp, false);
+  assert.equal(BATCH_MTP_POLICY, 'off');
+  assert.equal(mtp(cfg(32768)).batchMtp, false);
   const applied = applyParallel(cfg(32768), mtp(cfg(32768)));
-  assert.equal(applied.cfg.parallel, 4); assert.ok(applied.cfg.args.includes('--batch-mtp'));
+  assert.equal(applied.cfg.parallel, 4); assert.ok(!applied.cfg.args.includes('--batch-mtp'));
+  // the rule itself, for the day the policy is turned on
+  if (BATCH_MTP_POLICY === 'on') {
+    assert.equal(mtp(cfg(32768)).batchMtp, true);
+    assert.equal(mtp(cfg(32768, { gpu: [0, 1] })).batchMtp, false);
+  }
 });
 
 test("a number the person chose is kept exactly: Expert mode's value, the saved settings, an explicit --batch", () => {
@@ -64,10 +67,11 @@ test('the retry configuration has no slots and no batch-mtp', () => {
   assert.equal(next.parallel, undefined); assert.ok(!next.args.includes('--batch-mtp'));
 });
 
-test('helper agents never outnumber the engine slots', () => {
-  const p = buildProfile({ local: [{ id: 'a', baseUrl: 'http://127.0.0.1:1/v1', modelId: 'm', slots: 4 }] });
-  assert.equal(JSON.parse(p.patch.split('\n').slice(1).join('\n')).find(e => e.id === 'subagent').config.maxActiveSubagents, 4);
-  assert.notEqual(p.signature, buildProfile({ local: [{ id: 'a', baseUrl: 'http://127.0.0.1:1/v1', modelId: 'm', slots: 2 }] }).signature, 'a changed slot count restarts the agent when idle');
+test('helper agents: at least as many as the engine slots, and extra ones wait for their turn instead of being refused', () => {
+  const profile = slots => buildProfile({ local: [{ id: 'a', baseUrl: 'http://127.0.0.1:1/v1', modelId: 'm', slots }] });
+  const cap = slots => JSON.parse(profile(slots).patch.split('\n').slice(1).join('\n')).find(e => e.id === 'subagent').config.maxActiveSubagents;
+  assert.deepEqual([cap(1), cap(2), cap(4), cap(6)], [4, 4, 4, 6]);
+  assert.notEqual(profile(6).signature, profile(2).signature, 'a changed helper limit restarts the agent when idle');
 });
 
 // ---------------------------------------------------------------------------------------- the installed app's load
@@ -94,7 +98,7 @@ function fixture({ failStarts = 0, config = {} } = {}) {
 }
 const finish = async (native, id) => { for (let i = 0; i < 500; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
-test('the installed app loads with 4 slots and batch-mtp by default', async () => {
+test('the installed app loads with 4 request slots by default', async () => {
   const f = fixture();
   try {
     await f.native.refresh(true);
@@ -102,7 +106,7 @@ test('the installed app loads with 4 slots and batch-mtp by default', async () =
     assert.equal(job.state, 'done', job.error);
     assert.equal(f.saved.length, 1);
     assert.equal(f.saved[0].parallel, 4);
-    assert.ok(f.saved[0].args.includes('--batch-mtp'));
+    assert.ok(!f.saved[0].args.includes('--batch-mtp'));
     assert.equal(f.native.state().instances[0].parallel, 4, 'the agent reads the slot count from here');
   } finally { await f.native.close(); f.cleanup(); }
 });

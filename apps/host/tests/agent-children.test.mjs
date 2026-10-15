@@ -27,9 +27,12 @@ test('a helper row follows its helper: queued, working, completed with its closi
   let t = 0;
   const cp = new ChildProjector({ id: 'c1', name: 'Check the tests', task: 'Run the unit tests and report', now: () => (t += 100) });
   assert.equal(cp.agent().status, 'queued');
-  assert.equal(cp.agent().description, 'Run the unit tests and report');
+  assert.equal(cp.agent().description, 'Waiting for its turn. Run the unit tests and report');
   cp.consume(ev('step/start', { turn: 1, step: 1 }));
+  assert.equal(cp.agent().status, 'queued', 'a request that was sent is still waiting until the engine says its first word');
+  cp.consume({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'Running' } } });
   assert.equal(cp.agent().status, 'working');
+  assert.equal(cp.agent().description, 'Run the unit tests and report');
   cp.consume({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } } } });
   assert.equal(cp.agent().tokens, 120);
   cp.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'All 12 tests pass.' }] } }));
@@ -72,8 +75,8 @@ test('goal wording: plain, never a code', () => {
 
 // ------------------------------------------------------------------------------------------------- real Harness
 
-async function rig(t, { slots = 4 } = {}) {
-  const worker = await startScriptedWorker({});
+async function rig(t, { slots = 4, serial = false } = {}) {
+  const worker = await startScriptedWorker({ serial });
   const dir = mkdtempSync(join(tmpdir(), 'strata-kids-'));
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
   const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots }];
@@ -118,10 +121,10 @@ test('two helpers run at the same time as two rows, the run ends when both have 
   assert.equal(r.worker.requests.filter(q => q.directive === 'slow').length, 2);
 });
 
-test('helpers never outnumber the engine slots', { skip }, async (t) => {
+test('helpers are limited to the Harness cap (4, or the slot count if larger); the fifth is refused with a message the model reads', { skip }, async (t) => {
   const r = await rig(t, { slots: 2 });
-  const { frames } = await r.run('few', 'SCRIPT:spawn 3 slow 30');
-  assert.equal(rows(frames).size, 2, 'the third was refused by the Harness limit, which matches the slot count');
+  const { frames } = await r.run('few', 'SCRIPT:spawn 5 slow 30');
+  assert.equal(rows(frames).size, 4);
 });
 
 test('Manual: a helper that wants to change a file reaches the person as the same single Approve card, and the answer is honoured', { skip }, async (t) => {
@@ -195,4 +198,23 @@ test('/goal: sets a goal, runs its rounds in the chat, says how it ended, refuse
   await new Promise(res => setTimeout(res, 1500));
   assert.equal(r.worker.requests.length, before, 'no further round starts after Stop');
   assert.match(text(await r.bridge.goalCommand({ chatId: 'g2', line: '', workspacePath: r.ws, mode: 'bypass', onFrame: f => frames.push(f) }).then(() => frames.filter(f => f.type === 'delta').slice(-1))), /paused/);
+});
+
+test('one request slot: the second helper shows as waiting for its turn, then works, and the run still ends cleanly', { skip }, async (t) => {
+  const r = await rig(t, { slots: 1, serial: true });
+  const { frames } = await r.run('queue', 'SCRIPT:spawn 2 slow 25');
+  const byId = rows(frames);
+  assert.equal(byId.size, 2, 'both helpers exist (they are not refused)');
+  const histories = [...byId.values()];
+  // walk the frames in order: at some moment one helper was working while the other was waiting for its turn
+  const now = new Map(); let overlap = null;
+  for (const f of frames.filter(x => x.type === 'agent')) {
+    now.set(f.agent.id, f.agent);
+    const all = [...now.values()];
+    const waiting = all.find(a => a.status === 'queued' && a.description.startsWith('Waiting for its turn.'));
+    if (waiting && all.some(a => a.status === 'working')) overlap ??= waiting;
+  }
+  assert.ok(overlap, 'one helper visibly waited for its turn while the other worked');
+  for (const h of histories) assert.equal(h.at(-1).status, 'completed');
+  assert.equal(frames.at(-1).type, 'done');
 });

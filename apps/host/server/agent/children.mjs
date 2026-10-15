@@ -60,6 +60,7 @@ export class ChildProjector {
     const at = this.now();
     const done = this.status === 'completed' || this.status === 'failed' || this.status === 'cancelled';
     let description = this.task;
+    if (this.status === 'queued') description = this.task ? `Waiting for its turn. ${this.task}` : 'Waiting for its turn.';
     if (this.status === 'working' && this.activity) description = this.activity;
     if (this.status === 'completed') description = this.closing ? clip(this.closing, 140) : 'Finished.';
     if (this.status === 'failed') description = this.failure ?? 'Stopped because something went wrong.';
@@ -105,8 +106,9 @@ export class ChildProjector {
     switch (e.type) {
       case 'step/start':
       case 'turn/start':
-        // A helper that was finished and got a new message works again.
-        if (this.status !== 'working') { this.endedAt = null; this.failure = null; set('working'); }
+        // A request was sent. Whether the engine has room for it yet is told by its first word: until then the helper is waiting for its turn.
+        // A helper that had finished and got a new message starts over as waiting.
+        if (this.finished) { this.endedAt = null; this.failure = null; set('queued'); }
         break;
       case 'assistant/message': {
         const text = (d.message?.content ?? []).filter(p => p.type === 'text').map(p => p.text).join('').trim();

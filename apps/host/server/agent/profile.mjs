@@ -41,6 +41,12 @@ export const MODE_PRESETS = Object.freeze({
 export const DEFAULT_MODE = 'manual';
 /** Helper agents running at once when no local engine sets the limit (the Harness's own default). */
 export const DEFAULT_API_HELPERS = 8;
+/**
+ * Helpers a local chat may have at once: at least the engine's request slots, and never fewer than this. With one slot the engine
+ * serves its requests one after the other (its queue is unbounded), so the extra helpers show as waiting for their turn instead
+ * of being refused.
+ */
+export const MIN_LOCAL_HELPERS = 4;
 /** The preset for a chat's stored mode. Anything unknown (older values such as `auto`) gets the strictest ask-first mode. */
 export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEFAULT_MODE);
 
@@ -97,7 +103,7 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
   const env = {};
   const routes = [];
   const mcpEnv = {};
-  // Helper agents run at most as many at once as the engine has request slots (a local model); API models take the Harness's own limit.
+  // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
 
   local.forEach((inst, index) => {
@@ -154,7 +160,7 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
     // The chat modes. Replacing the table also drops the Harness's own three presets: a chat is always in one of ours.
     { id: 'permission', config: { presets: Object.fromEntries(Object.values(MODE_PRESETS).map(({ key, sandbox, approval, name, description }) => [key, { sandbox, approval, name, description }])), defaultPreset: MODE_PRESETS[DEFAULT_MODE].key } },
-    { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? slots : DEFAULT_API_HELPERS } },
+    { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? Math.max(slots, MIN_LOCAL_HELPERS) : DEFAULT_API_HELPERS } },
     // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN }] }] : []),
     ...(mcp.length ? [{ insert: mcp }] : []),

@@ -32,7 +32,10 @@ import { createHash } from 'node:crypto';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
-export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model = 'scripted-model' } = {}) {
+export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model = 'scripted-model', serial = false } = {}) {
+  // `serial` stands in for an engine with one request slot: the next request waits until the one before it has finished.
+  let tail = Promise.resolve();
+  const turn = () => { let release; const mine = new Promise(r => { release = r; }); const wait = tail; tail = tail.then(() => mine); return wait.then(() => release); };
   const requests = [];
   let aborted = 0;
   const server = createServer(async (req, res) => {
@@ -42,6 +45,8 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     if (req.method === 'GET' && url.pathname === '/v1/models') return json(200, { object: 'list', data: [{ id: model, object: 'model' }] });
     if (req.method === 'GET' && url.pathname === '/__requests') return json(200, { requests, aborted });
     if (req.method !== 'POST' || !url.pathname.endsWith('/chat/completions')) return json(404, { error: 'no route' });
+    const release = serial ? await turn() : () => {};
+    res.on('close', release);
     let raw = '';
     for await (const c of req) raw += c;
     const body = JSON.parse(raw);

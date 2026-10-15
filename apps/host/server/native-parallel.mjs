@@ -30,6 +30,13 @@ export const MAX_SLOTS = 8;
 export const PARALLEL_POLICY = 'fit';
 /** Share of ALL the graphics memory the slots' sessions may take together under the 'fit' policy. */
 export const SLOT_SHARE = 0.2;
+/**
+ * `--batch-mtp` lets each slot verify draft tokens. Measured on a 12 GB RTX 3060 (docs/BATCHING.md says it pays on larger
+ * cards): a lone chat 35.6 tok/s with it against 37.8 without, 2 chats 37.2 against 33.8 together, 4 chats 42.5 against 38.4 -
+ * a small gain for several chats, a small loss for one, and 400 MiB less expert cache. Off until a card shows it pays; Expert
+ * mode adds it by hand (`--batch-mtp` in the engine arguments).
+ */
+export const BATCH_MTP_POLICY = 'off';
 
 const argValue = (args, flag) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : undefined; };
 
@@ -75,7 +82,7 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
   }
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read the engine's own fitting is all there is: ask for the default and let it say what it can run.
-  if (!cards.length) return { slots: requested, batchMtp: facts.mtp && facts.gpus.length === 1, explicit: false, requested, note: null, slotGb: slot };
+  if (!cards.length) return { slots: requested, batchMtp: BATCH_MTP_POLICY === 'on' && facts.mtp && facts.gpus.length === 1, explicit: false, requested, note: null, slotGb: slot };
   const total = cards.reduce((a, b) => a + b, 0);
   let slots = requested;
   if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > SLOT_SHARE * total) slots -= 1;
@@ -84,7 +91,7 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
       ? `Your graphics card has room for ${slots} requests at once with this context size, so Strata set that. A smaller context size leaves room for more.`
       : 'Your graphics card has no spare room for several requests at once with this context size, so Strata set it to one at a time. A smaller context size leaves room for more.')
     : null;
-  return { slots, batchMtp: slots > 1 && facts.mtp && !facts.batchMtp && facts.gpus.length === 1, explicit: false, requested, note, slotGb: slot };
+  return { slots, batchMtp: BATCH_MTP_POLICY === 'on' && slots > 1 && facts.mtp && !facts.batchMtp && facts.gpus.length === 1, explicit: false, requested, note, slotGb: slot };
 }
 
 /**
