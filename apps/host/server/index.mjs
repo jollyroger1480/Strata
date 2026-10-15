@@ -87,9 +87,13 @@ const native=createNativeControl({control,directory:store.DATA_DIR,modelsDirecto
 const agent = createAgentBridge({
   dataDir: store.DATA_DIR,
   componentsDir: process.env.STRATA_COMPONENTS_DIR ?? null,
+  // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
+  bundledDir: resolve(HERE, '..', '..', 'harness'),
   localInstances: () => native.readyInstances().map(i => ({
     id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
+    // The engine's request slots: helper agents never outnumber them.
+    slots: i.metrics?.live?.slots?.length || i.parallel || 1,
   })),
   connections: () => modelProviders.withSecrets(),
   log: line => console.log(line),
@@ -470,11 +474,14 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   if (entry) serving.mark(entry.id, { state: 'generating' });
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
   try {
-    const result = await agent.runTurn({ chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal });
+    // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
+    const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const result = goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
-    write({ type: 'error', message: err.message, code: err.code ?? 'AGENT_ERROR' });
+    write({ type: 'error', message: err.message, ...(err.details ? { details: err.details } : {}), code: err.code ?? 'AGENT_ERROR' });
     settle(null, err.message);
   }
 }
@@ -1404,7 +1411,7 @@ async function api(req, res, path, method, url) {
         res.end();
         return undefined;
       }
-      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason} Chat is running without tools.` })}\n`);
+      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason}`, ...(capability.detail ? { details: capability.detail } : {}) })}\n`);
     } else if (agentSkip && chatId && body.agent !== false && process.env.STRATA_AGENT !== 'off') {
       res.write(`${JSON.stringify({ type: 'notice', code: 'agent-skipped', message: agentSkip })}\n`);
     }

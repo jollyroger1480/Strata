@@ -18,6 +18,8 @@
  * the profile file, a prompt, or a log.
  */
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { standardPreset } from './preset.mjs';
 
 const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'openai-responses', anthropic: 'anthropic-messages' };
 
@@ -27,18 +29,23 @@ export const ASSUMED_API_CONTEXT = 128_000;
 /**
  * The three chat modes as Harness permission presets (see README, "Modes"). A preset is a
  * sandbox mode plus an approval policy; the Harness switches them with its own `/permission` command.
- *   manual  read-only sandbox + ask:   any change is denied by the sandbox until the user approves a one-shot widening
+ *   manual  open sandbox + ask:        the Strata gate (plugins/strata-gate.mjs) asks BEFORE any change runs; nothing is denied first
  *   plan    read-only sandbox + never: nothing can change, and the agent is told not to ask
  *   bypass  danger-full-access + never: the Harness's own full-access, never-ask bundle (its `danger-full-access` preset)
  */
 export const MODE_PRESETS = Object.freeze({
-  manual: { key: 'strata-manual', sandbox: 'read-only', approval: 'ask', name: 'Manual', description: 'Asks before changing a file or running a command that changes anything.' },
+  manual: { key: 'strata-manual', sandbox: 'danger-full-access', approval: 'ask', name: 'Manual', description: 'Asks before changing a file or running a command that changes anything.' },
   plan: { key: 'strata-plan', sandbox: 'read-only', approval: 'never', name: 'Plan', description: 'Read-only. Nothing is changed and no approval prompts appear.' },
   bypass: { key: 'strata-bypass', sandbox: 'danger-full-access', approval: 'never', name: 'Bypass', description: 'Full access without approval prompts. Files and commands anywhere on this computer run without asking.' },
 });
 export const DEFAULT_MODE = 'manual';
+/** Helper agents running at once when no local engine sets the limit (the Harness's own default). */
+export const DEFAULT_API_HELPERS = 8;
 /** The preset for a chat's stored mode. Anything unknown (older values such as `auto`) gets the strictest ask-first mode. */
 export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEFAULT_MODE);
+
+/** The approval gate plugin (plain ESM, loaded by absolute path). */
+export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', import.meta.url));
 
 const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'x';
 
@@ -55,15 +62,17 @@ export function outputBudget(context) {
 
 /**
  * @param {object} input
- * @param {Array<{id:string,label?:string,baseUrl:string,modelId:string,context?:number,key?:string,vision?:boolean}>} input.local
+ * @param {Array<{id:string,label?:string,baseUrl:string,modelId:string,context?:number,key?:string,vision?:boolean,slots?:number}>} input.local
  *        ready local instances; the first is the default route (`strata-local`)
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
-export function buildProfile({ local = [], connections = [] }) {
+export function buildProfile({ local = [], connections = [], gate = true }) {
   const providers = {};
   const env = {};
   const routes = [];
+  // Helper agents run at most as many at once as the engine has request slots (a local model); API models take the Harness's own limit.
+  let slots = 0;
 
   local.forEach((inst, index) => {
     const route = index === 0 ? 'strata-local' : `strata-local-${slug(inst.id)}`;
@@ -83,6 +92,7 @@ export function buildProfile({ local = [], connections = [] }) {
         input: inst.vision ? ['text', 'image'] : ['text'],
       }],
     };
+    slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context });
   });
 
@@ -115,6 +125,11 @@ export function buildProfile({ local = [], connections = [] }) {
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
     // The chat modes. Replacing the table also drops the Harness's own three presets: a chat is always in one of ours.
     { id: 'permission', config: { presets: Object.fromEntries(Object.values(MODE_PRESETS).map(({ key, sandbox, approval, name, description }) => [key, { sandbox, approval, name, description }])), defaultPreset: MODE_PRESETS[DEFAULT_MODE].key } },
+    { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? slots : DEFAULT_API_HELPERS } },
+    // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
+    ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN }] }] : []),
+    // The reminder tools would be a second scheduler beside the app's Tasks; web search needs a search-service key the app has none of.
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset() },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },

@@ -36,15 +36,18 @@ export function agentEnvironment(base = process.env, extra = {}) {
  * Find a usable Harness. Returns `{ ok:true, dir, bin, version }` or `{ ok:false, reason }`; the reason
  * is user-readable because it becomes the capability state shown in the app.
  */
-export function resolveHarness({ env = process.env, componentsDir = null } = {}) {
-  const candidates = [env.STRATA_HARNESS_DIR, componentsDir ? join(componentsDir, 'harness') : null].filter(Boolean);
+export function resolveHarness({ env = process.env, componentsDir = null, bundledDir = null } = {}) {
+  // Order: an explicit folder, the folder the installer ships next to the host, then the user's component folder.
+  const candidates = [env.STRATA_HARNESS_DIR, bundledDir, componentsDir ? join(componentsDir, 'harness') : null].filter(Boolean);
   if (!candidates.length) return { ok: false, reason: 'The agent component (DeepSeek Harness) is not installed.' };
   for (const dir of candidates.map(c => resolve(c))) {
-    const bin = join(dir, 'apps', 'cli', 'lib', 'bin.js');
+    // A source checkout keeps the CLI in apps/cli; the installer's pruned production copy IS the CLI package.
+    const nested = join(dir, 'apps', 'cli', 'lib', 'bin.js');
+    const bin = existsSync(nested) ? nested : join(dir, 'lib', 'bin.js');
     if (!existsSync(bin)) continue;
     if (!existsSync(join(dir, 'node_modules'))) return { ok: false, reason: `The agent component at ${dir} has no installed dependencies.` };
     let version = null;
-    try { version = JSON.parse(readFileSync(join(dir, 'apps', 'cli', 'package.json'), 'utf8')).version ?? null; } catch { /* version is informational */ }
+    try { version = JSON.parse(readFileSync(existsSync(nested) ? join(dir, 'apps', 'cli', 'package.json') : join(dir, 'package.json'), 'utf8')).version ?? null; } catch { /* version is informational */ }
     return { ok: true, dir, bin, version };
   }
   return { ok: false, reason: `The agent component was not found at ${candidates.join(' or ')}. Install or repair it.` };
@@ -139,7 +142,7 @@ export function stopStaleAgent(pidFile) {
   try { pid = Number(JSON.parse(readFileSync(pidFile, 'utf8')).pid); } catch { /* unreadable record */ }
   rmSync(pidFile, { force: true });
   const cmd = commandLineOf(pid);
-  if (!cmd || !/apps[\\/]cli[\\/]lib[\\/]bin\.js/.test(cmd) || !/--profile web/.test(cmd)) return null;
+  if (!cmd || !/lib[\\/]bin\.js/.test(cmd) || !/--profile web/.test(cmd)) return null;
   if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
   else { try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ } }
   return pid;

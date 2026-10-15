@@ -11,6 +11,9 @@ const SHELL = new Set(['pwsh', 'bash', 'job_kill', 'job_output', 'job_list']);
 const WRITE = new Set(['write', 'edit']);
 const READ = new Set(['read', 'glob', 'grep', 'read_image', 'working_directory', 'todo_write', 'get_goal', 'list_agents', 'skill', 'present']);
 
+/** Delegation tools have no card: the helper agents show as rows, and the tool's raw reply ("started subagent <id>") is not for the person. */
+export const NO_CARD = new Set(['subagent', 'subagent_fork', 'send_message', 'interrupt_agent', 'list_agents']);
+
 export function toolScope(name) {
   if (SHELL.has(name)) return 'shell';
   if (WRITE.has(name)) return 'write';
@@ -31,16 +34,61 @@ export function parseArguments(raw) {
   try { const v = JSON.parse(String(raw ?? '{}')); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
 }
 
+/**
+ * One plain sentence and one short detail per tool, so a card never shows raw JSON or an internal tool name as its
+ * explanation. Unknown tools (a connected MCP server's) fall back to a generic sentence with their arguments.
+ */
+const WORDS = {
+  read: a => ['Reads a file.', a.file_path ?? a.path],
+  glob: a => ['Looks for files by name.', a.pattern],
+  grep: a => ['Searches inside files.', a.pattern ?? a.query],
+  read_image: a => ['Looks at a picture.', a.file_path ?? a.path],
+  working_directory: () => ['Checks which folder it is working in.', ''],
+  todo_write: a => ['Updates its to-do list.', Array.isArray(a.todos) ? a.todos.map(t => t?.content ?? t?.title ?? '').filter(Boolean).join('; ') : ''],
+  skill: a => ['Uses a saved skill.', a.name ?? a.skill],
+  present: a => ['Shows you a result.', a.file_path ?? a.path ?? a.title],
+  create_goal: a => ['Sets a goal to work towards.', a.objective],
+  update_goal: a => ['Updates the goal.', a.objective ?? a.status ?? ''],
+  get_goal: () => ['Checks the current goal.', ''],
+  web_fetch: a => ['Opens a web page.', a.url],
+  web_search: a => ['Searches the web.', Array.isArray(a.queries) ? a.queries.join('; ') : a.query],
+  workflow: a => ['Runs a multi-step plan.', a.description ?? a.name ?? ''],
+  job_list: () => ['Checks the background tasks.', ''],
+  job_output: a => ['Reads what a background task printed.', a.job_id ?? a.id],
+  job_kill: a => ['Stops a background task.', a.job_id ?? a.id],
+  lsp: a => ['Looks up how the code fits together.', a.file_path],
+};
+
 /** The ToolCall fields the card needs, from one Harness tool call. */
 export function presentTool({ callId, name, args, reason = null }) {
   const scope = toolScope(name);
-  const preview = scope === 'shell' ? args.command ?? ''
+  const words = WORDS[name]?.(args);
+  const preview = scope === 'shell' && !words ? args.command ?? ''
     : scope === 'write' ? args.file_path ?? args.path ?? args.filePath ?? ''
-      : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.query ?? JSON.stringify(args);
-  const effect = reason ?? (scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
+      : words ? words[1] ?? '' : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.query ?? JSON.stringify(args);
+  const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');
   return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope };
+}
+
+/** A tool's failure in plain words, or null when there is nothing better than the original text. */
+export function plainToolError(text) {
+  const t = String(text ?? '');
+  if (/non-public ip|enotfound|getaddrinfo|web fetch failed|econnrefused|econnreset|etimedout|fetch failed/i.test(t)) return 'That web page could not be opened. Check the address and your internet connection.';
+  if (/invalid arguments|missing required property|not a declared property/i.test(t)) return 'The assistant asked this tool in the wrong way. It will usually try again.';
+  if (/unknown or no longer available/i.test(t)) return 'That skill is not available.';
+  if (/cannot modify|must (?:first )?be read|has not been read|changed since/i.test(t)) return 'The file could not be changed. It may need to be read again first, or it changed in the meantime.';
+  if (/sandbox|access denied|permission denied|eacces|eperm/i.test(t)) return 'The computer did not allow this.';
+  if (/timed out|timeout/i.test(t)) return 'This took too long and was stopped.';
+  if (/extension|not a supported image|cannot read/i.test(t)) return 'This file could not be read.';
+  return null;
+}
+
+/** A failed tool's result: the plain sentence first, the original text after it (the card's disclosure is the Details). */
+export function withPlain(raw) {
+  const plain = plainToolError(raw);
+  return plain ? `${plain}\n\nDetails: ${raw.replace(/^Error:\s*/, '')}` : raw;
 }
 
 /** Text of a tool-result message, bounded. */
@@ -91,6 +139,7 @@ export class TurnProjector {
         const c = f.chunk;
         if (c.type === 'text-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
+          this.emittedAny = true;
           this.emittedText.set(f.attemptId, (this.emittedText.get(f.attemptId) ?? 0) + c.text.length);
           out.push({ type: 'delta', text: c.text });
         } else if (c.type === 'reasoning-delta' && c.text) {
@@ -117,6 +166,7 @@ export class TurnProjector {
         break;
       }
       case 'tool/call': {
+        if (NO_CARD.has(d.name)) break;
         const args = parseArguments(d.arguments);
         const card = { ...presentTool({ callId: d.callId, name: d.name, args }), state: 'running' };
         this.tools.set(d.callId, { card, calledAt: e.time });
@@ -153,12 +203,18 @@ export class TurnProjector {
         const denied = this.denied.has(callId);
         const frame = this.#card(callId, {
           state: denied ? 'denied' : isError ? 'error' : 'done',
-          result: this.byPolicy.has(callId) ? NOT_IN_MODE : resultText(d.message),
+          // A card the person (or the mode) refused keeps its plain sentence; the model's own error text ("the user rejected ...") is not for them.
+          result: this.byPolicy.has(callId) ? NOT_IN_MODE : denied ? (entry.card.result ?? 'Denied. Nothing ran.') : isError ? withPlain(resultText(d.message)) : resultText(d.message),
           durationMs: Math.max(0, (e.time ?? 0) - entry.calledAt),
         });
         if (frame) out.push(frame);
         break;
       }
+      case 'turn/start':
+        // The parent woke up again (a helper finished and reported back): the message goes on, as a new paragraph.
+        this.ended = null;
+        if (this.emittedAny) out.push({ type: 'delta', text: '\n\n' });
+        break;
       case 'turn/end':
         this.ended = d.reason ?? { kind: 'completed' };
         break;

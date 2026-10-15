@@ -20,10 +20,24 @@ import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf } from './profile.mjs';
-import { TurnProjector } from './events.mjs';
+import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
+import { ChildProjector } from './children.mjs';
 
+/**
+ * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
+ * text for the Details disclosure (experts), already free of secrets.
+ */
 export class AgentUnavailable extends Error {
-  constructor(message, code = 'agent-unavailable') { super(message); this.name = 'AgentUnavailable'; this.code = code; }
+  constructor(message, code = 'agent-unavailable', details = null) { super(message); this.name = 'AgentUnavailable'; this.code = code; this.details = details; }
+}
+
+/** The plain sentence for a raw agent failure text, whatever produced it. */
+export function plainAgentFailure(raw) {
+  const text = String(raw ?? '');
+  if (/did not print its address|exited during start|could not start|ECONNREFUSED.*127\.0\.0\.1|refused the launch token|socket/i.test(text)) return 'The coding assistant could not start. Try again. If it keeps happening, close and reopen Strata.';
+  if (/process stopped|lost the session stream|stream did not open|session stream/i.test(text)) return 'The coding assistant stopped unexpectedly, so this answer is incomplete. Send your message again.';
+  if (/did not accept the message/i.test(text)) return 'The coding assistant did not take this message. Send it again in a moment.';
+  return text;
 }
 
 /** A timer that never keeps the process alive by itself. */
@@ -40,7 +54,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, localInstances, connections, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -71,22 +85,23 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
   const notifyIdle = () => { if (activeTurns() === 0) { for (const w of idleWaiters) w(); idleWaiters.clear(); } };
   const waitIdle = (signal, ms) => new Promise((resolve, reject) => {
     if (activeTurns() === 0) return resolve();
-    const timer = setTimeout(() => { idleWaiters.delete(done); reject(new AgentUnavailable('Another chat is still running a turn and the model list changed. Try again when it finishes.', 'agent-busy')); }, ms);
+    const timer = setTimeout(() => { idleWaiters.delete(done); reject(new AgentUnavailable('Another chat is still working and the list of models changed. Try again when it finishes.', 'agent-busy')); }, ms);
     const done = () => { clearTimeout(timer); resolve(); };
     idleWaiters.add(done);
     signal?.addEventListener('abort', () => { clearTimeout(timer); idleWaiters.delete(done); reject(signal.reason ?? new Error('aborted')); }, { once: true });
   });
 
-  function harnessInfo() { return resolveHarness({ env, componentsDir }); }
+  function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
 
   /** The capability state the app shows. Never carries a token or a key. */
   function status() {
     const h = harnessInfo();
-    if (!h.ok) return { state: 'unavailable', reason: h.reason, code: 'component-missing' };
-    const profile = buildProfile({ local: localInstances(), connections: connections() });
+    if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate });
     return {
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
-      reason: lastError ?? null,
+      reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
+      detail: lastError ?? null,
       harness: { version: h.version },
       runtime: rt?.hp.running ? { pid: rt.hp.pid, generation: rt.generation } : null,
       routes: profile.routes.map(({ route, kind, modelId, name, contextWindow }) => ({ route, kind, modelId, name, contextWindow })),
@@ -97,7 +112,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
 
   async function startRuntime(profile) {
     const h = harnessInfo();
-    if (!h.ok) throw new AgentUnavailable(h.reason, 'component-missing');
+    if (!h.ok) throw new AgentUnavailable('The coding assistant isn’t installed on this computer yet. Chat works without it.', 'component-missing', h.reason);
     mkdirSync(home, { recursive: true });
     const stale = stopStaleAgent(join(root, 'harness.pid'));
     if (stale) log(`agent · stopped a leftover Harness process (pid ${stale}) from an earlier run`);
@@ -130,7 +145,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
   async function ensureRuntime(choice, signal) {
     for (;;) {
       if (starting) { await starting.catch(() => {}); continue; }
-      const profile = buildProfile({ local: localInstances(), connections: connections() });
+      const profile = buildProfile({ local: localInstances(), connections: connections(), gate });
       const route = routeFor(profile, choice);
       if (!route) {
         throw new AgentUnavailable(choice?.connectionId
@@ -145,7 +160,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
           const old = rt; rt = null;
           old.events?.close(); old.gw.close(); await old.hp.stop();
         }
-        try { return await startRuntime(profile); } catch (e) { lastError = redact(String(e.message ?? e), Object.values(profile.env)); throw e; }
+        try { return await startRuntime(profile); } catch (e) {
+          lastError = redact(String(e.message ?? e), Object.values(profile.env));
+          throw e instanceof AgentUnavailable ? e : new AgentUnavailable(plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again. If it keeps happening, close and reopen Strata.' : plainAgentFailure(lastError), 'agent-start-failed', lastError);
+        }
       })();
       try { await starting; } finally { starting = null; }
     }
@@ -187,13 +205,24 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       return r?.values?.permissions?.currentValue ?? null;
     };
     try {
-      if (await read() === want) return;
-      const done = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: `/permission ${want}`, submittedAttachments: [] });
-      if (done?.result?.kind !== 'success') throw new Error(done?.result?.text ?? 'the agent did not recognise the command');
-      const now = await read();
-      if (now !== want) throw new Error(`the session reports "${now}" instead of "${want}"`);
+      if (await read() !== want) {
+        const done = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: `/permission ${want}`, submittedAttachments: [] });
+        if (done?.result?.kind !== 'success') throw new Error(done?.result?.text ?? 'the agent did not recognise the command');
+        const now = await read();
+        if (now !== want) throw new Error(`the session reports "${now}" instead of "${want}"`);
+      }
     } catch (e) {
-      throw new AgentUnavailable(`The agent could not switch this chat to ${MODE_PRESETS[mode].name} mode, so nothing ran: ${e.message}`, 'mode-unavailable');
+      throw new AgentUnavailable(`Strata could not set this chat to ${MODE_PRESETS[mode].name} mode, so nothing ran. Try again.`, 'mode-unavailable', e.message);
+    }
+    // Manual leaves the sandbox open and relies on the Strata gate to ask first. Without the gate it must not start.
+    if (mode === 'manual' && !runtime.gateChecked) {
+      try {
+        const probe = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: '/strata-gate', submittedAttachments: [] });
+        if (probe?.result?.kind !== 'success' || !String(probe.result.text ?? '').includes('strata-gate active')) throw new Error('the approval gate is not loaded');
+        runtime.gateChecked = true;
+      } catch (e) {
+        throw new AgentUnavailable('Strata could not make sure the coding assistant asks before changing anything, so nothing ran. Close and reopen Strata, then try again.', 'mode-unavailable', e.message);
+      }
     }
   }
 
@@ -203,13 +232,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
    */
   async function runTurn(options) {
     const c = chat(options.chatId);
-    if (c.turn || c.starting) throw new AgentUnavailable('This chat is already running a turn.', 'turn-active');
+    if (c.turn || c.starting) throw new AgentUnavailable('This chat is still working. Stop it or wait for it to finish.', 'turn-active');
     // From here until the Harness has the prompt, Stop has no session to cancel; it cancels the start.
     c.starting = true; c.cancelStart = false;
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null }) {
     let send = onFrame;
     signal?.addEventListener('abort', () => { send = () => {}; }, { once: true });
     const emit = frame => { try { send(frame); } catch { send = () => {}; } };
@@ -225,7 +254,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
         await runtime.gw.rpc('session/selectModel', { request: { sessionId, provider: route.route, model: route.modelId } });
       } catch (e) {
         if (e.code === 'session/not-found') { delete sessionMap[c.id]; persist(); }
-        throw new AgentUnavailable(`The agent could not use ${route.name}: ${e.message}`, 'model-unavailable');
+        throw new AgentUnavailable(`The coding assistant could not use ${route.name}. Pick the model again and retry.`, 'model-unavailable', e.message);
       }
       c.route = `${route.route}/${route.modelId}`; c.routeGeneration = runtime.generation;
     }
@@ -239,14 +268,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
       ended: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
-      abortFromRuntime: reason => finishTurn(reason),
+      abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
+      // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
+      children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
     };
     c.turn = turn;
     function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
+      clearTimeout(turn.settleTimer);
       turn.follow?.close();
-      const frames = failure ? [{ type: 'error', message: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
+      for (const child of turn.children.values()) child.follow?.close();
+      if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
+      const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
       for (const f of frames) emit(f);
       c.turn = null;
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
@@ -282,8 +316,115 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
         }
       } else if (!turn.live) return;
       for (const f of projector.consume(item)) emit(f);
-      if (item.type === 'event' && item.event.type === 'turn/end') finishTurn(null);
+      if (item.type === 'event') watchParent(item.event);
     }
+
+    // -- helper agents ---------------------------------------------------------------------------------------
+
+    const rowFrame = child => ({ type: 'agent', agent: child.cp.agent() });
+    const emitRow = (child, force = false) => {
+      const now = Date.now();
+      if (!force && now - child.lastRow < 400) { child.rowPending = true; return; }
+      child.lastRow = now; child.rowPending = false;
+      emit(rowFrame(child));
+    };
+
+    function openChild(d) {
+      const id = d.childId;
+      if (!id || turn.children.has(id)) return;
+      const cp = new ChildProjector({ id, name: d.label || 'Helper' });
+      const child = { id, cp, follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0 };
+      turn.children.set(id, child);
+      emitRow(child, true);
+      const fold = item => {
+        if (turn.finished) return;
+        const { frames, row } = cp.consume(item);
+        for (const f of frames) emit(f);
+        if (item.type === 'event' && item.event.type === 'turn/end') { child.done = true; child.endedAt = Date.now(); emitRow(child, true); armSettle(); return; }
+        if (item.type === 'event' && child.done && cp.status === 'working') { child.done = false; }
+        if (row) emitRow(child);
+      };
+      child.follow = runtime.gw.openStream('session/follow', {
+        request: { address: { kind: 'subagent', parentSessionId: sessionId, childSessionId: id, mode: d.mode ?? 'unknown' }, assistantStream: true },
+      }, {
+        onItem: item => {
+          if (item.type === 'snapshot') { for (const r of item.records ?? []) if (r.type === 'event') fold({ type: 'event', event: r.event }); return; }
+          fold(item);
+        },
+        onError: e => {
+          log(`agent · helper stream ended: ${e.message}`);
+          if (!child.done) { child.done = true; child.endedAt = Date.now(); cp.status = 'failed'; cp.failure = 'Lost contact with this helper.'; cp.endedAt = Date.now(); emitRow(child, true); armSettle(); }
+        },
+      });
+      // A late reader still gets the final row: flush any row held back by the throttle.
+      child.flush = after(500, function tick() { if (!turn.finished && child.rowPending) emitRow(child, true); if (!turn.finished && !child.done) child.flush = after(500, tick); });
+    }
+
+    function watchParent(e) {
+      const d = e.data ?? {};
+      switch (e.type) {
+        case 'turn/start':
+          turn.parentOpen = true;
+          clearTimeout(turn.settleTimer);
+          // After Stop, a helper's report would start a new turn that nobody asked for.
+          if (turn.stopping) void runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
+          break;
+        case 'turn/end':
+          turn.parentOpen = false;
+          armSettle();
+          break;
+        case 'tool/call':
+          if (d.name === 'subagent' || d.name === 'subagent_fork') turn.subagentCalls.set(d.callId, parseArgs(d.arguments));
+          break;
+        case 'subagent/catalog':
+          openChild(d);
+          break;
+        case 'tool/result': {
+          const call = turn.subagentCalls.get(d.message?.toolCallId);
+          const text = (d.message?.content ?? []).map(p => p.text ?? '').join(' ');
+          const started = /started subagent ([0-9a-f-]{36})/i.exec(text);
+          const child = started ? turn.children.get(started[1]) : null;
+          if (call && child) { child.cp.task = String(call.prompt ?? call.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 140); emitRow(child, true); }
+          break;
+        }
+        case 'user/message':
+          if (d.source?.kind === 'goal' && Number.isInteger(d.source.round)) emit({ type: 'delta', text: `*Working on the goal, step ${d.source.round}*\n\n` });
+        // falls through
+        case 'agent/inbox/spliced': {
+          const hit = JSON.stringify(d);
+          if (!/Background subagent/.test(hit)) break;
+          for (const child of turn.children.values()) if (hit.includes(child.id)) child.noticed = true;
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    /**
+     * The run is over when the parent is idle and every helper has finished and reported back. A helper's report
+     * wakes the parent a moment after the helper ends, so a helper that ended but has not reported yet keeps the run
+     * open (for a few seconds at most); after Stop nobody waits for reports.
+     */
+    function armSettle() {
+      clearTimeout(turn.settleTimer);
+      if (turn.finished) return;
+      turn.settleTimer = after(turn.stopping ? 1200 : turn.children.size ? 600 : 0, async () => {
+        if (turn.finished || turn.parentOpen) return;
+        const open = [...turn.children.values()];
+        if (open.some(c => !c.done)) return;
+        if (!turn.stopping) {
+          if (open.some(c => !c.noticed && Date.now() - c.endedAt < 8000)) { armSettle(); return; }
+          // An armed goal starts its next round as soon as the agent is idle: the run is not over until the goal stops.
+          const current = await goalGet();
+          if (turn.finished || turn.parentOpen) return;
+          if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
+          if (turn.goalRun && current) { const line = goalEnding(current); if (line) emit({ type: 'delta', text: line }); }
+        }
+        finishTurn(null);
+      });
+    }
+    const goalGet = () => runtime.gw.rpc('goals/get', { agentId: sessionId }).catch(() => undefined);
 
     const snapshotTimer = {};
     await Promise.race([turn.snapshot.promise, new Promise((_, rej) => { snapshotTimer.t = after(20_000, () => rej(new Error('the session stream did not open'))); })])
@@ -292,13 +433,20 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     if (turn.finished) return { error: true };
     if (turn.stopBeforePrompt || c.cancelStart) { projector.ended = { kind: 'aborted', reason: { kind: 'user' } }; finishTurn(null); return { cancelled: true }; }
 
-    let prompt = message;
-    if (fresh && history.length) prompt = withEarlierConversation(history, message);
-    try {
-      await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } });
-    } catch (e) {
-      finishTurn(`The agent did not accept the message: ${e.message}`);
-      return { error: true };
+    if (goal) {
+      // A goal run has no prompt of its own: the Harness's goal driver starts the rounds. Everything from now on is ours.
+      turn.live = true; turn.goalRun = true;
+      try { await startGoal(runtime, sessionId, goal); }
+      catch (e) { finishTurn(plainGoalError(e)); return { error: true }; }
+    } else {
+      let prompt = message;
+      if (fresh && history.length) prompt = withEarlierConversation(history, message);
+      try {
+        await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } });
+      } catch (e) {
+        finishTurn(`The agent did not accept the message: ${e.message}`);
+        return { error: true };
+      }
     }
     turn.prompted = true;
     if (turn.stopBeforePrompt) {
@@ -315,23 +463,105 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     return { sessionId, reason: outcome.reason, tokensIn: projector.tokensIn, tokensOut: projector.tokensOut };
   }
 
+  // -- /goal -----------------------------------------------------------------------------------------------
+
+  /** Create or resume the chat's goal; the Harness's goal driver then runs the rounds by itself. */
+  async function startGoal(runtime, sessionId, goal) {
+    if (goal.action === 'create') {
+      const request = { objective: goal.objective, ...(goal.maxRounds ? { maxGoalRounds: goal.maxRounds } : {}) };
+      await runtime.gw.rpc('goals/create', { agentId: sessionId, request });
+      return;
+    }
+    const current = await runtime.gw.rpc('goals/get', { agentId: sessionId });
+    if (!current) throw new AgentUnavailable('There is no goal to continue. Start one with /goal followed by what you want done.', 'goal-none');
+    await runtime.gw.rpc('goals/resume', { agentId: sessionId, ref: { id: current.id, revision: current.revision } });
+  }
+
+  async function pauseGoal(runtime, sessionId) {
+    try {
+      const current = await runtime.gw.rpc('goals/get', { agentId: sessionId });
+      if (current && current.phase === 'active') await runtime.gw.rpc('goals/pause', { agentId: sessionId, ref: { id: current.id, revision: current.revision } });
+    } catch { /* no goal service, or nothing to pause */ }
+  }
+
+  /** The goal's state in plain words. */
+  function describeGoal(view) {
+    if (!view) return 'No goal is set. Start one with /goal followed by what you want done.';
+    const steps = `step ${view.roundsStarted} of at most ${view.maxGoalRounds}`;
+    const what = `"${view.objective}"`;
+    if (view.phase === 'active') return `Working on the goal ${what} (${steps}).`;
+    if (view.phase === 'paused') return `The goal ${what} is paused (${steps}). Type /goal resume to go on.`;
+    if (view.phase === 'complete') return `The goal ${what} is complete.`;
+    return `The goal ${what} stopped: ${plainBlocker(view.blockedReason)}`;
+  }
+
+  /**
+   * Handle a "/goal ..." line for a chat, as the Harness's own /goal command reads it: nothing = show the goal,
+   * clear, pause, resume, edit <text>, or any other text = a new goal. Starting or resuming runs the rounds and
+   * streams them like a chat turn (Stop pauses the goal); every other verb answers at once.
+   */
+  async function goalCommand(options) {
+    const { chatId, line, onFrame } = options;
+    const text = String(line ?? '').trim();
+    const verb = text.split(/\s+/)[0]?.toLowerCase() ?? '';
+    const rest = text.slice(verb.length).trim();
+    const say = reply => {
+      onFrame({ type: 'queued', requestId: `goal-${randomUUID()}` });
+      onFrame({ type: 'start', model: '', contextMax: 0, demo: false, remoteModel: false, agent: true, mode: modeOf(options.mode), skills: [] });
+      onFrame({ type: 'delta', text: reply });
+      onFrame({ type: 'done', finishReason: 'stop', tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0 });
+      return { goal: true };
+    };
+    const known = sessionMap[chatId]?.sessionId;
+    const quick = ['', 'clear', 'pause', 'edit', 'complete'].includes(verb) || (verb === 'status');
+    let runtime = rt;
+    if (quick) {
+      if (!known || !runtime?.hp.running) return say(verb === '' || verb === 'status' ? describeGoal(null) : 'There is no goal in this chat yet.');
+      const current = await runtime.gw.rpc('goals/get', { agentId: known }).catch(() => undefined);
+      const ref = current ? { id: current.id, revision: current.revision } : null;
+      try {
+        if (verb === '' || verb === 'status') return say(describeGoal(current));
+        if (!ref) return say('There is no goal in this chat yet.');
+        if (verb === 'clear') { await runtime.gw.rpc('goals/clear', { agentId: known, ref }); return say('The goal is cleared.'); }
+        if (verb === 'pause') {
+          if (current.phase === 'active') await runtime.gw.rpc('goals/pause', { agentId: known, ref });
+          return say(describeGoal(await runtime.gw.rpc('goals/get', { agentId: known })));
+        }
+        if (verb === 'complete') { await runtime.gw.rpc('goals/complete', { agentId: known, ref }); return say('The goal is marked complete.'); }
+        if (verb === 'edit') {
+          if (!rest) return say('Type /goal edit followed by the new wording of the goal.');
+          await runtime.gw.rpc('goals/edit', { agentId: known, ref, request: { objective: rest } });
+          return say(`The goal now reads: "${rest}".`);
+        }
+      } catch (e) { return say(plainGoalError(e)); }
+    }
+    if (verb === 'resume') return runTurn({ ...options, goal: { action: 'resume' } });
+    // Any other text is a new goal. One unfinished goal at a time (the Harness's rule): say so in plain words.
+    return runTurn({ ...options, goal: { action: 'create', objective: text } });
+  }
+
   /** Answer one pending approval. `decision` is `approve` or `deny`. */
   async function approve({ chatId, callId, decision }) {
     const sessionId = sessionMap[chatId]?.sessionId;
+    // A helper agent's question carries the helper's session id in front of its call id. Only a helper that belongs to
+    // THIS chat's run can be answered from this chat.
+    const [maybeChild] = String(callId).split(':');
+    const ownHelper = callId.includes(':') && chats.get(chatId)?.turn?.children.has(maybeChild);
+    const key = ownHelper ? callId : `${sessionId}:${callId}`;
     // The durable `approval/asked` (which makes the card say "needs approval") and the waterfall frame
     // (which makes it answerable) travel on different streams; a fast click can beat the second one.
-    let entry = sessionId ? pending.get(`${sessionId}:${callId}`) : null;
+    let entry = sessionId ? pending.get(key) : null;
     for (let i = 0; !entry && sessionId && i < 40; i++) {
       await new Promise(r => setTimeout(r, 50));
-      entry = pending.get(`${sessionId}:${callId}`);
+      entry = pending.get(key);
     }
-    if (!entry) throw new AgentUnavailable('This approval is no longer pending.', 'approval-gone');
-    if (!rt?.hp.running) throw new AgentUnavailable('The agent is not running, so this approval has expired.', 'approval-gone');
-    pending.delete(`${sessionId}:${callId}`);
+    if (!entry) throw new AgentUnavailable('That question is no longer waiting for an answer.', 'approval-gone');
+    if (!rt?.hp.running) throw new AgentUnavailable('That question expired because the coding assistant restarted. Ask again.', 'approval-gone');
+    pending.delete(key);
     try {
       await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome: decision === 'approve' ? 'allowed-once' : 'rejected' });
     } catch (e) {
-      throw new AgentUnavailable(`The answer was not accepted: ${e.message}`, 'approval-gone');
+      throw new AgentUnavailable('Your answer could not be delivered. Ask again.', 'approval-gone', e.message);
     }
     return { ok: true };
   }
@@ -352,7 +582,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
       const early = await Promise.race([turn.ended.promise, new Promise(r => setTimeout(() => r(null), 100))]);
       if (early) return { stopped: true, ended: early.reason?.kind ?? 'aborted', ms: Date.now() - t0 };
     }
-    await rt.gw.rpc('session/cancel', { request: { sessionId: turn.sessionId } });
+    turn.stopping = true;
+    await pauseGoal(rt, turn.sessionId);
+    // Helpers first: a helper still working would otherwise report back and wake the parent again.
+    await Promise.allSettled([...turn.children.values()].filter(h => !h.done).map(h => rt.gw.rpc('subagents/interruptByParent', { childSessionId: h.id, parentSessionId: turn.sessionId, mode: 'continuable' })));
+    await rt.gw.rpc('session/cancel', { request: { sessionId: turn.sessionId } }).catch(e => { if (turn.parentOpen) throw e; });
+    // Nothing is running in the parent (it was waiting for its helpers): the run ends once they are all down.
+    if (!turn.parentOpen) { clearTimeout(turn.settleTimer); turn.settleTimer = after(300, () => { if (!turn.finished && !turn.parentOpen && [...turn.children.values()].every(h => h.done)) turn.finish(null); }); }
     let timer; const result = await Promise.race([turn.ended.promise, new Promise(r => { timer = after(waitMs, () => r(null)); })]);
     clearTimeout(timer);
     if (!result) return { stopped: false, pending: true, reason: 'the turn is still stopping' };
@@ -361,7 +597,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
 
   function pendingFor(chatId) {
     const sessionId = sessionMap[chatId]?.sessionId;
-    return [...pending.values()].filter(p => p.sessionId === sessionId).map(({ callId, tool, reason, at }) => ({ callId, tool, reason, at }));
+    const helpers = chats.get(chatId)?.turn?.children;
+    return [...pending.values()].filter(p => p.sessionId === sessionId || helpers?.has(p.sessionId))
+      .map(p => (p.sessionId === sessionId ? p : { ...p, callId: `${p.sessionId}:${p.callId}` })).map(({ callId, tool, reason, at }) => ({ callId, tool, reason, at }));
   }
 
   async function close() {
@@ -369,7 +607,31 @@ export function createAgentBridge({ dataDir, componentsDir = null, localInstance
     if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
   }
 
-  return { status, runTurn, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { status, runTurn, goalCommand, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+}
+
+/** A goal that stopped by itself, in words. */
+export function plainBlocker(reason) {
+  if (!reason) return 'it could not go on.';
+  if (reason.code === 'round-limit') return 'it worked for the most steps it was allowed. Type /goal clear, then start a new goal to go on.';
+  return String(reason.message ?? 'it could not go on.');
+}
+
+/** What a goal run says when it ends. */
+export function goalEnding(view) {
+  if (view.phase === 'complete') return '\n\n*The goal is complete.*';
+  if (view.phase === 'blocked') return `\n\n*The goal stopped: ${plainBlocker(view.blockedReason)}*`;
+  if (view.phase === 'paused') return '\n\n*The goal is paused. Type /goal resume to go on.*';
+  return '';
+}
+
+/** A goal request the Harness refused, as a sentence. */
+export function plainGoalError(e) {
+  const message = String(e?.message ?? e);
+  if (/already|unfinished|current goal/i.test(message)) return 'This chat already has a goal that is not finished. Type /goal edit to change it, /goal clear to remove it, or /goal to see it.';
+  if (/GOAL_NONE|no goal/i.test(message) || e?.code === 'goal-none') return 'There is no goal to continue. Start one with /goal followed by what you want done.';
+  if (/objective/i.test(message)) return 'A goal needs a few words about what you want done, for example: /goal make every test pass.';
+  return 'The goal could not be changed right now. Try again in a moment.';
 }
 
 /** The Harness session of a chat that existed before the agent did knows nothing; carry a bounded summary. */

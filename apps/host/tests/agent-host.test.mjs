@@ -191,7 +191,7 @@ test('A08 over HTTP: two chats stream at the same time without mixing', { skip }
 test('without the agent component the chat says so and still uses the model the user chose', async t => {
   const s = await setup(t, { harness: null });
   const status = await s.host.status();
-  assert.equal(status.state, 'unavailable'); assert.match(status.reason, /agent component/i);
+  assert.equal(status.state, 'unavailable'); assert.match(status.reason, /coding assistant/i);
   const frames = await s.send('chat-h-fallback', 'SCRIPT:hello');
   const notice = frames.find(f => f.type === 'notice');
   assert.equal(notice.code, 'agent-unavailable'); assert.match(notice.message, /without tools/);

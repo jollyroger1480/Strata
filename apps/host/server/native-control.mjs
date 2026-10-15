@@ -1,5 +1,6 @@
 /** Native Strata control plane. All user actions are explicit; opening the UI only reads state. */
 import { spawn } from 'node:child_process';
+import {chooseParallel,applyParallel,withoutParallel,FALLBACK_NOTE} from './native-parallel.mjs';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, copyFileSync, renameSync, unlinkSync, chmodSync, statSync, accessSync, constants } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
@@ -99,6 +100,10 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(args.gpus!==undefined){const detected=new Set((snapshot.hardware?.gpus??[]).map(g=>g.index));if(!Array.isArray(args.gpus)||!args.gpus.length||new Set(args.gpus).size!==args.gpus.length||args.gpus.some(g=>!Number.isInteger(g)||!detected.has(g)))throw new Error('Choose distinct detected GPUs. CPU-only text inference is not supported by this native adapter.');cfg.gpu=args.gpus.length===1?args.gpus[0]:args.gpus;cfg.layer_split=args.gpus.length>1?validateNativeSettings({layer_split:args.layerSplit??'auto'}).layer_split:'auto';if(cfg.layer_split!=='auto'&&cfg.layer_split.split(',').length!==args.gpus.length-1)throw new Error('Choose one layer split point between each pair of GPUs.');}
   if(cfg.vram_reserve_mib!==undefined&&cfg.vram_reserve_mib!==null){cfg.args=[...(cfg.args??[])];const at=cfg.args.indexOf('--vram-reserve-mib');if(at>=0)cfg.args.splice(at,2);cfg.args.push('--vram-reserve-mib',String(cfg.vram_reserve_mib));}if(cfg.vision){if(cfg.vision_tokens!=null)cfg.vision={...cfg.vision,max_tokens:cfg.vision_tokens};if(cfg.vision_min_tokens!=null)cfg.vision={...cfg.vision,min_tokens:cfg.vision_min_tokens};}cfg.mcp={...(cfg.mcp??{}),...(cfg.mcp_timeout_s!=null?{timeout_s:cfg.mcp_timeout_s}:{}),...(cfg.mcp_max_rounds!=null?{max_rounds:cfg.mcp_max_rounds}:{}),...(cfg.mcp_max_result_chars!=null?{max_result_chars:cfg.mcp_max_result_chars}:{})};
   for(const arg of cfg.args??[])if(arg.endsWith('.gguf')&&!existsSync(resolve(repo(),arg)))throw new Error('An engine argument names a missing GGUF. Restore the saved arguments or repair the files.');
+  /* Installed app: several requests at once by default (4, fewer where the card has no room), unless a number was chosen. */
+  const parallelChoice=packaged?chooseParallel({config:cfg,values:args.values??{},hardware:snapshot.hardware}):null;
+  let parallelNote=null;
+  if(parallelChoice){const applied=applyParallel(cfg,parallelChoice);for(const k of Object.keys(cfg))if(!(k in applied.cfg))delete cfg[k];Object.assign(cfg,applied.cfg);parallelNote=applied.note;}
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
   if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
@@ -113,13 +118,19 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(!args.multiple){if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel native requests before switching models.');for(const id of [...instances.keys()])await unload(id);}else if(matching)await unload(matching.id);
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
-  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
+  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
   let proc=null,started=null;
   if(packaged){
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   started=control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300}));
+   started=control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300})).catch(async error=>{
+    if(!(cfg.parallel>1)||parallelChoice?.explicit||job.state!=='running')throw error;
+    append(id,'Loading with several requests at once failed; trying again with one: '+error.message);
+    Object.keys(cfg).forEach(k=>delete cfg[k]);Object.assign(cfg,withoutParallel(JSON.parse(readFileSync(configPath,'utf8'))));
+    writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});parallelNote=FALLBACK_NOTE;instance.parallel=1;
+    await control.stop(instance.profile).catch(()=>{});await control.saveProfile(instance.profile,configPath);await control.start(instance.profile,{waitSeconds:300});
+   });
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(error){instance.status='error';instance.error=error.message;emit();throw error;}
   } else {
@@ -130,7 +141,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
-   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();return {summary:`${instance.label} is ready.`,instanceId:id};}}catch{}
+   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}

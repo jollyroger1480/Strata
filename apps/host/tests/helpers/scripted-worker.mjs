@@ -21,6 +21,9 @@
  *                                   an escalation, retry once with `sandbox_permissions: workspace-write`
  *   SCRIPT:retryshell <file> <text> the same with the shell tool (an in-workspace append)
  *   SCRIPT:read <file>              the `read` tool on <file>
+ *   SCRIPT:spawn <n> <script...>    n `subagent` calls in one reply; each child's prompt is SCRIPT:<script...>. When a child's
+ *                                   completion notice wakes the parent, it answers with a short text quoting the notice.
+ *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
  */
@@ -104,7 +107,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     // The Harness's session-title request carries the same user text but offers no tools.
     if (!(body.tools ?? []).length && messages.some(m => /concise title/i.test(text(m)))) return say(['Scripted title']);
     if (name === 'slow') {
-      const n = Number(args) || 400;
+      const n = parseInt(args, 10) || 400;
       return say(Array.from({ length: n }, (_, i) => `w${i} `));
     }
     if (name === 'echo') return say([args]);
@@ -117,6 +120,30 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
         : toolCall(shellName(), { command: shellCommand(file, value), description: `Append one line to ${file}` });
     }
     if (name === 'read') return toolCall('read', { file_path: args });
+    if (name === 'call') {
+      // This prompt's one call already ran (the Harness may add a context message after its result): answer, never call twice.
+      if (toolMessages.length) return say(['Tool finished. ', `Result: ${text(toolMessages[toolMessages.length - 1]).replace(/\s+/g, ' ').slice(0, 120)}`]);
+      const at = args.indexOf(' ');
+      let callArgs = {};
+      try { callArgs = JSON.parse(at < 0 ? '{}' : args.slice(at + 1).replace(/\s+#\d+.*$/, '')); } catch { /* an unparsable script argument is a test bug; send no arguments */ }
+      return toolCall(at < 0 ? args : args.slice(0, at), callArgs);
+    }
+    if (name === 'spawn') {
+      // A settlement notice (or any later user-role message) after this prompt already got its tool round: just answer.
+      if (messages.slice(promptAt + 1).some(m => m.role === 'assistant') && last.role === 'user') {
+        return say(['Noted: ', text(last).replace(/\s+/g, ' ').slice(0, 90)]);
+      }
+      const [count, ...script] = args.split(/\s+/);
+      const n = Math.max(1, Number(count) || 1);
+      send({ role: 'assistant', content: '', reasoning_content: `I will start ${n} helper agents.` });
+      await delay(chunkDelayMs);
+      for (let i = 0; i < n; i++) {
+        const argsJson = JSON.stringify({ description: `Helper ${i + 1}`, prompt: `SCRIPT:${script.join(' ') || 'echo done'} #${i + 1}` });
+        send({ tool_calls: [{ index: i, id: `call_${requests.length}_${i}`, type: 'function', function: { name: 'subagent', arguments: '' } }] });
+        for (let k = 0; k < argsJson.length; k += 23) { send({ tool_calls: [{ index: i, function: { arguments: argsJson.slice(k, k + 23) } }] }); await delay(2); }
+      }
+      return finish('tool_calls', 40 * n);
+    }
     if (name === 'ask') {
       send({ role: 'assistant', content: '' });
       send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }) } }] });
