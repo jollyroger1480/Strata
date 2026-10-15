@@ -135,6 +135,10 @@ class EngineComponent:
     def cuda_archs(self) -> tuple[str, ...]:
         return tuple(item for item in self.archs if item.startswith(("sm_", "compute_")))
 
+    @property
+    def hip_archs(self) -> tuple[str, ...]:
+        return tuple(item for item in self.archs if item.startswith("gfx"))
+
     def to_dict(self) -> dict:
         return {"id": self.id, "version": self.version, "platform": self.platform, "backend": self.backend,
                 "entrypoint": self.entrypoint, "exe": str(self.exe), "root": str(self.root),
@@ -390,6 +394,26 @@ def cuda_archs_present(environ=None) -> list[str]:
     return found
 
 
+def hip_archs_present(kfd_root: str = "/sys/class/kfd/kfd/topology/nodes") -> list[str]:
+    """``gfxNNNN`` for each AMD GPU the Linux kernel driver lists (``gfx_target_version`` is MMmmss: gfx1201 = 120001,
+    gfx1103 = 110003, gfx90a = 90010); empty when it cannot say (Windows, no amdgpu/kfd, no permission)."""
+    found = []
+    try:
+        nodes = sorted(Path(kfd_root).iterdir())
+    except OSError:
+        return []
+    for node in nodes:
+        try:
+            for line in (node / "properties").read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition(" ")
+                if key == "gfx_target_version" and value.strip().isdigit() and int(value) > 0:
+                    number = int(value)
+                    found.append(f"gfx{number // 10000}{number // 100 % 100:x}{number % 100:x}")
+        except OSError:
+            continue
+    return found
+
+
 def _smi_query(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
@@ -462,6 +486,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
     usable, reasons, broken = [], [], []
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
+    hip_here = hip_archs_present() if wanted == "hip" else []
     have_runtime = runtime if runtime is not None else runtime_version()
     for item in found:
         label = f"{item.version} {item.platform}-{item.backend}"
@@ -481,6 +506,10 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         if item.cuda_archs and archs_here and not arch_covers(item.cuda_archs, archs_here):
             reasons.append(f"{label} has code for {', '.join(item.cuda_archs)}, this PC's GPU is "
                            f"{', '.join(archs_here)}")
+            continue
+        if item.hip_archs and hip_here and not set(item.hip_archs) & set(hip_here):
+            reasons.append(f"{label} has code for {', '.join(item.hip_archs)}, this PC's GPU is "
+                           f"{', '.join(hip_here)}")
             continue
         need = item.min_driver.get("nvidia")
         if need and driver_here and _version_key(driver_here) < _version_key(need):
