@@ -97,6 +97,7 @@ PAYLOAD = (
     "requirements.txt",
     "requirements-monitor.txt",
     "docs/MANAGEMENT_PROTOCOL.md",
+    "data/gguf_fingerprints.json",     # `strata models import --plan` names a known file set from this table
 )
 
 #: `tools/` modules the terminal paths import. Adding one here is a deliberate act: this list is what keeps

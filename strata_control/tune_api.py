@@ -81,8 +81,9 @@ class ApiHarness:
         self._log = tempfile.NamedTemporaryFile(prefix="strata-api-harness-", suffix=".log",
                                                 delete=False)
         try:
-            self._proc = subprocess.Popen(self._argv(), cwd=str(self.serve_dir), env=self.env,
-                                          stdout=self._log, stderr=subprocess.STDOUT)
+            from serve import lifeline       # the worker (and the engine under it) end with this process
+            self._proc = lifeline.popen(self._argv(), "worker", cwd=str(self.serve_dir), env=self.env,
+                                        stdout=self._log, stderr=subprocess.STDOUT)
         except OSError as e:
             raise MeasurementError(f"the worker could not be started: {e}") from e
 
@@ -106,7 +107,15 @@ class ApiHarness:
             return ""
         try:
             text = Path(self._log.name).read_text(encoding="utf-8", errors="replace")
-            return f"; log: {text[-limit:].strip()}" if text.strip() else ""
+            if not text.strip():
+                return ""
+            # The engine prints its reason first and a usage dump after it, so the last 500 characters of a
+            # rejected flag are the middle of the usage text. Name the reason line(s) before the tail.
+            reasons = [line.strip() for line in text.splitlines()
+                       if re.search(r"unknown argument|unrecognized|invalid value|error|refus|is required|cannot|failed",
+                                    line, re.IGNORECASE)][:3]
+            lead = f"; reason: {' | '.join(reasons)[:300]}" if reasons else ""
+            return f"{lead}; log: {text[-limit:].strip()}"
         except OSError:
             return ""
 

@@ -86,6 +86,11 @@ runs it on its own interpreter (`PYTHONNOUSERSITE=1`, no `PYTHONHOME`/`PYTHONPAT
 256-bit token on Windows, a private socket elsewhere; a Job Object / process group; leases) and a second client (the
 Terminal) attaches to the same instance.
 
+The app starts each engine with `runtime start --die-with-pid <host>`, so the engine ends with the host, and the host ends
+with the shell (a kill-on-close Job Object around the app on Windows; the host watching its parent everywhere). The app is a
+single instance: a second launch focuses the open window. One app can run several engines (profiles `app-1`, `app-2`, ...).
+docs/CLOSING.md has every close path and how each is tested.
+
 **The engine** is not in the installer. It is a component in the per-user component folder
 (`%LOCALAPPDATA%\Strata\components`, `$XDG_DATA_HOME/strata/components`, or `STRATA_COMPONENTS_DIR`):
 

@@ -79,6 +79,7 @@ def args_to_argv(args: dict[str, Any]) -> list[str]:
     reshuffled its own output would produce a different digest each time and break the rollback
     comparison.
     """
+    from strata_control.tuning import flag_argv
     out: list[str] = []
     for flag in sorted(args):
         value = args[flag]
@@ -87,7 +88,7 @@ def args_to_argv(args: dict[str, Any]) -> list[str]:
         if value is True:
             out.append(flag)
             continue
-        out.extend([flag, str(value)])
+        out.extend(flag_argv(flag, value))
     return out
 
 

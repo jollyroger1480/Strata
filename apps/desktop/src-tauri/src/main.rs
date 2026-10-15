@@ -7,7 +7,19 @@
 //!   2. opens one webview window on the host's own origin, so the renderer and the API share an
 //!      origin exactly as the browser build does and the supplied UI's relative `/api/...` calls
 //!      keep working with no rewrite;
-//!   3. stops the host when the app exits.
+//!   3. stops the host when the app exits, and sees to it that nothing the app started outlives it.
+//!
+//! One app instance runs at a time (the single-instance plugin): a second launch focuses the window that is
+//! already open and starts nothing, so two apps never fight over the `app-N` engine slots. One app can still run
+//! several engines (one per GPU, say): the host gives each its own `app-N` profile under Strata Control.
+//!
+//! Closing ends the engines this app started, on every path:
+//!   - a normal exit and the window's X: the host is asked to stop them through Control (drained, then ended), with a
+//!     deadline after which the host is ended;
+//!   - the shell is killed, crashes, or the user logs off: on Windows the shell owns a kill-on-close Job Object that
+//!     contains the host, Control, the owner host, the server and the engine, so they end with it; everywhere the host
+//!     watches its parent and each engine's owner is told to follow the host (`--die-with-pid`).
+//! Engines the Terminal started are not in any of this and are left alone.
 //!
 //! Ownership stays where the architecture puts it. The App Host owns the local client API and the
 //! engine lifecycle; Strata Control owns components, models, profiles and jobs; DeepSeek Harness
@@ -25,6 +37,149 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
+
+/// The kill-on-close Job Object that holds everything this app starts (Windows). Its only handle is this process's,
+/// which the system closes however the process ends; closing the last handle ends every process in the job.
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimits {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        counts: [u64; 6],
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimits {
+        basic: BasicLimits,
+        io: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(job: Handle, class: i32, info: *mut c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn GetCurrentProcess() -> Handle;
+        fn CloseHandle(handle: Handle) -> i32;
+        fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
+    }
+
+    /// Is this process inside any job object? (The self-test asks, so an installed build proves it is contained.)
+    pub fn current_process_in_a_job() -> bool {
+        let mut result = 0i32;
+        unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut result) != 0 && result != 0 }
+    }
+
+    pub struct Job(Handle);
+
+    // The handle is a plain kernel object handle, usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// A new job that ends all of its processes when its last handle closes. None if the system refuses.
+        pub fn kill_on_close() -> Option<Job> {
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let mut info = ExtendedLimits::default();
+                info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                    &mut info as *mut ExtendedLimits as *mut c_void,
+                    std::mem::size_of::<ExtendedLimits>() as u32,
+                );
+                if ok == 0 {
+                    CloseHandle(handle);
+                    return None;
+                }
+                Some(Job(handle))
+            }
+        }
+
+        /// Put a process (by handle) in the job; everything it starts later joins too.
+        pub fn assign_raw(&self, process: *mut c_void) -> bool {
+            unsafe { AssignProcessToJobObject(self.0, process) != 0 }
+        }
+
+        /// Put this very process in the job, so the host and everything below it are contained.
+        pub fn assign_current(&self) -> bool {
+            self.assign_raw(unsafe { GetCurrentProcess() })
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Held for the life of the process. The handle is deliberately never closed by us: the system closes it when the
+/// process ends, by any route, and that is the moment the job ends what is left in it.
+#[cfg(windows)]
+static APP_JOB: std::sync::OnceLock<job::Job> = std::sync::OnceLock::new();
+
+/// Is the app inside a job object right now? Always false off Windows.
+fn app_is_contained() -> bool {
+    #[cfg(windows)]
+    {
+        job::current_process_in_a_job()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Put this process (and so everything it starts) in a kill-on-close job. True if it is contained now.
+fn contain_app() -> bool {
+    #[cfg(windows)]
+    {
+        if let Some(job) = job::Job::kill_on_close() {
+            if job.assign_current() {
+                let _ = APP_JOB.set(job);
+                return true;
+            }
+        }
+        eprintln!("[strata] could not put the app in a job object; engines are stopped by the host and their owners instead");
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// The running App Host, kept so it can be stopped on exit.
 struct HostProcess(Mutex<Option<Child>>);
@@ -273,6 +428,8 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
         // for the same reason, so the monitor reports `none` instead of fabricated numbers.
         .env("STRATA_PACKAGED", "1")
         .env("STRATA_REAL_ENGINE", "1")
+        // the host leaves, after stopping what this app started, when this shell is gone (killed, crashed)
+        .env("STRATA_EXIT_WITH_PARENT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -308,11 +465,15 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     Ok(port)
 }
 
-/// Stop the App Host.
+/// How long the host gets to stop the engines this app started (drain, then end) before it is ended. The host's own
+/// deadline is shorter; whatever is still running when the shell exits is ended by the job object / the owners.
+const HOST_STOP_SECONDS: u64 = 60;
+
+/// Stop the App Host, and with it the engines this app started.
 ///
-/// Only this process is signalled. The engine worker and any jobs belong to Strata Control and are
-/// deliberately not touched here: quitting the window must not kill inference another client is
-/// using.
+/// The host stops them through Control (profiles `app-N`), then exits. Engines another client started (the
+/// Terminal's `strata runtime start`) are not touched. If the host does not finish in time it is ended, and the
+/// engines are ended by the job object (Windows) or by their owners following the host (`--die-with-pid`).
 fn stop_host(app: &tauri::AppHandle) {
     let port = app.try_state::<HostPort>().and_then(|s| *s.0.lock().unwrap());
     let token = app.try_state::<ShutdownToken>().and_then(|s| s.0.lock().unwrap().clone());
@@ -323,7 +484,7 @@ fn stop_host(app: &tauri::AppHandle) {
             // process is ended as before.
             if let (Some(port), Some(token)) = (port, token) {
                 let _ = http_post(&format!("http://127.0.0.1:{port}/api/control/shutdown"), &[("x-strata-shutdown", token.as_str())]);
-                let deadline = Instant::now() + Duration::from_secs(80);
+                let deadline = Instant::now() + Duration::from_secs(HOST_STOP_SECONDS);
                 while Instant::now() < deadline {
                     if let Ok(Some(_)) = child.try_wait() {
                         return;
@@ -471,6 +632,11 @@ fn run_self_test(report_path: &str) -> i32 {
         }
     };
 
+    // Closing must always end what the app started: on Windows the shell sits in a kill-on-close job object.
+    if cfg!(windows) {
+        record("shell-contained-in-kill-on-close-job", app_is_contained(), "IsProcessInJob".into());
+    }
+
     let port = match pick_port() {
         Ok(p) => p,
         Err(e) => return write_self_test_report(report_path, steps, &e),
@@ -589,12 +755,21 @@ fn main() {
     // at the screen — the lesson from the Electron attempt, where a packaged app that never started
     // its host hung with no output at all.
     let args: Vec<String> = std::env::args().collect();
+    contain_app();
     if let Some(path) = self_test_path(&args) {
         let code = run_self_test(&path);
         std::process::exit(code);
     }
 
     tauri::Builder::default()
+        // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(HostProcess(Mutex::new(None)))
@@ -678,6 +853,32 @@ mod tests {
         std::fs::write(dir.join("strata.py"), b"").unwrap();
         assert_eq!(control_dir(&res), Some(dir));
         let _ = std::fs::remove_dir_all(&res);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_process_in_the_job_ends_when_the_job_is_closed() {
+        use std::os::windows::io::AsRawHandle;
+        let job = job::Job::kill_on_close().expect("a job object");
+        let mut child = Command::new("ping").args(["-n", "120", "127.0.0.1"]).stdout(Stdio::null()).spawn().expect("ping");
+        assert!(job.assign_raw(child.as_raw_handle() as *mut std::ffi::c_void), "the child joins the job");
+        assert!(child.try_wait().unwrap().is_none(), "it runs while the job is open");
+        drop(job); // what the system does when the app ends, by any route
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let ended = child.try_wait().unwrap().is_some();
+        if !ended {
+            let _ = child.kill();
+        }
+        assert!(ended, "closing the job must end its processes");
+    }
+
+    #[test]
+    fn the_shells_wait_for_the_host_exceeds_the_hosts_own_deadline_and_stays_bounded() {
+        // the host ends itself after 45 s (server/index.mjs); the shell must wait longer than that, but not for ever
+        assert!(HOST_STOP_SECONDS > 45 && HOST_STOP_SECONDS <= 90);
     }
 
     #[test]

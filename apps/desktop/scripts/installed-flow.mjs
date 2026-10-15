@@ -13,7 +13,7 @@
  *   host health, Control status (engine usable, acquiring forbidden), models from Control, load through the host
  *   (profile + `runtime start` under the owner runtime), a chat answer from the stub engine, a second client attaches to
  *   the same owner/instance, unload stops it, no engine for this PC is a notice with nothing started, the Tauri-style
- *   clean shutdown stops the engines the host started, a hard-killed host leaves the engine to Control (reported), stop.
+ *   clean shutdown stops the engines the host started, a hard-killed host takes its engine with it.
  * With --spy the host runs under tests/helpers/acquire-spy.mjs and the run fails on any attempt to reach the internet or
  * run an installer.
  *
@@ -121,6 +121,20 @@ async function startHost() {
   host.hostLog = () => log;
   for (let i = 0; i < 200; i++) { try { if ((await fetch(base + '/api/health')).ok) return true; } catch { /* not yet */ } await delay(150); }
   return false;
+}
+/** The host started the way the Tauri shell starts it, by a stand-in shell (a node process) that can then be killed hard. */
+async function startHostViaShell() {
+  port = await freePort(); base = `http://127.0.0.1:${port}`;
+  const spec = { command: node, args: [hostEntry], options: {
+    cwd: join(install, 'host'), stdio: 'ignore', windowsHide: true,
+    env: { ...baseEnv, STRATA_PORT: String(port), STRATA_DIST: join(install, 'host', 'dist'), NODE_ENV: 'production', STRATA_PACKAGED: '1', STRATA_REAL_ENGINE: '1',
+      STRATA_NO_ACQUIRE: '1', STRATA_SHUTDOWN_TOKEN: shutdownToken, STRATA_EXIT_WITH_PARENT: '1', FAKE_ENGINE_MARK: mark,
+      STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()) } } };
+  const shell = spawn(node, ['-e', "const s=JSON.parse(process.env.HOST_SPEC);const c=require('node:child_process').spawn(s.command,s.args,s.options);console.log(c.pid);setInterval(()=>{},1000);"],
+    { env: { ...process.env, HOST_SPEC: JSON.stringify(spec) }, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+  const hostPid = await new Promise(r => shell.stdout.once('data', c => r(Number(String(c).trim()))));
+  for (let i = 0; i < 200; i++) { try { if ((await fetch(base + '/api/health')).ok) return { shell, hostPid }; } catch { /* not yet */ } await delay(150); }
+  return { shell, hostPid, failed: true };
 }
 const call = async (path, method = 'GET', body) => {
   const response = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -230,19 +244,46 @@ async function main() {
   const final = controlJson('runtime', 'status', '--profile', 'app-1');
   record('clean shutdown stops the engine the app started and exits', stopping.status === 202 && code === 0 && final.json?.state === 'stopped' && (!ran2 || !alive(ran2.pid)), `status=${stopping.status}; host exit=${code}; runtime=${final.json?.state}; engine alive=${ran2 ? alive(ran2.pid) : 'n/a'}`);
 
-  // ---- hard kill: report what happens to an engine whose app host dies (stub engine only)
-  if (real) { await finishSpy(); return; }
+  // ---- hard kill: an engine whose app host dies ends with it (the owner follows the host: runtime start --die-with-pid)
   if (!(await startHost())) { record('host restarts', false, host.hostLog().slice(-400)); return; }
   await call('/api/native?refresh=1');
   rmSync(mark, { force: true });
-  const third = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: 'stub' } })).body.id);
-  const ran3 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+  const third = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body.id, 400);
+  let ran3 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+  if (real) {
+    const listed = spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(`${dirs.components}/engine/`) && l.includes('--serve'));
+    ran3 = listed.length ? { pid: Number(listed[0].trim().split(/\s+/)[0]) } : null;
+    record('(real) the engine is up before the host is killed', !!ran3, listed[0] ? listed[0].trim().slice(0, 120) : 'no engine process');
+  }
   await stopHost(true);
-  await delay(1500);
+  for (let i = 0; i < 600 && ran3 && alive(ran3.pid); i++) await delay(100);       // the owner notices within a second, drains, stops
   const orphan = controlJson('runtime', 'status', '--profile', 'app-1');
-  record('(info) a hard-killed app host leaves the engine to Control', third.job.state === 'done', `engine after the host was killed: runtime=${orphan.json?.state}, engine alive=${ran3 ? alive(ran3.pid) : 'n/a'}`);
+  record('a hard-killed app host takes its engine with it', third.job.state === 'done' && (!ran3 || !alive(ran3.pid)), `engine alive=${ran3 ? alive(ran3.pid) : 'n/a'}; runtime=${orphan.json?.state ?? orphan.json?.error?.message}`);
   const cleanup = controlJson('runtime', 'stop', '--profile', 'app-1');
-  record('Control stops it on request', cleanup.json?.state === 'stopped' && (!ran3 || !alive(ran3.pid)), `runtime=${cleanup.json?.state}; engine alive=${ran3 ? alive(ran3.pid) : 'n/a'}`);
+  record('nothing is left to stop afterwards', /stopped|not managed/.test(JSON.stringify(cleanup.json)) && controlJson('runtime', 'status', '--profile', 'app-1').json?.state === 'stopped', JSON.stringify(cleanup.json).slice(0, 160));
+
+  // ---- the shell itself is killed (what the desktop shell's crash or kill looks like to the host): the host leaves, and
+  // its engine with it, with nothing announced. Windows also has the job object; this is the path that works everywhere.
+  const started2 = await startHostViaShell();
+  if (started2.failed) { record('host starts under a stand-in shell', false, ''); try { started2.shell.kill('SIGKILL'); } catch { /* gone */ } }
+  else {
+    await call('/api/native?refresh=1');
+    rmSync(mark, { force: true });
+    const fourth = await waitJob((await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId } })).body.id, 400);
+    let ran4 = existsSync(mark) ? JSON.parse(readFileSync(mark, 'utf8')) : null;
+    if (real) {
+      const listed = spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(`${dirs.components}/engine/`) && l.includes('--serve'));
+      ran4 = listed.length ? { pid: Number(listed[0].trim().split(/\s+/)[0]) } : null;
+    }
+    if (isWin) spawnSync('taskkill', ['/PID', String(started2.shell.pid), '/F'], { windowsHide: true }); else started2.shell.kill('SIGKILL');
+    for (let i = 0; i < 100 && alive(started2.hostPid); i++) await delay(100);
+    const hostGone = !alive(started2.hostPid);
+    for (let i = 0; i < 900 && ran4 && alive(ran4.pid); i++) await delay(100);
+    const engineGone = !ran4 || !alive(ran4.pid);
+    record('a killed shell takes the host and its engine with it', fourth.job.state === 'done' && hostGone && engineGone,
+      `host pid ${started2.hostPid} gone=${hostGone}; engine pid ${ran4?.pid} gone=${engineGone}; runtime=${controlJson('runtime', 'status', '--profile', 'app-1').json?.state}`);
+    controlJson('runtime', 'stop', '--profile', 'app-1');
+  }
 
   await finishSpy();
 }

@@ -400,6 +400,9 @@ class EngineHarness:
         self.args = dict(args)
         self.workload = {**DEFAULT_WORKLOAD, **(workload or {})}
         self.cwd = Path(cwd) if cwd else Path.cwd()
+        if env is None:
+            from strata_control.tuning import engine_env
+            env = engine_env(self.engine)       # an engine package's own folder first on the library path
         self.env = env
         self.boot_timeout_s = boot_timeout_s
         self.request_timeout_s = request_timeout_s
@@ -410,12 +413,10 @@ class EngineHarness:
         self._context: int | None = None
 
     def _argv(self) -> list[str]:
-        from strata_control.tuning import engine_command
+        from strata_control.tuning import engine_command, flag_argv
         argv = [*engine_command(self.engine), "--serve"]
         for flag, value in self.args.items():
-            argv.append(flag)
-            if value not in ("1", "0", "true", "false", ""):
-                argv.append(str(value))
+            argv.extend(flag_argv(flag, value))
         return argv
 
     def __enter__(self) -> "EngineHarness":
@@ -430,8 +431,9 @@ class EngineHarness:
             raise MeasurementError(f"the engine binary is not at {self.engine}")
         started = time.monotonic()
         try:
-            self._proc = subprocess.Popen(
-                self._argv(), cwd=str(self.cwd), env=self.env,
+            from serve import lifeline       # the engine ends with this process, however this process ends
+            self._proc = lifeline.popen(
+                self._argv(), "engine", cwd=str(self.cwd), env=self.env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1)
         except OSError as e:

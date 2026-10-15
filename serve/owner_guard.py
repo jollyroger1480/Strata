@@ -18,6 +18,7 @@ import os
 import signal
 import stat
 import threading
+import time
 
 
 def _stop_gracefully() -> None:
@@ -25,7 +26,7 @@ def _stop_gracefully() -> None:
     _thread.interrupt_main()
 
 
-def start(fd: int, on_loss=None) -> None:
+def start(fd: int, on_loss=None, grace: float = 60.0) -> None:
     if os.name == "nt":
         if fd < 0 or not stat.S_ISFIFO(os.fstat(fd).st_mode):
             raise ValueError("--owner-fd must be an inherited pipe")
@@ -49,13 +50,21 @@ def start(fd: int, on_loss=None) -> None:
         try:
             while os.read(fd, 1):
                 pass
-            # This is an emergency path.  Signal the whole dedicated group so
-            # an engine already spawned during model loading cannot be orphaned.
-            os.killpg(os.getpgrp(), signal.SIGTERM)
         except OSError:
-            # A broken guard must never authorize another process to manage us.
-            os.killpg(os.getpgrp(), signal.SIGTERM)
+            pass                       # a broken guard must never authorize another process to manage us
         finally:
             os.close(fd)
+        # This is an emergency path.  Signal the whole dedicated group so an engine already spawned during model
+        # loading cannot be orphaned.  SIGTERM is the clean stop (the server drains and closes its engine); if the
+        # group is still there after `grace` seconds, SIGKILL ends whatever is left.
+        pgid = os.getpgrp()
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
 
     threading.Thread(target=watch, name="strata-owner-guard", daemon=True).start()
