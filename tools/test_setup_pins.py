@@ -319,6 +319,41 @@ class Requirements(unittest.TestCase):
         self.assertEqual(setup.req_name('numpy==2.5.3; python_version >= "3.12"'), "numpy")
         self.assertEqual(setup.req_name("charset_normalizer==3"), "charset-normalizer")
 
+    def test_build_helpers_are_pinned_but_absent_from_runtime_install(self):
+        runtime = {setup.req_name(x) for x in setup.requirement_lines()}
+        build = setup.requirement_lines(setup.BUILD_REQUIREMENTS)
+        self.assertEqual({setup.req_name(x) for x in build}, {"cmake", "ninja"})
+        self.assertTrue(all("==" in x for x in build))
+        self.assertTrue(runtime.isdisjoint({"cmake", "ninja"}))
+
+    def test_local_build_installs_only_missing_helper(self):
+        installed = False
+        requests = []
+        commands = []
+
+        def find_tool(name):
+            if name == "cmake":
+                return "/usr/bin/cmake"
+            return "/venv/bin/ninja" if installed else None
+
+        def pip_install(packages, what):
+            nonlocal installed
+            requests.append((packages, what))
+            installed = True
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(setup, "WIN", False), \
+                mock.patch.object(setup, "find_tool", side_effect=find_tool), \
+                mock.patch.object(setup, "pip_install", side_effect=pip_install), \
+                mock.patch.object(setup, "run", side_effect=run):
+            setup.cmake_build(ROOT, ROOT / "build-test", "strata", [], None, "unused.bat")
+        self.assertEqual(requests, [(["ninja==1.13.2"], "CMake and Ninja build tools")])
+        self.assertEqual(commands[0][:4], ["/usr/bin/cmake", "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=/venv/bin/ninja"])
+        self.assertEqual(commands[1][:3], ["/usr/bin/cmake", "--build", str(ROOT / "build-test")])
+
     def pip(self, stamp, packages, installed=()):
         ran = []
         with tempfile.TemporaryDirectory() as d:

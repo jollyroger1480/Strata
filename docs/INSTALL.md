@@ -27,6 +27,11 @@ you the first time: Python 3.12 if you have none (for your user account, no admi
 the build tools (Visual Studio Build Tools + CUDA Toolkit on Windows, `build-essential` + CUDA on Ubuntu) and compiles
 the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAILS.md#before-you-start).
 
+The normal Python install uses `requirements.txt` and does not install CMake or Ninja. If setup has to compile an
+engine or image encoder, it uses existing CMake/Ninja tools when available and installs missing pinned helpers from
+`requirements-build.txt` into `.venv`. An older `.venv` keeps any build helpers it already has; setup does not remove
+packages during an update.
+
 ## Windows
 
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or
