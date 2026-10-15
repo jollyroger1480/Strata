@@ -242,5 +242,52 @@ class Downloads(unittest.TestCase):
             self.assertEqual(partial.read_bytes(), data, "an oversized stale partial is discarded, not appended to")
 
 
+class FeedTool(unittest.TestCase):
+    """The owner's release tool: keys are made outside git, never printed, never overwritten; what it writes verifies."""
+
+    def test_keygen_refuses_a_git_checkout_and_an_existing_key_and_never_prints_the_secret(self):
+        import contextlib
+        import io
+        from feed_tool import keygen, main
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder) / "checkout"
+            (repo / ".git").mkdir(parents=True)
+            with self.assertRaises(SystemExit):
+                keygen(repo / "keys")
+            keys = Path(folder) / "keys"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["keygen", "--out", str(keys)])
+            secret = json.loads((keys / "feed-key.json").read_text())
+            self.assertNotIn(secret["seed"], out.getvalue())
+            self.assertIn(secret["key_id"], out.getvalue())
+            public = json.loads((keys / "feed-key.pub.json").read_text())
+            self.assertNotIn("seed", json.dumps(public))
+            self.assertEqual(public["keys"][0]["key_id"], secret["key_id"])
+            with self.assertRaises(SystemExit):
+                keygen(keys)
+            if os.name != "nt":
+                self.assertEqual((keys / "feed-key.json").stat().st_mode & 0o077, 0, "the secret is readable by its owner only")
+            self.assertTrue(json.loads((keys / "feed-key.json").read_text())["seed"])
+
+    def test_a_feed_the_tool_writes_verifies_with_the_public_file_and_a_changed_byte_does_not(self):
+        import contextlib
+        import io
+        from feed_tool import build_feed, keygen, main
+        with tempfile.TemporaryDirectory() as folder:
+            keygen(Path(folder) / "keys")
+            key = json.loads((Path(folder) / "keys" / "feed-key.json").read_text())
+            release = Path(folder) / "release"
+            build_feed(release, key=key, sequence=3)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["verify-feed", str(release), "--pub", str(Path(folder) / "keys" / "feed-key.pub.json")])
+            self.assertIn("sequence 3", out.getvalue())
+            feed = release / "strata-feed.json"
+            feed.write_bytes(feed.read_bytes().replace(b'"sequence": 3', b'"sequence": 4'))
+            with self.assertRaises(feedmod.FeedError):
+                main(["verify-feed", str(release), "--pub", str(Path(folder) / "keys" / "feed-key.pub.json")])
+
+
 if __name__ == "__main__":
     unittest.main()

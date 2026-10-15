@@ -75,6 +75,8 @@ def keygen(out: Path, *, allow_git: bool = False) -> dict:
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         json.dump(key, stream, indent=1)
         stream.write("\n")
+    from strata_control import private_files
+    private_files.restrict_to_current_user(secret, directory=False)          # 0600, or a protected ACL on Windows
     public.write_text(json.dumps({"keys": [signing.public_part(key)]}, indent=1) + "\n", encoding="utf-8")
     return signing.public_part(key)
 
@@ -218,12 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("folder", type=Path)
     pe.add_argument("--out", type=Path, required=True)
     pe.add_argument("--format", choices=feedmod.FORMATS, default="tar.gz")
+    pe.add_argument("--url-prefix", default="engine/", help='where the archive sits relative to the feed ("" for flat GitHub release assets)')
     pc = sub.add_parser("pack-control")
     pc.add_argument("folder", type=Path)
     pc.add_argument("--out", type=Path, required=True)
     pc.add_argument("--version", required=True)
     pc.add_argument("--platform", required=True, choices=feedmod.PLATFORMS)
     pc.add_argument("--format", choices=feedmod.FORMATS, default="tar.gz")
+    pc.add_argument("--url-prefix", default="control/")
     bf = sub.add_parser("build-feed")
     bf.add_argument("--out", type=Path, required=True)
     bf.add_argument("--key", type=Path, required=True)
@@ -244,10 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "sign-package":
         print("manifest sha256", sign_package(a.folder, _load_key(a.key)))
     elif a.cmd == "pack-engine":
-        entry = pack_engine(a.folder, a.out, a.format)
+        entry = pack_engine(a.folder, a.out, a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "backend", "variant", "size", "sha256", "manifest_sha256")}, indent=1))
     elif a.cmd == "pack-control":
-        entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format)
+        entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "platform", "size", "sha256")}, indent=1))
     elif a.cmd == "build-feed":
         doc = build_feed(a.out, key=_load_key(a.key), sequence=a.sequence, channel=a.channel, engine_dir=a.engine,
