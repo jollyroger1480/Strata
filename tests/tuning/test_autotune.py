@@ -1,0 +1,332 @@
+"""The auto-tuner's decisions, tested with a stub engine whose speed is computed from the flags it is given."""
+
+from __future__ import annotations
+
+import threading
+import unittest
+
+from strata_control import autotune, tune_knobs
+from strata_control.tune_session import StartFailed
+
+from tests.tuning.stub_session import FakeClock, StubSession, flag
+
+BASE = ["--pack", "P", "--native", "m.gguf", "--expert-cache", "auto", "--prefill", "auto", "--spec", "4",
+        "--spec-min-p", "0.5", "--mtp", "D", "--max-context", "131072", "--kv", "int8", "--kv-resident", "32768",
+        "--vram-reserve-mib", "1536"]
+
+
+def make_ctx(**kw):
+    ctx = tune_knobs.Context(backend="cuda", family="flash-next", gpu_count=1, vram_mib=12000, ram_gib=64, model_gib=60.0,
+                             context_tokens=131072, base_args=list(BASE), logical_threads=12, **kw)
+    ctx.facts = {"workers": 6, "slots": 3000}
+    return ctx
+
+
+def speed_with(gains: dict[str, float], base=60.0):
+    """tok/s as a function of the flags: each (flag, value) in `gains` multiplies the speed."""
+    def model(args, env, tune=None):
+        v = base
+        for (f, val), g in gains.items():
+            if f.startswith("STRATA_"):
+                if env.get(f) == val:
+                    v *= g
+            elif flag(args, f) == val:
+                v *= g
+        if tune:
+            for k, g in (gains.get(("tune", None)) or {}).items() if False else []:
+                pass
+        return v
+    return model
+
+
+def run_tuner(model, *, opts=None, ctx=None, clock=None, session_kw=None, cancel=None, progress=None, **kw):
+    clock = clock or FakeClock()
+    session = StubSession(model=model, clock=clock, **(session_kw or {}))
+    t = autotune.Tuner(session, BASE, {}, ctx or make_ctx(), opts or autotune.Options(), clock=clock, sleep=clock.sleep,
+                       system=session.system, total_ram_mib=64000, total_vram_mib=12000, quiet=lambda: None,
+                       cancel=cancel, progress=progress, **kw)
+    return t, session, t.run()
+
+
+class RulesTest(unittest.TestCase):
+    def test_never_list(self):
+        ctx = make_ctx(arch="gfx1201")
+        bad = [({"--expert-cache": 0}, {}), ({"--kv-resident": 20480}, {}), ({"--pcie-frac": 0.75}, {}),
+               ({"--spec": 6}, {}), ({"--spec": 2}, {}), ({"--lookup-chain": 4}, {}), ({"--adapt-every": 100000}, {}),
+               ({"--prefill": 512}, {}), ({"--ple-io": "ram"}, {}), ({}, {"STRATA_SH_STREAM": "1"}),
+               ({}, {"STRATA_RDNA2_SGEMM": "all"}), ({}, {"STRATA_HIP_WMMA": "1"}), ({"--pool-workers": 8}, {})]
+        for args, env in bad:
+            self.assertTrue(tune_knobs.check_setting(args, env, ctx), (args, env))
+        ok = [({"--spec": 3}, {}), ({"--host-core": "last"}, {}), ({"--pool-workers": 4}, {}), ({"--prefill": "auto:32768"}, {}),
+              ({"--adapt-every": 1, "--adapt-swaps": 80, "--adapt-decay": 0.97}, {}), ({"--pcie-frac": 0.2}, {})]
+        for args, env in ok:
+            self.assertEqual(tune_knobs.check_setting(args, env, ctx), [], (args, env))
+
+    def test_hybrid_cpu_affinity_never(self):
+        ctx = make_ctx()
+        ctx.hybrid_cpu = True
+        self.assertTrue(tune_knobs.check_setting({"--pool-affinity": "auto"}, {}, ctx))
+        ctx.hybrid_cpu = False
+        self.assertEqual(tune_knobs.check_setting({"--pool-affinity": "auto"}, {}, ctx), [])
+
+    def test_boolean_flags_are_present_or_absent(self):
+        self.assertEqual(tune_knobs.apply_to_argv(["--a", "1"], {"--kv-grow": True}), ["--a", "1", "--kv-grow"])
+        self.assertEqual(tune_knobs.apply_to_argv(["--kv-grow", "--a", "1"], {"--kv-grow": None}), ["--a", "1"])
+        self.assertNotIn("0", tune_knobs.apply_to_argv(["--kv-grow"], {"--kv-grow": False}))
+
+    def test_candidates_are_single_knob_changes_of_the_users_config(self):
+        ctx = make_ctx(allow_placement=True)
+        arms, skipped = tune_knobs.plan_arms(ctx, mode="thorough")
+        self.assertTrue(arms)
+        for p in arms:
+            argv = tune_knobs.apply_to_argv(BASE, p.args)
+            # everything the user had that the arm does not name is untouched (Rule 1)
+            for f in ("--expert-cache", "--kv", "--spec-min-p", "--vram-reserve-mib", "--max-context"):
+                if f not in p.args:
+                    self.assertEqual(flag(argv, f), flag(BASE, f), (p.arm.id, f))
+            self.assertEqual(tune_knobs.check_setting(p.args, p.env, ctx), [])
+
+    def test_answer_changing_arms_need_the_users_tick(self):
+        ctx = make_ctx()
+        ids = {p.arm.id for p in tune_knobs.plan_arms(ctx, mode="thorough")[0]}
+        self.assertNotIn("spec3", ids)
+        self.assertNotIn("adapt_async", ids)
+        ctx2 = make_ctx(allow_placement=True)
+        self.assertIn("spec3", {p.arm.id for p in tune_knobs.plan_arms(ctx2, mode="thorough")[0]})
+        ctx3 = make_ctx(allow_nonrepeatable=True)
+        ctx3.facts = {"workers": 6, "resident_ram": True}
+        self.assertIn("adapt_async", {p.arm.id for p in tune_knobs.plan_arms(ctx3, mode="thorough")[0]})
+
+    def test_engine_without_a_flag_drops_the_arm_with_a_reason(self):
+        ctx = make_ctx()
+        ctx.engine_flags = ["--spec"]
+        arms, skipped = tune_knobs.plan_arms(ctx, mode="thorough")
+        self.assertFalse(any(p.arm.id == "host_core_last" for p in arms))
+        self.assertTrue(any("does not accept" in s["reason"] for s in skipped))
+
+    def test_qwen36_and_sycl_lists(self):
+        q = make_ctx()
+        q.family = "qwen36"
+        q.facts = {"workers": 6, "hybrid_experts": True}
+        ids = [p.arm.id for p in tune_knobs.plan_arms(q, mode="thorough")[0]]
+        self.assertIn("q36_workers_explicit", ids)
+        self.assertNotIn("host_core_last", ids)
+        s = make_ctx(allow_placement=True)
+        s.backend = "sycl"
+        ids = [p.arm.id for p in tune_knobs.plan_arms(s, mode="thorough")[0]]
+        self.assertEqual(set(ids) - {"adapt_decay_09", "pcie_start_02"}, set())
+
+    def test_workers_arm_never_goes_below_a_quarter(self):
+        c = make_ctx()
+        c.facts = {"workers": 4}
+        self.assertEqual(tune_knobs.dynamic_value("workers-2", c), 2)
+        c.facts = {"workers": 2}
+        self.assertIsNone(tune_knobs.dynamic_value("workers-2", c))
+
+
+class TunerTest(unittest.TestCase):
+    def test_finds_a_real_gain_and_changes_one_knob(self):
+        model = speed_with({("--host-core", "last"): 1.08})
+        t, s, r = run_tuner(model, ctx=make_ctx())
+        self.assertEqual(r.outcome, "improved", r.notes)
+        self.assertEqual(r.settings["args"], {"--host-core": "last"})
+        self.assertAlmostEqual(r.gain_pct, 8.0, delta=2.0)
+        self.assertEqual(r.answers["class"], "exact")
+        for args, env in s.runs:                           # every run kept the user's own flags
+            self.assertEqual(flag(args, "--expert-cache"), "auto")
+            self.assertEqual(flag(args, "--kv"), "int8")
+        self.assertLessEqual(r.seconds, 1200 + 90 * 2)
+
+    def test_no_gain_keeps_the_default(self):
+        t, s, r = run_tuner(lambda a, e, tune=None: 60.0, session_kw={"noise": 0.02})
+        self.assertEqual(r.outcome, "default_confirmed")
+        self.assertEqual(r.settings, {"args": {}, "env": {}, "per_request": {}})
+        self.assertIn("already the fastest", r.message)
+
+    def test_a_gain_below_the_margin_is_not_taken(self):
+        model = speed_with({("--host-core", "last"): 1.02})
+        t, s, r = run_tuner(model, session_kw={"noise": 0.001})
+        self.assertEqual(r.settings["args"], {})
+
+    def test_losing_candidates_are_dropped_after_one_loss(self):
+        model = speed_with({("--host-core", "last"): 0.85})
+        t, s, r = run_tuner(model, session_kw={"noise": 0.001})
+        arm = [a for a in r.arms if a["id"] == "host_core_last"][0]
+        self.assertEqual(arm["status"], "dropped")
+        self.assertEqual(sum(1 for args, _ in s.runs if flag(args, "--host-core") == "last"), 1)
+
+    def test_machine_drift_is_not_mistaken_for_a_gain(self):
+        clock = FakeClock()
+        counter = {"n": 0}
+
+        def model(args, env, tune=None):                    # the machine slows 1.2% per engine start
+            return 60.0 * (1.0 - 0.012 * len(session.runs)) * (1.03 if flag(args, "--host-core") == "last" else 1.0)
+        session = StubSession(model=model, clock=clock, noise=0.0005)
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(), clock=clock, sleep=clock.sleep, system=session.system,
+                           total_ram_mib=64000, quiet=lambda: None)
+        r = t.run()
+        self.assertEqual(r.settings["args"], {}, r.notes)
+
+    def test_candidate_that_does_not_fit_is_never_started(self):
+        model = speed_with({("--host-core", "last"): 1.10})
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock, avail=9000, rss=lambda a, e: 12000.0)
+        calls = {"n": 0}
+        real = session.system
+
+        def system():
+            out = real()
+            out["memory"]["available_mib"] = 40000 if not session.runs else 9000     # after the base run only 9 GB is free
+            return out
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(wait_ram_s=30), clock=clock, sleep=clock.sleep,
+                           system=system, total_ram_mib=64000, quiet=lambda: None)
+        r = t.run()
+        self.assertEqual(len(session.runs), 1, "only the base was started")
+        self.assertEqual(r.outcome, "default_confirmed")
+        self.assertTrue(any(a["status"] == "skipped" and "memory" in a["reason"] for a in r.arms))
+
+    def test_first_oom_stops_the_search(self):
+        def fail(args, env):
+            return StartFailed("OOM", "out of memory") if flag(args, "--host-core") == "last" else None
+        t, s, r = run_tuner(speed_with({}), session_kw={"fail": fail})
+        self.assertTrue(any("ran out of memory" in n for n in r.notes))
+        self.assertEqual(sum(1 for a, _ in s.runs if flag(a, "--host-core") == "last"), 1)
+        self.assertEqual(r.settings["args"], {})
+
+    def test_unsupported_candidate_fails_alone(self):
+        def fail(args, env):
+            return StartFailed("UNSUPPORTED", "unknown argument: --host-core") if flag(args, "--host-core") else None
+        ctx = make_ctx()
+        ctx.facts = {"workers": 6}
+        t, s, r = run_tuner(speed_with({("--pool-workers", "4"): 1.1}), ctx=ctx, session_kw={"fail": fail})
+        failed = [a for a in r.arms if a["status"] == "failed"]
+        self.assertTrue(failed and "UNSUPPORTED" in failed[0]["reason"])
+        self.assertEqual(r.settings["args"], {"--pool-workers": 4})
+
+    def test_room_goal_refuses_a_faster_candidate_that_takes_more_memory(self):
+        model = speed_with({("--host-core", "last"): 1.1})
+        rss = lambda a, e: 20000.0 if flag(a, "--host-core") == "last" else 12000.0
+        t, s, r = run_tuner(model, opts=autotune.Options(goal="room", ram_wish_pct=20, reserve_mib=1536), session_kw={"rss": rss})
+        self.assertEqual(r.settings["args"], {})
+        self.assertTrue(any("more memory" in a["reason"] for a in r.arms))
+        t, s, r = run_tuner(model, opts=autotune.Options(goal="speed"), session_kw={"rss": rss})
+        self.assertEqual(r.settings["args"], {"--host-core": "last"})
+
+    def test_cancel_changes_nothing(self):
+        cancel = threading.Event()
+        model = speed_with({("--host-core", "last"): 1.1})
+        n = {"i": 0}
+
+        def progress(p):
+            if p["stage"] == "rounds":
+                cancel.set()
+        t, s, r = run_tuner(model, cancel=cancel, progress=progress)
+        self.assertEqual(r.outcome, "cancelled")
+        self.assertEqual(r.settings["args"], {})
+
+    def test_the_time_chosen_bounds_the_number_of_restarts(self):
+        model = speed_with({})
+        t, s, r = run_tuner(model, session_kw={"run_s": 300.0}, opts=autotune.Options(budget_s=1200))
+        self.assertLessEqual(len(s.runs), 1200 / 300 + 1)
+        t, s, r = run_tuner(model, session_kw={"run_s": 60.0}, opts=autotune.Options(budget_s=1200))
+        self.assertGreater(len(s.runs), 4)
+
+    def test_progress_reports_stage_and_time_left(self):
+        seen = []
+        t, s, r = run_tuner(speed_with({}), progress=seen.append)
+        self.assertTrue(any(p["stage"] == "base" for p in seen))
+        etas = [p["eta_s"] for p in seen if p.get("eta_s") is not None]
+        self.assertTrue(etas)
+        self.assertLessEqual(etas[-1], etas[0])
+        self.assertEqual(seen[-1]["stage"], "done")
+
+    def test_per_request_value_needs_every_round(self):
+        wins = {"n": 0}
+
+        def model(args, env, tune=None):
+            if tune and tune.get("spec_min_p") == 0.7:
+                return 60.0 * 1.06
+            return 60.0
+        t, s, r = run_tuner(model, session_kw={"noise": 0.002})
+        self.assertEqual(r.settings["per_request"].get("spec_min_p"), 0.7)
+        self.assertEqual(r.outcome, "improved")
+
+        calls = {"n": 0}
+
+        def noisy(args, env, tune=None):
+            if tune and tune.get("spec_min_p") == 0.7:
+                calls["n"] += 1
+                return 60.0 * (1.06 if calls["n"] % 3 else 0.99)      # one round in three it does not win
+            return 60.0
+        t, s2, r = run_tuner(noisy, session_kw={"noise": 0.0})
+        self.assertNotIn("spec_min_p", r.settings["per_request"])
+
+    def test_thorough_confirms_with_five_pairs(self):
+        model = speed_with({("--host-core", "last"): 1.06})
+        t, s, r = run_tuner(model, opts=autotune.Options(mode="thorough", budget_s=7200), session_kw={"noise": 0.003})
+        self.assertEqual(r.outcome, "improved")
+        self.assertEqual(r.pairs, 5)
+        self.assertGreaterEqual(r.faster_pairs, 4)
+
+    def test_prompt_regression_blocks_a_decode_win(self):
+        model = speed_with({("--host-core", "last"): 1.08})
+        pp = lambda a, e: 1500.0 * (0.8 if flag(a, "--host-core") == "last" else 1.0)
+        t, s, r = run_tuner(model, session_kw={"pp": pp, "noise": 0.001})
+        self.assertEqual(r.settings["args"], {})
+
+    def test_base_that_cannot_start_is_reported(self):
+        t, s, r = run_tuner(speed_with({}), session_kw={"fail": lambda a, e: StartFailed("FAIL_BOOT", "x")})
+        self.assertEqual(r.outcome, "base_failed")
+        self.assertEqual(len(s.runs), 1)
+
+    def test_coding_metric_uses_prompt_speed(self):
+        m = autotune.metric({"decode_tok_s": 100.0, "pp_tok_s": 400.0}, "coding")
+        self.assertAlmostEqual(m, 200.0)
+        self.assertEqual(autotune.metric({"decode_tok_s": 100.0, "pp_tok_s": 400.0}, "chat"), 100.0)
+
+
+class DecisionRulesTest(unittest.TestCase):
+    def test_threshold_follows_the_noise(self):
+        self.assertAlmostEqual(autotune.accept_threshold(0.03, 0.0, 0.0), 1.03)
+        self.assertAlmostEqual(autotune.accept_threshold(0.03, 0.025, 0.0), 1.05)
+        self.assertAlmostEqual(autotune.accept_threshold(0.03, 0.0, 0.04), 1.08)
+
+    def test_is_win(self):
+        self.assertTrue(autotune.is_win([1.05, 1.06], [1.0], threshold=1.03))
+        self.assertFalse(autotune.is_win([1.05, 0.99], [1.0], threshold=1.03))
+        self.assertFalse(autotune.is_win([1.04, 1.04], [0.9], threshold=1.03))
+        self.assertTrue(autotune.is_win([1.05, 1.06, 1.04, 1.05, 0.99], [1.0], threshold=1.03, need=4))
+
+
+class RecheckTest(unittest.TestCase):
+    def _preset(self):
+        return {"settings": {"args": {"--host-core": "last"}, "env": {}, "per_request": {}},
+                "measured": {"decode_tok_s": 60.0, "pp4k_tok_s": 1500.0, "rss_peak_mib": 12000.0, "vram_peak_mib": 10000.0}}
+
+    def test_keep_when_as_fast(self):
+        s = StubSession(model=lambda a, e, tune=None: 59.0, noise=0.0)
+        out = autotune.recheck(s, BASE, self._preset(), ctx=make_ctx())
+        self.assertEqual(out["verdict"], "keep")
+        self.assertEqual(len(s.runs), 1)
+        self.assertEqual(flag(s.runs[0][0], "--host-core"), "last")
+
+    def test_retune_suggested_when_slower(self):
+        s = StubSession(model=lambda a, e, tune=None: 50.0, noise=0.0)
+        out = autotune.recheck(s, BASE, self._preset(), ctx=make_ctx())
+        self.assertEqual(out["verdict"], "retune")
+        self.assertIn("slower", out["reason"])
+
+    def test_engine_update_adds_a_baseline_start(self):
+        s = StubSession(model=lambda a, e, tune=None: 60.0 if flag(a, "--host-core") else 62.0, noise=0.0)
+        out = autotune.recheck(s, BASE, self._preset(), ctx=make_ctx(), engine_changed=True)
+        self.assertEqual(len(s.runs), 2)
+        self.assertEqual(out["verdict"], "retune")
+
+    def test_a_start_that_fails_suggests_retune(self):
+        s = StubSession(model=lambda a, e, tune=None: 60.0, fail=lambda a, e: StartFailed("UNSUPPORTED", "unknown argument"))
+        out = autotune.recheck(s, BASE, self._preset(), ctx=make_ctx())
+        self.assertEqual(out["verdict"], "retune")
+
+
+if __name__ == "__main__":
+    unittest.main()

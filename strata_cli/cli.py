@@ -24,7 +24,7 @@ BACKENDS = ("metal", "cuda", "hip", "sycl", "cpu")
 from strata_control.doctor import inspect as inspect_components
 from strata_control.profiles import ProfileError
 from strata_cli.client import ClientError, Endpoint
-from strata_cli import monitor_commands
+from strata_cli import monitor_commands, tune_commands
 
 
 class _VersionAction(argparse.Action):
@@ -440,6 +440,8 @@ def parser() -> argparse.ArgumentParser:
     tune_list.add_argument("--state-dir", default=None)
     tune_list.add_argument("--output", choices=("human", "json"), default="human")
 
+    tune_commands.add_tune_auto(tune_sp)
+    tune_commands.add_presets(sp)
     monitor_commands.add_status(sp)
     monitor_commands.add_monitor(sp)
     monitor_commands.add_logs(sp)
@@ -1351,6 +1353,9 @@ def _tune(a: argparse.Namespace) -> int:
         from strata_control.paths import state_base
         return state_base() / "tuning"
 
+    if a.tune_command == "auto":
+        return tune_commands.auto(a)
+
     if a.tune_command == "list":
         root = state_root()
         jobs = []
@@ -1795,6 +1800,8 @@ def _run(a: argparse.Namespace) -> int:
             return _bench(a)
         if a.command == "timeskip":
             return _timeskip(a)
+        if a.command == "presets":
+            return tune_commands.presets_command(a)
         if a.command == "tune":
             return _tune(a)
         if a.command == "runtime":
