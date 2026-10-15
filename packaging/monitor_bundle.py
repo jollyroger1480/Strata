@@ -259,6 +259,10 @@ def rollback(target: Path, *, plan: bool = False,
     if if_active_sha256 != active["sha256"] or if_rollback_sha256 != prior["sha256"]:
         raise ValueError("monitor rollback digests changed or are missing; preview again")
     swap = Path(tempfile.mkdtemp(prefix=".strata-monitor-swap-", dir=target.parent))
+    if os.name == "nt":
+        # os.rename onto an existing directory fails on Windows (POSIX replaces an empty one):
+        # keep only the unique name mkdtemp reserved.
+        swap.rmdir()
     try:
         os.rename(target, swap)
         try:
@@ -279,7 +283,7 @@ def rollback(target: Path, *, plan: bool = False,
                 raise OSError(f"monitor rollback interrupted; inspect {target}, {previous} and {swap}") from exc
             raise
     finally:
-        if swap.exists() and not any(swap.iterdir()):
+        if swap.is_dir() and not any(swap.iterdir()):
             swap.rmdir()
     return {**result, "rolled_back": True, "would_rollback": False}
 
