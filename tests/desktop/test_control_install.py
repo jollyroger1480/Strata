@@ -225,6 +225,9 @@ class InstallerServerTests(unittest.TestCase):
         import setup as plain
         if not plain.gpus():
             self.skipTest("no NVIDIA GPU here: setup stops at step 1")
+        import shutil
+        if shutil.disk_usage(self.tmp.name).free < 130 * 10**9:
+            self.skipTest("less than 130 GB free: setup stops at its disk check before the download step")
         home = Path(self.tmp.name) / "home"
         shims = Path(self.tmp.name) / "shims"
         for p in (home / "third_party" / "llama.cpp" / "ggml", home / "third_party" / "llama.cpp" / "gguf-py", shims):
