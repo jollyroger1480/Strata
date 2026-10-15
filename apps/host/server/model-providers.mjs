@@ -207,5 +207,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     const result = { tokensIn, tokensOut, usageSource: tokensIn !== null && tokensOut !== null ? 'reported' : 'unavailable', durationMs, ttftMs: firstToken, tps: tokensOut !== null ? tokensOut / Math.max(0.001, durationMs / 1000) : null };
     onFrame({ type: 'done', ...result }); return result;
   }
-  return { list, save, remove, discover, resolve, stream };
+  /** Connections WITH their keys, for the host's own agent bridge only; never serialised to a client. */
+  function withSecrets() { return connections.map(c => ({ ...c, models: c.models.map(m => ({ ...m })) })); }
+  return { list, save, remove, discover, resolve, stream, withSecrets };
 }
