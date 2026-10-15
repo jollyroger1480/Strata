@@ -154,6 +154,8 @@ class Rig:
         if real_config is not None:
             cfg = json.loads(real_config.read_text(encoding="utf-8"))
             cfg.update({"host": "127.0.0.1", "port": self.port})
+            if cfg.get("log"):
+                cfg["log"] = str(root / "engine.log")                  # never the real install's log
             self.config = root / "run.json"
             self.config.write_text(json.dumps(cfg), encoding="utf-8")
         else:
