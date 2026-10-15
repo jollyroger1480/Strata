@@ -97,6 +97,7 @@ class TuneResult:
     message: str = ""
     mode: str = "quick"
     seconds: float = 0.0
+    waited_s: float = 0.0              # of those seconds, spent waiting (box lock, busy PC, memory)
     runs: int = 0
     base: dict[str, Any] = field(default_factory=dict)
     chosen: dict[str, Any] = field(default_factory=dict)
@@ -193,10 +194,14 @@ class Tuner:
         self.total_vram = total_vram_mib
         self.quiet = quiet
         self.storm = False
+        self.waited_s = 0.0                # time spent waiting for the box lock, the PC to be quiet or memory: not the user's budget
 
     # ---- bookkeeping
+    def _elapsed(self) -> float:
+        return self.clock() - self.started - self.waited_s
+
     def _say(self, stage: str, message: str, **extra: Any) -> None:
-        elapsed = self.clock() - self.started
+        elapsed = self._elapsed()
         avg = statistics.mean(self.run_times) if self.run_times else 150.0
         remaining = max(0, self.planned_runs - self.done_runs)
         eta = min(max(0.0, self.o.budget_s - elapsed), remaining * avg) if self.planned_runs else None
@@ -208,7 +213,7 @@ class Tuner:
             raise Cancelled()
 
     def _over_budget(self, reserve_s: float = 0.0) -> bool:
-        return (self.clock() - self.started) + reserve_s > self.o.budget_s
+        return self._elapsed() + reserve_s > self.o.budget_s
 
     def _avg_run(self) -> float:
         return statistics.mean(self.run_times) if self.run_times else 150.0
@@ -270,12 +275,18 @@ class Tuner:
         self._check_cancel()
         t0 = self.clock()
 
+        entered: list[float] = []
+
         def pre_start() -> None:
             # checked again once the box lock is ours: another stream's engine may have come and gone while we waited
+            lock_got = self.clock()
+            self.waited_s += lock_got - t0
             self._wait_for_quiet()
             why = self._ram_guard(delta_mib, label, wait_s=60.0)
+            self.waited_s += self.clock() - lock_got
             if why:
                 raise StartFailed("SKIPPED", why)
+            entered.append(self.clock())
 
         try:
             with self.session.engine(args, env, pre_start=pre_start) as eng:
@@ -284,7 +295,7 @@ class Tuner:
                     points(eng)
         except StartFailed as e:
             res = RunResult(status=e.status, reason=e.reason)
-        dt = self.clock() - t0
+        dt = self.clock() - (entered[0] if entered else t0)          # the run itself, not the waiting before it
         if res.status != "SKIPPED":
             self.run_times.append(dt)
             self.done_runs += 1
@@ -304,6 +315,7 @@ class Tuner:
         except Cancelled:
             r.outcome, r.message = "cancelled", "Stopped. Your settings were not changed."
         r.seconds = round(self.clock() - self.started, 1)
+        r.waited_s = round(self.waited_s, 1)
         return r
 
     def _spec(self) -> RequestSet:
@@ -353,7 +365,7 @@ class Tuner:
         if o.mode == "thorough":
             n_arms = len(planned)
         else:
-            left = int((o.budget_s - (self.clock() - self.started)) / max(1.0, self._avg_run()))
+            left = int((o.budget_s - self._elapsed()) / max(1.0, self._avg_run()))
             fixed = (per_arm - 1) + 1 + 2                  # extra base rounds, the final base, a combined-confirm margin
             n_arms = min(len(planned), max(0, (left - fixed) // per_arm))
         for p in planned[n_arms:]:
