@@ -3,6 +3,7 @@ import { createCloudflare } from './cloudflare.mjs';
 import { createConnectorInstaller } from './cloudflared-install.mjs';
 import { openArtifact } from './artifacts.mjs';
 import { saveSnapshot } from './snapshot.mjs';
+import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, typedFolder, TYPE_A_PATH } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
@@ -548,14 +549,15 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
 // The interpreter that drives the job is the same one the launcher would pick, named explicitly so
 // a packaged run uses the runtime the bundle carries rather than whatever `python3` resolves to.
-const TS_PYTHON = process.env.STRATA_PYTHON || 'python3';
+const PYTHON = resolvePython({ repo: REPO_ROOT });
+const TS_PYTHON = PYTHON.command;
 const REVISE_SCRIPT = resolve(REPO_ROOT, 'integrations', 'harness', 'revise_once.py');
 // A revision attempt is an agent turn, performed by the Harness through the pinned integration
 // script — which is a *Python* program, so it is invoked with the interpreter, not with Node.
 // This is a configured path, never a value an HTTP caller supplies: accepting one would hand a
 // remote caller command execution on the user's machine.
 const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
-  ?? `"${TS_PYTHON}" "${REVISE_SCRIPT}"`;
+  ?? `${shellPrefix(PYTHON)} "${REVISE_SCRIPT}"`;
 /**
  * Tuning, from the App Host.
  *
@@ -570,15 +572,15 @@ const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
  * the engine with each candidate, and inventing measurements is exactly what the handoff forbids.
  * The plan and the report are real; the sweep is gated on that harness.
  */
-function createTuning({ repoRoot, python, env = process.env } = {}) {
+function createTuning({ repoRoot, python, pythonArgs = [], env = process.env } = {}) {
   const cli = join(repoRoot, 'strata.py');
   const stateDir = () => env.STRATA_TUNE_DIR
     || join(env.XDG_STATE_HOME || join(env.HOME || '.', '.local', 'state'), 'strata', 'tuning');
 
   function runCli(args) {
     return new Promise((resolve) => {
-      const child = spawn(python, [cli, ...args, '--output', 'json'], {
-        cwd: repoRoot, env: { ...env, STRATA_TUNE_DIR: stateDir() },
+      const child = spawn(python, [...pythonArgs, cli, ...args, '--output', 'json'], {
+        cwd: repoRoot, windowsHide: true, env: { ...env, STRATA_TUNE_DIR: stateDir() },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let out = '', err = '';
@@ -639,11 +641,12 @@ function createTuning({ repoRoot, python, env = process.env } = {}) {
   };
 }
 
-const tuning = createTuning({ repoRoot: REPO_ROOT, python: TS_PYTHON });
+const tuning = createTuning({ repoRoot: REPO_ROOT, python: TS_PYTHON, pythonArgs: PYTHON.args });
 
 const timeskip = createTimeSkip({
   repoRoot: REPO_ROOT,
   python: TS_PYTHON,
+  pythonArgs: PYTHON.args,
   env: { ...process.env, STRATA_TIMESKIP_DIR: process.env.STRATA_TIMESKIP_DIR ?? '' },
 });
 

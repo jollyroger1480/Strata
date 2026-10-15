@@ -95,14 +95,15 @@ function summarise(run) {
  * attempt is an agent turn), so the default bound is generous, and exceeding it is reported as a
  * timeout rather than as success.
  */
-export function createTimeSkip({ repoRoot, python, timeoutMs = 30 * 60 * 1000, env = process.env } = {}) {
+export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 30 * 60 * 1000, env = process.env } = {}) {
   const cli = join(repoRoot, 'strata.py');
 
   function runCli(args, { signal } = {}) {
     return new Promise((resolve) => {
       const root = stateDir(env);
-      const child = spawn(python, [cli, ...args, '--output', 'json'], {
+      const child = spawn(python, [...pythonArgs, cli, ...args, '--output', 'json'], {
         cwd: repoRoot,
+        windowsHide: true,
         env: { ...env, STRATA_TIMESKIP_DIR: root },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
