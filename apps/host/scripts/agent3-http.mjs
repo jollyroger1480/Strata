@@ -88,6 +88,20 @@ if (command === 'connect') {
   console.log(`${stamp()}  -- clear`, JSON.stringify(await j('/api/goal/clear', { chatId: chat })));
   console.log(`${stamp()}  -- state after clear`, JSON.stringify(await j(`/api/goal?chatId=${chat}`)));
   void last;
+} else if (command === 'goalbar') {
+  // Pause from the goal bar while a round runs, then resume through the chat stream.
+  const [objective, pauseAfter = '6'] = rest;
+  const chat = process.env.CHAT ?? `gb-${Date.now()}`;
+  const common = { sessionId: chat, mode: 'bypass', remoteModel: await model() };
+  const running = stream({ ...common, message: `/goal ${objective}` });
+  await sleep(Number(pauseAfter) * 1000);
+  console.log(`${stamp()}  -- pause from the bar`, JSON.stringify(await j('/api/goal/pause', { chatId: chat })));
+  await running;
+  console.log(`${stamp()}  -- state after the run`, JSON.stringify((await j(`/api/goal?chatId=${chat}`)).goal));
+  console.log(`${stamp()}  -- resume (stream, no message)`);
+  await stream({ ...common, goalAction: 'resume' });
+  console.log(`${stamp()}  -- state after resume`, JSON.stringify((await j(`/api/goal?chatId=${chat}`)).goal));
+  console.log(`${stamp()}  -- remove`, JSON.stringify(await j('/api/goal/clear', { chatId: chat })));
 } else if (command === 'timeskip') {
   const [request, stopAfter] = rest;
   const chat = process.env.CHAT ?? `t-${Date.now()}`;

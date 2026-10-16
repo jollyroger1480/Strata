@@ -372,7 +372,8 @@ test('browser: the tool server is found in the agent component; the screen can s
 
 const browserNow = findBrowser();
 const playwrightCli = HARNESS ? findPlaywrightMcp(HARNESS) : null;
-const browserSkip = skip || !browserNow.found || !playwrightCli ? 'needs STRATA_HARNESS_DIR with the browser tool server and Chrome or Edge on this computer' : false;
+// Opt-in: it starts a real (headless) Chrome, which a test run must not do on someone's PC unasked.
+const browserSkip = process.env.STRATA_TEST_BROWSER !== '1' ? 'starts a real browser: set STRATA_TEST_BROWSER=1' : skip || !browserNow.found || !playwrightCli ? 'needs STRATA_HARNESS_DIR with the browser tool server and Chrome or Edge on this computer' : false;
 
 test('real browser: the assistant opens a local page in the person\'s Chrome or Edge and reads it; Manual asks before opening it, Plan refuses', { skip: browserSkip, timeout: 240000 }, async (t) => {
   const http = await import('node:http');
