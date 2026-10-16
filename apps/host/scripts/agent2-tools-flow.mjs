@@ -166,7 +166,7 @@ try {
     await page.getByRole('heading', { name: 'Web browser' }).evaluate(el => el.scrollIntoView({ block: 'start' }));
     const sw = page.getByRole('switch', { name: 'Use a web browser' });
     check(await sw.isEnabled(), 'the browser switch is available (Chrome or Edge and the tool server were found)');
-    await sw.click();
+    if ((await sw.getAttribute('aria-checked')) !== 'true') await sw.click();
     await page.waitForTimeout(800);
     await shot('10-browser-on');
     await newChat();
@@ -179,6 +179,10 @@ try {
     check(r.asked >= 1 && r.reasons.some(x => /Opening a page in the browser.*example\.com/i.test(x)), `Manual asked before opening the page (${r.reasons[0] ?? 'no card'})`);
     check(/Opened a page in the browser/.test(body), 'a plain "Opened a page in the browser" card appeared');
     check(/Example Domain/.test(body), 'the answer names the page heading');
+    // leave the settings as they were found
+    await openTools();
+    await page.getByRole('heading', { name: 'Web browser' }).evaluate(el => el.scrollIntoView({ block: 'start' }));
+    if ((await page.getByRole('switch', { name: 'Use a web browser' }).getAttribute('aria-checked')) === 'true') await page.getByRole('switch', { name: 'Use a web browser' }).click();
   }
 } catch (e) {
   console.log('ERROR', e.message);
