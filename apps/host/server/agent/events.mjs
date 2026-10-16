@@ -92,6 +92,12 @@ const BROWSER_VERBS = {
   browser_press_key: ['Typing on the page', 'Typed on the page', "Couldn't type on the page"],
   browser_snapshot: ['Looking at the page', 'Looked at the page', "Couldn't look at the page"],
   browser_take_screenshot: ['Looking at the page', 'Looked at the page', "Couldn't look at the page"],
+  browser_evaluate: ['Running a small program on the page', 'Ran a small program on the page', "Couldn't run the program on the page"],
+  browser_run_code: ['Running a small program on the page', 'Ran a small program on the page', "Couldn't run the program on the page"],
+  browser_wait_for: ['Waiting for the page', 'Waited for the page', "Couldn't wait for the page"],
+  browser_navigate_back: ['Going back a page', 'Went back a page', "Couldn't go back"],
+  browser_tabs: ['Managing browser tabs', 'Managed browser tabs', "Couldn't manage the browser tabs"],
+  browser_close: ['Closing the browser page', 'Closed the browser page', "Couldn't close the browser page"],
 };
 const BROWSER_GENERIC = ['Using the browser', 'Used the browser', 'The browser step failed'];
 const BROWSER_PREFIX = 'mcp__browser__', INSTRUCTIONS_PREFIX = 'mcp__strata-instructions__', COMMANDS_PREFIX = 'mcp__strata-commands__';
@@ -117,7 +123,7 @@ export function presentTool({ callId, name, args, reason = null }) {
   const words = WORDS[name]?.(args);
   const preview = scope === 'shell' && !words ? args.command ?? ''
     : scope === 'write' ? args.file_path ?? args.path ?? args.filePath ?? ''
-      : words ? words[1] ?? '' : name.startsWith(INSTRUCTIONS_PREFIX) || name.startsWith(COMMANDS_PREFIX) ? ownToolName(name) : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.element ?? args.query ?? JSON.stringify(args);
+      : words ? words[1] ?? '' : name.startsWith(INSTRUCTIONS_PREFIX) || name.startsWith(COMMANDS_PREFIX) ? ownToolName(name) : /^mcp__browser__browser_(evaluate|run_code)$/.test(name) ? '' : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.element ?? args.query ?? args.text ?? args.action ?? (Object.keys(args).length ? JSON.stringify(args) : '');
   const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');

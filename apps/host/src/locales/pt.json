@@ -2828,5 +2828,20 @@
   "s2830": "Executou a sua ferramenta",
   "s2831": "A sua ferramenta falhou",
   "s2832": "Esta pasta é grande demais para testar uma mudança numa cópia. Abra uma pasta menor para este chat e tente novamente.",
-  "s2833": "O Time-skip funciona numa pasta sua. Escolha uma pasta de trabalho para este chat e tente novamente."
+  "s2833": "O Time-skip funciona numa pasta sua. Escolha uma pasta de trabalho para este chat e tente novamente.",
+  "s2834": "Executando um pequeno programa na página",
+  "s2835": "Executou um pequeno programa na página",
+  "s2836": "Não foi possível executar o programa na página",
+  "s2837": "Aguardando a página",
+  "s2838": "Aguardou a página",
+  "s2839": "Não foi possível aguardar a página",
+  "s2840": "Voltando uma página",
+  "s2841": "Voltou uma página",
+  "s2842": "Não foi possível voltar",
+  "s2843": "Gerenciando as abas do navegador",
+  "s2844": "Gerenciou as abas do navegador",
+  "s2845": "Não foi possível gerenciar as abas do navegador",
+  "s2846": "Fechando a página do navegador",
+  "s2847": "Fechou a página do navegador",
+  "s2848": "Não foi possível fechar a página do navegador"
 }

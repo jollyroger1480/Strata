@@ -136,7 +136,7 @@ try {
     await idle();
     await shot('07-say-hello');
     const after = await chatText();
-    check(b.asked >= 1 && b.reasons.some(x => /Run your tool .say hello./i.test(x)), `Manual asked first, in plain words (${b.reasons[0] ?? 'no card'})`);
+    check(b.asked >= 1 && b.reasons.some(x => /Running your tool.*say hello/i.test(x)), `Manual asked first, in plain words (${b.reasons[0] ?? 'no card'})`);
     check(/hello from my own tool/i.test(after), 'after Approve the command ran and the answer has its output');
   }
 
@@ -176,7 +176,7 @@ try {
     await idle();
     await shot('11-browser');
     const body = await chatText();
-    check(r.asked >= 1 && r.reasons.some(x => /Open the web page https:\/\/example\.com/i.test(x)), `Manual asked before opening the page (${r.reasons[0] ?? 'no card'})`);
+    check(r.asked >= 1 && r.reasons.some(x => /Opening a page in the browser.*example\.com/i.test(x)), `Manual asked before opening the page (${r.reasons[0] ?? 'no card'})`);
     check(/Opened a page in the browser/.test(body), 'a plain "Opened a page in the browser" card appeared');
     check(/Example Domain/.test(body), 'the answer names the page heading');
   }

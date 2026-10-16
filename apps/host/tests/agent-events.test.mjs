@@ -139,6 +139,11 @@ test('the browser and the person\'s own tools have plain sentences, translated i
     ['mcp__browser__browser_click', 'Clicking on the page', 'Clicked on the page', "Couldn't click on the page"],
     ['mcp__browser__browser_type', 'Typing on the page', 'Typed on the page', "Couldn't type on the page"],
     ['mcp__browser__browser_snapshot', 'Looking at the page', 'Looked at the page', "Couldn't look at the page"],
+    ['mcp__browser__browser_evaluate', 'Running a small program on the page', 'Ran a small program on the page', "Couldn't run the program on the page"],
+    ['mcp__browser__browser_wait_for', 'Waiting for the page', 'Waited for the page', "Couldn't wait for the page"],
+    ['mcp__browser__browser_navigate_back', 'Going back a page', 'Went back a page', "Couldn't go back"],
+    ['mcp__browser__browser_tabs', 'Managing browser tabs', 'Managed browser tabs', "Couldn't manage the browser tabs"],
+    ['mcp__browser__browser_close', 'Closing the browser page', 'Closed the browser page', "Couldn't close the browser page"],
     ['mcp__browser__browser_something_new', 'Using the browser', 'Used the browser', 'The browser step failed'],
     ['mcp__strata-instructions__house_style', 'Reading your instructions', 'Read your instructions', "Couldn't read your instructions"],
     ['mcp__strata-commands__check_site', 'Running your tool', 'Ran your tool', 'Your tool failed'],
@@ -153,4 +158,6 @@ test('the browser and the person\'s own tools have plain sentences, translated i
   const own = presentTool({ callId: 'c2', name: 'mcp__strata-commands__check_site', args: {} });
   assert.equal(own.target, 'check site');
   assert.equal(presentTool({ callId: 'c3', name: 'mcp__github__create_issue', args: {} }).target, 'mcp__github__create_issue', 'an unknown connected tool keeps its name');
+  assert.equal(presentTool({ callId: 'c4', name: 'mcp__browser__browser_snapshot', args: {} }).preview, '', 'no empty braces on a card');
+  assert.equal(presentTool({ callId: 'c5', name: 'mcp__browser__browser_evaluate', args: { function: '() => document.title' } }).preview, '', 'a script in the page is not shown as code on the card');
 });

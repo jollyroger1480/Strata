@@ -2828,5 +2828,20 @@
   "s2830": "Ejecutó tu herramienta",
   "s2831": "Tu herramienta falló",
   "s2832": "Esta carpeta es demasiado grande para probar un cambio en una copia. Abre una carpeta más pequeña para este chat e inténtalo de nuevo.",
-  "s2833": "Time-skip trabaja sobre una carpeta tuya. Elige una carpeta de trabajo para este chat e inténtalo de nuevo."
+  "s2833": "Time-skip trabaja sobre una carpeta tuya. Elige una carpeta de trabajo para este chat e inténtalo de nuevo.",
+  "s2834": "Ejecutando un pequeño programa en la página",
+  "s2835": "Ejecutó un pequeño programa en la página",
+  "s2836": "No se pudo ejecutar el programa en la página",
+  "s2837": "Esperando a la página",
+  "s2838": "Esperó a la página",
+  "s2839": "No se pudo esperar a la página",
+  "s2840": "Volviendo a la página anterior",
+  "s2841": "Volvió a la página anterior",
+  "s2842": "No se pudo volver atrás",
+  "s2843": "Gestionando las pestañas del navegador",
+  "s2844": "Gestionó las pestañas del navegador",
+  "s2845": "No se pudieron gestionar las pestañas del navegador",
+  "s2846": "Cerrando la página del navegador",
+  "s2847": "Cerró la página del navegador",
+  "s2848": "No se pudo cerrar la página del navegador"
 }
