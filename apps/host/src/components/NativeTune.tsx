@@ -1,7 +1,9 @@
 import { tr } from '../lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
-import { Btn, Dialog, Icon, Select } from './ui';
-import { TuneRunView, TuneResultView } from './TuneRunView';
+import { Btn, Dialog, Select } from './ui';
+import { TuneRunView, TuneOutcomeCard } from './TuneRunView';
+import { readOutcome } from '../lib/tune-outcome';
+import { go } from '../lib/store';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { answerNotice, tunePresetAction, tuneStatus, tuneUndo, type TuneProgress, type TunePreset, type TuneResult, type TuneStatus } from '../lib/native-tune';
 
@@ -53,7 +55,6 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
 
     const progress = job?.progress as TuneProgress | undefined;
     const result = job?.state === 'done' ? (job.result as TuneResult | null) : null;
-    const stopped = job?.state === 'cancelled';
     const ratio = progress && progress.runsPlanned ? Math.min(0.96, progress.runsDone / progress.runsPlanned) : 0;
     const active = status?.active ?? null;
 
@@ -64,14 +65,15 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
         body = <TuneRunView progress={progress} ratio={ratio} saving={false}/>;
         actions = <><Btn onClick={() => void act(() => nativeAction(`operations/${job!.id}/cancel`))} disabled={busy}>{tr("Stop")}</Btn></>;
     } else if (phase === 'result') {
-        const improved = result?.outcome === 'improved' || result?.verdict === 'keep';
-        const text = stopped ? tr("Stopped. Your settings were not changed.") : job?.state === 'error' ? tr("The tune did not finish. Your settings were not changed.") : result?.verdict ? (result.verdict === 'keep' ? tr("Still as fast as when it was saved.") : result.verdict === 'retune' ? tr("It is slower than before. You can tune again.") : tr("Could not tell right now. Your tuning was kept.")) : result?.outcome === 'improved' ? tr("+{0}% faster answers, saved as '{1}'", [Math.max(0, Math.round(result.gain_pct ?? 0)), result.preset?.name ?? '']) : result?.code === 'busy_pc' ? tr("Your PC was busy, so the measurements were not reliable. Nothing was changed. Try again when it is quiet.") : result?.outcome === 'default_confirmed' ? tr("Your current settings are already the fastest we found.") : (result?.message ?? tr("Nothing was changed."));
-        const good = improved || result?.outcome === 'default_confirmed';
-        body = result?.outcome === 'improved' ? <div className="stack"><TuneResultView result={result} saved={result.preset?.name ?? null}/>{notice(result.answers?.class, result.answers?.default_repeatable)}</div> : <div className="tune-progress"><div className="tune-orbit" data-complete={good}><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50"/><circle cx="60" cy="60" r="50" pathLength="100" strokeDasharray={`${good ? 100 : 4} 100`}/></svg><Icon name={good ? 'check' : 'gauge'} size={42}/></div><h3 role="status">{text}</h3>
-            {result?.outcome === 'default_confirmed' && result.preset ? <p className="small muted">{tr("Saved as '{0}', so it is not tuned again when you reopen the app.", [result.preset.name])}</p> : null}
-            
-            {job?.state === 'error' ? <p className="small inline-error" role="alert">{job.error}</p> : null}</div>;
-        actions = <>{status?.can_undo && result?.outcome === 'improved' ? <Btn disabled={busy} onClick={() => void act(async () => { await tuneUndo(model, resourceProfile, vision); setJobId(''); })}>{tr("Undo")}</Btn> : null}<Btn variant="primary" onClick={close}>{tr("Close")}</Btn></>;
+        const outcome = readOutcome(result, job?.state);
+        const ok = outcome.tone === 'ok';
+        body = <div className="stack"><TuneOutcomeCard outcome={outcome} details={job?.state === 'error' ? (job.details || job.error) : null}/>{outcome.code === 'faster' ? notice(result?.answers?.class, result?.answers?.default_repeatable) : null}</div>;
+        const again = <Btn variant={ok ? undefined : 'primary'} disabled={busy || !!other} onClick={() => void start('autotune')}>{tr(outcome.code === 'faster' || outcome.code === 'already_fastest' || outcome.code === 'still_fast' ? 'Tune again' : 'Try again')}</Btn>;
+        actions = <>
+            {status?.can_undo && outcome.code === 'faster' ? <Btn disabled={busy} onClick={() => void act(async () => { await tuneUndo(model, resourceProfile, vision); setJobId(''); })}>{tr("Undo")}</Btn> : null}
+            <span className="tune-actions-gap"/>
+            {ok ? <>{again}<Btn variant="primary" onClick={() => { close(); go('chat'); }}>{tr(outcome.code === 'faster' ? 'Start chatting' : 'Close')}</Btn></> : <><Btn onClick={close}>{tr("Close")}</Btn>{again}</>}
+        </>;
     } else {
         const stale = active && status?.state && status.state !== 'fresh';
         body = <div className="stack">
@@ -100,5 +102,5 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
             {active && status?.state === 'soft' ? <Btn disabled={busy || !!other} onClick={() => void start('recheck')}>{tr("Check again")}</Btn> : null}
             <Btn variant="primary" icon="gauge" disabled={busy || !!other || !status} onClick={() => void start('autotune')}>{tr(active ? "Tune again" : "Start tuning")}</Btn></>;
     }
-    return <Dialog open={open} wide={phase !== 'idle'} title={phase === 'result' && result?.outcome === 'improved' ? tr("Tuned and saved") : tr("Tune this model")} onClose={close} actions={actions}>{body}</Dialog>;
+    return <Dialog open={open} wide={phase !== 'idle'} title={phase === 'result' && readOutcome(result, job?.state).code === 'faster' ? tr("Tuned and saved") : tr("Tune this model")} onClose={close} actions={actions}>{body}</Dialog>;
 }

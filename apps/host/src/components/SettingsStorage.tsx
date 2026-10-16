@@ -6,6 +6,7 @@ import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { sizeGb } from '../lib/format';
 import { useNative } from '../lib/native';
 import { NativeDeleteDialog } from './NativeDelete';
+import { nativeShortName } from '../lib/native-names';
 export function SettingsStorage() {
     const state = useStore(s => s);
     const native = useNative();
@@ -98,7 +99,7 @@ export function SettingsStorage() {
         ]} onChange={id => { setError(''); setSelected(id); }}/>
     </Field>
     {tr(native?.installed?.models.length ? <Field label={tr("Downloaded models")} hint={tr("{0} on this computer. Choose a version to delete its files.", [sizeGb((native.installed.models).reduce((n, m) => n + (m.diskGb ?? 0), 0))])}>
-      <div className="stack">{tr(native.installed.models.map(m => <div className="row" key={m.model}><span><strong>{tr(m.model_name || m.model)}</strong> <small className="muted">{tr(m.model)} · {tr(sizeGb(m.diskGb ?? 0))}{tr(native.instances.some(i => i.model === m.model) ? <> · {tr('Loaded')}</> : null)}</small></span><Btn size="sm" variant="danger" disabled={!!native.jobs.some(j => j.state === 'running')} onClick={() => setNativeDeleting(m.model)}>{tr("Delete")}</Btn></div>))}</div>
+      <ul className="storage-models">{tr(native.installed.models.map(m => <li className="storage-model" key={m.model}><span className="storage-model__name" title={m.model_name || m.model}><strong>{nativeShortName(m.model)}</strong>{tr(native.instances.some(i => i.model === m.model) ? <small className="muted">{tr('Loaded')}</small> : null)}</span><span className="storage-model__size muted">{tr(sizeGb(m.diskGb ?? 0))}</span><Btn size="sm" variant="danger" disabled={!!native.jobs.some(j => j.state === 'running')} onClick={() => setNativeDeleting(m.model)}>{tr("Delete")}</Btn></li>))}</ul>
     </Field> : null)}
     <NativeDeleteDialog id={nativeDeleting} onClose={() => setNativeDeleting(null)}/>
     <Dialog open={!!selected} compact title={tr(version?.local ? 'Remove from Strata?' : `Delete ${version?.quant ?? 'model version'}?`)} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr("Keep version")}</Btn><Btn variant="danger" disabled={pending || unavailable} onClick={() => void remove()}>{tr(pending ? 'Working…' : version?.local ? 'Remove model' : 'Delete version')}</Btn></>}>

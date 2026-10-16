@@ -57,3 +57,7 @@ export const RECOMMENDED: { family: string; model: string; note: string }[] = [
   { family: 'qwen', model: 'IQ3_S', note: 'best quality for its size' },
   { family: 'unsloth', model: 'UD-Q4_K_XL', note: 'more quality' },
 ];
+
+/** Is a group of the version list open? What the person chose wins; until they touch it, only the group holding the selected version is open
+ *  (the running version's group used to stay open whatever was clicked). */
+export const groupOpen = (opened: Record<string, boolean>, id: string, containsSelected: boolean): boolean => opened[id] ?? containsSelected;

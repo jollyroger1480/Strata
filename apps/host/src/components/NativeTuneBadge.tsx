@@ -1,6 +1,6 @@
 import { tr } from '../lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
-import { Btn } from './ui';
+import { Btn, Icon } from './ui';
 import { answerNotice, tunePresetAction, tuneOff, tuneStatus, type TuneStatus } from '../lib/native-tune';
 import { useNative } from '../lib/native';
 
@@ -26,12 +26,12 @@ export function NativeTuneBadge({ model, resourceProfile, vision }: { model: str
     }
     if (!status || (!status.active && !status.last_active)) return null;
     const active = status.active;
-    return <p className="small muted" data-tuning-active={!!active} role="status">
+    return <p className="native-tune-line" data-tuning-active={!!active} role="status"><Icon name="gauge" size={15}/><span>
         {active ? <>{tr("Using your tuning '{0}'", [active.name])}{status.state === 'hard' ? <> {'·'} {tr("This PC changed since it was tuned, so these settings are not used until you tune again.")}</> : null}
             {active.answers && active.answers.class !== 'exact' ? <> {'·'} {tr(answerNotice(active.answers.class, active.answers.default_repeatable))}</> : null}{' '}
             <Btn size="sm" variant="ghost" disabled={busy} onClick={() => void flip(() => tuneOff(model, resourceProfile, vision))}>{tr("Switch off")}</Btn></>
             : <>{tr("Your tuning is off. The standard settings are used.")}{' '}
             <Btn size="sm" variant="ghost" disabled={busy} onClick={() => void flip(() => tunePresetAction(status.last_active!.id, 'apply'))}>{tr("Switch on")}</Btn></>}
         {error ? <span className="inline-error" role="alert"> {error}</span> : null}
-    </p>;
+    </span></p>;
 }

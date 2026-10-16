@@ -6,6 +6,7 @@ import { Brand } from '../components/Brand';
 import { SettingsModels } from '../components/SettingsModels';
 import { SettingsTools } from '../components/SettingsTools';
 import { SettingsStorage } from '../components/SettingsStorage';
+import { PrivacyNotes } from '../components/PrivacyNotes';
 import { SettingsUpdates } from '../components/SettingsUpdates';
 import { NativeOperations } from '../components/NativeOperations';
 import { FontChoice } from '../components/FontChoice';
@@ -34,7 +35,6 @@ export function SettingsScreen() {
         { section: 'Reading & focus', label: 'Motion', hint: 'Reduced motion also disables smooth scrolling.', aliases: 'animation system full reduced', control: <Select value={prefs.motion} ariaLabel={tr("Motion")} options={[{ value: 'system', label: 'Follow system' }, { value: 'full', label: 'Full' }, { value: 'reduced', label: 'Reduced' }]} onChange={setMotion}/> },
         { section: 'Reading & focus', label: 'Transparency', hint: 'Translucent controls or solid surfaces. Text stays opaque.', aliases: 'blur glass liquid opaque translucent', control: <Select value={prefs.transparency} ariaLabel={tr("Transparency")} options={[{ value: 'translucent', label: 'Translucent' }, { value: 'opaque', label: 'Opaque' }]} onChange={setTransparency}/> },
         { section: 'Reading & focus', label: 'Focus reading', hint: 'Hides navigation in chat. Settings stays open above the conversation.', aliases: 'distraction quiet', control: <button className="st-toggle" role="switch" aria-checked={prefs.focus} aria-label={tr("Focus reading")} onClick={() => setFocus(!prefs.focus)}/> },
-        { section: 'Privacy', label: 'Collection and logs', hint: 'Strata sends no usage telemetry. Conversations stay in browser storage. When you choose an API model, that conversation and enabled skill instructions are sent to its provider. The UI request log keeps client, timing and token metadata in memory. Native API monitoring can retain request content in memory when enabled. Connected tools access the resources you configure.', aliases: 'telemetry reporting tracking privacy logging requests', control: null },
     ];
     function activate(name: typeof PANELS[number]['name']) {
         setSettingsSection(name);
@@ -60,6 +60,7 @@ export function SettingsScreen() {
             <div className="st-card st-card--flush">
               {tr(section === 'About' ? <div className="settings-about-brand"><Brand variant="lockup" height={28}/></div> : null)}
               {tr(section === 'Storage' ? <SettingsStorage /> : null)}
+              {tr(section === 'Privacy' ? <PrivacyNotes /> : null)}
               {tr(section === 'Update' ? <SettingsUpdates /> : null)}
               {tr(fields.filter(f => f.section === section).map(f => <Field key={f.label} label={tr(f.label)} hint={tr(f.hint)}>{tr(f.control)}</Field>))}
             </div>
