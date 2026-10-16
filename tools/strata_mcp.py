@@ -91,6 +91,9 @@ FALLBACK_MODELS = {
     "NVFP4-NVIDIA": {"about": "NVIDIA's own NVFP4 checkpoint (plain rounding), converted by sergqwer; the same size "
                               "and speed as NVFP4", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
                      "families": ("nvfp4",), "vision": True},
+    "NVFP4-QAD": {"about": "NVIDIA's own retrained 4-bit model (quantization-aware distillation): a 102 GB download "
+                           "that this PC turns into a Strata pack once; no images yet",
+                  "download_gb": 102.2, "ram_gb": 80, "arena_gb": 68.0, "families": ("nvfp4",), "vision": False},
 }
 FALLBACK_FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},

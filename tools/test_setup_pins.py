@@ -65,8 +65,17 @@ class HuggingFacePins(unittest.TestCase):
         """NVFP4: every size names a repository of NVFP4_REPOS, pinned by a commit; every file has a size and a
         SHA-256, and the pack folder, dense GGUF, n-gram table and embedding are each there."""
         sizes = [m for m, d in setup.MODELS.items() if d.get("repo")]
-        self.assertEqual(sorted(sizes), ["NVFP4", "NVFP4-NVIDIA"])
+        self.assertEqual(sorted(sizes), ["NVFP4", "NVFP4-NVIDIA", "NVFP4-QAD"])
         for m in sizes:
+            if setup.MODELS[m].get("prepare"):         # NVIDIA's checkpoint: pinned files, prepared on the PC
+                t = setup.NVFP4_REPOS[setup.MODELS[m]["repo"]]
+                self.assertRegex(t["revision"], r"^[0-9a-f]{40}$")
+                for path, (role, size, sha) in t["files"].items():
+                    self.assertEqual(role, "src")
+                    self.assertGreater(size, 0)
+                    self.assertRegex(sha, r"^[0-9a-f]{64}$")
+                self.assertEqual(sorted(setup.ready_paths(m, setup.Path("M"))), ["dense", "mtp", "pack", "ple"])
+                continue
             t = setup.NVFP4_REPOS[setup.MODELS[m]["repo"]]
             self.assertRegex(t["revision"], r"^[0-9a-f]{40}$")
             for path, (role, size, sha) in t["files"].items():

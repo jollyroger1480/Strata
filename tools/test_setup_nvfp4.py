@@ -50,6 +50,7 @@ class ReadyPacks(unittest.TestCase):
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(body)
             repos[repo]["files"][path] = (roles[path], len(body), hashlib.sha256(body).hexdigest())
+        repos[setup.NVFP4_FP4LOCAL_REPO] = setup.NVFP4_REPOS[setup.NVFP4_FP4LOCAL_REPO]   # listed, never fetched here
         models = {"NVFP4": {**setup.MODELS["NVFP4"], "repo": A}, "NVFP4-NVIDIA": {**setup.MODELS["NVFP4-NVIDIA"], "repo": B}}
         self.patches = [mock.patch.object(setup, "NVFP4_REPOS", repos),
                         mock.patch.dict(setup.MODELS, models),
@@ -100,17 +101,50 @@ class Family(unittest.TestCase):
     def test_sizes_and_family(self):
         self.assertTrue(setup.FAMILIES["nvfp4"]["ready"])
         names = [m for m in setup.MODELS if "nvfp4" in setup.MODELS[m].get("families", ())]
-        self.assertEqual(names, ["NVFP4", "NVFP4-NVIDIA"])   # the GPTQ pack first: the default size
+        self.assertEqual(names, ["NVFP4", "NVFP4-NVIDIA", "NVFP4-QAD"])   # the GPTQ pack first: the default size
         for m in names:
             d = setup.MODELS[m]
             self.assertTrue(d["nvidia_only"])
-            self.assertTrue(d["vision"])
-            self.assertIn("License", d["license"])
-            self.assertEqual(d["engine"], setup.NVFP4_ENGINE)
+            self.assertEqual(d["vision"], m != "NVFP4-QAD")   # the prepared QAD model: text first
+            self.assertRegex(d["license"], "Licen[sc]e|Agreement")
+            self.assertEqual(d["engine"], setup.FP4LOCAL_ENGINE if m == "NVFP4-QAD" else setup.NVFP4_ENGINE)
 
     def test_gguf_names_skip_the_ready_family(self):
         self.assertIsNone(setup.gguf_choice("pack-a.gguf"))
         self.assertEqual(setup.gguf_choice("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"), ("qwen", "IQ3_XXS"))
+
+
+class PreparedModel(unittest.TestCase):
+    """NVFP4-QAD (NVIDIA's FP4-Local): the checkpoint is downloaded pinned, the pack is prepared on this PC."""
+
+    def test_the_checkpoint_files_are_pinned(self):
+        files = setup.ready_files("NVFP4-QAD")
+        names = {f[3] for f in files}
+        self.assertEqual(sum(1 for n in names if n.startswith("tensors/model-")), 21)
+        self.assertTrue({"config.json", "model.safetensors.index.json", "tokenizer.json"} <= names)
+        self.assertEqual(sum(f[4] for f in files) / 1e9 // 1, setup.MODELS["NVFP4-QAD"]["download_gb"] // 1)
+        for f in files:
+            self.assertEqual(f[0], "src")
+            self.assertRegex(f[5], "^[0-9a-f]{64}$")
+            self.assertEqual(f[2], "b9ce18a6887e18c089fdea8509a33e63429a3300")
+
+    def test_paths_are_the_prepared_files(self):
+        m = Path("/models")
+        p = setup.ready_paths("NVFP4-QAD", m)
+        d = m / "nvidia--Qwen3.8-Flash-Next-FP4-Local" / "prepared"
+        self.assertEqual(p, {"pack": d / "pack", "dense": d / "dense.gguf", "ple": d / "ple-nvfp4.gguf", "mtp": d / "mtp"})
+        self.assertNotIn("embd", p)
+
+    def test_prepared_done_needs_the_last_files(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
+            d = setup.prepared_dir("NVFP4-QAD", Path(t))
+            (d / "pack").mkdir(parents=True)
+            (d / "pack" / "native_experts.txt").write_text("x")
+            self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
+            (d / "mtp" / "rt").mkdir(parents=True)
+            (d / "mtp" / "rt" / "experts.bin").write_text("x")
+            self.assertTrue(setup.prepared_done("NVFP4-QAD", Path(t)))
 
 
 class MockedInstall(unittest.TestCase):
@@ -155,6 +189,20 @@ class MockedInstall(unittest.TestCase):
         self.assertEqual(code, 0, out[-2000:])
         self.assertIn("NVIDIA-NVFP4-Strata/pack", self.flag(cfg["args"], "--pack"))
         self.assertIn("NVIDIA Open Model License", out)
+
+    def test_qad_size_is_prepared_and_uses_its_own_files(self):
+        code, out, cfg, _ = self.run_install("128GB-1x24GB", "NVFP4-QAD")
+        self.assertEqual(code, 0, out[-2500:])
+        a = cfg["args"]
+        base = "nvidia--Qwen3.8-Flash-Next-FP4-Local/prepared"
+        self.assertTrue(self.flag(a, "--pack").endswith(base + "/pack"))
+        self.assertTrue(self.flag(a, "--native").endswith(base + "/dense.gguf"))
+        self.assertEqual(self.flag(a, "--native-dense-gguf"), self.flag(a, "--native"))
+        self.assertTrue(self.flag(a, "--ple-gguf").endswith(base + "/ple-nvfp4.gguf"))
+        self.assertNotIn("--embd-gguf", a)                  # its dense GGUF holds the token embedding
+        self.assertTrue(self.flag(a, "--mtp").endswith(base + "/mtp/rt"))   # NVIDIA's own draft layer, not Qwen's
+        self.assertIn("NVIDIA Open Model Agreement", out)
+        self.assertIn("turned into a Strata pack on this PC", out)
 
     def test_96gb_keeps_every_expert_in_ram_64gb_takes_the_ram_budget(self):
         code, out, cfg, _ = self.run_install("96GB-1x16GB")    # 68 GB of experts + 10 GB beside them fit 95.8

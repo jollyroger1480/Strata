@@ -540,6 +540,54 @@ def cmd_pack(a) -> int:
     return iq_pack.main()
 
 
+# ------------------------------------------------------------------------------------------------------- prepare (setup)
+def cmd_prepare(a) -> int:
+    """Everything setup needs from the downloaded checkpoint, each step skipped when its mark is there:
+        <out>/ple-nvfp4.gguf   the n-gram table      <out>/dense.gguf   the dense weights (no experts)
+        <out>/pack/            index.txt, dense.bin, experts.bin, native_experts.txt, tokenizer/
+        <out>/mtp/rt/          the draft layer (a Q2_0 copy of NVIDIA's MTP experts)
+    The checkpoint is read, never changed; it can be deleted afterwards (the pack and the two GGUFs hold everything)."""
+    import subprocess
+    model, out = pathlib.Path(a.model), pathlib.Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    me = [sys.executable, str(pathlib.Path(__file__).resolve())]
+    tools = pathlib.Path(__file__).resolve().parent
+
+    def run(cmd):
+        r = subprocess.run(cmd)
+        if r.returncode:
+            sys.exit("prepare: %s failed (exit %d)" % (cmd[1] if len(cmd) > 1 else cmd[0], r.returncode))
+
+    def step(name, mark, fn):
+        if mark.exists():
+            print("prepare: %s already done" % name, flush=True)
+            return
+        print("prepare: %s ..." % name, flush=True)
+        t0 = time.time()
+        fn()
+        mark.write_text("done %.0f s\n" % (time.time() - t0))
+
+    step("the n-gram table", out / "ple-nvfp4.gguf.done",
+         lambda: run(me + ["ple", "--model", str(model), "--out", str(out / "ple-nvfp4.gguf")]))
+    step("the dense weights", out / "dense.gguf.done",
+         lambda: run(me + ["convert", "--dense-only", "--model", str(model), "--outfile", str(out / "dense.gguf")]))
+    step("the experts and the pack", out / "pack" / "native_experts.txt",
+         lambda: run(me + ["pack", "--model", str(model), "--dense-gguf", str(out / "dense.gguf"), "--out", str(out / "pack")]))
+
+    mtp = out / "mtp"
+
+    def draft_layer():
+        src = mtp / "src"
+        run(me + ["mtp", "--model", str(model), "--out", str(src)])
+        run([sys.executable, str(tools / "mtp_pack.py"), "--src", str(src), "--experts", "q2_0",
+             "--out", str(mtp / "mtp-q2_0.gguf")])
+        run([sys.executable, str(tools / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(mtp / "rt")])
+        import shutil
+        shutil.rmtree(src, ignore_errors=True)
+    step("the draft layer", mtp / "rt" / "experts.bin", draft_layer)
+    print("prepare: done -> %s" % out)
+    return 0
+
 # ------------------------------------------------------------------------------------------------------ verifying
 def cmd_verify(a) -> int:
     """Experts: decode the checkpoint (CSF + ModelOpt definition) and compare with gguf-py's dequantization of the
@@ -593,6 +641,9 @@ def main() -> int:
     pk.add_argument("--model", required=True)
     pk.add_argument("--dense-gguf", required=True, help="the output of `convert --dense-only` (or `slim`)")
     pk.add_argument("--out", required=True)
+    pr = sub.add_parser("prepare")
+    pr.add_argument("--model", required=True)
+    pr.add_argument("--out", required=True)
     sl = sub.add_parser("slim")
     sl.add_argument("--gguf", required=True)
     sl.add_argument("--out", required=True)
@@ -601,7 +652,7 @@ def main() -> int:
     v.add_argument("--gguf", required=True)
     v.add_argument("--experts", type=int, default=4)
     a = ap.parse_args()
-    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "slim": cmd_slim, "pack": cmd_pack, "verify": cmd_verify}[a.cmd](a)
+    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "slim": cmd_slim, "pack": cmd_pack, "prepare": cmd_prepare, "verify": cmd_verify}[a.cmd](a)
 
 
 if __name__ == "__main__":
