@@ -15,7 +15,7 @@
  *   - it never holds a secret outside the environment of the agent process it starts.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
@@ -203,7 +203,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   }
 
   async function sessionFor(c, cwd, runtime) {
-    const known = sessionMap[c.id];
+    let known = sessionMap[c.id];
+    // The chat's folder changed: the agent's working folder and sandbox are fixed when its session starts, so the chat gets a new session
+    // in the new folder (the earlier conversation is carried into its first message, as for any fresh session).
+    if (known && cwd && known.cwd && resolve(known.cwd) !== resolve(cwd)) { delete sessionMap[c.id]; persist(); known = null; }
     if (known) return { sessionId: known.sessionId, fresh: false };
     const created = await runtime.gw.rpc('session/create', { request: { cwd } });
     sessionMap[c.id] = { sessionId: created.sessionId, cwd, createdAt: new Date().toISOString() };
