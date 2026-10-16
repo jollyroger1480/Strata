@@ -1958,9 +1958,9 @@ def prepared_dir(model: str, models_dir: Path) -> Path:
 
 
 def prepared_done(model: str, models_dir: Path) -> bool:
-    """The last file tools/nvfp4_local_pack.py prepare writes is there (the draft layer's experts)."""
-    return (prepared_dir(model, models_dir) / "mtp" / "rt" / "experts.bin").is_file() and \
-        (prepared_dir(model, models_dir) / "pack" / "native_experts.txt").is_file()
+    """Every step of tools/nvfp4_local_pack.py prepare is marked done (its marks, written when each step is whole)."""
+    d = prepared_dir(model, models_dir)
+    return all((d / m).is_file() for m in ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done"))
 
 
 def ready_paths(model: str, models_dir: Path) -> dict:

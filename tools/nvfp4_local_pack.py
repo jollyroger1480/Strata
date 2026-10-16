@@ -493,32 +493,39 @@ def experts_from_checkpoint(model, ck: Checkpoint, n_layers: int = 48, n_exp: in
         if key not in cache:
             cache.clear()
             rows = []
-            scale2 = np.zeros(n_exp, np.float32)
             for e in range(n_exp):
                 b = base % (l, e, role)
                 dec = csf_decode(np.asarray(ck.array(b + "weight_scale" + CSF_FIXED, np.uint8)),
                                  np.asarray(ck.array(b + "weight_scale" + CSF_EXC, np.uint32)))
                 rows.append(nvfp4_blocks(np.asarray(ck.array(b + "weight", np.uint8)), dec).reshape(-1))
-                scale2[e] = ck.array(b + "weight_scale_2", np.float32).reshape(-1)[0]
-            cache[key] = (np.stack(rows), scale2)
+            cache[key] = (np.stack(rows),)
         return cache[key]
 
     # shapes in ggml order (ne0 = K, ne1 = rows, ne2 = experts)
     geo = {"gate": (2560, 640), "up": (2560, 640), "down": (640, 2560)}
+
+    class _Mem(_VGguf):                       # a tiny tensor held in memory: iq_pack reads it like any dense one
+        pass
+
     for l in range(n_layers):
         for role, (k, rows) in geo.items():
             n = "blk.%d.ffn_%s_exps.weight" % (l, role)
             vt = _VTensor(n, [k, rows, n_exp], Q.NVFP4.value, "NVFP4", n_exp * rows * (k // 64) * 36)
             model.where[n] = (_VGguf(), vt, None, src)
-            sn = "blk.%d.ffn_%s_exps.scale" % (l, role)
-            model.where[sn] = (_VGguf(), _VTensor(sn, [n_exp], Q.F32.value, "F32", n_exp * 4), None, src)
+            # the per-expert F32 scales (weight_scale_2 -> .scale, input_scale -> .input_scale), as the converter writes them
+            for suffix, key in ((".scale", "weight_scale_2"), (".input_scale", "input_scale")):
+                vals = np.array([ck.array(base % (l, e, role) + key, np.float32).reshape(-1)[0] for e in range(n_exp)], np.float32)
+                sn = "blk.%d.ffn_%s_exps%s" % (l, role, suffix)
+                raw = vals.view(np.uint8)
+                model.where[sn] = (_Mem(), _VTensor(sn, [n_exp], Q.F32.value, "F32", n_exp * 4), raw, src)
     orig_bytes = type(model).bytes
 
     def bytes_(name):
         if name.startswith("blk.") and "_exps." in name:
+            if not name.endswith(".weight"):                   # the small F32 scale tensors are in memory
+                return model.where[name][2]
             l = int(name.split(".")[1]); role = name.split("ffn_")[1].split("_exps")[0]
-            data, s2 = layer_role(l, role)
-            return data.reshape(-1) if name.endswith(".weight") else s2.view(np.uint8)
+            return layer_role(l, role)[0].reshape(-1)
         return orig_bytes(model, name)
     model.bytes = bytes_
     return model
@@ -571,7 +578,7 @@ def cmd_prepare(a) -> int:
          lambda: run(me + ["ple", "--model", str(model), "--out", str(out / "ple-nvfp4.gguf")]))
     step("the dense weights", out / "dense.gguf.done",
          lambda: run(me + ["convert", "--dense-only", "--model", str(model), "--outfile", str(out / "dense.gguf")]))
-    step("the experts and the pack", out / "pack" / "native_experts.txt",
+    step("the experts and the pack", out / "pack.done",           # (native_experts.txt is the pack's own marker, not ours)
          lambda: run(me + ["pack", "--model", str(model), "--dense-gguf", str(out / "dense.gguf"), "--out", str(out / "pack")]))
 
     mtp = out / "mtp"
@@ -584,7 +591,7 @@ def cmd_prepare(a) -> int:
         run([sys.executable, str(tools / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(mtp / "rt")])
         import shutil
         shutil.rmtree(src, ignore_errors=True)
-    step("the draft layer", mtp / "rt" / "experts.bin", draft_layer)
+    step("the draft layer", out / "draft.done", draft_layer)
     print("prepare: done -> %s" % out)
     return 0
 

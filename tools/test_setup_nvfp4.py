@@ -135,15 +135,16 @@ class PreparedModel(unittest.TestCase):
         self.assertEqual(p, {"pack": d / "pack", "dense": d / "dense.gguf", "ple": d / "ple-nvfp4.gguf", "mtp": d / "mtp"})
         self.assertNotIn("embd", p)
 
-    def test_prepared_done_needs_the_last_files(self):
+    def test_prepared_done_needs_every_mark(self):
         with tempfile.TemporaryDirectory() as t:
             self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
             d = setup.prepared_dir("NVFP4-QAD", Path(t))
-            (d / "pack").mkdir(parents=True)
-            (d / "pack" / "native_experts.txt").write_text("x")
-            self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
-            (d / "mtp" / "rt").mkdir(parents=True)
-            (d / "mtp" / "rt" / "experts.bin").write_text("x")
+            d.mkdir(parents=True)
+            marks = ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done")
+            for m in marks[:-1]:
+                (d / m).write_text("x")
+                self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
+            (d / marks[-1]).write_text("x")
             self.assertTrue(setup.prepared_done("NVFP4-QAD", Path(t)))
 
 

@@ -164,6 +164,27 @@ NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Images are off. Detail
 START-HERE.bat --setup --family gyro --model Gyro-S
 ```
 
+<a id="nvfp4-qad"></a>
+
+### NVIDIA's retrained 4-bit model (NVFP4-QAD)
+
+NVIDIA retrained Qwen3.8-Flash-Next for 4-bit experts (quantization-aware distillation) and published it as
+[Qwen3.8-Flash-Next-FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local). In setup's NVFP4 family it is
+the size **NVFP4-QAD**. It is not a ready-made pack: setup downloads NVIDIA's files as they are (102 GB) and **turns them
+into a Strata pack on your PC** (once, 20-40 minutes; about 110 GB more disk while it runs, and the 102 GB can be deleted
+afterwards). Nothing of NVIDIA's weights is redistributed by Strata.
+
+| Size | Download | Memory it needs | In plain words |
+| --- | ---: | ---: | --- |
+| **NVFP4-QAD** | 102 GB (+110 GB of disk to prepare) | like NVFP4: ~80 GB of RAM keeps every expert in RAM | NVIDIA's own 4-bit model; RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision |
+
+NVIDIA cards only. Images are off for now. Its licenses are the NVIDIA Open Model Agreement and Qwen's Community License.
+Technical details and measurements: [NVFP4.md](NVFP4.md#nvidias-fp4-local-checkpoint).
+
+```
+START-HERE.bat --setup --family nvfp4 --model NVFP4-QAD
+```
+
 ### OrcaRouter Uncensored IQ3_XXS
 
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
