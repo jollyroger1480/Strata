@@ -55,7 +55,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, onGoal = () => {}, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -100,7 +100,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   function status() {
     const h = harnessInfo();
     if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
-    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools() });
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir() });
     return {
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
       reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
@@ -148,7 +148,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   async function ensureRuntime(choice, signal) {
     for (;;) {
       if (starting) { await starting.catch(() => {}); continue; }
-      const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools() });
+      const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir() });
       const route = routeFor(profile, choice);
       if (!route) {
         throw new AgentUnavailable(choice?.connectionId

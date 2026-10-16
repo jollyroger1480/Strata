@@ -165,3 +165,14 @@ test('a sentence with a name or a number also carries its catalog template and v
     'Opening {0}…', 'Opening a web page…', 'Using the browser…', 'Setting the goal…', 'Updating the goal…', 'Checking the goal…', 'Using a tool…', 'Reading your files…', 'Trying an improved version…', 'Checking the result…', 'Comparing the two versions…'];
   for (const key of keys) { const id = idOf(key); assert.ok(id, `${key} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) { assert.ok(catalog[l][id]?.trim(), `${l}: ${key}`); assert.deepEqual((catalog[l][id].match(/\{\d\}/g) ?? []).sort(), (key.match(/\{\d\}/g) ?? []).sort(), `${l} keeps the slots of ${key}`); } }
 });
+
+test('a goal step is always sent, even right after another status (it used to be swallowed by the 300 ms gap, which made a test flaky)', () => {
+  const { reporter, frames, advance } = rig();
+  reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
+  advance(20);
+  reporter.set({ phase: 'goal', code: 'goal-step', text: 'Working on the goal, step 1', key: 'Working on the goal, step {0}', values: [1], args: { round: 1, max: 3 } });
+  advance(10);
+  reporter.set({ phase: 'thinking', code: 'thinking', text: 'Thinking… 1 tokens', tokens: 1 });
+  advance(400);
+  assert.ok(frames.some(f => f.phase === 'goal' && f.args.round === 1), frames.map(f => f.phase).join(','));
+});

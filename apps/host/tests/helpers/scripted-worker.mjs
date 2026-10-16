@@ -65,7 +65,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       lastRole: last.role, directive: directive?.[1] ?? null, messageCount: messages.length,
       authorization: req.headers.authorization ? 'present' : 'absent',
       authSha: req.headers.authorization ? createHash('sha256').update(req.headers.authorization).digest('hex') : null,
-      promptChars: raw.length,
+      promptChars: raw.length, raw,
     });
     const shellName = () => (body.tools ?? []).find(t => ['bash', 'pwsh'].includes(t.function?.name))?.function?.name ?? 'bash';
     const shellCommand = (file, value) => (shellName() === 'pwsh' ? `Add-Content -Path '${file}' -Value '${value}'` : `echo ${value} >> ${file}`);

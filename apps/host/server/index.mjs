@@ -10,6 +10,7 @@ import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
+import { materializeSkills, parseSkillFile, skillSlug, writeCreatedSkill } from './skill-files.mjs';
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge } from './agent/agent-bridge.mjs';
@@ -27,7 +28,7 @@ import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
  */
 import http from 'node:http';
 import { homedir } from 'node:os';
-import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -113,6 +114,7 @@ const agentTools = createAgentTools({ read: () => store.get().agentTools, write:
 agentTools.ensureFile();
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
+  skillsDir: () => AGENT_SKILLS,
   onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
@@ -210,6 +212,11 @@ function setupState() {
   };
 }
 
+/** Skills written in the Skills page live here (one folder each, SKILL.md inside). */
+const CREATED_SKILLS = join(store.DATA_DIR, 'skills');
+/** What the agent scans: the whole current list, written out by syncAgentSkills (the Harness watches it, so no restart). */
+const AGENT_SKILLS = join(store.DATA_DIR, 'agent', 'skills-live');
+
 function skills() {
   const bundled = [
     {
@@ -283,32 +290,26 @@ for the choice being made.`,
     },
   ];
 
+  // Two places hold skills a person brought or wrote: the app's own folder (written in the Skills page) and the workspace's skills folder (added
+  // with "Add skill"). Both are plain `<name>/SKILL.md` folders; the frontmatter (name, description) is optional.
   const extra = [];
-  const dir = join(WORKSPACE, 'skills');
-  if (existsSync(dir) && statSync(dir).isDirectory()) {
+  for (const [dir, source, prefix] of [[CREATED_SKILLS, 'created', 'my-'], [join(WORKSPACE, 'skills'), 'workspace', 'ws-']]) {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
     for (const name of readdirSync(dir)) {
       const full = join(dir, name);
-      if (!statSync(full).isDirectory()) continue;
-      // The description always claimed this file was the source; now it is.
-      // Its instruction text is the thing a reader needs in order to decide
-      // whether to leave the skill switched on.
-      let body = '';
-      let sizeKb = 1;
+      try { if (!statSync(full).isDirectory()) continue; } catch { continue; }
+      let text = '', sizeKb = 1;
       const md = join(full, 'SKILL.md');
-      try {
-        body = readFileSync(md, 'utf8');
-        sizeKb = Math.max(0.1, statSync(md).size / 1024);
-      } catch {
-        /* a folder with no SKILL.md is listed but has nothing to show */
-      }
+      try { text = readFileSync(md, 'utf8'); sizeKb = Math.max(0.1, statSync(md).size / 1024); } catch { /* a folder with no SKILL.md is listed but has nothing to show */ }
+      const parsed = parseSkillFile(text);
       extra.push({
-        id: `ws-${name}`,
-        name,
-        description: `Workspace skill loaded from ${name}/SKILL.md`,
-        source: 'workspace',
+        id: `${prefix}${name}`,
+        name: parsed.title ?? name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase()),
+        description: parsed.description ?? (source === 'created' ? 'A skill you wrote.' : `Workspace skill loaded from ${name}/SKILL.md`),
+        source,
         enabled: true,
         triggers: [name.replace(/-/g, ' ')],
-        body,
+        body: parsed.body,
         sizeKb: Number(sizeKb.toFixed(1)),
       });
     }
@@ -326,6 +327,15 @@ let skillState = skills().map((s) => ({
   useCount: 0,
   lastUsedAt: null,
 }));
+
+/**
+ * Write the skills the agent may use into its folder. A skill narrowed to one workspace is left out (the agent has no such scope), a skill
+ * switched off is written as hidden. Called after every change to the list.
+ */
+function syncAgentSkills() {
+  try { materializeSkills(AGENT_SKILLS, skillState.filter(s => !s.onlyIn)); } catch (e) { console.warn('skills · could not write the agent skills folder:', e.message); }
+}
+syncAgentSkills();
 
 /** Whether a skill applies, given where the reader is. */
 /**
@@ -1392,6 +1402,34 @@ async function api(req, res, path, method, url) {
         ? { ...s, enabled: before.enabled, onlyIn: before.onlyIn ?? null, useCount: before.useCount, lastUsedAt: before.lastUsedAt }
         : { ...s, onlyIn: null, useCount: 0, lastUsedAt: null };
     });
+    syncAgentSkills();
+    return json(res, 200, skillState);
+  }
+  // A skill written in the app: a name, what it is for, and the instructions. Saved as a folder the agent can read; no restart.
+  if (path === '/api/skills' && method === 'POST') {
+    const body = await readBody(req);
+    try {
+      const name = String(body.name ?? '').trim().slice(0, 80);
+      const instructions = String(body.body ?? '').trim();
+      if (!name) throw new Error('Give the skill a name.');
+      if (!instructions) throw new Error('Write the instructions the assistant should follow.');
+      const id = writeCreatedSkill(CREATED_SKILLS, { name, description: String(body.description ?? '').trim().slice(0, 400), body: instructions.slice(0, 40000) });
+      const before = new Map(skillState.map(s => [s.id, s]));
+      skillState = skills().map(s => before.has(s.id) ? { ...s, enabled: before.get(s.id).enabled, onlyIn: before.get(s.id).onlyIn ?? null, useCount: before.get(s.id).useCount, lastUsedAt: before.get(s.id).lastUsedAt } : { ...s, onlyIn: null, useCount: 0, lastUsedAt: null });
+      syncAgentSkills();
+      hub.send('skills', skillState);
+      return json(res, 201, { id: `my-${id}`, skills: skillState });
+    } catch (e) { return error(res, 400, e.message); }
+  }
+  const skillDelete = /^\/api\/skills\/([^/]+)$/.exec(path);
+  if (skillDelete && method === 'DELETE') {
+    const skill = skillState.find(s => s.id === decodeURIComponent(skillDelete[1]));
+    if (!skill) return error(res, 404, 'Skill not found.');
+    if (skill.source !== 'created') return error(res, 400, 'Only a skill you wrote here can be removed from this page.');
+    rmSync(join(CREATED_SKILLS, skill.id.replace(/^my-/, '')), { recursive: true, force: true });
+    skillState = skillState.filter(s => s.id !== skill.id);
+    syncAgentSkills();
+    hub.send('skills', skillState);
     return json(res, 200, skillState);
   }
   const skillMatch = /^\/api\/skills\/([^/]+)$/.exec(path);
@@ -1414,6 +1452,7 @@ async function api(req, res, path, method, url) {
         : s,
     );
     store.update({ skillPreferences: Object.fromEntries(skillState.map(s => [s.id, { enabled: s.enabled, onlyIn: s.onlyIn }])), skillEdits: { ...store.get().skillEdits, [skillId]: { ...store.get().skillEdits?.[skillId], ...edit } } });
+    syncAgentSkills();
     hub.send('skills', skillState);
     return json(res, 200, skillState);
   }
