@@ -375,8 +375,8 @@ MODELS = {
                         "about 20% slower than Q2_0 on 12 GB cards",
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "file": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": False},
-    "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
-                       "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
+    "NVFP4": {"about": "best quality of the NVFP4 versions (GPTQ, sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, "
+                       "other NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
               "engine": NVFP4_ENGINE,
               "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's): https://huggingface.co/Qwen/Qwen3.8-Flash-Next"},
@@ -387,9 +387,9 @@ MODELS = {
                      "license": "NVIDIA Open Model License (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
                                 "License) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
                                 "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4"},
-    "NVFP4-QAD": {"about": "NVIDIA's own retrained 4-bit model (quantization-aware distillation, NVIDIA's Qwen3.8-Flash-Next-FP4-Local): "
-                           "a 102 GB download that this PC turns into a Strata pack (about 20-40 minutes and 110 GB more disk, "
-                           "once); RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision. No images yet",
+    "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local) - slightly faster on short prompts; "
+                           "a 102 GB download that this PC turns into a Strata pack once (about 20-40 minutes, 110 GB more disk); "
+                           "RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision. No images yet",
                   "download_gb": 102.2, "prepare_gb": 110.0, "ram_gb": 80, "arena_gb": 68.0,
                   "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_FP4LOCAL_REPO,
                   "prepare": "fp4-local", "engine": FP4LOCAL_ENGINE,

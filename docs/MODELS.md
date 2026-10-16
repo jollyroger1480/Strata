@@ -176,7 +176,7 @@ afterwards). Nothing of NVIDIA's weights is redistributed by Strata.
 
 | Size | Download | Memory it needs | In plain words |
 | --- | ---: | ---: | --- |
-| **NVFP4-QAD** | 102 GB (+110 GB of disk to prepare) | like NVFP4: ~80 GB of RAM keeps every expert in RAM | NVIDIA's own 4-bit model; RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision |
+| **NVFP4-QAD** | 102 GB (+110 GB of disk to prepare) | like NVFP4: ~80 GB of RAM keeps every expert in RAM | NVIDIA's FP4, trained for FP4 - slightly faster on short prompts than NVFP4 (GPTQ is the best quality of the NVFP4 versions); RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision |
 
 NVIDIA cards only. Images are off for now. Its licenses are the NVIDIA Open Model Agreement and Qwen's Community License.
 Technical details and measurements: [NVFP4.md](NVFP4.md#nvidias-fp4-local-checkpoint).
