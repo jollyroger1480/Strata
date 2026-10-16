@@ -2673,5 +2673,10 @@
   "s2672": "Die Modelldateien sind bereits auf diesem Computer. Es wird nichts heruntergeladen, nur Ihre gewählten Einstellungen werden angewendet.",
   "s2673": "Aktuell geladene native Modelle werden zuerst entladen.",
   "s2674": "Strata kann seine Einstellungsdatei nicht öffnen.",
-  "s2675": "Starte Strata einmal als du selbst (nicht als Administrator) oder drücke auf Reparieren."
+  "s2675": "Starte Strata einmal als du selbst (nicht als Administrator) oder drücke auf Reparieren.",
+  "s2676": "{0} umbenennen",
+  "s2677": "Arbeitsbereich umbenennen",
+  "s2678": "Name des Arbeitsbereichs",
+  "s2679": "Nur der Name ändert sich. Der Ordner bleibt, wo er ist.",
+  "s2680": "Dieser Arbeitsbereich konnte nicht umbenannt werden"
 }

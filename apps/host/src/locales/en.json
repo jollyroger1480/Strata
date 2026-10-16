@@ -2673,5 +2673,10 @@
   "s2672": "The model files are already on this computer. Nothing will be downloaded; only the settings you chose are applied.",
   "s2673": "Any currently loaded native models will be unloaded first.",
   "s2674": "Strata can’t open its settings file.",
-  "s2675": "Run Strata once as yourself (not as administrator) or press Repair."
+  "s2675": "Run Strata once as yourself (not as administrator) or press Repair.",
+  "s2676": "Rename {0}",
+  "s2677": "Rename workspace",
+  "s2678": "Workspace name",
+  "s2679": "Only the name changes. The folder stays where it is.",
+  "s2680": "Couldn't rename that workspace"
 }

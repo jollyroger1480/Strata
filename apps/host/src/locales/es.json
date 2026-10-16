@@ -2673,5 +2673,10 @@
   "s2672": "Los archivos del modelo ya están en este ordenador. No se descargará nada; solo se aplican los ajustes que elegiste.",
   "s2673": "Los modelos nativos cargados actualmente se descargarán primero.",
   "s2674": "Strata no puede abrir su archivo de ajustes.",
-  "s2675": "Ejecuta Strata una vez como tú mismo (no como administrador) o pulsa Reparar."
+  "s2675": "Ejecuta Strata una vez como tú mismo (no como administrador) o pulsa Reparar.",
+  "s2676": "Renombrar {0}",
+  "s2677": "Renombrar espacio de trabajo",
+  "s2678": "Nombre del espacio de trabajo",
+  "s2679": "Solo cambia el nombre. La carpeta sigue donde está.",
+  "s2680": "No se pudo renombrar ese espacio de trabajo"
 }
