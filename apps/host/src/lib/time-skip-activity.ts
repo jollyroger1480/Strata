@@ -4,6 +4,7 @@ import type { TimeSkipJob } from './time-skip';
 /** What the working view says it is doing: the host's own words (activity.code / text / args.step, notes-split-agent3.md), else from the phase. */
 export function activityWords(job: Pick<TimeSkipJob, 'phase' | 'activity'> | undefined): string {
   const a = job?.activity;
+  if (a?.code === 'line' && a.text) return a.text;
   if (a?.code === 'trying-version') {
     const step = typeof a.args?.step === 'string' && a.args.step ? String(a.args.step) : '';
     return step || tr('Trying an improved version…');

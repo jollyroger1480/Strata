@@ -7441,3 +7441,36 @@ textarea {
 .chatcol { position: relative; }
 .dropzone { position: absolute; inset: 8px; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 2px dashed var(--st-accent); border-radius: var(--st-r-lg); background: color-mix(in srgb, var(--st-surface) 88%, var(--st-accent) 12%); color: var(--st-ink); pointer-events: none; }
 .dropzone span { color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
+
+/* The chat's project folder, above the message box (round 8, item 4) */
+.folderchip { display: inline-flex; align-items: center; align-self: flex-start; max-width: 100%; margin: 0 0 6px 6px; border-radius: 8px; color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
+.folderchip__pick { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: 600 var(--st-fs-sm) var(--st-font); cursor: pointer; }
+.folderchip__pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+.folderchip__pick:hover:not(:disabled), .folderchip__x:hover:not(:disabled) { background: var(--st-surface-2); color: var(--st-ink); }
+.folderchip[data-set="true"] .folderchip__pick { color: var(--st-ink-soft); }
+.folderchip[data-missing="true"] .folderchip__pick { color: var(--st-danger, #b42318); }
+.folderchip__x { width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--st-icon); cursor: pointer; opacity: 0; }
+.folderchip:hover .folderchip__x, .folderchip:focus-within .folderchip__x { opacity: 1; }
+.folderchip button:disabled { opacity: .55; cursor: default; }
+
+/* Time-skip as two agents: the plan, the lever and its why, and A / B progress (round 8, item 11) */
+.tsf { padding: 4px 18px 14px; display: flex; flex-direction: column; gap: 14px; }
+.tsf__plan { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.tsf__plan li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 6px 0; font-size: var(--st-fs-sm); line-height: 1.4; color: var(--st-ink); }
+.tsf__plan li[data-state="done"] { color: var(--st-ink-muted); }
+.tsf__plan li[data-state="running"] { font-weight: 700; }
+.tsf__no { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--st-line); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+.tsf__plan li[data-state="done"] .tsf__no { background: var(--st-accent); border-color: transparent; color: var(--st-accent-ink); }
+.tsf__plan li[data-lever] { margin: 2px -10px; padding: 8px 10px; border-radius: 10px; background: var(--st-surface-2); }
+.tsf__why { display: block; margin-top: 3px; font-weight: 400; color: var(--st-ink-soft); font-size: var(--st-fs-xs); }
+.tsf__why strong { color: var(--st-accent-text); font-weight: 700; }
+.tsf__note { margin: 0; }
+.tsf__lanes { display: flex; flex-direction: column; gap: 10px; }
+.tsf__lane { display: grid; grid-template-columns: 22px 1fr; column-gap: 10px; row-gap: 4px; align-items: center; }
+.tsf__name { grid-row: span 2; width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--st-line); display: grid; place-items: center; font-size: 11px; font-weight: 800; color: var(--st-ink-soft); }
+.tsf__prog { height: 6px; border-radius: 999px; background: var(--st-surface-2); overflow: hidden; }
+.tsf__prog i { display: block; height: 100%; background: var(--st-accent); border-radius: inherit; transition: width .4s ease; }
+.tsf__words { grid-column: 2; font-size: var(--st-fs-xs); color: var(--st-ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsf__lane[data-state="waiting"] .tsf__name, .tsf__lane[data-state="pending"] .tsf__name { opacity: .6; }
+@media (prefers-reduced-motion: reduce) { .tsf__prog i { transition: none; } }
+.ts-keep__buttons { display: inline-flex; gap: 8px; }

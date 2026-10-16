@@ -21,6 +21,7 @@ import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
+import { FolderChip } from '../components/FolderChip';
 import { DropZone } from '../components/DropZone';
 import { ActivityLine, EditedFiles, FileCard } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
@@ -118,6 +119,8 @@ export function ChatScreen() {
     const planShown = planTab.length > 0 && selectedPreview === planTabId;
     const planRunId = plan?.state === 'running' ? plan.id : '';
     useEffect(() => { if (planRunId && planTabId && !session?.closedPreviews?.includes(planTabId)) setSelectedPreview(planTabId); }, [planRunId]);
+    // The chat shows every run of this chat (a running one has no files yet, so no tab); the sidebar tabs only those with something to compare.
+    const allTimeSkipRuns = session?.timeSkips ?? [];
     const extraTabs = [...runTabs, ...planTab];
     const selectedRun = timeSkipRuns.find(run => timeSkipTabId(run.id) === selectedPreview);
     const inlinePreview = splitWidth >= (selectedRun || planShown ? 760 : 1120);
@@ -398,7 +401,7 @@ export function ChatScreen() {
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={timeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
@@ -498,6 +501,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
       <div className="composer">
         <div className="composer__inner">
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
+          <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
