@@ -1633,6 +1633,12 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, await agent.approve({ chatId: b.sessionId, callId: b.toolId, decision: b.decision })); }
     catch (e) { return error(res, e.code === 'approval-gone' ? 409 : 400, e.message); }
   }
+  /* The person changed the chat's mode while a turn runs: it applies to the next tool call, goal and helpers included. */
+  if (path === '/api/chat/mode' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || !['manual', 'plan', 'bypass'].includes(b.mode)) return error(res, 400, 'sessionId and mode (manual, plan or bypass) are required');
+    try { return json(res, 200, await agent.setMode(b.sessionId, b.mode)); } catch (e) { return error(res, e.code === 'mode-unavailable' ? 409 : 502, e.message); }
+  }
   /* Stop one chat's turn. Resolves once the turn has really ended, not when the cancel was admitted. */
   if (path === '/api/chat/stop' && method === 'POST') {
     const b = await readBody(req);

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { tr } from '../lib/i18n';
 import type { TimeSkipFile } from '../lib/time-skip';
-import { diffStats, fileKind, htmlPreviewDocument, lineDiff, segmentLines, timeSkipImageUrl, wordDiff, type Segment } from '../lib/time-skip-compare';
+import { HTML_PREVIEW_SANDBOX, diffStats, fileKind, htmlPreviewDocument, needsOutsideFiles, lineDiff, segmentLines, timeSkipImageUrl, wordDiff, type Segment } from '../lib/time-skip-compare';
 import { Btn, Dialog, Icon } from './ui';
 
 const baseName = (path: string) => path.split('/').pop() || path;
@@ -77,10 +77,12 @@ function FileView({ jobId, file }: { jobId: string; file: TimeSkipFile }) {
   if (kind === 'html') return <>
     <div className="tsc-tools"><Btn size="sm" variant="ghost" icon={code ? 'image' : 'file'} aria-pressed={code} onClick={() => setCode(v => !v)}>{tr(code ? 'View preview' : 'View code')}</Btn></div>
     {code ? <DiffView original={original} updated={updated}/> : <>{heads}<div className="tsc-pair tsc-pair--html">
-      {/* No permissions at all: no scripts, no forms, no navigation. The page also carries a policy that blocks every outside request. */}
-      <iframe title={tr("Original page")} sandbox="" srcDoc={htmlPreviewDocument(original)} loading="lazy"/>
-      <iframe title={tr("Updated page")} sandbox="" srcDoc={htmlPreviewDocument(updated)} loading="lazy"/>
-    </div></>}
+      {/* The page may run its own scripts in an isolated frame; the policy inside blocks every outside request. */}
+      {file.status === 'added' ? <div className="tsc-picture tsc-picture--empty"><span>{tr("Not there before.")}</span></div>
+        : <iframe title={tr("Original page")} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewDocument(original)} loading="lazy"/>}
+      {file.status === 'removed' ? <div className="tsc-picture tsc-picture--empty"><span>{tr("Removed.")}</span></div>
+        : <iframe title={tr("Updated page")} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewDocument(updated)} loading="lazy"/>}
+    </div>{needsOutsideFiles(updated) ? <p className="tsc-note">{tr("This page asks for files from the internet, which the preview does not load, so it may look incomplete. View code shows exactly what was written.")}</p> : null}</>}
   </>;
   if (words) return <>{heads}<div className="tsc-pair tsc-pair--text">
     <MarkedDoc segments={words.original} markdown={kind === 'markdown'}/>

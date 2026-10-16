@@ -610,6 +610,34 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     return runTurn({ ...options, goal: { action: 'create', objective: text } });
   }
 
+  /**
+   * The person changed the chat's mode while a turn (a goal and its helpers included) is running. The new preset
+   * is put on the session at once, the running turn's own bookkeeping follows, and questions already waiting are
+   * settled the way the new mode would have settled them: Bypass allows them, Plan rejects them.
+   */
+  async function setMode(chatId, mode) {
+    const want = modeOf(mode);
+    const c = chats.get(chatId);
+    const sessionId = sessionMap[chatId]?.sessionId;
+    if (!rt || !sessionId) return { applied: false, mode: want, reason: 'no session yet' };
+    if (c?.turn && c.turn.mode === want) return { applied: true, mode: want, settled: 0 };
+    await applyMode(rt, sessionId, want);
+    let settled = 0;
+    if (c?.turn) {
+      c.turn.mode = want;
+      c.turn.projector.policy = MODE_PRESETS[want].approval;
+      if (want !== 'manual') {
+        const helpers = c.turn.children;
+        for (const [key, entry] of [...pending.entries()]) {
+          if (entry.sessionId !== sessionId && !helpers?.has(entry.sessionId)) continue;
+          pending.delete(key);
+          try { await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome: want === 'bypass' ? 'allowed-once' : 'rejected' }); settled++; } catch { /* already answered */ }
+        }
+      }
+    }
+    return { applied: true, mode: want, settled };
+  }
+
   /** Answer one pending approval. `decision` is `approve` or `deny`. */
   async function approve({ chatId, callId, decision }) {
     const sessionId = sessionMap[chatId]?.sessionId;
@@ -680,7 +708,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

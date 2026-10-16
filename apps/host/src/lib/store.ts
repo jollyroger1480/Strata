@@ -1012,6 +1012,8 @@ export function newSession(): Session {
 export function setChatPreferences(id: string | undefined, preferences: NonNullable<Session['preferences']>) {
   const sessionId = id ?? newSession().id;
   patchSession(sessionId, s => ({ ...s, preferences: { ...s.preferences, ...preferences } }));
+  // A mode change applies to the very next tool call of a turn that is already running (a goal and its helpers included).
+  if (preferences.mode && liveTurns.get(sessionId)?.agent) void api.post('/api/chat/mode', { sessionId, mode: preferences.mode }).catch(() => undefined);
 }
 export function setPreviewTabClosed(sessionId:string|undefined, artifactId:string, closed:boolean, selected:string|null) {
   if(!sessionId)return;
@@ -1217,10 +1219,14 @@ export async function followTimeSkip(sessionId: string, runId: string) {
       catch { misses += 1; }
       if (job && TS_TERMINAL.includes(job.phase)) {
         let files: TimeSkipFile[] = [], extra: Partial<TimeSkipJob> = {};
-        try {
-          const found = await api.get<{ files: TimeSkipFile[]; applyAttempt: number | null; more: number }>('/api/timeskip/files?id=' + encodeURIComponent(job.id));
-          files = found.files; extra = { files: found.files, applyAttempt: found.applyAttempt, moreFiles: found.more };
-        } catch { /* the list is a convenience; the job's record stands */ }
+        // The changed files are what the person came for: ask again a few times before settling for "nothing to compare".
+        for (let tryNo = 0; tryNo < 4; tryNo++) {
+          try {
+            const found = await api.get<{ files: TimeSkipFile[]; applyAttempt: number | null; more: number }>('/api/timeskip/files?id=' + encodeURIComponent(job.id));
+            files = found.files; extra = { files: found.files, applyAttempt: found.applyAttempt, moreFiles: found.more };
+            break;
+          } catch { await new Promise(r => setTimeout(r, 700 * (tryNo + 1))); }
+        }
         const finished = job;
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, ...finished, ...extra } }), timeSkipEnding(finished, files));
         // A run that changed files opens the comparison; one that changed nothing, failed or was stopped has no sidebar tab.

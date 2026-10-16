@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { PreviewArtifact } from '../lib/artifacts';
 import { plainTimeSkipError, replayTimeSkip, setTimeSkipResult, stopTimeSkip } from '../lib/store';
 import { realTimeSkipDocuments, timeSkipCheckOutcomes, timeSkipDocumentMarkdown, timeSkipDocuments, timeSkipExample, timeSkipResultState, type TimeSkipDocument, type TimeSkipRun, type TimeSkipVersion } from '../lib/time-skip';
+import { TimeSkipWorking } from './TimeSkipWorking';
 import { FloatingMenu } from './FloatingMenu';
 import { TimeSkipCompare } from './TimeSkipCompare';
-import { TimeSkipWorking } from './TimeSkipWorking';
 import { Btn, Dialog, Icon } from './ui';
 function VersionTabs({ version, onChange, done }: {
     version: TimeSkipVersion;

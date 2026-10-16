@@ -166,6 +166,11 @@ export function apply(ctx) {
     if (!agent || exec.name === 'run_code') return next();
     let preset;
     try { preset = effectivePreset(agent.session); } catch { return next(); }
+    // A helper that was set to ask while the chat was in Manual must stop asking the moment the chat leaves Manual,
+    // so a mode change applies to the very next tool call of a running goal and its helpers.
+    if (preset !== MANUAL_PRESET && agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) === 'ask') {
+      agent.session.append('approval/policy', { policy: 'never' });
+    }
     if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
     if (preset !== MANUAL_PRESET) return next();
     const gate = manualDecision(exec);
