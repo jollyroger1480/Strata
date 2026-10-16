@@ -27,7 +27,7 @@ export interface TuneStatus {
   can_undo: boolean;
 }
 
-export interface TuneProgress { stage: string; text: string | null; minutesLeft: number | null; runsDone: number; runsPlanned: number; elapsedS: number; step: string }
+export interface TuneProgress { stage: string; text: string | null; minutesLeft: number | null; runsDone: number; runsPlanned: number; elapsedS: number; step: string; /** each measurement so far, as decode tokens per second */ speeds?: { label: string; tok_s: number }[] }
 
 export interface TuneResult {
   summary: string;

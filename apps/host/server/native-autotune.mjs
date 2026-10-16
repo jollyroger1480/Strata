@@ -88,6 +88,8 @@ export function createAutoTune({ launcher, workDir, spawnProcess = spawn, pollMs
         args.push('--goal', opts.goal === 'room' ? 'room' : 'speed');
         if (opts.leaveRam) args.push('--leave-ram', String(Math.max(0, Math.min(50, Math.round(opts.leaveRam)))));
         if (opts.allowSmallDifferences) args.push('--allow-small-differences');
+        // For headless checks on a PC where another engine runs: do not wait for it (the tuner would sit in its quiet check).
+        if (process.env.STRATA_TUNE_NO_QUIET_CHECK === '1') args.push('--no-quiet-check');
         if (opts.name) args.push('--name', String(opts.name).slice(0, 80));
       }
       const child = spawnProcess(l.command, [...(l.prefix ?? []), ...args], { cwd: l.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: l.env });
@@ -98,7 +100,7 @@ export function createAutoTune({ launcher, workDir, spawnProcess = spawn, pollMs
       const poll = () => {
         try {
           const p = JSON.parse(readFileSync(statusFile, 'utf8'));
-          if (p && p.state !== 'done') { job.progress = { stage: p.stage, text: p.text ?? null, minutesLeft: p.minutes_left ?? null, runsDone: p.runs_done ?? 0, runsPlanned: p.runs_planned ?? 0, elapsedS: p.elapsed_s ?? 0, step: p.message ?? '' }; onProgress(job.progress); }
+          if (p && p.state !== 'done') { job.progress = { stage: p.stage, text: p.text ?? null, minutesLeft: p.minutes_left ?? null, runsDone: p.runs_done ?? 0, runsPlanned: p.runs_planned ?? 0, elapsedS: p.elapsed_s ?? 0, step: p.message ?? '', speeds: Array.isArray(p.speeds) ? p.speeds : [] }; onProgress(job.progress); }
         } catch { /* not written yet */ }
       };
       const timer = setInterval(poll, pollMs);

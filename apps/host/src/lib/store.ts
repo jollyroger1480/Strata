@@ -550,6 +550,16 @@ export async function addWorkspace(path: string) {
   }
 }
 
+/** The name the sidebar shows for a workspace; its folder is unchanged. */
+export async function renameWorkspace(id: string, name: string) {
+  try {
+    const ws = await api.patch<Workspace>(`/api/workspaces/${id}`, { name });
+    set({ workspaces: state.workspaces.map(w => (w.id === id ? { ...w, name: ws.name } : w)) });
+  } catch (err) {
+    pushToast('error', "Couldn't rename that workspace", err instanceof Error ? err.message : String(err));
+  }
+}
+
 export async function removeWorkspace(id: string) {
   const ws = state.workspaces.find((w) => w.id === id);
   try {

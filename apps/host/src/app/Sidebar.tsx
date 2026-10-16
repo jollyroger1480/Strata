@@ -16,7 +16,7 @@ import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
-import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
+import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
     containerRef: RefObject<HTMLElement | null>;
 }) {
@@ -49,6 +49,7 @@ export function Sidebar({ containerRef }: {
     const [removeWorkspaceId, setRemoveWorkspaceId] = useState<string | null>(null);
     const [menuId, setMenuId] = useState<string | null>(null);
     const [renameId, setRenameId] = useState<string | null>(null);
+    const [renameWsId, setRenameWsId] = useState<string | null>(null), [wsName, setWsName] = useState('');
     const [name, setName] = useState('');
     const [deleteId, setDeleteId] = useState<string | null>(null);
     const [folders, setFolders] = useState<Record<string, boolean>>({});
@@ -80,10 +81,10 @@ export function Sidebar({ containerRef }: {
                 }}/><IconBtn name="x" title={tr("Close chat search")} onClick={closeSearch}/></div> : <><span className="navgroup__label">{tr("Workspaces")}</span><div className="ws__tools"><button ref={searchTrigger} type="button" className="st-btn st-btn--icon" aria-label={tr("Search chats")} title={tr("Search chats")} onClick={() => setSearchOpen(true)}><Icon name="search" size={18}/></button><IconBtn name="folder-plus" title={tr("Add a workspace folder")} onClick={() => { void pickWorkspace().then(path => path ? addWorkspace(path) : undefined); }}/></div></>)}</div>
           {workspaces.map(w => {
                 const expanded = folders[w.id] !== false || !!q;
-                const rows = matching.filter(s => s.workspace === w.path);
+                const rows = matching.filter(s => s.workspace === w.path || !!w.aliases?.includes(s.workspace));
                 const shown = q ? rows : rows.slice(0, 20);
                 return <div className="ws__group" key={w.id}>
-              <div className={cx('ws__row', activeWorkspace === w.id && 'is-active')}><button className="ws__name" aria-expanded={expanded} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: !expanded })); }}><Icon name="chevron" size={14} className={cx('ws__chev', expanded && 'is-open')}/><Icon name="folder" size={17}/><span>{w.name}</span></button>{tr(w.id !== 'root' ? <IconBtn name="x" title={tr("Remove {0} from sidebar", [w.name])} onClick={() => setRemoveWorkspaceId(w.id)}/> : null)}</div>
+              <div className={cx('ws__row', activeWorkspace === w.id && 'is-active')}><button className="ws__name" aria-expanded={expanded} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: !expanded })); }}><Icon name="chevron" size={14} className={cx('ws__chev', expanded && 'is-open')}/><Icon name="folder" size={17}/><span>{w.name}</span></button><IconBtn name="pencil" title={tr("Rename {0}", [w.name])} onClick={() => { setWsName(w.name); setRenameWsId(w.id); }}/>{tr(w.id !== 'root' ? <IconBtn name="x" title={tr("Remove {0} from sidebar", [w.name])} onClick={() => setRemoveWorkspaceId(w.id)}/> : null)}</div>
               {tr(expanded ? <div className="navsessions">
                 {tr(shown.map(s => <div key={s.id}>
                   <div className="ws__session row"><a className="navsession" href={href('chat', s.id)} aria-current={activeSession === s.id && location.route === 'chat' ? 'page' : undefined} onClick={() => selectSession(s.id)} onContextMenu={e => { e.preventDefault(); openMenu(s.id, e.currentTarget); }} title={sessionTitle(s)}><span className="navsession__title">{sessionTitle(s)}</span>{tr(s.pinned ? <span aria-label={tr("Pinned")}><Icon name="pin" size={12}/></span> : <span className="navsession__time">{tr(relTime(s.updatedAt))}</span>)}{tr(isUnread(s, activeSession) ? <span className="navsession__unread" aria-label={tr("Unread")}/> : null)}{tr(s.archived ? <span className="xs muted">{tr("Archived")}</span> : null)}</a><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Actions for {0}", [sessionTitle(s)])} onClick={e => openMenu(s.id, e.currentTarget)}><Icon name="ellipsis" size={16}/></button></div>
@@ -113,6 +114,11 @@ export function Sidebar({ containerRef }: {
                     renameSession(renameId, name.trim());
                 setRenameId(null);
             }}>{tr("Save name")}</Btn></>}><label className="input-field" htmlFor="chat-name"><span>{tr("Chat name")}</span><input className="st-input" id="chat-name" value={name} onFocus={e => e.currentTarget.select()} onChange={e => setName(e.target.value)}/></label></Dialog>
+    <Dialog open={!!renameWsId} compact title={tr("Rename workspace")} onClose={() => setRenameWsId(null)} actions={<><Btn onClick={() => setRenameWsId(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!wsName.trim()} onClick={() => {
+                if (renameWsId)
+                    void renameWorkspace(renameWsId, wsName.trim());
+                setRenameWsId(null);
+            }}>{tr("Save name")}</Btn></>}><label className="input-field" htmlFor="workspace-name"><span>{tr("Workspace name")}</span><input className="st-input" id="workspace-name" value={wsName} onFocus={e => e.currentTarget.select()} onChange={e => setWsName(e.target.value)}/></label><p className="small muted">{tr("Only the name changes. The folder stays where it is.")}</p></Dialog>
     <Dialog open={!!deleteId} compact title={tr("Delete this chat?")} onClose={() => setDeleteId(null)} actions={<><Btn onClick={() => setDeleteId(null)}>{tr("Keep chat")}</Btn><Btn variant="danger" onClick={() => {
                 if (deleteId)
                     deleteSession(deleteId);

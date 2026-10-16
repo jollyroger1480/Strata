@@ -196,6 +196,7 @@ class Tuner:
         self.total_vram = total_vram_mib
         self.quiet = quiet
         self.storm = False
+        self.speeds: list[dict[str, Any]] = []
         self.waited_s = 0.0                # time spent waiting for the box lock, the PC to be quiet or memory: not the user's budget
 
     # ---- bookkeeping
@@ -208,7 +209,9 @@ class Tuner:
         remaining = max(0, self.planned_runs - self.done_runs)
         eta = min(max(0.0, self.o.budget_s - elapsed), remaining * avg) if self.planned_runs else None
         self.progress({"stage": stage, "message": message, "elapsed_s": round(elapsed), "runs_done": self.done_runs,
-                       "runs_planned": self.planned_runs, "eta_s": None if eta is None else round(eta), **extra})
+                       "runs_planned": self.planned_runs, "eta_s": None if eta is None else round(eta),
+                       # what each measurement so far came to, for the live readout (label, decode tok/s as the goal judges it)
+                       "speeds": list(self.speeds), **extra})
 
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
@@ -347,6 +350,9 @@ class Tuner:
         self._say("base", "Measuring your current settings")
         base1 = self._run(self.base_args, {}, spec, "base", points=per_request_points)
         self.base_runs.append(base1)
+        if base1.status == "PASS" and metric(base1, o.use):
+            self.speeds.append({"label": "base", "tok_s": round(float(metric(base1, o.use)), 1)})
+            self._say("base", "Measured your current settings")
         if base1.status != "PASS" or not metric(base1, o.use):
             r.outcome = "base_failed"
             r.message = "Your current settings could not be measured: " + (base1.reason or base1.status)
@@ -435,6 +441,8 @@ class Tuner:
                         r.notes.append("an engine ran out of memory; the search stopped (nothing was retried)")
                         break
                     continue
+                if metric(res, o.use):
+                    self.speeds.append({"label": p.arm.label, "tok_s": round(float(metric(res, o.use)), 1)})
                 over = self._memory_overrun(res, base1)
                 if over:
                     rep.status, rep.reason = "failed", over

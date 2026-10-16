@@ -360,6 +360,8 @@ export interface ToolCall {
   verb?: string;
   /** What the action is on: a file path, the command, a web address. */
   target?: string;
+  /** The question an approval card asks in plain words (server/agent/ask.mjs); the page translates it. */
+  ask?: { id: string; params?: (string | number)[]; why?: string; detail?: string };
   state: ToolState;
   result?: string;
   durationMs?: number;
@@ -374,6 +376,8 @@ export interface Workspace {
   id: string;
   name: string;
   path: string;
+  /** Earlier folders whose chats belong here (the first workspace moved off the app's own folder). */
+  aliases?: string[];
 }
 
 export interface SessionAgent {

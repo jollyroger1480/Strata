@@ -7,6 +7,8 @@
  * reasoning deltas, usage).
  */
 
+import { askFor } from './ask.mjs';
+
 const SHELL = new Set(['pwsh', 'bash', 'job_kill', 'job_output', 'job_list']);
 const WRITE = new Set(['write', 'edit']);
 const READ = new Set(['read', 'glob', 'grep', 'read_image', 'working_directory', 'todo_write', 'get_goal', 'list_agents', 'skill', 'present']);
@@ -127,7 +129,7 @@ export function presentTool({ callId, name, args, reason = null }) {
   const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');
-  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(verbsFor(name).known ? preview : name, 300) };
+  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(verbsFor(name).known ? preview : name, 300), ask: askFor(name, args, typeof args.description === 'string' ? args.description : null) };
 }
 
 /** A tool's failure in plain words, or null when there is nothing better than the original text. */
@@ -254,9 +256,12 @@ export class TurnProjector {
           out.push({ type: 'reasoning', text: c.text });
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
-          this.tokensIn += Number(c.usage.inputTokens) || 0;
+          // The Harness counts input, cache reads and cache writes apart (a prompt the server's conversation cache already held is `cacheReadTokens`,
+          // not `inputTokens`): the prompt of a request is all three. Counting only `inputTokens` made a long agent chat look nearly empty (0%).
+          const prompt = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.cacheReadTokens) || 0) + (Number(c.usage.cacheWriteTokens) || 0);
+          this.tokensIn += prompt;
           this.tokensOut += Number(c.usage.outputTokens) || 0;
-          this.contextTokens = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.outputTokens) || 0);
+          this.contextTokens = prompt + (Number(c.usage.outputTokens) || 0);
         }
       }
       return out;

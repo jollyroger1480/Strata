@@ -16,6 +16,7 @@ import { ComposerControls } from '../components/ComposerControls';
 import { ChatPhotos } from '../components/ChatPhotos';
 import { useChatPhotos, removeChatPhoto } from '../lib/chat-photos';
 import { useNative } from '../lib/native';
+import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 /** Chat — talk to the one loaded model. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -626,6 +627,13 @@ function ToolCard({ messageId, tool: t }: {
     const pending = t.state === 'proposed';
     if (!pending && t.state !== 'running')
         return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{tr(t.verb ?? t.name)}{t.target ? <><span>·</span><span className="tool-summary__target" title={t.target}>{t.target}</span></> : null}<span>·</span><Icon name={t.state === 'denied' || t.state === 'error' ? 'x' : 'check'} size={14}/>{tr(t.state === 'denied' ? 'Denied' : t.state === 'error' ? 'Failed' : t.live && t.state === 'done' && t.approved ? 'Approved' : 'Done')}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
+    if (pending && t.ask)
+        return <section className="askcard" data-state={t.state} aria-label={tr(askQuestion(t.ask))}>
+      <div className="askcard__top"><span className="askcard__icon"><Icon name={askIcon(t.ask)} size={18}/></span>
+        <div className="askcard__text"><p className="askcard__q">{askQuestion(t.ask)}</p>{askSub(t.ask) ? <p className="askcard__why" title={askSub(t.ask)}>{askSub(t.ask)}</p> : null}</div>
+        <div className="askcard__acts"><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div></div>
+      <details className="askcard__details"><summary><Icon name="chevron" size={11}/>{tr("Details")}</summary><pre>{t.preview}</pre></details>
+    </section>;
     return <section className="toolcard toolcard--compact" data-state={t.state} aria-label={t.name}>
     <details className="toolcard__disclosure">
       <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{tr(t.verb ?? t.name)}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>

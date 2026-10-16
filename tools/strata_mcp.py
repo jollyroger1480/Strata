@@ -846,6 +846,10 @@ class Strata:
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
+                              # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
+                              # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
+                              "mem_total": bool(d.get("mem_total")),
+                              "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
                               "on_this_pc": verdict, "installed": tag in have, "id": tag})
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
