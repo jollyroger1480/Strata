@@ -105,7 +105,7 @@ void bf16_widening_is_exact() {
 /// and the type lookup all have to be right for every format, not only for IQ4_NL.
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
-        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}};
+        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
@@ -129,11 +129,11 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         const float scale = 0.75f;
         uint32_t sb;
         std::memcpy(&sb, &scale, 4);
-        head += str("strata.ple.format") + le(8u, 4) + str("f8_e4m3");
+        head += str("strata.ple.format") + le(8u, 4) + str(f.id == k::PleFormat::NVFP4 ? "nvfp4x16" : "f8_e4m3");
         head += str("strata.ple.scale") + le(6u, 4) + le(sb, 4);       // 6 = FLOAT32
     }
     head += str("per_layer_token_embd.weight") + le(2u, 4);
-    head += le((uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
+    head += le(f.id == k::PleFormat::NVFP4 ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
     while (head.size() % 32) head += '\0';
     out.write(head.data(), (std::streamsize) head.size());
