@@ -7138,3 +7138,34 @@ textarea {
 .tool-summary { border-top: 0; padding-block: 3px; color: var(--st-ink-muted); }
 .tool-summary summary { font-weight: 500; min-height: 22px; cursor: pointer; }
 .tool-summary > div { margin-top: 6px; padding-left: 20px; }
+
+/* ---- the live status line ---- */
+.live-status { display: flex; align-items: center; gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.live-status__verb { font-weight: 700; color: var(--st-ink); animation: live-verb .35s ease; }
+.live-status__meta { color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+.live-status__pulse { width: 14px; height: 14px; position: relative; flex: none; }
+.live-status__pulse i { position: absolute; inset: 0; border-radius: 50%; background: var(--st-accent); opacity: .9; animation: live-pulse 1.4s ease-in-out infinite; }
+.live-status__pulse i:nth-child(2) { animation-delay: .45s; opacity: .5; }
+@keyframes live-pulse { 0%, 100% { transform: scale(.55); } 50% { transform: scale(1); } }
+@keyframes live-verb { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .live-status__pulse i, .live-status__verb { animation: none; } }
+
+/* ---- reasoning: one quiet line, the answer is the main content ---- */
+.rz { border-left: 2px solid var(--st-line); padding: 0 0 0 12px; margin: 2px 0 6px; color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
+.rz > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.rz > summary::-webkit-details-marker { display: none; }
+.rz__label { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rz[data-live] .rz__label { color: var(--st-ink-soft); }
+.rz__chev { flex: none; transition: transform var(--st-dur) var(--st-ease); }
+.rz[open] .rz__chev { transform: rotate(180deg); }
+.rz__body { margin: 8px 0 4px; max-height: 168px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: 13px; color: var(--st-ink-muted); scrollbar-width: thin; }
+.rz__jump { display: inline-flex; align-items: center; gap: 4px; margin: 2px 0 4px; padding: 0; border: 0; background: transparent; color: var(--st-accent-text); font: inherit; font-size: var(--st-fs-xs); font-weight: 700; cursor: pointer; }
+.rz__jump svg { transform: rotate(0deg); }
+
+/* ---- the goal bar ---- */
+.goalbar { display: flex; align-items: center; gap: 6px; margin: 0 14px -8px; padding: 6px 6px 14px 12px; border: 1px solid var(--st-line); border-bottom: 0; border-radius: var(--st-r-md) var(--st-r-md) 0 0; background: var(--st-surface-2); color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.goalbar > svg { flex: none; color: var(--st-icon); }
+.goalbar__text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.goalbar__text > span { color: var(--st-ink-muted); }
+.goalbar[data-phase="complete"] > svg { color: var(--st-accent-text); }
+.goalbar .st-btn--icon { width: 28px; height: 28px; }

@@ -2,6 +2,8 @@ import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
+import { applyStatusFrame, clearStatus } from './live-status';
+import { applyGoalFrame } from './goal';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
@@ -631,6 +633,12 @@ function applyEvent(e: StreamEvent) {
     case 'providers':
       applyProviders(data as unknown as ModelProviders);
       break;
+    case 'goal':
+      if (typeof data.chatId === 'string') applyGoalFrame(data.chatId, data.goal);
+      break;
+    case 'timeskip':
+      applyTimeSkipEvent(data);
+      break;
     case 'engine':
       set({ engine: data as unknown as EngineConfig });
       break;
@@ -1147,6 +1155,17 @@ export function plainTimeSkipError(raw: string | null | undefined): string {
   return body.length > 300 ? body.slice(0, 299) + '…' : body;
 }
 
+/** The host says a Time-skip run moved on (phase, and what it is doing now): the working view shows the newest words. */
+function applyTimeSkipEvent(data: Record<string, unknown>) {
+  const id = typeof data.id === 'string' ? data.id : '';
+  if (!id) return;
+  for (const session of state.sessions) {
+    const run = session.timeSkips?.find(r => r.job?.id === id);
+    if (!run || run.completedAt) continue;
+    patchRun(session.id, run.id, r => ({ ...r, job: { ...r.job!, ...(typeof data.phase === 'string' ? { phase: data.phase as TimeSkipJob['phase'] } : {}), activity: data.activity as TimeSkipJob['activity'] } }));
+  }
+}
+
 function timeSkipEnding(job: TimeSkipJob, files: TimeSkipFile[]): string {
   if (job.phase === 'failed') return tr('Time-skip stopped. {0} Your files were not changed.', [plainTimeSkipError(job.error)]);
   if (job.phase === 'cancelled' || job.phase === 'interrupted') return tr('Time-skip was stopped before it finished. Your files were not changed.');
@@ -1440,11 +1459,15 @@ async function runLoopCommand(command: LoopCommand) {
   scheduleLoop(sessionId);
 }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean } = {}) {
+/** Carry on a paused goal: the host runs its rounds again. No message is sent and no bubble is added. */
+export async function resumeGoal() { await sendMessage('', { goalAction: 'resume' }); }
+
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume' } = {}) {
   if(state.streaming)return;
-  const loopCommand = options.fromLoop ? null : parseLoop(text.trim());
+  const resume = options.goalAction === 'resume';
+  const loopCommand = options.fromLoop || resume ? null : parseLoop(text.trim());
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
-  const demoPrompt = timeSkipPrompt(text.trim());
+  const demoPrompt = resume ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
     if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
     return;
@@ -1453,7 +1476,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
   if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','Choose an image-reading model','Switch to a local model with Read pictures enabled, or remove the attachments.');return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
-  if(!body)return;
+  if(!body&&!resume)return;
 
   let sessionId = state.activeSession;
   if (!sessionId) sessionId = newSession().id;
@@ -1490,9 +1513,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
+    title: s.messages.length === 0 && !resume ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
     updatedAt: new Date().toISOString(),
-    messages: [...s.messages, userMsg, assistantMsg],
+    messages: [...s.messages, ...(resume ? [] : [userMsg]), assistantMsg],
   }));
 
   const turnAbort = new AbortController();
@@ -1515,7 +1538,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
       '/api/chat/stream',
       {
         sessionId,
-        message: body,
+        ...(resume ? { goalAction: 'resume' } : { message: body }),
         history:await Promise.all(prior.map(async(m,index)=>{const included=canSendPictures?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
@@ -1538,8 +1561,12 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
           patchAssistant(m => ({ ...m, requestId: String(frame.requestId) }));
         } else if (type === 'start') {
           patchAssistant((m) => ({ ...m, demo: frame.demo === true, remoteModel: frame.remoteModel === true, requestId: typeof frame.requestId === 'string' ? frame.requestId : m.requestId, model: String(frame.model), contextMax: Number(frame.contextMax), skillsUsed: Array.isArray(frame.skills) ? frame.skills.map(String) : [] }));
+        } else if (type === 'status') {
+          applyStatusFrame(sessionId, frame as Record<string, unknown>);
+        } else if (type === 'goal') {
+          applyGoalFrame(sessionId, frame.goal);
         } else if (type === 'reasoning') {
-          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? '') }));
+          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
@@ -1554,7 +1581,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
         } else if (type === 'artifacts' && Array.isArray(frame.artifacts)) {
           patchAssistant(m => ({ ...m, artifacts: frame.artifacts as PreviewArtifact[] }));
         } else if(type==='native-tool'){
@@ -1570,8 +1597,10 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
           }));
         } else if (type === 'error') {
+          clearStatus(sessionId);
           patchAssistant((m) => ({ ...m, error: plainFailure(String(frame.message ?? 'Engine error')).message, streaming: false }));
         } else if (type === 'done') {
+          clearStatus(sessionId);
           patchSession(sessionId, (sess) => ({
             ...sess,
             tokensIn: sess.tokensIn + Number(frame.tokensIn ?? 0),
@@ -1605,6 +1634,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
+    clearStatus(sessionId);
     markTurn(sessionId, null);
   }
 }
