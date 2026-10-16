@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
-import { createForkTimeskip, leverPrompt, parseLever, defaultLever, improvementPrompt, copyProject } from '../server/timeskip-fork.mjs';
+import { isViewStep, stepObjective } from '../server/agent/plan.mjs';
+import { UNATTENDED, createForkTimeskip, leverPrompt, parseLever, defaultLever, improvementPrompt, copyProject } from '../server/timeskip-fork.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
@@ -101,4 +102,11 @@ test('Stop ends both agents, removes the copies and leaves the folder alone', { 
   assert.ok(!existsSync(join(r.dir, 'ts', run.id)));
   assert.equal(readFileSync(join(r.project, 'keep.txt'), 'utf8'), 'original');
   assert.equal(r.ts.files(run.id), null);
+});
+
+test('a step about looking at the page in a browser is recognised, carries the no-hang rule, and the unattended note forbids windows', () => {
+  assert.ok(isViewStep('Open goku.html in a browser to confirm rendering')); assert.ok(isViewStep('Preview the page in a window')); assert.ok(!isViewStep('Write the HTML file')); assert.ok(!isViewStep('Count the voxels'));
+  const plan = { title: 'T', steps: [{ text: 'Write it' }, { text: 'Open it in a browser to check', detail: '' }] };
+  assert.match(stepObjective(plan, 1), /Never wait for a program to close/); assert.match(stepObjective(plan, 1), /Start-Process/); assert.ok(!/Start-Process/.test(stepObjective(plan, 0)));
+  assert.match(UNATTENDED, /Never open a visible window/);
 });

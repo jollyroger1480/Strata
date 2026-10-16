@@ -16,6 +16,10 @@ import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { diffRun, runImagePath, isNoisePath } from './timeskip.mjs';
+import { isViewStep } from './agent/plan.mjs';
+
+/** The note both agents carry on every step: the work is in a copy, unattended, on whatever machine this is. */
+export const UNATTENDED = 'This work runs in a copy of the folder with nobody watching. Never open a visible window and never wait for a program to close. To check a web page use the headless browser tool if you have one; otherwise read the file and say plainly what you could not check. A check that cannot be done here is noted in one sentence and the step is finished.';
 
 const SKIP = new Set(['.git', '.strata', '.timeskip', 'node_modules', '__pycache__']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -118,6 +122,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       if (stopped()) return;
       const plan = agent.planState(aChat);
       if (!plan || plan.steps.length < 2) throw new Error('The assistant could not split this request into steps. Describe the steps you want, or use /goal instead.');
+      agent.setPlanBriefing(aChat, UNATTENDED);
       agent.planControl({ chatId: aChat, planId: plan.id, action: 'approve' });
       r.plan = { id: plan.id, title: plan.title, steps: plan.steps.map(s => ({ id: s.id, text: s.text, detail: s.detail })) };
       announce(r);
@@ -142,7 +147,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
         if (stopped()) return;
         const bp = agent.planState(bChat);
         if (!bp || bp.steps.length < 2) { r.b.state = 'failed'; r.b.note = 'The improvement plan could not be written, so only A is shown.'; announce(r); return; }
-        agent.setPlanBriefing(bChat, 'This work continues from a first attempt that is already in this folder; its notes are in .timeskip/context.md (read them first). Improve on it where it is weak instead of starting over.');
+        agent.setPlanBriefing(bChat, UNATTENDED + ' This work continues from a first attempt that is already in this folder; its notes are in .timeskip/context.md (read them first). Improve on it where it is weak instead of starting over.');
         agent.planControl({ chatId: bChat, planId: bp.id, action: 'approve' });
         r.b.plan = bp.steps.map(s => ({ id: s.id, text: s.text }));
         r.b.state = 'running'; r.b.total = bp.steps.length; announce(r);
@@ -160,10 +165,11 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
           if (stopped()) return;
           finished = agent.planState(bChat)?.steps[at]?.state === 'done';
          }
-          if (agent.planState(bChat)?.steps[at]?.state !== 'done') break;
+          if (agent.planState(bChat)?.steps[at]?.state !== 'done' && isViewStep(bp.steps[at].text)) { agent.skipStep(bChat, at, 'Could not look at the page here; the files were checked instead.'); say(r, 'b-skip', `B, step ${at + 1} (viewing the page) was skipped on this machine.`, { step: at + 1 }); }
+          if (!['done', 'skipped'].includes(agent.planState(bChat)?.steps[at]?.state)) break;
         }
         const end = agent.planState(bChat);
-        r.b.state = end?.steps.every(x => x.state === 'done') ? 'done' : 'failed';
+        r.b.state = end?.steps.every(x => ['done', 'skipped'].includes(x.state)) ? 'done' : 'failed';
         if (r.b.state === 'failed') r.b.note = stopped() ? 'Stopped.' : 'B did not finish, so only A is shown.';
         announce(r);
       };
@@ -205,13 +211,17 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
         if (stopped()) return;
         finished = agent.planState(aChat)?.steps[at]?.state === 'done';
        }
+        if (agent.planState(aChat)?.steps[at]?.state !== 'done' && isViewStep(plan.steps[at].text)) {
+          // a look-in-a-browser step must not fail the whole version
+          agent.skipStep(aChat, at, 'Could not look at the page here; the files were checked instead.'); say(r, 'a-skip', `A, step ${at + 1} (viewing the page) was skipped on this machine.`, { step: at + 1 });
+        }
         const now = agent.planState(aChat);
-        if (!now || now.steps[at]?.state !== 'done') break;
+        if (!now || !['done', 'skipped'].includes(now.steps[at]?.state)) break;
         if (r.lever && at + 1 === r.lever.step - 1) { try { forkNow(); } catch (e) { r.b = { ...r.b, state: 'failed', note: 'B could not be prepared, so only A is shown.' }; } }
       }
       if (stopped()) return;
       const aEnd = agent.planState(aChat);
-      r.a.state = aEnd?.state === 'done' || aEnd?.steps.every(x => x.state === 'done') ? 'done' : 'failed';
+      r.a.state = aEnd?.steps.every(x => ['done', 'skipped'].includes(x.state)) ? 'done' : 'failed';
       announce(r);
       if (r.a.state !== 'done') throw new Error('A did not finish the plan' + (r.a.note ? ' (' + r.a.note + ')' : r.a.goal?.blocked ? ' (' + r.a.goal.blocked + ')' : '') + ', so there is nothing to compare. Your files were not changed.');
       if (r.lever && !forked) { forkNow(); }
