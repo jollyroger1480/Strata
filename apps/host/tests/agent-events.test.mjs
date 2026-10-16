@@ -18,7 +18,9 @@ test('the generated profile names credentials, never carries them, and declares 
   const providers = entries.find(e => e.id === 'llm-pi-ai').config.providers;
   assert.deepEqual(Object.keys(providers).sort(), ['api-c0nn-1234-ab', 'strata-local']);
   assert.equal(providers['strata-local'].models[0].contextWindow, 32768);
-  assert.equal(providers['strata-local'].models[0].maxTokens, 8192);
+  assert.equal(providers['strata-local'].models[0].maxTokens, 28672, 'a local model may use nearly the whole window (it was 8192, which cut big answers off)');
+  assert.equal(providers['strata-local'].models[0].reasoning, true);
+  assert.equal(providers['strata-local'].compat.thinkingFormat, 'chat-template');
   assert.equal(providers['api-c0nn-1234-ab'].models[1].contextWindow, ASSUMED_API_CONTEXT, 'an unknown API window is a stated assumption, not a catalog default');
   assert.equal(entries.find(e => e.id === 'agent-default-model').config.provider, 'strata-local', 'local stays the default');
   assert.equal(entries.find(e => e.id === 'session-title-llm').disabled, true);

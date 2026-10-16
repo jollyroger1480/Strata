@@ -56,18 +56,20 @@ async function rig(t) {
   return { worker, bridge, dir, ws, run, preset };
 }
 
-test('mode mapping: three presets, the strictest by default, unknown values fall back to Manual', () => {
+test('mode mapping: three presets, Manual by default, unknown values fall back to Manual', () => {
   assert.deepEqual(Object.keys(MODE_PRESETS), ['manual', 'plan', 'bypass']);
-  assert.deepEqual([MODE_PRESETS.manual.sandbox, MODE_PRESETS.manual.approval], ['read-only', 'ask']);
+  // Manual leaves the sandbox open and asks BEFORE a change through the Strata gate (plugins/strata-gate.mjs).
+  assert.deepEqual([MODE_PRESETS.manual.sandbox, MODE_PRESETS.manual.approval], ['danger-full-access', 'ask']);
   assert.deepEqual([MODE_PRESETS.plan.sandbox, MODE_PRESETS.plan.approval], ['read-only', 'never']);
   assert.deepEqual([MODE_PRESETS.bypass.sandbox, MODE_PRESETS.bypass.approval], ['danger-full-access', 'never']);
   for (const v of ['manual', 'plan', 'bypass']) assert.equal(modeOf(v), v);
   for (const v of [undefined, null, '', 'auto', 'accept-edits', 'danger-full-access', 'constructor']) assert.equal(modeOf(v), 'manual', String(v));
-  // Only Bypass gives full access, and the profile names our three and nothing else.
+  // Only Bypass gives full access WITHOUT asking, and the profile names our three and nothing else.
   const entry = JSON.parse(buildProfile({ local: [] }).patch.split('\n').slice(1).join('\n')).find(e => e.id === 'permission');
   assert.deepEqual(Object.keys(entry.config.presets), ['strata-manual', 'strata-plan', 'strata-bypass']);
   assert.equal(entry.config.defaultPreset, 'strata-manual');
-  assert.deepEqual(Object.entries(entry.config.presets).filter(([, p]) => p.sandbox === 'danger-full-access').map(([k]) => k), ['strata-bypass']);
+  assert.deepEqual(Object.entries(entry.config.presets).filter(([, p]) => p.sandbox === 'danger-full-access' && p.approval === 'never').map(([k]) => k), ['strata-bypass']);
+  assert.deepEqual(Object.entries(entry.config.presets).filter(([, p]) => p.sandbox !== 'danger-full-access').map(([k]) => k), ['strata-plan']);
 });
 
 test('projection: under "never" no card ever offers Approve; "ask" marks the approved card', () => {
@@ -209,7 +211,7 @@ test('MODE changing the mode while a turn runs does not touch that turn', { skip
   assert.ok(frames.filter(f => f.type === 'delta').length >= 3, 'the turn must be live first');
   // The person flips the menu to Bypass and sends again. The second send is refused (a chat runs one turn at a time) and,
   // because it is refused before anything is applied, the running turn's permissions do not move.
-  await assert.rejects(r.bridge.runTurn({ chatId: 'm-mid', message: 'SCRIPT:echo x', workspacePath: r.ws, mode: 'bypass', onFrame: () => {} }), /already running a turn/);
+  await assert.rejects(r.bridge.runTurn({ chatId: 'm-mid', message: 'SCRIPT:echo x', workspacePath: r.ws, mode: 'bypass', onFrame: () => {} }), /still working/);
   assert.equal(await r.preset('m-mid'), MODE_PRESETS.manual.key);
   // Another chat in another mode is its own session and does not move this one either.
   await r.run('m-mid-other', 'SCRIPT:echo y', { mode: 'bypass' });

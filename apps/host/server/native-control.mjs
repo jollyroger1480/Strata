@@ -1,5 +1,6 @@
 /** Native Strata control plane. All user actions are explicit; opening the UI only reads state. */
 import { spawn } from 'node:child_process';
+import {chooseParallel,applyParallel,withoutParallel,FALLBACK_NOTE} from './native-parallel.mjs';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync, copyFileSync, renameSync, unlinkSync, chmodSync, statSync, accessSync, constants } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
@@ -20,7 +21,7 @@ const safeId=value=>typeof value==='string'&&/^[a-z0-9_-]{1,80}$/i.test(value);
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},control=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});
@@ -43,7 +44,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  let defaultId=null,timer=null,closing=false,polling=false;
  const emit=()=>{const value=state();writeFileSync(join(directory,'native-jobs.json'),JSON.stringify(value.jobs),{mode:0o600});changed(value);};
  const append=(instanceId,line)=>{logs.push({at:new Date().toISOString(),instanceId,line:String(line).slice(0,2000)});if(logs.length>400)logs.shift();};
- function state(){return {...snapshot,downloadDirectory:preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false}};}
+ function state(){return {...snapshot,downloadDirectory:preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false}};}
  let sourceCache={path:'',time:0,text:''};
  function sourceText(){try{const path=join(packaged?control.control.dir:preferences.repo,'serve/server.py'),time=statSync(path).mtimeMs;if(sourceCache.path===path&&sourceCache.time===time)return sourceCache.text;sourceCache={path,time,text:readFileSync(path,'utf8')};return sourceCache.text;}catch{return '';}}
  function nativeFields(){const source=sourceText();return NATIVE_FIELDS.map(field=>({...field,supported:field.id.startsWith('vision_')||field.id.startsWith('mcp_')||field.id==='vram_reserve_mib'||source.includes(field.id)}));}
@@ -184,6 +185,12 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
   if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
   const {cfg,resources,visionPreferences}=buildConfig(args,config);
+  /* Installed app: several requests at once by default (4, fewer where the card has no room), unless a number was chosen. */
+  const parallelChoice=packaged?chooseParallel({config:cfg,values:args.values??{},hardware:snapshot.hardware?.gpus?.length?snapshot.hardware:{gpus:hardwareProbe()??[]}}):null;
+  let parallelNote=null;
+  /* The agent asks for long answers (a thinking model can use most of the window): let the engine clamp the output to what is left of the context instead of refusing the request. */
+  if(packaged&&cfg.fit_max_tokens===undefined)cfg.fit_max_tokens=true;
+  if(parallelChoice){const applied=applyParallel(cfg,parallelChoice);for(const k of Object.keys(cfg))if(!(k in applied.cfg))delete cfg[k];Object.assign(cfg,applied.cfg);parallelNote=applied.note;}
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
   if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
@@ -198,7 +205,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(!args.multiple){if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel native requests before switching models.');for(const id of [...instances.keys()])await unload(id);}else if(matching)await unload(matching.id);
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
-  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
+  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
   let proc=null,started=null,retried=null;
   if(packaged){
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
@@ -208,12 +215,19 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(error){const said=humanStartError(error);
-    /* A start that died gets ONE automatic second try with a safer memory setting (never saved, never repeated), unless the caller says no. */
-    const safer=args.retrySafer===false||job.state!=='running'?null:saferStart(cfg,snapshot.hardware,modelArena(args.model),said);
-    if(!safer){instance.status='error';instance.error=said;emit();throw new Error(said);}
-    retried=safer;append(id,`The first start stopped (${said}). Starting once more: ${safer.detail}`);job.summary=safer.words;job.details=[said,`Second try: ${safer.detail}`];instance.notice=safer.words;emit();
-    try{await startWith(safer.config);append(id,'Strata Control reports the engine is ready (second try).');}
-    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2===said?said2:`${said2} (after one automatic second try with a safer setting: ${safer.detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}
+    /* ONE automatic second try in all, never saved, never repeated (args.retrySafer false turns it off): with a safer memory setting when the
+       failure looks like a memory stop, and without several-requests-at-once when that was the app's own default (not a number the user chose).
+       Both changes ride on the same single try, with the plain sentence of the memory change when there is one. */
+    const allowed=args.retrySafer!==false&&job.state==='running';
+    const safer=allowed?saferStart(cfg,snapshot.hardware,modelArena(args.model),said):null;
+    const dropParallel=allowed&&cfg.parallel>1&&!parallelChoice?.explicit;
+    if(!safer&&!dropParallel){instance.status='error';instance.error=said;emit();throw new Error(said);}
+    let retryConfig=safer?safer.config:cfg;if(dropParallel)retryConfig=withoutParallel(retryConfig);
+    const words=safer?safer.words:FALLBACK_NOTE,detail=[safer?.detail,dropParallel?'one request at a time':null].filter(Boolean).join('; ');
+    retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
+    append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
+    try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
+    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2===said?said2:`${said2} (after one automatic second try with a safer setting: ${detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
@@ -222,7 +236,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
-   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.`,instanceId:id};}}catch{}
+   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';if(resources||args.vision!==undefined)writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}

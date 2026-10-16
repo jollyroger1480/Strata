@@ -432,3 +432,24 @@ test('packaged: the install job also fetches the engine through Control (merge o
     assert.doesNotMatch(job.summary, /http|ConnectionReset|bytes/);
   } finally { await g.native.close(); g.cleanup(); }
 });
+
+test('packaged: the app default of several requests at once and the memory retry share ONE second try, never two', async () => {
+  const f = packagedFixture(); f.hardware.gpus[0].vram_gb = 48;
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'server_exited', output: { log_tail: 'something else went wrong' } }, 1);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 2, 'the failed first start and one second try');
+    assert.match(job.result.summary, /after a second try/);
+    assert.equal(f.native.state().instances[0].parallel, 1, 'the second try runs one request at a time');
+  } finally { await f.native.close(); f.cleanup(); }
+  const g = packagedFixture(); g.hardware.gpus[0].vram_gb = 48;
+  try {
+    await g.native.refresh(true);
+    g.failStart({ message: 'server_exited', output: { log_tail: 'mapped staging allocation failed [pinned-memory-exhausted]' } });
+    const job = await finish(g.native, g.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'error');
+    assert.equal(g.calls.filter(c => c[0] === 'start').length, 2, 'memory change and parallel drop ride on the same single try');
+  } finally { await g.native.close(); g.cleanup(); }
+});

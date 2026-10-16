@@ -1,6 +1,11 @@
-/** Small host-owned schedules. No tools, shell commands or catch-up bursts. */
+/**
+ * Small host-owned schedules. No catch-up bursts. A task runs as the agent (a Harness session of its own) under the mode it was
+ * given when it was created: `plan` (looks, changes nothing), `manual` (asks first: nobody is there to answer, so it stops at the
+ * first thing that needs a yes and says what that was) or `bypass` (full access). The default is `plan`.
+ */
 import { randomUUID } from 'node:crypto';
 const frequencies = ['hourly', 'daily', 'weekdays', 'weekly'];
+export const TASK_MODES = ['plan', 'manual', 'bypass'];
 export function validateTask(input) {
   const title = String(input.title ?? '').trim(), prompt = String(input.prompt ?? '').trim();
   if (!title || title.length > 120) throw new Error('Use a task name of 1–120 characters.');
@@ -11,7 +16,9 @@ export function validateTask(input) {
   if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new Error('Choose a weekday.');
   const timeZone = String(input.timeZone ?? 'UTC');
   new Intl.DateTimeFormat('en', { timeZone }).format();
-  return { title, prompt, frequency: input.frequency, at: input.at, weekday, timeZone, enabled: input.enabled !== false };
+  const mode = input.mode ?? 'plan';
+  if (!TASK_MODES.includes(mode)) throw new Error('Choose what this task may do.');
+  return { title, prompt, frequency: input.frequency, at: input.at, weekday, timeZone, mode, enabled: input.enabled !== false };
 }
 export function nextRun(task, after = Date.now()) {
   const format = new Intl.DateTimeFormat('en-GB', { timeZone: task.timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -33,7 +40,7 @@ export function nextRun(task, after = Date.now()) {
   }
   throw new Error('Could not calculate the next run.');
 }
-export function createTaskService({ read, write, run, now = Date.now }) {
+export function createTaskService({ read, write, run, notify = () => {}, now = Date.now, timeoutMs = 15 * 60_000 }) {
   let records = read().map(t => ({ ...t, status: t.status === 'running' ? 'interrupted' : t.status, nextRunAt: t.enabled && !t.archived ? nextRun(t, now()) : null }));
   const controllers = new Map();
   const save = () => write(records);
@@ -54,10 +61,10 @@ export function createTaskService({ read, write, run, now = Date.now }) {
     const controller = new AbortController(); controllers.set(id, controller);
     t.status = 'running'; t.lastRunAt = new Date(now()).toISOString(); t.error = null;
     t.nextRunAt = t.enabled ? nextRun(t, now()) : null; save();
-    const timeout = setTimeout(() => controller.abort(), 120000); timeout.unref?.();
-    try { const result = await run(t, controller.signal); t.output = result.text.slice(0, 100000); t.demo = result.demo; t.status = 'done'; }
+    const timeout = setTimeout(() => controller.abort(), timeoutMs); timeout.unref?.();
+    try { const result = await run(t, controller.signal); t.output = result.text.slice(0, 100000); t.demo = result.demo; t.attention = result.attention ?? null; t.status = 'done'; }
     catch (e) { t.status = controller.signal.aborted ? 'cancelled' : 'error'; t.error = controller.signal.aborted ? 'Run stopped.' : String(e.message ?? e); }
-    finally { clearTimeout(timeout); controllers.delete(id); save(); }
+    finally { clearTimeout(timeout); controllers.delete(id); save(); try { notify(t); } catch { /* a notification is a courtesy */ } }
   }
   function tick() { for (const t of records) if (t.enabled && !t.archived && t.status !== 'running' && t.nextRunAt && Date.parse(t.nextRunAt) <= now()) void execute(t.id); }
   return { list, put, execute, tick, stop: id => controllers.get(id)?.abort(), close: () => controllers.forEach(c => c.abort()) };

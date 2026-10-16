@@ -7,6 +7,7 @@ import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, typedFolder, TYPE_A_PATH } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
+import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
 import { skillEdit } from './skill-edits.mjs';
 import { systemFonts } from './fonts.mjs';
@@ -83,16 +84,22 @@ const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () =
 const CONTROL = findControl();
 const control = createControl({ control: CONTROL });
 const appUpdater = createAppUpdater();
-const native=createNativeControl({control,appUpdater,directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+const native=createNativeControl({control,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
 const agent = createAgentBridge({
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
+  // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
+  bundledDir: resolve(HERE, '..', '..', 'harness'),
   localInstances: () => native.readyInstances().map(i => ({
     id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
+    // The engine's request slots: helper agents never outnumber them.
+    slots: i.metrics?.live?.slots?.length || i.parallel || 1,
+    // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
+    mcpServers: i.mcpServers,
   })),
   connections: () => modelProviders.withSecrets(),
   log: line => console.log(line),
@@ -473,11 +480,14 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   if (entry) serving.mark(entry.id, { state: 'generating' });
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
   try {
-    const result = await agent.runTurn({ chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal });
+    // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
+    const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const result = goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
-    write({ type: 'error', message: err.message, code: err.code ?? 'AGENT_ERROR' });
+    write({ type: 'error', message: err.message, ...(err.details ? { details: err.details } : {}), code: err.code ?? 'AGENT_ERROR' });
     settle(null, err.message);
   }
 }
@@ -699,10 +709,21 @@ const timeskip = createTimeSkip({
   env: { ...process.env, STRATA_TIMESKIP_DIR: process.env.STRATA_TIMESKIP_DIR ?? '' },
 });
 
+const runAgentTask = createAgentTaskRunner({
+  agent, workspace: WORKSPACE,
+  // The loaded local model. (STRATA_TASK_REMOTE_MODEL="<connection id>:<model id>" lets a developer or an API-only setup name a saved API model instead.)
+  choice: () => {
+    try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { /* no local model is ready */ }
+    const [connectionId, ...rest] = String(process.env.STRATA_TASK_REMOTE_MODEL ?? '').split(':');
+    return connectionId && rest.length ? { connectionId, modelId: rest.join(':') } : null;
+  },
+});
 const tasks = createTaskService({
   read: () => store.get().tasks ?? [],
   write: records => store.update({ tasks: records }),
+  notify: task => hub.send('task', { id: task.id, title: task.title, status: task.status, attention: task.attention ?? null, error: task.error ?? null }),
   run: async (task, signal) => {
+    if (agent.status().state !== 'unavailable') { const agentResult = await runAgentTask(task, signal); if (agentResult) return agentResult; }
     let text = '', failure = null, demo = !models.REAL;
     await runTurn({ message: task.prompt, signal, client: `Task: ${task.title}`, onFrame: frame => {
       if (frame.type === 'delta') text += frame.text ?? '';
@@ -1432,7 +1453,7 @@ async function api(req, res, path, method, url) {
         res.end();
         return undefined;
       }
-      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason} Chat is running without tools.` })}\n`);
+      res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason}`, ...(capability.detail ? { details: capability.detail } : {}) })}\n`);
     } else if (agentSkip && chatId && body.agent !== false && process.env.STRATA_AGENT !== 'off') {
       res.write(`${JSON.stringify({ type: 'notice', code: 'agent-skipped', message: agentSkip })}\n`);
     }

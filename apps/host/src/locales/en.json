@@ -2612,5 +2612,12 @@
   "s2611": "These files could not be checked.",
   "s2612": "Check that the folder holds complete GGUF files, then try again.",
   "s2613": "Thinking budget",
-  "s2614": "No limit"
+  "s2614": "No limit",
+  "s2615": "What this task may do",
+  "s2616": "Look only, change nothing",
+  "s2617": "Stop and tell me before changing anything",
+  "s2618": "Allowed to make changes",
+  "s2619": "Task finished",
+  "s2620": "Task needs your yes",
+  "s2621": "Task failed"
 }

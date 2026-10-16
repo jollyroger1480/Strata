@@ -2612,5 +2612,12 @@
   "s2611": "No se pudieron comprobar estos archivos.",
   "s2612": "Comprueba que la carpeta tenga archivos GGUF completos e inténtalo de nuevo.",
   "s2613": "Presupuesto de razonamiento",
-  "s2614": "Sin límite"
+  "s2614": "Sin límite",
+  "s2615": "Qué puede hacer esta tarea",
+  "s2616": "Solo mirar, no cambiar nada",
+  "s2617": "Detenerse y avisarme antes de cambiar algo",
+  "s2618": "Puede hacer cambios",
+  "s2619": "Tarea terminada",
+  "s2620": "La tarea necesita tu visto bueno",
+  "s2621": "La tarea falló"
 }

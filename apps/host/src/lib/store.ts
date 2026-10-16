@@ -629,6 +629,14 @@ function applyEvent(e: StreamEvent) {
     case 'setup':
       set({ setup: data as unknown as SetupState });
       break;
+    case 'task': {
+      // A task finished on its own (the host ran it on schedule): say so, and say when it needs a person's yes or failed.
+      const t = data as unknown as { title?: string; status?: string; attention?: string | null; error?: string | null };
+      if (t.status === 'error') pushToast('error', 'Task failed', String(t.title ?? ''));
+      else if (t.attention) pushToast('warn', 'Task needs your yes', String(t.title ?? ''));
+      else if (t.status === 'done') pushToast('success', 'Task finished', String(t.title ?? ''));
+      break;
+    }
     case 'agent':
       if (typeof data.sessionId === 'string') patchSession(data.sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], data.agent) }));
       break;

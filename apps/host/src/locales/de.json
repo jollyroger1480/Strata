@@ -2612,5 +2612,12 @@
   "s2611": "Diese Dateien konnten nicht geprüft werden.",
   "s2612": "Prüfen Sie, ob der Ordner vollständige GGUF-Dateien enthält, und versuchen Sie es erneut.",
   "s2613": "Denkbudget",
-  "s2614": "Unbegrenzt"
+  "s2614": "Unbegrenzt",
+  "s2615": "Was diese Aufgabe darf",
+  "s2616": "Nur ansehen, nichts ändern",
+  "s2617": "Vor jeder Änderung anhalten und mir Bescheid geben",
+  "s2618": "Darf Änderungen vornehmen",
+  "s2619": "Aufgabe abgeschlossen",
+  "s2620": "Aufgabe braucht Ihr Ja",
+  "s2621": "Aufgabe fehlgeschlagen"
 }

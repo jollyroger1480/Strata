@@ -180,7 +180,7 @@ test('A08 two chats run independently, each with its own session and approval', 
   assert.equal(r.bridge.pendingFor('chat-a08-a').length, 1);
   const callId = a.frames.find(f => f.type === 'agent-tool').tool.id;
   // An approval cannot be answered through the wrong chat.
-  await assert.rejects(r.bridge.approve({ chatId: 'chat-a08-b', callId, decision: 'approve' }), /no longer pending/);
+  await assert.rejects(r.bridge.approve({ chatId: 'chat-a08-b', callId, decision: 'approve' }), /no longer waiting/);
   await r.bridge.approve({ chatId: 'chat-a08-a', callId, decision: 'approve' });
   await a.promise;
   assert.equal(states(a.frames).at(-1), 'done');
@@ -191,7 +191,7 @@ test('a second send to a chat that is mid-turn is refused', { skip }, async t =>
   const r = await rig(t);
   const first = r.run('chat-busy', 'SCRIPT:slow 80');
   for (let i = 0; i < 100 && !first.frames.some(f => f.type === 'delta'); i++) await new Promise(x => setTimeout(x, 50));
-  await assert.rejects(r.run('chat-busy', 'SCRIPT:hello').promise, /already running/);
+  await assert.rejects(r.run('chat-busy', 'SCRIPT:hello').promise, /still working/);
   await first.promise;
 });
 

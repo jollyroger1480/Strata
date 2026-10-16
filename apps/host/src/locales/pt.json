@@ -2612,5 +2612,12 @@
   "s2611": "Não foi possível verificar esses arquivos.",
   "s2612": "Verifique se a pasta tem arquivos GGUF completos e tente novamente.",
   "s2613": "Orçamento de raciocínio",
-  "s2614": "Sem limite"
+  "s2614": "Sem limite",
+  "s2615": "O que esta tarefa pode fazer",
+  "s2616": "Só olhar, sem alterar nada",
+  "s2617": "Parar e avisar antes de alterar algo",
+  "s2618": "Pode fazer alterações",
+  "s2619": "Tarefa concluída",
+  "s2620": "A tarefa precisa do seu sim",
+  "s2621": "A tarefa falhou"
 }
