@@ -19,7 +19,7 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { timeSkipDir } from './platform-paths.mjs';
 
 /** Where runs are recorded. Mirrors the CLI's own default resolution. */
@@ -160,15 +160,36 @@ export function measureFolder(root, { maxFiles = 3000, maxBytes = 300 * 1024 * 1
  * What a run changed, file by file: the saved original against the revision, for the Compare view.
  * Reads the folders the job itself kept; it decides nothing.
  */
-export function diffRun(record) {
+/** Pictures the Compare view shows side by side (read as bytes through /api/timeskip/file, never as text). */
+export const IMAGE_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp' };
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+export const imageTypeOf = path => IMAGE_TYPES[String(path).split('.').pop().toLowerCase()] ?? null;
+
+/** The two folders a run compares: the saved original and the revision (or the last attempt when the checks kept nothing). */
+export function runRoots(record) {
   const baseline = (record.checkpoints ?? []).find(c => c.label === 'baseline');
   const selected = (record.checkpoints ?? []).find(c => c.id === record.selected_checkpoint);
   const attempts = record.attempts ?? [];
   const last = attempts[attempts.length - 1] ?? null;
-  // A kept checkpoint is the revision; when nothing was kept (the checks could not decide) the person looks at the last attempt.
   const useAttempt = !selected || selected.id === baseline?.id;
-  const updatedRoot = useAttempt ? last?.path : selected?.path;
-  const baseRoot = baseline?.path;
+  return { baseRoot: baseline?.path ?? null, updatedRoot: (useAttempt ? last?.path : selected?.path) ?? null, useAttempt, last };
+}
+
+/** The absolute path of one picture of a run, for one side, or null: not a picture, not inside the run's folder, missing or too big. */
+export function runImagePath(record, relPath, version) {
+  if (!imageTypeOf(relPath)) return null;
+  const { baseRoot, updatedRoot } = runRoots(record);
+  const root = version === 'original' ? baseRoot : version === 'updated' ? updatedRoot : null;
+  if (!root) return null;
+  const full = resolve(root, ...String(relPath).split('/'));
+  const inside = relative(resolve(root), full);
+  if (!inside || inside.startsWith('..') || isAbsolute(inside)) return null;
+  try { const st = statSync(full); return st.isFile() && st.size <= MAX_IMAGE_BYTES ? full : null; } catch { return null; }
+}
+
+export function diffRun(record) {
+  // A kept checkpoint is the revision; when nothing was kept (the checks could not decide) the person looks at the last attempt.
+  const { baseRoot, updatedRoot, useAttempt, last } = runRoots(record);
   if (!baseRoot || !updatedRoot) return { files: [], applyAttempt: null, more: 0 };
   const paths = [...new Set([...walkFiles(baseRoot), ...walkFiles(updatedRoot)])].sort();
   const files = [];
@@ -178,6 +199,15 @@ export function diffRun(record) {
     const status = a.missing ? 'added' : b.missing ? 'removed' : null;
     const same = !status && a.text !== undefined && a.text === b.text;
     if (same) continue;
+    if (imageTypeOf(path)) {
+      // A picture is compared as bytes and shown from the file itself, never read as text.
+      let differs = true;
+      try { differs = a.missing || b.missing || !readFileSync(join(baseRoot, path)).equals(readFileSync(join(updatedRoot, path))); } catch { /* treat as changed */ }
+      if (!differs) continue;
+      if (files.length >= MAX_LISTED) { more += 1; continue; }
+      files.push({ path, status: status ?? 'changed', image: true });
+      continue;
+    }
     if (!status && !a.text && !b.text && !a.big && !b.big) {
       // Both binary: compare sizes only.
       try { if (statSync(join(baseRoot, path)).size === statSync(join(updatedRoot, path)).size && readFileSync(join(baseRoot, path)).equals(readFileSync(join(updatedRoot, path)))) continue; } catch { /* treat as changed */ }
@@ -288,6 +318,14 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
       if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return null;
       const run = readRun(stateDir(env), id);
       return run ? diffRun(run) : null;
+    },
+
+    /** One picture of a run (original or updated), for the Compare view: { path, type } or null. */
+    image: (id, relPath, version) => {
+      if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return null;
+      const run = readRun(stateDir(env), id);
+      const full = run ? runImagePath(run, relPath, version) : null;
+      return full ? { path: full, type: imageTypeOf(relPath) } : null;
     },
 
     /** Stop a run this host is driving. The saved version stays; the run reads as interrupted. */

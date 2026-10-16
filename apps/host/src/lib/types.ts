@@ -329,6 +329,9 @@ export interface ChatMessage {
   inputTokens?: number;
   /** What the context held after this reply (the last model request's prompt + reply); an agent turn's inputTokens add every request up. */
   contextUsed?: number;
+  /** When the first reasoning arrived, and how long the model reasoned before it began the answer (for "Thought for 38s"). */
+  reasoningStartedAt?: number;
+  reasoningMs?: number;
   contextMax?: number;
   usageSource?: 'reported' | 'demo' | 'unavailable' | 'estimated';
   skillsUsed?: string[];

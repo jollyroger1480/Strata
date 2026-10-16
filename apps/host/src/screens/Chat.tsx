@@ -3,7 +3,8 @@ import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
 import { FloatingMenu } from '../components/FloatingMenu';
 import { TimeSkipPanel } from '../components/TimeSkipPanel';
-import { timeSkipPrompt, timeSkipTabId } from '../lib/time-skip';
+import { timeSkipPrompt, timeSkipTabId, type TimeSkipRun } from '../lib/time-skip';
+import { TimeSkipWorking } from '../components/TimeSkipWorking';
 import { ChatToolbar } from '../components/ChatToolbar';
 import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
@@ -16,6 +17,10 @@ import { ComposerControls } from '../components/ComposerControls';
 import { ChatPhotos } from '../components/ChatPhotos';
 import { useChatPhotos, removeChatPhoto } from '../lib/chat-photos';
 import { useNative } from '../lib/native';
+import { ReasoningBlock } from '../components/ReasoningBlock';
+import { StatusLine } from '../components/StatusLine';
+import { GoalBar } from '../components/GoalBar';
+import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 /** Chat — talk to the one loaded model. */
@@ -375,7 +380,7 @@ export function ChatScreen() {
                 <Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }}/>{tr("Latest")}</button>) : null)}
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={timeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
             </div>
           </div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
@@ -469,6 +474,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
       <div className="composer">
         <div className="composer__inner">
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
+          <GoalBar chatId={session?.id}/>
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onChange={(e) => { setSlashOpen(false); setSlashDismissed(false); setDraft(e.target.value); e.currentTarget.style.height = "auto"; e.currentTarget.style.height = `${Math.min(180, e.currentTarget.scrollHeight)}px`; }} onKeyDown={(e) => {
@@ -526,7 +532,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, }: {
+function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
@@ -535,8 +541,11 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     onOpenTimeSkip: (id: string) => void;
     timeSkipDone: boolean;
     timeSkipReal?: boolean;
+    timeSkipRun?: TimeSkipRun;
 }) {
     const streaming = useStore(s => s.streaming);
+    const activeSession = useStore(s => s.activeSession);
+    const liveStatus = useLiveStatus(m.role === 'assistant' && m.streaming ? activeSession : null);
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     if (m.role === 'user') {
         return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
@@ -556,29 +565,23 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
       </div>);
     }
     return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
-      {tr(m.reasoning ? (<details className="st-collapse">
-          <summary>
-            <Icon name="thinking" size={17}/>
-            <span>{tr("Model reasoning")}</span>
-            <Icon name="chevron" size={16} className="st-chev"/>
-          </summary>
-          <div className="st-collapse__body">{m.reasoning}</div>
-        </details>) : null)}
+      {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
       {tr((m.tools ?? []).map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
 
-      <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(m.content ? (<Markdown text={m.timeSkipId && !timeSkipReal ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.content ? (<Markdown text={m.timeSkipId && !timeSkipReal ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />
           </span>) : null)}
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
-      </div>
+      </div> : null)}
+      {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
 
-      {tr(m.timeSkipId ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
+      {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 

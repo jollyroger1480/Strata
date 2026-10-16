@@ -32,6 +32,8 @@ export interface TimeSkipJob {
   decision: { outcome?: string; reason?: string; improvements?: string[];
               regressions?: string[]; retained?: string } | null;
   needsUserReview: boolean;
+  /** What the host says it is doing now (notes-split-agent3.md): a code, English words with {0} slots, and arguments. */
+  activity?: { code: string; text: string; args?: Record<string, unknown> } | null;
   error: string | null;
   finishedAt?: number | null;
   /** The files the run changed (saved original against the revision), read from the job's own folders. */
