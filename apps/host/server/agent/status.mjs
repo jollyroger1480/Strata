@@ -5,36 +5,61 @@
  * new frame on every change of phase or target (at most one per `gapMs`, the newest change wins), and between changes only repeats the
  * frame to refresh a counter (reasoning tokens, bytes written) every `beatMs`. It never sends the same words twice in a row.
  *
- *   { type:'status', seq, phase, code, text, args?, tokens?, elapsedMs }
+ *   { type:'status', seq, phase, code, text, key?, values?, args?, tokens?, elapsedMs }
+ *   `key`/`values` (only when the sentence has a name or a number in it): the catalog template ("Writing {0}…") and its values, for translation.
  *
  * phases: starting waiting thinking answering preparing tool approval helpers goal idle   (see notes-split-agent3.md)
  */
 
-/** The sentence for a tool, in the person's words: what it is doing to what ("Writing pagoda.html…"). */
-export function toolStatusText(name, args = {}, { bytes = 0 } = {}) {
+/** Fill the `{0}` slots of a template (the catalog key of a sentence) with values. */
+export const fillTemplate = (key, values = []) => String(key).replace(/\{(\d+)\}/g, (_, i) => String(values[Number(i)] ?? ''));
+
+/**
+ * The sentence for a tool, in the person's words: what it is doing to what ("Writing pagoda.html…"), as a catalog template and its values
+ * so the page can translate it: `{ key: 'Writing {0}…', values: ['pagoda.html'] }`.
+ */
+export function toolStatus(name, args = {}, { bytes = 0 } = {}) {
   const base = value => String(value ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
   const file = base(args.file_path ?? args.path ?? args.filePath);
-  const size = bytes >= 1500 ? ` (${(bytes / 1024).toFixed(bytes >= 10240 ? 0 : 1)} KB)` : '';
+  const kb = bytes >= 1500 ? (bytes / 1024).toFixed(bytes >= 10240 ? 0 : 1) : null;
+  const act = (verb, noun) => file
+    ? (kb ? { key: `${verb} {0}… ({1} KB)`, values: [file, kb] } : { key: `${verb} {0}…`, values: [file] })
+    : (kb ? { key: `${verb} ${noun}… ({0} KB)`, values: [kb] } : { key: `${verb} ${noun}…`, values: [] });
   switch (name) {
-    case 'write': return file ? `Writing ${file}…${size}` : `Writing a file…${size}`;
-    case 'edit': return file ? `Changing ${file}…${size}` : `Changing a file…${size}`;
-    case 'read': return file ? `Reading ${file}…` : 'Reading a file…';
-    case 'read_image': return 'Looking at a picture…';
-    case 'pwsh': case 'bash': return 'Running a command…';
-    case 'glob': case 'grep': return 'Searching your files…';
-    case 'web_search': return 'Searching the web…';
-    case 'web_fetch': { let host = ''; try { host = new URL(args.url).hostname; } catch { /* partial address */ } return host ? `Opening ${host}…` : 'Opening a web page…'; }
-    case 'todo_write': return 'Updating its to-do list…';
-    case 'skill': return 'Using a saved skill…';
-    case 'present': return 'Showing you a result…';
-    case 'workflow': return 'Running a multi-step plan…';
-    case 'job_list': case 'job_output': case 'job_kill': return 'Checking background tasks…';
+    case 'write': return act('Writing', 'a file');
+    case 'edit': return act('Changing', 'a file');
+    case 'read': return file ? { key: 'Reading {0}…', values: [file] } : { key: 'Reading a file…', values: [] };
+    case 'read_image': return { key: 'Looking at a picture…', values: [] };
+    case 'pwsh': case 'bash': return { key: 'Running a command…', values: [] };
+    case 'glob': case 'grep': return { key: 'Searching your files…', values: [] };
+    case 'web_search': return { key: 'Searching the web…', values: [] };
+    case 'web_fetch': { let host = ''; try { host = new URL(args.url).hostname; } catch { /* partial address */ } return host ? { key: 'Opening {0}…', values: [host] } : { key: 'Opening a web page…', values: [] }; }
+    case 'create_goal': return { key: 'Setting the goal…', values: [] };
+    case 'update_goal': return { key: 'Updating the goal…', values: [] };
+    case 'get_goal': return { key: 'Checking the goal…', values: [] };
+    case 'todo_write': return { key: 'Updating its to-do list…', values: [] };
+    case 'skill': return { key: 'Using a saved skill…', values: [] };
+    case 'present': return { key: 'Showing you a result…', values: [] };
+    case 'workflow': return { key: 'Running a multi-step plan…', values: [] };
+    case 'job_list': case 'job_output': case 'job_kill': return { key: 'Checking background tasks…', values: [] };
     default:
-      if (name.startsWith('mcp__browser__')) return name.endsWith('navigate') ? (args.url ? `Opening ${args.url}…` : 'Opening a page…') : 'Using the browser…';
-      if (name.startsWith('mcp__strata-instructions__')) return 'Reading your instructions…';
-      if (name.startsWith('mcp__strata-commands__')) return 'Running your tool…';
-      return 'Using a tool…';
+      if (name.startsWith('mcp__browser__')) return name.endsWith('navigate') ? (args.url ? { key: 'Opening {0}…', values: [String(args.url)] } : { key: 'Opening a page…', values: [] }) : { key: 'Using the browser…', values: [] };
+      if (name.startsWith('mcp__strata-instructions__')) return { key: 'Reading your instructions…', values: [] };
+      if (name.startsWith('mcp__strata-commands__')) return { key: 'Running your tool…', values: [] };
+      return { key: 'Using a tool…', values: [] };
   }
+}
+
+/** The same, as one English sentence. */
+export function toolStatusText(name, args = {}, options = {}) {
+  const s = toolStatus(name, args, options);
+  return fillTemplate(s.key, s.values);
+}
+
+/** A status update (what the reporter takes) for a tool: text, catalog template and values together. */
+export function toolUpdate(phase, code, name, args, options, extra = {}) {
+  const s = toolStatus(name, args, options);
+  return { phase, code, text: fillTemplate(s.key, s.values), key: s.key, values: s.values, ...extra };
 }
 
 const COUNTERS = new Set(['tokens', 'bytes']);
@@ -96,6 +121,7 @@ export class StatusReporter {
     this.lastEmitAt = this.now();
     this.emitFrame({
       type: 'status', seq: ++this.seq, phase: w.phase, code: w.code, text: w.text,
+      ...(w.key && w.key !== w.text ? { key: w.key, values: w.values ?? [] } : {}),
       ...(w.args ? { args: w.args } : {}), ...(w.tokens !== undefined ? { tokens: w.tokens } : {}),
       elapsedMs: Math.max(0, this.now() - this.phaseStartedAt),
     });
@@ -122,7 +148,7 @@ export function withPlainStatus(write, options = {}) {
   const frame = f => {
     switch (f.type) {
       case 'start': reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' }); break;
-      case 'reasoning': reasoning.add(f.text ?? ''); reporter.set({ phase: 'thinking', code: 'thinking', text: `Thinking… ${fmtTokens(reasoning.tokens)} tokens`, tokens: reasoning.tokens, args: { tokens: reasoning.tokens } }); break;
+      case 'reasoning': reasoning.add(f.text ?? ''); reporter.set({ phase: 'thinking', code: 'thinking', text: `Thinking… ${fmtTokens(reasoning.tokens)} tokens`, key: 'Thinking… {0} tokens', values: [fmtTokens(reasoning.tokens)], tokens: reasoning.tokens, args: { tokens: reasoning.tokens } }); break;
       case 'delta': reporter.set({ phase: 'answering', code: 'answering', text: 'Writing the answer…' }); break;
       case 'done': case 'error': reporter.clear(); break;
       default: break;

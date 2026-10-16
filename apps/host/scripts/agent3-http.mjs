@@ -26,7 +26,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function model() {
   const providers = await j('/api/model-providers');
-  const c = providers.connections[0];
+  const c = providers.connections.at(-1);
   if (!c) throw new Error('no API connection saved: run "connect" first');
   return { connectionId: c.id, modelId: c.models[0].id };
 }
@@ -72,7 +72,7 @@ if (command === 'connect') {
 } else if (command === 'stream') {
   const [message, mode = 'bypass'] = rest;
   const chat = process.env.CHAT ?? `c-${Date.now()}`;
-  await stream({ sessionId: chat, message, mode, remoteModel: await model(), workspaceId: process.env.WORKSPACE_ID });
+  await stream({ sessionId: chat, message, mode, remoteModel: await model(), workspaceId: process.env.WORKSPACE_ID, ...(process.env.PLAIN ? { agent: false } : {}), ...(process.env.THINK ? { thinking: process.env.THINK } : {}) });
 } else if (command === 'goal') {
   const [objective] = rest;
   const chat = process.env.CHAT ?? `g-${Date.now()}`;

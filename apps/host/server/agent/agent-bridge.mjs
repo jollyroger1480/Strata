@@ -341,7 +341,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       child.lastRow = now; child.rowPending = false;
       emit(rowFrame(child));
       const working = [...turn.children.values()].filter(h => !h.done).length;
-      if (working && !turn.parentOpen) reporter.set({ phase: 'helpers', code: 'helpers', text: `Helpers are working (${working})…`, args: { n: working } });
+      if (working && !turn.parentOpen) reporter.set({ phase: 'helpers', code: 'helpers', text: `Helpers are working (${working})…`, key: 'Helpers are working ({0})…', values: [working], args: { n: working } });
     };
 
     function openChild(d) {
@@ -448,7 +448,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       const goal = goalObject(view);
       emit({ type: 'goal', goal });
       onGoal(chatId, goal);
-      if (!final && goal && goal.phase === 'active' && turn.goalRound) reporter.set({ phase: 'goal', code: 'goal-step', text: `Working on the goal, step ${turn.goalRound}`, args: { round: turn.goalRound, max: goal.maxRounds } });
+      if (!final && goal && goal.phase === 'active' && turn.goalRound) reporter.set({ phase: 'goal', code: 'goal-step', text: `Working on the goal, step ${turn.goalRound}`, key: 'Working on the goal, step {0}', values: [turn.goalRound], args: { round: turn.goalRound, max: goal.maxRounds } });
     }
     turn.announceGoal = announceGoal;
 

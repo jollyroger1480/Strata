@@ -7,7 +7,7 @@
  * reasoning deltas, usage).
  */
 
-import { toolStatusText, TokenCount, fmtTokens } from './status.mjs';
+import { toolUpdate, TokenCount, fmtTokens } from './status.mjs';
 import { askFor } from './ask.mjs';
 
 const SHELL = new Set(['pwsh', 'bash', 'job_kill', 'job_output', 'job_list']);
@@ -77,6 +77,9 @@ const VERBS = {
   bash: ['Running a command', 'Ran a command', 'The command failed'],
   web_fetch: ['Opening a web page', 'Opened a web page', "Couldn't open the web page"],
   web_search: ['Searching the web', 'Searched the web', "Couldn't search the web"],
+  create_goal: ['Setting the goal', 'Set the goal', "Couldn't set the goal"],
+  update_goal: ['Updating the goal', 'Updated the goal', "Couldn't update the goal"],
+  get_goal: ['Checking the goal', 'Checked the goal', "Couldn't check the goal"],
   todo_write: ['Updating its to-do list', 'Updated its to-do list', "Couldn't update its to-do list"],
   present: ['Showing you a result', 'Showed you a result', "Couldn't show the result"],
   working_directory: ['Checking the folder', 'Checked the folder', "Couldn't check the folder"],
@@ -219,7 +222,7 @@ export class TurnProjector {
   #afterTool() {
     const id = this.running.at(-1);
     const card = id ? this.tools.get(id)?.card : null;
-    if (card) this.#status({ phase: 'tool', code: 'tool', text: toolStatusText(card.name, card.args), args: { tool: card.name, verb: card.verb, target: card.target } });
+    if (card) this.#status(toolUpdate('tool', 'tool', card.name, card.args, {}, { args: { tool: card.name, verb: card.verb, target: card.target } }));
     else this.#status({ phase: 'waiting', code: 'model-working', text: 'Working out the next step…' });
   }
 
@@ -269,8 +272,10 @@ export class TurnProjector {
         } else if (c.type === 'reasoning-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
           this.#produced(f.attemptId, c.text, out);
+          // The count is for the model's current thinking (each model request starts again from zero), not the whole turn.
+          if (this.reasoningAttempt !== f.attemptId) { this.reasoning = new TokenCount(); this.reasoningAttempt = f.attemptId; }
           this.reasoning.add(c.text);
-          this.#status({ phase: 'thinking', code: 'thinking', text: `Thinking… ${fmtTokens(this.reasoning.tokens)} tokens`, tokens: this.reasoning.tokens, args: { tokens: this.reasoning.tokens } });
+          this.#status({ phase: 'thinking', code: 'thinking', text: `Thinking… ${fmtTokens(this.reasoning.tokens)} tokens`, key: 'Thinking… {0} tokens', values: [fmtTokens(this.reasoning.tokens)], tokens: this.reasoning.tokens, args: { tokens: this.reasoning.tokens } });
           out.push({ type: 'reasoning', text: c.text });
         } else if (c.type === 'tool-call-delta' && c.id) {
           // The model is writing a tool call. For a big file this is the long silent part: nothing else arrives until it is finished.
@@ -284,7 +289,7 @@ export class TurnProjector {
             const raw = (/"(?:file_path|path|filePath)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head) ?? /"url"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head))?.[1];
             let target = raw; try { if (raw !== undefined) target = JSON.parse('"' + raw + '"'); } catch { /* a half-written escape: show it as it is */ }
             const args = target ? { file_path: target, url: target } : {};
-            this.#status({ phase: 'preparing', code: 'preparing-tool', text: toolStatusText(call.name, args, { bytes: call.bytes }), args: { tool: call.name, verb: toolVerb(call.name, 'running'), target: target ?? '', bytes: call.bytes } });
+            this.#status(toolUpdate('preparing', 'preparing-tool', call.name, args, { bytes: call.bytes }, { args: { tool: call.name, verb: toolVerb(call.name, 'running'), target: target ?? '', bytes: call.bytes } }));
           }
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
@@ -317,7 +322,7 @@ export class TurnProjector {
         this.tools.set(d.callId, { card, calledAt: e.time });
         this.composing.delete(d.callId);
         this.running.push(d.callId);
-        this.#status({ phase: 'tool', code: 'tool', text: toolStatusText(d.name, args), args: { tool: d.name, verb: card.verb, target: card.target } });
+        this.#status(toolUpdate('tool', 'tool', d.name, args, {}, { args: { tool: d.name, verb: card.verb, target: card.target } }));
         out.push({ type: 'agent-tool', tool: card });
         break;
       }

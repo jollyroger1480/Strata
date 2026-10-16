@@ -11,6 +11,7 @@ test('a tool is described by what it does to what, in the person\'s words', () =
   assert.equal(toolStatusText('edit', { path: 'notes.md' }), 'Changing notes.md…');
   assert.equal(toolStatusText('pwsh', { command: 'Get-ChildItem' }), 'Running a command…');
   assert.equal(toolStatusText('web_search', {}), 'Searching the web…');
+  assert.equal(toolStatusText('update_goal', {}), 'Updating the goal…');
   assert.equal(toolStatusText('web_fetch', { url: 'https://example.com/a' }), 'Opening example.com…');
   assert.equal(toolStatusText('mcp__browser__browser_navigate', { url: 'https://example.com' }), 'Opening https://example.com…');
   assert.equal(toolStatusText('mcp__strata-commands__x', {}), 'Running your tool…');
@@ -72,6 +73,8 @@ test('projector: thinking counts tokens; composing a file call is "Writing pagod
   assert.deepEqual([seen.at(-1).phase, seen.at(-1).tokens, seen.at(-1).text], ['thinking', 5, 'Thinking… 5 tokens']);
   chunk({ type: 'text-delta', text: 'I will build the pagoda HTML file now.' });
   assert.equal(seen.at(-1).phase, 'answering');
+  chunk({ type: 'reasoning-delta', text: 'again' }, 'a2');
+  assert.equal(seen.at(-1).tokens, 1, 'a new model request counts its own thinking from zero');
   chunk({ type: 'tool-call-delta', index: 0, id: 'call-1', name: 'write', argumentsDelta: '{"file_path":"C:\\\\work\\\\pagoda.html","content":"<html>' });
   assert.deepEqual([seen.at(-1).phase, seen.at(-1).code, seen.at(-1).text], ['preparing', 'preparing-tool', 'Writing pagoda.html…'], 'the stale sentence is replaced the moment the call starts');
   assert.equal(seen.at(-1).args.target, 'C:\\work\\pagoda.html');
@@ -147,4 +150,18 @@ test('real Harness: a turn that writes a file says what it is doing, in order, a
   assert.equal(statuses.at(-1).phase, 'idle');
   assert.ok(frames.indexOf(statuses.at(-1)) < frames.findIndex(f => f.type === 'done'), 'cleared before done');
   assert.ok(existsSync(join(ws, 'pagoda.html')));
+});
+
+test('a sentence with a name or a number also carries its catalog template and values, and every status sentence is in the catalog in every language', async () => {
+  const { readFileSync } = await import('node:fs');
+  const catalog = Object.fromEntries(['en', 'de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
+  const idOf = text => Object.entries(catalog.en).find(([, v]) => v === text)?.[0];
+  const p = new TurnProjector(); const seen = []; p.onStatus = u => seen.push(u);
+  p.consume({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a', chunk: { type: 'tool-call-delta', index: 0, id: 'c', name: 'write', argumentsDelta: '{"file_path":"/w/pagoda.html","content":"' + 'x'.repeat(4000) } } });
+  assert.deepEqual([seen.at(-1).key, seen.at(-1).values], ['Writing {0}… ({1} KB)', ['pagoda.html', '3.9']]);
+  assert.equal(seen.at(-1).text, 'Writing pagoda.html… (3.9 KB)');
+  const keys = ['Starting…', 'Reading your message…', 'Working out the next step…', 'Thinking… {0} tokens', 'Writing the answer…', 'Waiting for your answer…', 'Helpers are working ({0})…', 'Working on the goal, step {0}',
+    'Writing {0}…', 'Writing a file…', 'Writing {0}… ({1} KB)', 'Writing a file… ({0} KB)', 'Changing {0}…', 'Changing a file…', 'Reading {0}…', 'Reading a file…', 'Running a command…', 'Searching your files…', 'Searching the web…',
+    'Opening {0}…', 'Opening a web page…', 'Using the browser…', 'Setting the goal…', 'Updating the goal…', 'Checking the goal…', 'Using a tool…', 'Reading your files…', 'Trying an improved version…', 'Checking the result…', 'Comparing the two versions…'];
+  for (const key of keys) { const id = idOf(key); assert.ok(id, `${key} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) { assert.ok(catalog[l][id]?.trim(), `${l}: ${key}`); assert.deepEqual((catalog[l][id].match(/\{\d\}/g) ?? []).sort(), (key.match(/\{\d\}/g) ?? []).sort(), `${l} keeps the slots of ${key}`); } }
 });
