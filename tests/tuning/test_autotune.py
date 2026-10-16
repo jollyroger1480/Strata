@@ -267,6 +267,21 @@ class TunerTest(unittest.TestCase):
         self.assertEqual(r.outcome, "default_confirmed")
         self.assertTrue(any(a["status"] == "skipped" and "memory" in a["reason"] for a in r.arms))
 
+    def test_nothing_compared_is_inconclusive_not_default_confirmed(self):
+        model = speed_with({})
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock)
+
+        def system():
+            out = session.system()
+            out["memory"]["available_mib"] = 40000 if not session.runs else 3000
+            return out
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(wait_ram_s=30, per_request=False), clock=clock,
+                           sleep=clock.sleep, system=system, total_ram_mib=64000, quiet=lambda: None)
+        r = t.run()
+        self.assertEqual(r.outcome, "inconclusive")
+        self.assertIn("could not be tried", r.message)
+
     def test_first_oom_stops_the_search(self):
         def fail(args, env):
             return StartFailed("OOM", "out of memory") if flag(args, "--kv-resident") == "65536" else None

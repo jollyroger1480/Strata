@@ -582,6 +582,11 @@ class Tuner:
             elif r.noise["noisy"] and (spread > 2 * STAGE_GAP_NOISY):
                 r.outcome = "inconclusive"
                 r.message = "The PC was too noisy to tell settings apart, so nothing was changed. Try again when it is idle."
+            elif arms and not any(a.status in ("tested", "dropped", "failed") for a in arms) and not r.per_request:
+                # candidates were planned but none could be measured (no free memory, no time): that is not "already the fastest"
+                r.outcome = "inconclusive"
+                r.message = ("Other settings could not be tried (not enough free memory or time), so nothing was compared and nothing was "
+                             "changed. Try again when the PC is quiet.")
             else:
                 r.outcome = "default_confirmed"
                 r.message = "Your current settings are already the fastest we found. Nothing was changed."
