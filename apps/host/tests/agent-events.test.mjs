@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProfile, outputBudget, routeFor, ASSUMED_API_CONTEXT } from '../server/agent/profile.mjs';
 import { agentEnvironment, redact } from '../server/agent/harness-runtime.mjs';
-import { TurnProjector, presentTool, toolScope, friendlyFailure } from '../server/agent/events.mjs';
+import { TurnProjector, presentTool, toolScope, toolVerb, friendlyFailure } from '../server/agent/events.mjs';
 import { withEarlierConversation } from '../server/agent/agent-bridge.mjs';
 
 const local = [{ id: 'inst-1', label: 'Qwen', baseUrl: 'http://127.0.0.1:8095/v1', modelId: 'qwen', context: 32768, key: 'local-secret-key-1' }];
@@ -128,4 +128,29 @@ test('a chat that existed before the agent carries a bounded summary into its fi
   assert.match(prompt, /Current message:\nNOW$/);
   assert.ok(prompt.length < 12 * 1600 + 200, 'bounded');
   assert.equal(withEarlierConversation([], 'NOW'), 'NOW');
+});
+
+test('the browser and the person\'s own tools have plain sentences, translated in every language', async () => {
+  const { readFileSync } = await import('node:fs');
+  const catalog = Object.fromEntries(['en', 'de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
+  const idOf = text => Object.entries(catalog.en).find(([, v]) => v === text)?.[0];
+  const cases = [
+    ['mcp__browser__browser_navigate', 'Opening a page in the browser', 'Opened a page in the browser', "Couldn't open the page"],
+    ['mcp__browser__browser_click', 'Clicking on the page', 'Clicked on the page', "Couldn't click on the page"],
+    ['mcp__browser__browser_type', 'Typing on the page', 'Typed on the page', "Couldn't type on the page"],
+    ['mcp__browser__browser_snapshot', 'Looking at the page', 'Looked at the page', "Couldn't look at the page"],
+    ['mcp__browser__browser_something_new', 'Using the browser', 'Used the browser', 'The browser step failed'],
+    ['mcp__strata-instructions__house_style', 'Reading your instructions', 'Read your instructions', "Couldn't read your instructions"],
+    ['mcp__strata-commands__check_site', 'Running your tool', 'Ran your tool', 'Your tool failed'],
+    ['mcp__github__create_issue', 'Using a tool', 'Used a tool', 'The tool failed'],
+  ];
+  for (const [name, running, done, failed] of cases) {
+    assert.equal(toolVerb(name, 'running'), running, name); assert.equal(toolVerb(name, 'done'), done, name); assert.equal(toolVerb(name, 'error'), failed, name);
+    for (const text of [running, done, failed]) { const id = idOf(text); assert.ok(id, `${text} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) assert.ok(catalog[l][id]?.trim(), `${l}: ${text}`); }
+  }
+  const nav = presentTool({ callId: 'c1', name: 'mcp__browser__browser_navigate', args: { url: 'https://example.com' } });
+  assert.equal(nav.target, 'https://example.com'); assert.equal(nav.verb, 'Opening a page in the browser');
+  const own = presentTool({ callId: 'c2', name: 'mcp__strata-commands__check_site', args: {} });
+  assert.equal(own.target, 'check site');
+  assert.equal(presentTool({ callId: 'c3', name: 'mcp__github__create_issue', args: {} }).target, 'mcp__github__create_issue', 'an unknown connected tool keeps its name');
 });

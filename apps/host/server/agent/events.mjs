@@ -82,10 +82,33 @@ const VERBS = {
   job_kill: ['Stopping a background task', 'Stopped a background task', "Couldn't stop the background task"],
 };
 const GENERIC_VERBS = ['Using a tool', 'Used a tool', 'The tool failed'];
+/** The browser tool server's tools (Settings -> Tools): the card says what happened to the page, not the tool's internal name. */
+const BROWSER_VERBS = {
+  browser_navigate: ['Opening a page in the browser', 'Opened a page in the browser', "Couldn't open the page"],
+  browser_click: ['Clicking on the page', 'Clicked on the page', "Couldn't click on the page"],
+  browser_hover: ['Pointing at the page', 'Pointed at the page', "Couldn't point at the page"],
+  browser_type: ['Typing on the page', 'Typed on the page', "Couldn't type on the page"],
+  browser_fill_form: ['Typing on the page', 'Typed on the page', "Couldn't type on the page"],
+  browser_press_key: ['Typing on the page', 'Typed on the page', "Couldn't type on the page"],
+  browser_snapshot: ['Looking at the page', 'Looked at the page', "Couldn't look at the page"],
+  browser_take_screenshot: ['Looking at the page', 'Looked at the page', "Couldn't look at the page"],
+};
+const BROWSER_GENERIC = ['Using the browser', 'Used the browser', 'The browser step failed'];
+const BROWSER_PREFIX = 'mcp__browser__', INSTRUCTIONS_PREFIX = 'mcp__strata-instructions__', COMMANDS_PREFIX = 'mcp__strata-commands__';
+/** The person's own tool's name as they wrote it (spaces for underscores). */
+const ownToolName = name => name.replace(/^mcp__strata-(?:instructions|commands)__/, '').replace(/_/g, ' ');
+/** The three sentences (running, worked, failed) for a tool, and whether this is one the app knows by name. */
+function verbsFor(name) {
+  if (VERBS[name]) return { verbs: VERBS[name], known: true };
+  if (name.startsWith(BROWSER_PREFIX)) return { verbs: BROWSER_VERBS[name.slice(BROWSER_PREFIX.length)] ?? BROWSER_GENERIC, known: true };
+  if (name.startsWith(INSTRUCTIONS_PREFIX)) return { verbs: ['Reading your instructions', 'Read your instructions', "Couldn't read your instructions"], known: true };
+  if (name.startsWith(COMMANDS_PREFIX)) return { verbs: ['Running your tool', 'Ran your tool', 'Your tool failed'], known: true };
+  return { verbs: GENERIC_VERBS, known: false };
+}
 
 /** The sentence for a card in this state (the first for a running or waiting card). */
 export function toolVerb(name, state) {
-  const v = VERBS[name] ?? GENERIC_VERBS;
+  const v = verbsFor(name).verbs;
   return state === 'error' ? v[2] : state === 'done' ? v[1] : v[0];
 }
 /** The ToolCall fields the card needs, from one Harness tool call. */
@@ -94,11 +117,11 @@ export function presentTool({ callId, name, args, reason = null }) {
   const words = WORDS[name]?.(args);
   const preview = scope === 'shell' && !words ? args.command ?? ''
     : scope === 'write' ? args.file_path ?? args.path ?? args.filePath ?? ''
-      : words ? words[1] ?? '' : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.query ?? JSON.stringify(args);
+      : words ? words[1] ?? '' : name.startsWith(INSTRUCTIONS_PREFIX) || name.startsWith(COMMANDS_PREFIX) ? ownToolName(name) : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.element ?? args.query ?? JSON.stringify(args);
   const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');
-  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(name in VERBS ? preview : name, 300) };
+  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(verbsFor(name).known ? preview : name, 300) };
 }
 
 /** A tool's failure in plain words, or null when there is nothing better than the original text. */
