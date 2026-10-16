@@ -7374,3 +7374,16 @@ textarea {
 .privacy-notes { padding: 2px 4px; }
 .plan__step[data-state="skipped"] { color: var(--st-ink-muted); text-decoration: line-through; }
 .plan__step[data-state="skipped"] .plan__text small { text-decoration: none; }
+
+/* Computer use: one compact segmented control on a single line (round 8, item 2) */
+.native-choice__col .native-resource-choice { display: inline-flex; align-self: flex-start; gap: 2px; padding: 3px; border: 1px solid var(--st-line); border-radius: 10px; background: var(--st-surface-2); max-width: 100%; }
+.native-choice__col .native-resource-choice button { min-height: 0; height: 30px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.native-choice__col .native-resource-choice button strong { font-weight: 600; font-size: inherit; }
+.native-choice__col .native-resource-choice button > svg, .native-choice__col .native-resource-choice button > span + svg { display: none; }
+.native-choice__col .native-resource-choice button[data-selected="true"] { background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-card); }
+.native-choice__col .native-resource-choice button:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 1px; }
+
+/* the version dropdown's chevron turns when it opens (round 8, item 7) */
+.version-trigger__chev { transform: rotate(90deg); transition: transform var(--st-t-local, 160ms) var(--st-ease-in-out, ease); }
+.version-trigger[aria-expanded="true"] .version-trigger__chev { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .version-trigger__chev { transition: none; } }

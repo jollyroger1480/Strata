@@ -19,7 +19,7 @@ import { computerIdentity, configIdentity, defaultProfileKey, emptyProfiles, rea
 import { modelFamilyIcon } from '../lib/model-icons';
 import { familyVersion, modelFamilies } from '../lib/model-versions';
 import { sizeGb } from '../lib/format';
-import { applyImageModel, getState, lifecycleStatus, loadRuntimeModel, loadVariant, pushToast, restartEngine, saveEngine, selectImageModel, setConfigDraft, useStore, validateEngine } from '../lib/store';
+import { applyImageModel, getState, useLifecycle, loadRuntimeModel, loadVariant, pushToast, restartEngine, saveEngine, selectImageModel, setConfigDraft, useStore, validateEngine } from '../lib/store';
 import type { ImageModelChoice, RuntimeModels, RuntimeModel } from '../lib/types';
 import { useNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
@@ -55,7 +55,7 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
     const imageNeedsDownload = imageChoice !== 'off' && imageVersion?.state !== 'installed';
     const imageUnavailable = imageChoice !== 'off' && !imageModels?.generationAvailable;
     const rawDraft = useStore(s => s.configDraft), connected = useStore(s => s.connection === 'live');
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [selected, setSelected] = useState(() => {
         if (initialVariant)
             return initialVariant;

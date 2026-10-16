@@ -324,6 +324,14 @@ function libraryResponse(data: ModelLibrary): ModelLibrary {
 export function lifecycleStatus(s = state) {
   return lifecyclePolicy({ connected: s.connection === 'live', streaming: !!s.streaming || s.liveChats > 0, stats: s.serving?.stats, busy: s.busy });
 }
+/** The lifecycle status without subscribing to the whole store: a screen that only needs this must not redraw on every monitor tick (round 8, item 13). */
+export function useLifecycle() {
+  const connected = useStore(s => s.connection === 'live');
+  const streaming = useStore(s => !!s.streaming || s.liveChats > 0);
+  const stats = useStore(s => s.serving?.stats);
+  const busy = useStore(s => s.busy);
+  return lifecyclePolicy({ connected, streaming, stats, busy });
+}
 export function lifecycleAvailable(): boolean {
   const result = lifecycleStatus();
   if (!result.allowed) pushToast('warn', 'Model change unavailable', result.reason);

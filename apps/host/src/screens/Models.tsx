@@ -11,7 +11,7 @@ import { contextTokens, estimate, execution } from '../lib/experience';
 import { planMemory } from '../lib/run-memory';
 import { useMedia } from '../lib/responsive';
 import { formatModelName, sizeGb } from '../lib/format';
-import { cancelInstall, go, installVariant, loadVariant, removeVariant, unloadModel, useStore, lifecycleStatus } from '../lib/store';
+import { cancelInstall, go, installVariant, loadVariant, removeVariant, unloadModel, useStore, useLifecycle } from '../lib/store';
 export function ModelsScreen({ embedded = false, ...props }: {
     embedded?: boolean;
     contextOverride?: number;
@@ -28,7 +28,7 @@ function ModelLibraryScreen({ embedded = false, contextOverride, onChoose }: {
 } = {}) {
     const inlineDetails = useMedia('(max-width: 850px)');
     const library = useStore(s => s.library), hardware = useStore(s => s.hardware), engine = useStore(s => s.engine);
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [selected, setSelected] = useState(''), [selectedFamily, setSelectedFamily] = useState(''), [confirm, setConfirm] = useState<'switch' | 'delete' | null>(null), [pending, setPending] = useState(false), [error, setError] = useState('');
     if (!library)
         return <Screen title={tr("Model")}><p>{tr("Loading model versions\u2026")}</p></Screen>;

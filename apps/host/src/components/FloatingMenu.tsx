@@ -14,7 +14,7 @@ export function FloatingMenu({ anchor, title, onClose, children, width = 232 }: 
         const rect = anchor?.getBoundingClientRect();
         const height = ref.current?.getBoundingClientRect().height ?? 200;
         const left = Math.max(12, Math.min(rect?.left ?? 12, window.innerWidth - Math.min(width, window.innerWidth - 24) - 12));
-        const below = rect?.bottom ?? 12;
+        const below = (rect?.bottom ?? 12) + 8; // a little air between the button and its panel
         const top = below + height + 12 <= window.innerHeight ? below : Math.max(12, (rect?.top ?? window.innerHeight) - height - 6);
         setPlaced({ left, top });
         ref.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)')?.focus();
