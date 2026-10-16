@@ -75,7 +75,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     if (rows.length > 100) fail('Add up to 100 models to one connection.');
     const models = rows.map(row => {
       const id = text(row.id, 256); if (!id || /[\r\n]/.test(id)) fail('Every model needs a model ID.');
-      return { id, name: text(row.name) || id, contextMax: numeric(row.contextMax) };
+      return { id, name: text(row.name) || id, contextMax: numeric(row.contextMax), maxOutput: numeric(row.maxOutput) };
     });
     if (new Set(models.map(m => m.id)).size !== models.length) fail('Each model ID must be unique within this connection.');
     return { id: existing?.id ?? randomUUID(), kind, provider: catalog?.id ?? null, name, baseUrl, protocol, apiKey, models };
@@ -128,7 +128,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       if (connection.protocol !== 'anthropic' || !data.has_more) break;
       after = data.last_id; if (!after) break;
     }
-    const models = [...new Map(rows.filter(m => text(m.id, 256)).map(m => [m.id, { id: text(m.id, 256), name: text(m.display_name ?? m.name) || text(m.id, 256), contextMax: numeric(m.context_length ?? m.max_context_length ?? m.context_window) }])).values()];
+    const models = [...new Map(rows.filter(m => text(m.id, 256)).map(m => [m.id, { id: text(m.id, 256), name: text(m.display_name ?? m.name) || text(m.id, 256), contextMax: numeric(m.context_length ?? m.max_context_length ?? m.context_window), maxOutput: numeric(m.max_output_tokens ?? m.max_completion_tokens ?? m.top_provider?.max_completion_tokens) }])).values()];
     return { models: models.sort((a, b) => a.name.localeCompare(b.name)) };
   }
   async function stream({ selection, message, history = [], systemPrompt = '', signal, onFrame }) {

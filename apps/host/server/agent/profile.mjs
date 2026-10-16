@@ -116,9 +116,18 @@ export const LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'med
 export const EFFORT_LEVEL = Object.freeze({ off: 'off', low: 'low', medium: 'medium', high: 'high', max: 'max' });
 export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()] ?? null;
 
-export function outputBudget(context) {
-  const c = Number.isFinite(context) && context > 0 ? context : 32768;
-  return Math.max(1024, Math.min(8192, Math.floor(c / 4)));
+/**
+ * Output budget for an API model. The connection's own maximum output is used when it is known (`maxOutput`, read from the provider's model
+ * list). Otherwise a generous 32K, never more than the window minus room for the prompt (a quarter of a small window at most is the prompt's).
+ * It used to be a quarter of the window capped at 8,192, which cut a thinking model off while it was still thinking: `length` and no answer.
+ * The budget is the answer's room: a model that thinks keeps what is left of it for the answer, and the Harness sends the window minus the prompt.
+ */
+export const DEFAULT_API_OUTPUT = 32768;
+export function outputBudget(context, maxOutput = null) {
+  const c = Number.isFinite(context) && context > 0 ? context : null;
+  const window = c === null ? Infinity : Math.max(1024, c - Math.min(4096, Math.floor(c / 4)));
+  if (Number.isFinite(maxOutput) && maxOutput > 0) return Math.max(1024, Math.min(Math.floor(maxOutput), window));
+  return Math.max(1024, Math.min(DEFAULT_API_OUTPUT, window));
 }
 
 /**
@@ -180,7 +189,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
-        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT),
+        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
         input: ['text'],
       })),
     };

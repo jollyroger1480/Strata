@@ -49,7 +49,13 @@ test('routeFor picks the chat\'s own choice', () => {
   assert.equal(routeFor(p, { connectionId: conn.id, modelId: 'm2' }).modelId, 'm2');
   assert.equal(routeFor(p, { instanceId: 'inst-1' }).route, 'strata-local');
   assert.equal(routeFor(p, { connectionId: 'gone', modelId: 'm1' }), null);
-  assert.equal(outputBudget(2048), 1024); assert.equal(outputBudget(1_000_000), 8192);
+  assert.equal(outputBudget(2048), 1536, 'a small window keeps a quarter for the prompt');
+  assert.equal(outputBudget(1_000_000), 32768, 'a big window with no known maximum gets a generous 32K, not 8K');
+  assert.equal(outputBudget(128_000), 32768); assert.equal(outputBudget(null), 32768);
+  assert.equal(outputBudget(16_384), 16_384 - 4096, 'never more than the window minus room for the prompt');
+  assert.equal(outputBudget(200_000, 64_000), 64_000, 'the connection own maximum is used when known');
+  assert.equal(outputBudget(8192, 64_000), 8192 - 2048, 'a known maximum is still bounded by the window');
+  assert.equal(outputBudget(200_000, 4096), 4096, 'a small known maximum is respected');
 });
 
 test('the agent environment keeps what a shell needs and drops ambient credentials', () => {
@@ -160,4 +166,13 @@ test('the browser and the person\'s own tools have plain sentences, translated i
   assert.equal(presentTool({ callId: 'c3', name: 'mcp__github__create_issue', args: {} }).target, 'mcp__github__create_issue', 'an unknown connected tool keeps its name');
   assert.equal(presentTool({ callId: 'c4', name: 'mcp__browser__browser_snapshot', args: {} }).preview, '', 'no empty braces on a card');
   assert.equal(presentTool({ callId: 'c5', name: 'mcp__browser__browser_evaluate', args: { function: '() => document.title' } }).preview, '', 'a script in the page is not shown as code on the card');
+});
+
+test('an API model\'s route gets a generous answer room, or the connection\'s own maximum when the provider listed one', () => {
+  const profile = buildProfile({ local: [], connections: [{ id: 'c1', name: 'C', baseUrl: 'https://x/v1', protocol: 'openai-chat', apiKey: 'k', models: [
+    { id: 'unknown', contextMax: null }, { id: 'big', contextMax: 200_000, maxOutput: 64_000 }, { id: 'small', contextMax: 16_384 }] }] });
+  const providers = JSON.parse(profile.patch.split('\n').slice(1).join('\n')).find(e => e.id === 'llm-pi-ai').config.providers;
+  const models = Object.values(providers)[0].models;
+  const by = Object.fromEntries(models.map(m => [m.id, m.maxTokens]));
+  assert.equal(by.unknown, 32768); assert.equal(by.big, 64_000); assert.equal(by.small, 16_384 - 4096);
 });
