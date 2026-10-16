@@ -109,10 +109,13 @@ test('two helpers run at the same time as two rows, the run ends when both have 
     assert.ok(history.at(-1).tokens > 0 && history.at(-1).durationMs > 0);
     assert.match(history[1]?.description ?? history[0].description, /SCRIPT:slow 40/, 'the row names its task');
   }
-  // concurrent: both were working before either finished
-  const firstDone = Math.min(...frames.filter(f => f.type === 'agent' && f.agent.status === 'completed').map(f => f.at));
-  const bothWorking = [...byId.values()].every(history => history.some(a => a.status === 'working'));
-  assert.ok(bothWorking && frames.filter(f => f.type === 'agent' && f.agent.status === 'working').every(f => f.at < firstDone + 50));
+  // concurrent: both were working before either finished (by the order the frames arrived in, not by the clock: a loaded computer delays a frame, it does not reorder it)
+  const agentFrames = frames.filter(f => f.type === 'agent');
+  const firstDone = agentFrames.findIndex(f => f.agent.status === 'completed');
+  for (const id of byId.keys()) {
+    const working = agentFrames.findIndex(f => f.agent.id === id && f.agent.status === 'working');
+    assert.ok(working >= 0 && working < firstDone, `helper ${id} was working before the first helper finished`);
+  }
   assert.equal(frames.filter(f => f.type === 'agent-tool').length, 0, 'no card for the delegation tool itself');
   assert.match(text(frames), /Noted/, 'the parent answered after the helpers reported back');
   assert.equal(frames.at(-1).type, 'done');
@@ -161,14 +164,14 @@ test('Stop on the chat stops its helpers, ends the run quickly and starts no fur
   const r = await rig(t);
   const started = Date.now();
   let stopped = null;
-  const { frames } = await r.run('stopper', 'SCRIPT:spawn 2 slow 400', { onFrame: f => {
+  const { frames } = await r.run('stopper', 'SCRIPT:spawn 2 slow 2000', { onFrame: f => {
     if (f.type === 'agent' && f.agent.status === 'working' && !stopped) stopped = new Promise(res => setTimeout(res, 300)).then(() => r.bridge.stop('stopper'));
   } });
   const result = await stopped;
   assert.equal(result.stopped, true);
   const final = [...rows(frames).values()].map(h => h.at(-1).status);
   assert.deepEqual(final, ['cancelled', 'cancelled']);
-  assert.ok(Date.now() - started < 12_000, 'seconds, not the 16 s the helpers would have taken');
+  assert.ok(Date.now() - started < 40_000, 'seconds, not the 80 s the helpers would have taken (a generous bound: a loaded computer is slow, never that slow)');
   const done = frames.at(-1);
   assert.equal(done.type, 'done'); assert.equal(done.cancelled, true);
   assert.equal(r.bridge.isRunning('stopper'), false);

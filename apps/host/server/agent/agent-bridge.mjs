@@ -353,6 +353,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       emitRow(child, true);
       const fold = item => {
         if (turn.finished) return;
+        // A helper that finishes before its throttled "working" row went out would show queued -> completed and never "working": send the held row first.
+        if (item.type === 'event' && item.event.type === 'turn/end' && child.rowPending) emitRow(child, true);
         const { frames, row } = cp.consume(item);
         for (const f of frames) emit(f);
         if (item.type === 'event' && item.event.type === 'turn/end') { child.done = true; child.endedAt = Date.now(); emitRow(child, true); armSettle(); return; }
