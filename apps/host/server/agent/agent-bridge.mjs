@@ -251,7 +251,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
     // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
-    const level = effortOf(thinking);
+    const level = effortOf(thinking ?? 'Medium');   // the menu's default is Medium
     const wanted = `${route.route}/${route.modelId}/${level ?? ''}`;
     if (c.route !== wanted || c.routeGeneration !== runtime.generation) {
       const select = effort => runtime.gw.rpc('session/selectModel', { request: { sessionId, provider: route.route, model: route.modelId, ...(effort ? { reasoningEffort: effort } : {}) } });

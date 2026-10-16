@@ -1334,7 +1334,7 @@ export async function sendMessage(text: string) {
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         // A chat set to plain talk (preferences.agent === false) never runs a tool: the host answers it directly.
         ...(state.sessions.find(s=>s.id===sessionId)?.preferences?.agent===false?{agent:false}:{}),
-        thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'High',
+        thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'Medium',
         thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',

@@ -17,10 +17,7 @@
  *     preset (nothing can change); the Harness's plan mode needs an interactive review the app does not have.
  *   - `tool-bash` / `tool-pwsh`: exactly one, by operating system (the Harness chooses the same at load).
  *   - `tool-plugin-manager` stays disabled, as in `standard`.
- *   - Prompt size: a local model reads every tool schema and every instruction on every first message (about 9,000 tokens at
- *     the start, 20 s before the first word on a 64K model). The goal tools, the skill tool (no skill ships), and the
- *     workflow tool (3.4 KB of schema on its own) are left out; they are the largest and the least used. Helper agents,
- *     files, shell, search, todo, web fetch and present stay.
+ *   - The goal, skill, workflow and fork tools are kept (owner decision): the first message is slower, and the short plain system prompt below keeps it as small as it can be.
  */
 
 /** Plugin ids of the pinned Harness `standard` preset, in its order (the drift check). */
@@ -30,9 +27,9 @@ export const STANDARD_PLUGIN_IDS = [
   'tool-ask-user', 'tool-todo', 'tool-web', 'present', 'tool-plugin-manager',
 ];
 /** What we leave out of it. */
-export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning', 'skill-filesystem', 'tool-skill', 'command-goal', 'tool-goal'];
+export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning'];
 /** Plugins removed from inside the `delegation` group (the group stays: helper agents are a feature). */
-export const REMOVED_DELEGATION_IDS = ['workflow-ptc', 'tool-workflow', 'tool-subagent-fork'];
+export const REMOVED_DELEGATION_IDS = [];
 
 /**
  * The whole system prompt of an app chat. The Harness's own text is about 4.8 KB (about 1,200 tokens) of guidance for working on
@@ -63,6 +60,10 @@ export function standardPreset({ platform = process.platform, search = false } =
     { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
     { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
+    { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem' },
+    { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
+    { id: 'command-goal', name: '@deepseek-ai/dsh-command-goal' },
+    { id: 'tool-goal', name: '@deepseek-ai/dsh-tool-goal' },
     {
       id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
       config: [
@@ -77,6 +78,9 @@ export function standardPreset({ platform = process.platform, search = false } =
         { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control' },
         { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents' },
         { id: 'tool-subagent', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true } },
+        { id: 'tool-subagent-fork', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'fork', toolName: 'subagent_fork' } },
+        { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc', config: { provider: 'spawn' } },
+        { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
       ],
     },
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },

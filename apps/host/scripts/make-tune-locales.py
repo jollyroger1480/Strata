@@ -34,7 +34,7 @@ KEYS = [
     "Thorough (up to 2 hours)",
     "What you mostly do",
     "Coding with long prompts",
-    "Allow settings that can change answers slightly",
+    "Allow settings that change answers very slightly (same quality)",
     "Saved tunings",
     "In use",
     "Use",
@@ -58,7 +58,7 @@ T = {
         "这些选择还没有已保存的调优。",
         "Strata 会在这台电脑上尝试不同的设置，并保留能让回答更快的设置。运行期间模型会被卸载，电脑会比较忙。",
         "请先完成当前操作。", "花多长时间", "快速（约 20 分钟）", "彻底（最多 2 小时）", "你主要做什么",
-        "长提示的编程", "允许可能略微改变回答的设置", "已保存的调优", "使用中", "使用",
+        "长提示的编程", "允许会让回答产生极细微差别的设置（质量相同）", "已保存的调优", "使用中", "使用",
         "再次检查（约 2 分钟）", "再次调优", "开始调优", "正在调优你的模型",
     ],
     "ja": [
@@ -74,7 +74,7 @@ T = {
         "この選択に対する保存済みチューニングはまだありません。",
         "Strata はこの PC でさまざまな設定を試し、回答が速くなるものを残します。実行中はモデルがアンロードされ、コンピューターは負荷が高くなります。",
         "先に現在の操作を終えてください。", "かける時間", "クイック（約 20 分）", "じっくり（最大 2 時間）", "主な用途",
-        "長いプロンプトでのコーディング", "回答がわずかに変わる可能性のある設定も許可する", "保存済みチューニング", "使用中", "使用する",
+        "長いプロンプトでのコーディング", "回答がごくわずかに変わる設定を許可する（品質は同じ）", "保存済みチューニング", "使用中", "使用する",
         "もう一度チェック（約 2 分）", "もう一度チューニング", "チューニングを開始", "モデルをチューニング中",
     ],
     "de": [
@@ -90,7 +90,7 @@ T = {
         "Für diese Auswahl gibt es noch keine gespeicherte Abstimmung.",
         "Strata probiert auf diesem PC verschiedene Einstellungen aus und behält die, die Antworten schneller machen. Dein Modell wird dabei entladen, und der Computer ist ausgelastet.",
         "Beende zuerst den aktuellen Vorgang.", "Wie lange soll es dauern?", "Schnell (etwa 20 Minuten)", "Gründlich (bis zu 2 Stunden)", "Was du hauptsächlich machst",
-        "Programmieren mit langen Prompts", "Einstellungen erlauben, die Antworten leicht verändern können", "Gespeicherte Abstimmungen", "In Gebrauch", "Verwenden",
+        "Programmieren mit langen Prompts", "Einstellungen erlauben, die Antworten minimal verändern (gleiche Qualität)", "Gespeicherte Abstimmungen", "In Gebrauch", "Verwenden",
         "Erneut prüfen (etwa 2 Minuten)", "Erneut abstimmen", "Abstimmung starten", "Dein Modell wird abgestimmt",
     ],
     "es": [
@@ -106,7 +106,7 @@ T = {
         "Todavía no hay un ajuste guardado para estas opciones.",
         "Strata prueba distintos ajustes en este PC y conserva los que hacen las respuestas más rápidas. Tu modelo se descarga mientras tanto y el ordenador estará ocupado.",
         "Termina primero la operación actual.", "Cuánto tiempo dedicar", "Rápido (unos 20 minutos)", "A fondo (hasta 2 horas)", "Qué haces sobre todo",
-        "Programar con prompts largos", "Permitir ajustes que pueden cambiar ligeramente las respuestas", "Ajustes guardados", "En uso", "Usar",
+        "Programar con prompts largos", "Permitir ajustes que cambian las respuestas muy ligeramente (misma calidad)", "Ajustes guardados", "En uso", "Usar",
         "Comprobar de nuevo (unos 2 minutos)", "Ajustar de nuevo", "Empezar a ajustar", "Ajustando tu modelo",
     ],
     "ru": [
@@ -122,7 +122,7 @@ T = {
         "Для этих параметров пока нет сохранённой настройки.",
         "Strata пробует на этом ПК разные настройки и оставляет те, что ускоряют ответы. Пока это идёт, модель выгружена, а компьютер занят.",
         "Сначала завершите текущую операцию.", "Сколько времени потратить", "Быстро (около 20 минут)", "Тщательно (до 2 часов)", "Чем вы в основном занимаетесь",
-        "Программирование с длинными промптами", "Разрешить настройки, которые могут немного изменить ответы", "Сохранённые настройки", "Используется", "Использовать",
+        "Программирование с длинными промптами", "Разрешить настройки, которые совсем немного меняют ответы (то же качество)", "Сохранённые настройки", "Используется", "Использовать",
         "Проверить снова (около 2 минут)", "Настроить снова", "Начать настройку", "Настройка вашей модели",
     ],
     "pt": [
@@ -138,7 +138,7 @@ T = {
         "Ainda não há ajuste salvo para estas escolhas.",
         "O Strata testa configurações diferentes neste PC e mantém as que deixam as respostas mais rápidas. Seu modelo é descarregado enquanto isso e o computador fica ocupado.",
         "Termine primeiro a operação atual.", "Quanto tempo dedicar", "Rápido (cerca de 20 minutos)", "Completo (até 2 horas)", "O que você mais faz",
-        "Programação com prompts longos", "Permitir configurações que podem mudar um pouco as respostas", "Ajustes salvos", "Em uso", "Usar",
+        "Programação com prompts longos", "Permitir ajustes que mudam as respostas muito ligeiramente (mesma qualidade)", "Ajustes salvos", "Em uso", "Usar",
         "Verificar de novo (cerca de 2 minutos)", "Ajustar de novo", "Iniciar ajuste", "Ajustando o seu modelo",
     ],
     "ko": [
@@ -154,7 +154,7 @@ T = {
         "이 선택에 대해 저장된 최적화가 아직 없습니다.",
         "Strata는 이 PC에서 여러 설정을 시험하고 답변을 더 빠르게 하는 설정만 남깁니다. 실행하는 동안 모델이 언로드되고 컴퓨터가 바쁝니다.",
         "먼저 현재 작업을 끝내세요.", "얼마나 오래 할까요", "빠름 (약 20분)", "꼼꼼히 (최대 2시간)", "주로 하는 일",
-        "긴 프롬프트로 코딩", "답변을 조금 바꿀 수 있는 설정 허용", "저장된 최적화", "사용 중", "사용",
+        "긴 프롬프트로 코딩", "답변이 아주 조금 달라질 수 있는 설정 허용 (같은 품질)", "저장된 최적화", "사용 중", "사용",
         "다시 점검 (약 2분)", "다시 최적화", "최적화 시작", "모델을 최적화하는 중",
     ],
 }

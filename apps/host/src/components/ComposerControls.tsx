@@ -49,7 +49,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const attachLatest = useRef(onAttach);
     attachLatest.current = onAttach;
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
-    const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'High';
+    const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
     const shortcut = MOD === '⌘' ? '⌘⇧A' : 'Ctrl+Shift+A';
     async function openFile(selected: File | undefined) {

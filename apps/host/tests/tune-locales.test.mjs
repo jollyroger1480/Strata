@@ -33,3 +33,13 @@ test('the Tune strings do not collide with the main catalog ids or texts, and tr
   setTranslationLanguage('en');
   assert.equal(tr('Tune this model'), 'Tune this model');
 });
+
+test('the Tune dialog shows the answer-changing switch in plain words, off by default, in the simple dialog', async () => {
+  const source = await readFile('src/components/NativeTune.tsx', 'utf8');
+  const label = 'Allow settings that change answers very slightly (same quality)';
+  assert.ok(Object.values(catalogs.en).includes(label), 'the label is in the catalogs');
+  assert.ok(source.includes(`tr("${label}")`));
+  assert.match(source, /\[allowSmall, setAllowSmall\] = useState\(false\)/);
+  assert.match(source, /type="checkbox" checked=\{allowSmall\}/);
+  assert.match(source, /allowSmallDifferences: allowSmall/);
+});

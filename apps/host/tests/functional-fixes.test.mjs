@@ -115,8 +115,24 @@ test('items 3, 7, 10: what the agent sends the model is small, plain, and carrie
   const req = worker.requests.find(r => r.toolNames.length);
   assert.ok(req, 'a request with tools');
   assert.equal(req.params.chat_template_kwargs.enable_thinking, false, 'Thinking Off reaches the model request');
-  for (const gone of ['workflow', 'create_goal', 'update_goal', 'get_goal', 'skill', 'subagent_fork']) assert.ok(!req.toolNames.includes(gone), `${gone} is not sent`);
-  for (const kept of ['pwsh', 'read', 'write', 'edit', 'glob', 'grep']) assert.ok(req.toolNames.includes(kept), `${kept} is still there`);
-  // 29,700 characters before the trim (about 7,500 tokens); the request now stays below 20,000 including the user's own message.
-  assert.ok(req.promptChars < 20_000, `first request is ${req.promptChars} characters`);
+  for (const kept of ['pwsh', 'read', 'write', 'edit', 'glob', 'grep', 'workflow', 'create_goal', 'update_goal', 'get_goal', 'skill', 'subagent_fork']) assert.ok(req.toolNames.includes(kept), `${kept} is offered (owner decision: the goal, skill, workflow and fork tools stay)`);
 });
+
+// The Reasoning menu in the agent: every level reaches the model server as chat_template_kwargs, and an unset menu is Medium (owner decision).
+for (const [level, thinking, effort] of [['Off', 'Off', undefined], ['Low', 'Low', 'low'], ['Medium', 'Medium', 'medium'], ['High', 'High', 'high'], ['unset (Medium)', undefined, 'medium']]) {
+  test(`agent Reasoning ${level}: the request carries chat_template_kwargs ${effort ? `enable_thinking true, reasoning_effort ${effort}` : 'enable_thinking false and no effort'}`, { skip }, async t => {
+    const worker = await startScriptedWorker({});
+    const dir = mkdtempSync(join(tmpdir(), 'strata-eff-'));
+    const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+    const local = [{ id: 'i', baseUrl: worker.url, modelId: 'scripted-model', context: 65536 }];
+    const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+    t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
+    worker.requests.length = 0;
+    await bridge.runTurn({ chatId: `eff-${level}`, message: 'SCRIPT:echo hi', workspacePath: ws, mode: 'plan', ...(thinking ? { thinking } : {}), onFrame: () => {} });
+    const req = worker.requests.find(r => r.toolNames.length);
+    assert.ok(req, 'a request with tools');
+    const kwargs = req.params.chat_template_kwargs;
+    assert.equal(kwargs.enable_thinking, effort !== undefined);
+    assert.equal(kwargs.reasoning_effort, effort);
+  });
+}

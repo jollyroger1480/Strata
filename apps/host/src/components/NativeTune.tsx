@@ -89,7 +89,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
             {other ? <p className="small inline-error" role="alert">{tr("Finish the current operation first.")}</p> : null}
             <label className="input-field"><span>{tr("How long to spend")}</span><Select value={mode} ariaLabel={tr("How long to spend")} options={[{ value: 'quick', label: 'Quick (about 20 minutes)' }, { value: 'thorough', label: 'Thorough (up to 2 hours)' }]} onChange={v => setMode(v as 'quick' | 'thorough')}/></label>
             <label className="input-field"><span>{tr("What you mostly do")}</span><Select value={use} ariaLabel={tr("What you mostly do")} options={[{ value: 'chat', label: 'Chat' }, { value: 'coding', label: 'Coding with long prompts' }]} onChange={v => setUse(v as 'chat' | 'coding')}/></label>
-            <label className="check-label"><input type="checkbox" checked={allowSmall} onChange={e => setAllowSmall(e.target.checked)}/>{tr("Allow settings that can change answers slightly")}</label>
+            <label className="check-label"><input type="checkbox" checked={allowSmall} onChange={e => setAllowSmall(e.target.checked)}/>{tr("Allow settings that change answers very slightly (same quality)")}</label>
             {status && status.presets.length ? <section className="stack"><h2 className="h4">{tr("Saved tunings")}</h2>
                 {status.presets.map(p => <div className="row row--between" key={p.id}>
                     <span>{p.name}{p.active ? <small> {'·'} {tr("In use")}</small> : null}</span>
