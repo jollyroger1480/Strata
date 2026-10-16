@@ -2240,3 +2240,22 @@ unless noted; the gain is small on these two cards and larger on the Turing card
 `STRATA_DEQUANT_WIDE` (the wide dequantization of Q4_K / Q5_K / Q6_K / IQ4_XS for the prompt's dense weights) is now on by default on
 sm_86 as well as sm_61: bit-exact, and the time to the first token of a 150 / 300 / 450-token prompt fell 11-15% on the RTX 3060 and 6-10% on the RTX A4000 (5 of 5 pairs each).
 `STRATA_DEQUANT_WIDE=0` turns it off.
+
+### RTX 20 (Turing, sm_75) kernel series (opt-in, 0.1.45)
+
+Kernels by rafatxf (#2069-#2072, #2093, #2220-#2222), imanu86 (#2081) and xrip (#1821) for compute capability 7.5. They were measured
+on one RTX 2080 Ti (decode +5..6 % at 4K-32K, prompts at depth up to +30 %, per the PRs) and are bitwise equal to the kernels they
+replace, but nobody on the team has an sm_75 card to confirm them, so they are off until asked for:
+
+`STRATA_SM75_PERF=1` turns on every bitwise Turing kernel below on a 7.5 card (no other card is ever affected). Each has its own
+variable, which wins in both directions (`=0` off, `=1` on): `STRATA_SM75_IL` (interleaved small-batch matvec table),
+`STRATA_SM75_EXP` (expert layout mode 4), `STRATA_GR_UP75` / `STRATA_GR_DOWN_TG` (hyper-connection read), `STRATA_SCORES_HALVE`
+and `STRATA_TOPK_SPLIT` (decode QSA selection), `STRATA_TOPK_SAMPLE` (prompt top-k, one read of the scores), `STRATA_ATTN_V3`
+(decode attention), `STRATA_Q2_WARP` (Q2_0 matvec), `STRATA_FUSE_WAIT=2` and `STRATA_QIL` (fewer launches per decode layer),
+`STRATA_TC_SM75` (BF16 dequant, 16-byte stores), `STRATA_PA_V1_PREFETCH` (prompt attention v1 prefetch),
+`STRATA_SCORES_THREAD` (#1825: the prompt path's thread-per-head block scorer, bitwise the warp kernel's scores; `=1` takes it on any
+CUDA card, where it measured +1..3 % prompt speed on a Tesla P100 at 30-60K tokens, so it is not a default there).
+
+Options that change answers (other summation order) are separate and explicit: `STRATA_SELECT_SIMT=1|2` (FP32 tiled block scorer,
+KL 0.01 against the warp scorer per #2071), `STRATA_PA_V2T=1` (v2 prompt attention, #2092/#2146), `STRATA_PF_FUSED=1
+STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
