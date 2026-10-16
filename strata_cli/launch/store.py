@@ -60,7 +60,8 @@ def _private_write(path: Path, payload: bytes) -> None:
 
 
 def now_text() -> str:
-    return time.strftime("%Y-%m-%d %H:%M")
+    now = time.time()
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)) + f".{int((now % 1) * 1000000):06d}"
 
 
 def save(settings: LaunchSettings, name: str | None = None) -> LaunchSettings:

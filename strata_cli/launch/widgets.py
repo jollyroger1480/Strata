@@ -83,7 +83,7 @@ def cell(c: Cell | str) -> Cell:
 class Menu(Static):
     """A column list with a cursor: `items` is a list of `Item`, `columns` a list of (title, width) (width 0 = the rest)."""
 
-    DEFAULT_CSS = "Menu { height: auto; }"
+    DEFAULT_CSS = "Menu { height: auto; text-wrap: nowrap; text-overflow: clip; }"
 
     def __init__(self, columns: list[tuple[str, int]] | None = None, *, glyphs: Glyphs | None = None, id: str | None = None,
                  window: int = 0) -> None:

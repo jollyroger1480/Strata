@@ -276,7 +276,7 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
 
 def slug(name: str) -> str:
     """A name safe for profile ids and file names: lowercase letters, digits, - and _, starting with a letter."""
-    text = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_") or "launch"
+    text = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9_-]+", "-", name.lower())).strip("-_") or "launch"
     if not text[0].isalpha():
         text = "l" + text
     return text[:48]

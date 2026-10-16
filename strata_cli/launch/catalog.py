@@ -70,12 +70,12 @@ def verdict(on_this_pc: str | None) -> tuple[str, str]:
     if not text:
         return TIGHT, "not checked (this computer's memory could not be read)"
     if low.startswith("does not fit"):
-        return NO, "does not fit (you can still try)"
+        return NO, "does not fit (can still try)"
     if "low-ram mode" in low:
-        return FITS, "fits (slower: part of it stays in RAM or on the SSD)"
+        return FITS, "fits, a bit slower"
     if "part of its experts" in low or "read from the ssd" in low:
         base = "slow here" in low
-        return TIGHT, ("tight: part is read from the SSD, noticeably slower" if base else "fits, with part read from the SSD")
+        return (TIGHT, "tight: much read from SSD") if base else (FITS, "fits, part read from SSD")
     if low.startswith("tight"):
         return TIGHT, "tight: close other programs"
     if "fits" in low:

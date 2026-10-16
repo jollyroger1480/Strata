@@ -148,19 +148,19 @@ def options(port: int, *, tunnel_url: str | None = None) -> list[AccessOption]:
     cf = find_cloudflared()
     ts = tailscale_status()
     out = [AccessOption("local", "This computer only", f"http://127.0.0.1:{port}",
-                        "for apps on this computer (OpenCode, Codex, Claude Code...)", True)]
+                        "for apps on this computer", True)]
     out.append(AccessOption("lan", "My local network", f"http://{lan or '<network address>'}:{port}",
-                            "other computers at home or in the office" if lan else
-                            "other computers on your network; no network address was found on this computer", bool(lan), warn=not lan))
+                            "other computers at home or the office" if lan else
+                            "no network address found on this computer", bool(lan), warn=not lan))
     out.append(AccessOption("cloudflare", "Cloudflare tunnel", tunnel_url or "https://<random>.trycloudflare.com",
-                            "from anywhere, no router setup · cloudflared found" if cf else "cloudflared is not installed",
+                            "from anywhere · cloudflared found" if cf else "cloudflared is not installed",
                             bool(cf), warn=not cf))
     if ts["running"]:
         out.append(AccessOption("tailscale", "Tailscale", f"http://{ts['name'] or ts['ip']}:{port}",
-                                f"your Tailscale devices · tailnet address {ts['ip']}", True))
+                                "your Tailscale devices", True))
     else:
         out.append(AccessOption("tailscale", "Tailscale", f"http://<tailnet address>:{port}",
-                                "Tailscale is installed but not connected (run: tailscale up)" if ts["installed"] else
+                                "Tailscale is not connected" if ts["installed"] else
                                 "Tailscale is not installed", False, warn=True))
     return out
 
