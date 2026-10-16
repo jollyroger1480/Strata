@@ -3,6 +3,7 @@
     python tools/nvfp4_local_pack.py convert --model <nvidia/Qwen3.8-Flash-Next-FP4-Local dir> --outfile <model.gguf>
     python tools/nvfp4_local_pack.py ple     --model <same dir> --out <ple-nvfp4.gguf>
     python tools/nvfp4_local_pack.py mtp     --model <same dir> --out <mtp src dir>   (then tools/mtp_pack.py, tools/mtp_rt.py)
+    python tools/nvfp4_local_pack.py pack    --model <same dir> --dense-gguf <dense.gguf> --out <pack dir>   (instead of iq_pack on a full GGUF)
     python tools/nvfp4_local_pack.py verify  --model <same dir> --gguf <model.gguf> [--experts 6]
     python tools/iq_pack.py --gguf <model.gguf> --out <pack dir>
 
@@ -449,6 +450,96 @@ def cmd_slim(a) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------- the pack, without a big GGUF
+def nvfp4_blocks(weight_u8: np.ndarray, scale_u8: np.ndarray) -> np.ndarray:
+    """ModelOpt NVFP4 rows -> ggml's block_nvfp4 rows: weight [R, K/2] (two E2M1 codes a byte, element 2i low), scale [R, K/16]
+    E4M3 bytes -> [R, K/64 * 36] bytes of super-blocks `[4 UE4M3 scales | 32 code bytes]`. The same bits as llama.cpp's
+    ModelBase._nvfp4_pack (the scale's sign bit is dropped; it is 0 in every scale of this checkpoint)."""
+    R, nb = scale_u8.shape
+    w = weight_u8.reshape(R, nb, 8)
+    vals = np.stack([w & 0x0F, w >> 4], axis=-1).reshape(R, nb, 16)
+    qs = (vals[:, :, :8] | (vals[:, :, 8:] << 4)).astype(np.uint8)
+    d = (scale_u8 & 0x7F).reshape(R, nb // 4, 4)
+    qs = qs.reshape(R, nb // 4, 32)
+    return np.concatenate([d, qs], axis=-1).reshape(R, (nb // 4) * 36)
+
+
+class _VTensor:
+    """A tensor info for iq_pack: an expert tensor (or its scale) whose bytes come from the checkpoint."""
+
+    def __init__(self, name, shape, type_id, type_name, nbytes):
+        self.name, self.shape, self.type_id, self.type_name, self.offset = name, shape, type_id, type_name, 0
+        self._n = nbytes
+
+    def expected_bytes(self):
+        return self._n
+
+
+class _VGguf:
+    data_start = 0
+
+
+def experts_from_checkpoint(model, ck: Checkpoint, n_layers: int = 48, n_exp: int = 512):
+    """Give an iq_pack.Model of the dense-only GGUF the routed experts of the checkpoint as virtual tensors."""
+    from _paths import add_gguf_py
+    add_gguf_py()
+    from gguf import GGMLQuantizationType as Q
+    src = next(iter(model.where.values()))[3]
+    cache: dict = {}
+    base = "model.language_model.layers.%d.mlp.experts.%d.%s_proj."
+
+    def layer_role(l, role):
+        key = (l, role)
+        if key not in cache:
+            cache.clear()
+            rows = []
+            scale2 = np.zeros(n_exp, np.float32)
+            for e in range(n_exp):
+                b = base % (l, e, role)
+                dec = csf_decode(np.asarray(ck.array(b + "weight_scale" + CSF_FIXED, np.uint8)),
+                                 np.asarray(ck.array(b + "weight_scale" + CSF_EXC, np.uint32)))
+                rows.append(nvfp4_blocks(np.asarray(ck.array(b + "weight", np.uint8)), dec).reshape(-1))
+                scale2[e] = ck.array(b + "weight_scale_2", np.float32).reshape(-1)[0]
+            cache[key] = (np.stack(rows), scale2)
+        return cache[key]
+
+    # shapes in ggml order (ne0 = K, ne1 = rows, ne2 = experts)
+    geo = {"gate": (2560, 640), "up": (2560, 640), "down": (640, 2560)}
+    for l in range(n_layers):
+        for role, (k, rows) in geo.items():
+            n = "blk.%d.ffn_%s_exps.weight" % (l, role)
+            vt = _VTensor(n, [k, rows, n_exp], Q.NVFP4.value, "NVFP4", n_exp * rows * (k // 64) * 36)
+            model.where[n] = (_VGguf(), vt, None, src)
+            sn = "blk.%d.ffn_%s_exps.scale" % (l, role)
+            model.where[sn] = (_VGguf(), _VTensor(sn, [n_exp], Q.F32.value, "F32", n_exp * 4), None, src)
+    orig_bytes = type(model).bytes
+
+    def bytes_(name):
+        if name.startswith("blk.") and "_exps." in name:
+            l = int(name.split(".")[1]); role = name.split("ffn_")[1].split("_exps")[0]
+            data, s2 = layer_role(l, role)
+            return data.reshape(-1) if name.endswith(".weight") else s2.view(np.uint8)
+        return orig_bytes(model, name)
+    model.bytes = bytes_
+    return model
+
+
+def cmd_pack(a) -> int:
+    """tools/iq_pack.py on the dense-only GGUF, with the experts read from the checkpoint: experts.bin, native_experts.txt,
+    dense.bin, index.txt and the tokenizer, with no 74 GB GGUF in between."""
+    import iq_pack
+    ck = Checkpoint(a.model)
+    orig_model = iq_pack.Model
+
+    class M(orig_model):
+        def __init__(self, first):
+            super().__init__(first)
+            experts_from_checkpoint(self, ck)
+    iq_pack.Model = M
+    sys.argv = ["iq_pack.py", "--gguf", a.dense_gguf, "--out", a.out, "--experts-bin"]
+    return iq_pack.main()
+
+
 # ------------------------------------------------------------------------------------------------------ verifying
 def cmd_verify(a) -> int:
     """Experts: decode the checkpoint (CSF + ModelOpt definition) and compare with gguf-py's dequantization of the
@@ -498,6 +589,10 @@ def main() -> int:
     m = sub.add_parser("mtp")
     m.add_argument("--model", required=True)
     m.add_argument("--out", required=True)
+    pk = sub.add_parser("pack")
+    pk.add_argument("--model", required=True)
+    pk.add_argument("--dense-gguf", required=True, help="the output of `convert --dense-only` (or `slim`)")
+    pk.add_argument("--out", required=True)
     sl = sub.add_parser("slim")
     sl.add_argument("--gguf", required=True)
     sl.add_argument("--out", required=True)
@@ -506,7 +601,7 @@ def main() -> int:
     v.add_argument("--gguf", required=True)
     v.add_argument("--experts", type=int, default=4)
     a = ap.parse_args()
-    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "slim": cmd_slim, "verify": cmd_verify}[a.cmd](a)
+    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "slim": cmd_slim, "pack": cmd_pack, "verify": cmd_verify}[a.cmd](a)
 
 
 if __name__ == "__main__":

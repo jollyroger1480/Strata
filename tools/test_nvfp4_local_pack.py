@@ -96,3 +96,16 @@ def test_e4m3_table_and_bf16_rounding():
     b = P.f32_to_bf16_bits(x)
     back = (b.astype(np.uint32) << 16).view(np.float32)
     assert back.tolist() == [1.0, 1.0, 1.0078125, -2.5]    # ties to even; 1+3*2^-9 rounds up
+
+
+def test_nvfp4_blocks_layout_by_hand():
+    # one row of 64 values: codes 0..15 repeated; scales 0x38 0x39 0x3A 0x3B with a sign bit set on the first (dropped)
+    codes = np.arange(64) % 16
+    packed = (codes[0::2] | (codes[1::2] << 4)).astype(np.uint8).reshape(1, 32)
+    sc = np.array([[0xB8, 0x39, 0x3A, 0x3B]], np.uint8)
+    out = P.nvfp4_blocks(packed, sc)
+    assert out.shape == (1, 36)
+    assert out[0, :4].tolist() == [0x38, 0x39, 0x3A, 0x3B]
+    # within a 16-block: element j in the low nibble, element j+8 in the high one
+    blk0 = out[0, 4:12]
+    assert [int(b & 15) for b in blk0] == list(range(8)) and [int(b >> 4) for b in blk0] == list(range(8, 16))
