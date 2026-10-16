@@ -1,5 +1,6 @@
 import { tr } from '../lib/i18n';
 import {nativeSettingsResponse,nativeSettingsValues} from '../lib/native-settings-response';
+import { describeChange, type TunedChange } from '../lib/tune-values';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/client';
 import { refreshNative, useNative, type NativeField } from '../lib/native';
@@ -10,6 +11,7 @@ export function NativeSettings({ model }: {
 }) {
     const native = useNative();
     const [revision,setRevision]=useState(0);
+    const [tuned, setTuned] = useState<{ preset: { name: string } | null; changed: TunedChange[] } | null>(null);
     const [values, setValues] = useState<Record<string, any>>({}), [mcp, setMcp] = useState('{}'), [original, setOriginal] = useState(''), [text, setText] = useState(''), [tab, setTab] = useState('fields'), [pending, setPending] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [query, setQuery] = useState('');
     useEffect(() => {
         let active = true;
@@ -22,9 +24,11 @@ export function NativeSettings({ model }: {
         void api.get<{
             values: Record<string, any>;
             mcp: Record<string, any>;
+            tuned?: { preset: { name: string } | null; changed: TunedChange[] } | null;
         }>(`/api/native/models/${model}/settings`).then(input => {
             if (!active)
                 return;
+            setTuned(input.tuned ?? null);
             const value = nativeSettingsResponse(input);
             setValues(value.values);
             setText(JSON.stringify(value.values, null, 2));
@@ -87,7 +91,7 @@ export function NativeSettings({ model }: {
       {error ? <><ErrorNotice message={tr('Couldn’t load model settings.')} next={tr('Check that the engine is connected and this model is installed, then try again.')} onRetry={() => setRevision(value => value + 1)}/><details className="native-settings-diagnostic"><summary className="small">{tr('Details')}</summary><p className="small muted">{error}</p></details></> : <p className="small muted" role="status">{tr('Reading saved settings…')}</p>}
     </details>;
     const rows = (native?.fields ?? []).filter(f => `${tr(f.label)} ${f.id} ${tr(f.group)}`.toLowerCase().includes(query.toLowerCase()));
-    return <details className="native-settings"><summary>{tr("Native engine settings")}</summary><p className="small muted">{tr(!original ? 'Reading saved settings… ' : '')}{tr("Settings for this model. Blank values use Strata\u2019s defaults.")}</p><div className="editor-tabs" role="tablist" aria-label={tr("Native settings editor")}>{tr(['fields', 'json', 'tools'].map(t => <button key={t} role="tab" aria-selected={tab === t} onClick={() => chooseTab(t)}>{tr(t === 'fields' ? 'Parameters' : t === 'json' ? 'JSON' : 'MCP tools')}</button>))}</div>
+    return <details className="native-settings"><summary>{tr("Native engine settings")}</summary>{tr(tuned?.changed?.length ? <div className="native-tuned"><p className="small"><strong>{tr("Your tuning '{0}' sets", [tuned.preset?.name ?? ''])}</strong></p><ul>{tuned.changed.map(c => { const d = describeChange(c); return <li key={c.flag}><span>{d.name}</span><b>{d.now || tr('off')}</b>{d.was !== null ? <small className="muted">{tr("was {0}", [d.was])}</small> : null}</li>; })}</ul></div> : null)}<p className="small muted">{tr(!original ? 'Reading saved settings… ' : '')}{tr("Settings for this model. Blank values use Strata\u2019s defaults.")}</p><div className="editor-tabs" role="tablist" aria-label={tr("Native settings editor")}>{tr(['fields', 'json', 'tools'].map(t => <button key={t} role="tab" aria-selected={tab === t} onClick={() => chooseTab(t)}>{tr(t === 'fields' ? 'Parameters' : t === 'json' ? 'JSON' : 'MCP tools')}</button>))}</div>
   {tr(tab === 'fields' ? <><input className="st-input" type="search" aria-label={tr("Search native parameters")} placeholder={tr("Search parameters…")} value={query} onChange={e => setQuery(e.target.value)}/>{tr(['Responses', 'GPU & memory', 'Serving', 'Image reading', 'Tools', 'Recovery'].map(group => rows.some(f => f.group === group) ? <section className="native-settings-group" key={group}><h3 className="h4">{tr(group)}</h3>{tr(rows.filter(f => f.group === group).map(f => <label className="native-setting-row" key={f.id}><span><strong>{tr(f.label)}</strong>{tr(f.supported === false ? <small>{tr("Requires a newer Strata installation.")}</small> : f.hint ? <small>{tr(f.hint)}</small> : null)}</span><NativeFieldInput field={f} value={values[f.id]} onChange={v => change(f.id, v)}/></label>))}</section> : null))}<section className="native-settings-group"><h3 className="h4">{tr("Sampling")}</h3>{tr([['temperature', 'Temperature'], ['top_p', 'Top-p'], ['top_k', 'Top-k'], ['min_p', 'Min-p'], ['repetition_penalty', 'Repetition penalty'], ['presence_penalty', 'Presence penalty'], ['frequency_penalty', 'Frequency penalty'], ['penalty_last_n', 'Penalty window'], ['seed', 'Seed']].map(([id, label]) => <label className="native-setting-row" key={id}><span><strong>{tr(label)}</strong></span><input className="st-input" aria-label={tr("Native {0}", [label])} inputMode="decimal" value={values.sampling?.[id] ?? ''} onChange={e => {
                     const sampling = { ...values.sampling };
                     if (e.target.value === '')
