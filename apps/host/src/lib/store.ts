@@ -1181,7 +1181,8 @@ async function startTimeSkipReal(prompt: string) {
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
     title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
-    timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
+    // The comparison sidebar opens only when there is an update to compare (see followTimeSkip), not while it works.
+    timeSkips: [...(s.timeSkips ?? []), run],
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: '/time-skip ' + prompt, timeSkipId: run.id },
       { id: uid('m'), role: 'assistant', at, timeSkipId: run.id, content: TS_WORKING() },
@@ -1220,6 +1221,8 @@ export async function followTimeSkip(sessionId: string, runId: string) {
         } catch { /* the list is a convenience; the job's record stands */ }
         const finished = job;
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, ...finished, ...extra } }), timeSkipEnding(finished, files));
+        // A run that changed files opens the comparison; one that changed nothing, failed or was stopped has no sidebar tab.
+        if (files.length > 0 && !['failed', 'cancelled', 'interrupted'].includes(finished.phase)) patchSession(sessionId, s => ({ ...s, previewOpen: timeSkipTabId(runId) }));
         return;
       }
       if (job) { const live = job; patchRun(sessionId, runId, r => ({ ...r, job: { ...r.job!, ...live } })); }

@@ -968,6 +968,14 @@ async function api(req, res, path, method, url) {
     if (!found) return error(res, 404, 'No such Time-skip run.');
     return json(res, 200, found);
   }
+  /* One picture of a run, original or updated, for the Compare view. Only pictures inside the run's own folders; served as an image and nothing else. */
+  if (path === '/api/timeskip/file' && method === 'GET') {
+    const found = timeskip.image(url.searchParams.get('id'), url.searchParams.get('path'), url.searchParams.get('version'));
+    if (!found) return error(res, 404, 'No such picture in this Time-skip run.');
+    res.writeHead(200, { 'content-type': found.type, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
+    createReadStream(found.path).pipe(res);
+    return;
+  }
   if (path === '/api/timeskip/stop' && method === 'POST') {
     const body = await readBody(req);
     return json(res, 200, { stopped: timeskip.cancel(String(body.id ?? '')) });
