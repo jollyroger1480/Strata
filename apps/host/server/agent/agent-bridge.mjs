@@ -57,7 +57,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, expertSampling = () => null, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -311,14 +311,33 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
-      plan: null, advancing: false, goalRun: false,
+      plan: null, advancing: false, goalRun: false, lastActivity: Date.now(), watchdog: null,
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
+    /**
+     * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
+     * quiet, a lost event) the turn is stopped and ended with a plain message instead of showing "thinking" forever. A running tool gets
+     * a longer allowance than a quiet model (a build can be silent for minutes). Whatever the assistant finished is kept.
+     */
+    turn.watchdog = setInterval(() => {
+      if (turn.finished || turn.stopping) return;
+      const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
+      const limit = toolRunning ? stallToolMs : stallMs;
+      if (Date.now() - turn.lastActivity < limit) return;
+      turn.stalledFor = Math.round((Date.now() - turn.lastActivity) / 1000);
+      turn.stopping = true;
+      void runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
+      for (const h of turn.children.values()) if (!h.done) void runtime.gw.rpc('subagents/interruptByParent', { childSessionId: h.id, parentSessionId: sessionId, mode: 'continuable' }).catch(() => {});
+      const mins = Math.max(1, Math.round(turn.stalledFor / 60));
+      turn.finish(`The assistant stopped answering for ${mins > 1 ? mins + ' minutes' : 'a minute'}, so I ended this turn. Anything it already finished is kept. Send your message again to go on.`);
+    }, Math.min(15_000, Math.max(200, Math.floor(stallMs / 4))));
+    turn.watchdog.unref?.();
     function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
       clearTimeout(turn.settleTimer);
+      clearInterval(turn.watchdog);
       turn.follow?.close();
       for (const child of turn.children.values()) child.follow?.close();
       if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
@@ -357,6 +376,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     function handle(item) {
       if (turn.finished) return;
+      turn.lastActivity = Date.now();
       if (item.type === 'event') {
         const e = item.event;
         if (e.seq <= turn.lastSeq) return;
@@ -393,6 +413,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       emitRow(child, true);
       const fold = item => {
         if (turn.finished) return;
+        turn.lastActivity = Date.now();
         // A helper that finishes before its throttled "working" row went out would show queued -> completed and never "working": send the held row first.
         if (item.type === 'event' && item.event.type === 'turn/end' && child.rowPending) emitRow(child, true);
         const { frames, row } = cp.consume(item);
