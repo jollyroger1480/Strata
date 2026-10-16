@@ -95,6 +95,13 @@ class ArmReport:
 @dataclass
 class TuneResult:
     outcome: str = "default_confirmed"   # improved | default_confirmed | inconclusive | base_failed | cancelled
+    #: what a screen shows, one of: faster | already_fastest | busy_pc | failed | stopped  (see `finalize`)
+    code: str = "already_fastest"
+    #: why, for busy_pc: noisy | drift | not_tried (no memory or time to compare anything); for failed: start_failed | no_engine
+    reason_code: str = ""
+    #: the numbers a screen puts in its sentence, all plain numbers: gain_pct, base_tok_s, tuned_tok_s, noise_pct, drift_pct,
+    #: minutes, pairs, faster_pairs, preset_name
+    values: dict[str, Any] = field(default_factory=dict)
     message: str = ""
     mode: str = "quick"
     seconds: float = 0.0
@@ -129,6 +136,9 @@ def metric(run: dict[str, Any] | RunResult, use: str) -> float | None:
     """The number a configuration is judged on (6.1): decode speed for chat; for coding the geometric mean of decode
     speed and long-prompt speed (the 4K prompt when no long one was measured)."""
     get = (lambda k: run.get(k)) if isinstance(run, dict) else (lambda k: getattr(run, k, None))
+    if use == "prompt":                       # a prompt-only knob (the chunk size): long-prompt speed, the 4K prompt otherwise
+        p = get("pp_long_tok_s") or get("pp_tok_s")
+        return float(p) if p else None
     d = get("decode_tok_s")
     if not d:
         return None
@@ -321,11 +331,31 @@ class Tuner:
             r.outcome, r.message = "cancelled", "Stopped. Your settings were not changed."
         r.seconds = round(self.clock() - self.started, 1)
         r.waited_s = round(self.waited_s, 1)
+        self.finalize(r)
         return r
+
+    @staticmethod
+    def finalize(r: "TuneResult") -> None:
+        """The structured outcome a screen shows inside the tune dialog (owner feedback, item 13): a code and plain numbers, so no
+        screen has to read a sentence. faster / already_fastest / busy_pc (noisy, drifting, or nothing could be compared) /
+        failed / stopped. `busy_pc` is a result, not an error: nothing was changed and trying again later is the answer."""
+        r.code = {"improved": "faster", "default_confirmed": "already_fastest", "inconclusive": "busy_pc",
+                  "base_failed": "failed", "cancelled": "stopped"}.get(r.outcome, "failed")
+        if r.outcome == "default_confirmed" and r.noise.get("noisy"):
+            r.reason_code = r.reason_code or "noisy_but_nothing_better"
+        base = (r.base or {}).get("decode_tok_s")
+        tuned = (r.chosen or {}).get("decode_tok_s")
+        r.values = {"gain_pct": r.gain_pct, "gain_decode_pct": r.gain_decode_pct, "base_tok_s": base, "tuned_tok_s": tuned,
+                    "noise_pct": round(100 * (r.noise or {}).get("spread", 0.0), 1) if r.noise else None,
+                    "drift_pct": round(100 * (r.noise or {}).get("drift", 0.0), 1) if r.noise else None,
+                    "minutes": round(r.seconds / 60.0 - r.waited_s / 60.0, 1), "pairs": r.pairs, "faster_pairs": r.faster_pairs}
 
     def _spec(self) -> RequestSet:
         long_tokens = 0
-        if self.o.use == "coding" and self.o.mode == "thorough":
+        if self.ctx.context_tokens >= 65536:
+            # long contexts mean long prompts: the chunk size (spec 4.3) only shows on a long one
+            long_tokens = min(98304, int(0.75 * self.ctx.context_tokens))
+        elif self.o.use == "coding" and self.o.mode == "thorough":
             long_tokens = min(28000, int(0.8 * self.ctx.context_tokens))
         return RequestSet(warmups=2 if self.o.mode == "thorough" else 1, decodes=5, decode_tokens=200,
                           pp_tokens=4096 if self.ctx.context_tokens >= 6000 else 1024, long_tokens=long_tokens)
@@ -340,6 +370,7 @@ class Tuner:
         why = self._ram_guard(0, "your current settings")
         if why:
             r.outcome, r.message = "base_failed", "Not tuned: " + why
+            r.reason_code = "no_memory"
             return
         pr_rows: list[dict[str, Any]] = []
 
@@ -355,6 +386,7 @@ class Tuner:
             self._say("base", "Measured your current settings")
         if base1.status != "PASS" or not metric(base1, o.use):
             r.outcome = "base_failed"
+            r.reason_code = "start_failed"
             r.message = "Your current settings could not be measured: " + (base1.reason or base1.status)
             return
         r.base = base1.to_dict()
@@ -381,6 +413,7 @@ class Tuner:
         planned = planned[:n_arms]
         arms = [ArmReport(p.arm.id, p.arm.label, dict(p.args), dict(p.env), p.arm.answer) for p in planned]
         by_id = {a.id: a for a in arms}
+        by_use = {p.arm.id: ("prompt" if p.arm.metric == "prompt" else o.use) for p in planned}
         self.planned_runs = self.done_runs + per_arm * (len(planned) + 1) - 1 + 1 + (o.confirm_pairs or 0) * 2
         if not planned:
             self._say("plan", "No other setting is worth trying on this PC")
@@ -452,7 +485,8 @@ class Tuner:
             # a candidate that lost by more than the margin against its own round's base is dropped from later rounds
             for p in list(alive):
                 b, c = round_runs[rnd].get("base"), round_runs[rnd].get(p.arm.id)
-                m_b, m_c = (metric(b, o.use) if b else None), (metric(c, o.use) if c else None)
+                um = by_use[p.arm.id]
+                m_b, m_c = (metric(b, um) if b else None), (metric(c, um) if c else None)
                 if m_b and m_c and m_c / m_b < 1.0 - max(o.margin, EARLY_DROP):
                     by_id[p.arm.id].status = "dropped"
                     by_id[p.arm.id].reason = f"slower by {100 * (1 - m_c / m_b):.1f}% in round {rnd + 1}"
@@ -484,11 +518,16 @@ class Tuner:
             if rep.status in ("failed", "skipped") or not rows:
                 continue
             ratios, pps = [], []
+            um = by_use[p.arm.id]
             for b, c in rows:
-                mc, mbb = metric(c, o.use), metric(b, o.use)
+                mc, mbb = metric(c, um), metric(b, um)
                 if mc and mbb:
                     ratios.append(mc / mbb)
-                if c.pp_tok_s and b.pp_tok_s:
+                # the other side of the trade: prompt speed for a decode knob, decode speed for a prompt knob
+                if um == "prompt":
+                    if c.decode_tok_s and b.decode_tok_s:
+                        pps.append(c.decode_tok_s / b.decode_tok_s)
+                elif c.pp_tok_s and b.pp_tok_s:
                     pps.append(c.pp_tok_s / b.pp_tok_s)
             rep.pairs = len(ratios)
             rep.faster = sum(1 for x in ratios if x > 1.0)
@@ -507,26 +546,27 @@ class Tuner:
             r.notes.append(f"the PC was noisy ({spread * 100:.1f}% between identical runs)")
 
         # ---- stage 4: stack the winners, then (thorough) confirm against the base with more pairs
+        fu = o.use
         chosen_args: dict[str, Any] = {}
         chosen_env: dict[str, str | None] = {}
         final_pairs: list[tuple[RunResult, RunResult]] = []
         if winners:
             winners.sort(key=lambda a: a.ratio_decode or 0.0, reverse=True)
-            incumbent = [winners[0]]
-            for extra in winners[1:]:
-                conflict = set(extra.settings) & {k for w in incumbent for k in w.settings}
-                if not conflict:
-                    incumbent.append(extra)
+            incumbent = [winners[0]]            # gains did not stack in three stacking runs (spec 1.10): the best single knob
+            if len(winners) > 1:
+                r.notes.append("more than one setting helped; only the best one is kept because gains did not add up in the study")
             for w in incumbent:
                 chosen_args.update(w.settings)
                 chosen_env.update(w.env)
-            need_confirm = len(incumbent) > 1 or (o.confirm_pairs or 0) > 0
+            fu = by_use[incumbent[0].id]
+            need_confirm = (o.confirm_pairs or 0) > 0
             if need_confirm and not self._over_budget(reserve_s=2 * self._avg_run()):
                 n = o.confirm_pairs or 2
                 self._say("confirm", "Confirming the combined result against your current settings")
-                final_pairs = self._confirm(chosen_args, chosen_env, spec, n)
-                ratios = [metric(c, o.use) / metric(b, o.use) for b, c in final_pairs if metric(c, o.use) and metric(b, o.use)]
-                pps = [c.pp_tok_s / b.pp_tok_s for b, c in final_pairs if c.pp_tok_s and b.pp_tok_s]
+                final_pairs = self._confirm(chosen_args, chosen_env, spec, n, fu)
+                ratios = [metric(c, fu) / metric(b, fu) for b, c in final_pairs if metric(c, fu) and metric(b, fu)]
+                pps = [c.decode_tok_s / b.decode_tok_s for b, c in final_pairs if c.decode_tok_s and b.decode_tok_s] if fu == "prompt" \
+                    else [c.pp_tok_s / b.pp_tok_s for b, c in final_pairs if c.pp_tok_s and b.pp_tok_s]
                 need = max(2, int(math.ceil(0.8 * len(ratios)))) if len(ratios) >= 5 else len(ratios)
                 if not (ratios and is_win(ratios, pps, threshold=threshold, need=need)):
                     # the stack did not hold; fall back to the best single winner, which already won its own pairs
@@ -547,6 +587,7 @@ class Tuner:
             if not final_pairs and winners:
                 final_pairs = list(data[winners[0].id])
 
+        fu_final = fu
         # ---- per-request winners (found in the base engine): keep only the ones that won every round
         per_request_chosen = {row["key"]: row["value"] for row in r.per_request if row.get("won")}
         if per_request_chosen and not self.storm and not self.cancel.is_set() and not self._over_budget(reserve_s=self._avg_run()):
@@ -562,11 +603,12 @@ class Tuner:
 
         # ---- result
         if end_base is not None and end_base.status == "PASS" and drift > 0.03 and winners:
-            gain_guess = statistics.median([metric(c, o.use) / metric(b, o.use) for b, c in final_pairs]) - 1.0 if final_pairs else 0.0
+            gain_guess = statistics.median([metric(c, fu) / metric(b, fu) for b, c in final_pairs]) - 1.0 if final_pairs else 0.0
             if gain_guess < 2 * drift:
                 chosen_args, chosen_env, winners, final_pairs = {}, {}, [], []
                 per_request_chosen = {}
                 r.outcome = "inconclusive"
+                r.reason_code = "drift"
                 r.message = ("The PC changed speed while measuring (about %.0f%%), more than the gain found, so nothing "
                              "was changed. Try again when nothing else is running." % (drift * 100))
         if r.outcome != "inconclusive":
@@ -574,7 +616,14 @@ class Tuner:
                 r.outcome = "improved"
             elif r.noise["noisy"] and (spread > 2 * STAGE_GAP_NOISY):
                 r.outcome = "inconclusive"
+                r.reason_code = "noisy"
                 r.message = "The PC was too noisy to tell settings apart, so nothing was changed. Try again when it is idle."
+            elif arms and not any(a.status in ("tested", "dropped", "failed") for a in arms) and not r.per_request:
+                # candidates were planned but none could be measured (no free memory, no time): that is not "already the fastest"
+                r.outcome = "inconclusive"
+                r.reason_code = "not_tried"
+                r.message = ("Other settings could not be tried (not enough free memory or time), so nothing was compared and nothing was "
+                             "changed. Try again when the PC is quiet.")
             else:
                 r.outcome = "default_confirmed"
                 r.message = "Your current settings are already the fastest we found. Nothing was changed."
@@ -594,9 +643,10 @@ class Tuner:
                     cls = row["answer"]
                 if row["key"] == key and row["answer"] != "exact":
                     fields.append(key)
-        r.answers = {"class": cls, "fields": sorted(set(fields))}
+        r.answers = {"class": cls, "fields": sorted(set(fields)), "default_repeatable": not tune_knobs.default_unsteady(self.ctx)}
         if final_pairs:
-            ratios = [metric(c, o.use) / metric(b, o.use) for b, c in final_pairs if metric(c, o.use) and metric(b, o.use)]
+            fu = fu_final
+            ratios = [metric(c, fu) / metric(b, fu) for b, c in final_pairs if metric(c, fu) and metric(b, fu)]
             pps = [c.pp_tok_s / b.pp_tok_s for b, c in final_pairs if c.pp_tok_s and b.pp_tok_s]
             r.pairs = len(ratios)
             r.faster_pairs = sum(1 for x in ratios if x > 1.0)
@@ -607,7 +657,7 @@ class Tuner:
             c_runs = [c for _, c in final_pairs]
             r.chosen = {"decode_tok_s": round(statistics.median([c.decode_tok_s for c in c_runs if c.decode_tok_s]), 2)
                         if any(c.decode_tok_s for c in c_runs) else None,
-                        "pp_tok_s": round(statistics.median([c.pp_tok_s for c in c_runs if c.pp_tok_s]), 1)
+                        "pp_tok_s": round(statistics.median([c.pp_long_tok_s or c.pp_tok_s for c in c_runs if c.pp_long_tok_s or c.pp_tok_s]), 1)
                         if any(c.pp_tok_s for c in c_runs) else None,
                         "rss_peak_mib": max([c.rss_peak_mib for c in c_runs if c.rss_peak_mib] or [None]) if any(c.rss_peak_mib for c in c_runs) else None,
                         "vram_used_mib": max([c.vram_used_mib for c in c_runs if c.vram_used_mib] or [None]) if any(c.vram_used_mib for c in c_runs) else None}
@@ -644,7 +694,7 @@ class Tuner:
             return "it would not leave the graphics memory you wanted free"
         return None
 
-    def _confirm(self, args: dict[str, Any], env: dict[str, str | None], spec: RequestSet, pairs: int) -> list[tuple[RunResult, RunResult]]:
+    def _confirm(self, args: dict[str, Any], env: dict[str, str | None], spec: RequestSet, pairs: int, use: str | None = None) -> list[tuple[RunResult, RunResult]]:
         """Interleaved pairs of the combined settings against the base (the order alternates)."""
         out: list[tuple[RunResult, RunResult]] = []
         cand_args = tune_knobs.apply_to_argv(self.base_args, args)
@@ -660,7 +710,8 @@ class Tuner:
                 runs[who] = self._run(cand_args if who == "cand" else self.base_args, env if who == "cand" else {}, spec,
                                       f"confirm {who} {i + 1}")
             if runs["cand"].status == "PASS" and runs["base"].status == "PASS":
-                if self.o.use and metric(runs["cand"], self.o.use) and metric(runs["base"], self.o.use):
+                use = use or self.o.use
+                if metric(runs["cand"], use) and metric(runs["base"], use):
                     out.append((runs["base"], runs["cand"]))
                     self.base_runs.append(runs["base"])
             else:

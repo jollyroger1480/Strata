@@ -35,5 +35,11 @@
  "tune34": "Use",
  "tune35": "Tune again",
  "tune36": "Start tuning",
- "tune37": "Tuning your model"
+ "tune37": "Tuning your model",
+ "tune38": "Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.",
+ "tune39": "Using your tuning '{0}'",
+ "tune40": "Switch off",
+ "tune41": "Switch on",
+ "tune42": "Your tuning is off. The standard settings are used.",
+ "tune43": "Your PC was busy, so the measurements were not reliable. Nothing was changed. Try again when it is quiet."
 }

@@ -891,6 +891,8 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
   /* The auto-tuner's saved tunings (Strata Control's presets, shared with the Terminal). Starting a tune or a re-check is POST /api/native/operations with kind autotune / recheck. */
   if(path==='/api/native/tune/status'&&method==='GET')return json(res,200,await native.tuneStatus({model:url.searchParams.get('model'),resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined}));
+  if(path==='/api/native/tune/effective'&&method==='GET')return json(res,200,await native.tuneEffective({model:url.searchParams.get('model'),resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined}));
+  if(path==='/api/native/tune/off'&&method==='POST'){const body=await readBody(req);return json(res,200,await native.tuneOff({model:body.model,resourceProfile:body.resourceProfile,vision:body.vision}));}
   if(path==='/api/native/tune/presets'&&method==='GET')return json(res,200,await native.tunePresets.list());
   if(path==='/api/native/tune/undo'&&method==='POST'){const body=await readBody(req);return json(res,200,await native.tunePresets.undoFor({model:body.model,resourceProfile:body.resourceProfile,vision:body.vision}));}
   const tunePreset=/^\/api\/native\/tune\/presets\/([0-9a-f]{8,32})\/(apply|rename|delete|undo)$/.exec(path);
@@ -900,7 +902,8 @@ async function api(req, res, path, method, url) {
   const nativeInstance=/^\/api\/native\/instances\/([a-z0-9-]+)\/(unload|default)$/.exec(path);
   if(nativeInstance&&method==='POST')return json(res,200,nativeInstance[2]==='unload'?await native.unload(nativeInstance[1]):native.setDefault(nativeInstance[1]));
   const nativeSettings=/^\/api\/native\/models\/([a-z0-9_-]+)\/settings$/.exec(path);
-  if(nativeSettings&&method==='GET')return json(res,200,native.settings(nativeSettings[1]));
+  /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
+  if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}
   if(nativeSettings&&method==='PATCH')return json(res,200,native.save(nativeSettings[1],await readBody(req)));
 
   // Credentials are handled only on the host. Responses and events expose a key-set flag.

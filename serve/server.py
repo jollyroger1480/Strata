@@ -7140,6 +7140,34 @@ def lift_reasoning_effort_arg(cfg: dict) -> None:
 SAMPLING_ALIASES = {"repeat_penalty": "repetition_penalty", "repeat_last_n": "penalty_last_n"}
 
 
+def apply_saved_tuning(cfg: dict, *, say=None) -> dict:
+    """The run config with the active saved tuning for its choices put on top (strata_control/presets.py), with no measurement.
+    Every start path runs this (the Terminal, `runtime start`, the app's load, a restart of the app, an unload and a load), so the
+    tuning is applied every time and never re-measured. A tune's own worker sets STRATA_NO_PRESET so that it measures the
+    configuration it was given. Never fails a start: a store that cannot be read means the configuration as it is."""
+    if os.environ.get("STRATA_NO_PRESET"):
+        return cfg
+    say = say or (lambda line: print(line, flush=True))
+    try:
+        from strata_control import presets as _presets
+        out, applied = _presets.overlay(cfg)
+        if applied.get("applied"):
+            changes = {**(applied.get("args") or {}), **(applied.get("env") or {})}
+            note = applied.get("notice") or ""
+            say(f"[strata] saved tuning '{applied['preset']['name']}' applied: "
+                f"{' '.join(f'{k} {v}' for k, v in changes.items()) or 'the standard settings (nothing to change)'}"
+                f"{'; ' + note if note and 'identical' not in note else ''}")
+            if applied.get("state") == "soft":
+                say("[strata] this PC or engine changed since it was saved (" + "; ".join(applied["reasons"]) +
+                    "): a short re-check is available (strata presets recheck)")
+        elif applied.get("why_not"):
+            say(f"[strata] saved tuning '{applied['preset']['name']}' {applied['why_not']}; re-tune with strata tune auto")
+        return out
+    except Exception as e:  # noqa: BLE001
+        say(f"[strata] saved tuning could not be read ({type(e).__name__}); starting with the configuration as it is")
+        return cfg
+
+
 def sampling_defaults_from_config(cfg: dict) -> dict:
     """The run config's optional `sampling` block: defaults for the sampling fields a request leaves out, so
     a plain client gets configured sampling instead of greedy.  Supported: temperature, top_p, top_k, min_p,
@@ -7451,23 +7479,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = json.loads(config_bytes.decode("utf-8-sig")) if a.config else {}   # Notepad adds a BOM
-    if a.config and a.engine == "strata" and not os.environ.get("STRATA_NO_PRESET"):
-        # the saved tuning for this model and these choices (strata_control/presets.py): applied with no measurement. A tune's
-        # own worker sets STRATA_NO_PRESET so that it measures the configuration it was given. Never fails the start.
-        try:
-            from strata_control import presets as _presets
-            cfg, _applied = _presets.overlay(cfg)
-            if _applied.get("applied"):
-                print(f"[strata] saved tuning '{_applied['preset']['name']}' applied: "
-                      f"{' '.join(f'{k} {v}' for k, v in {**(_applied.get('args') or {}), **(_applied.get('env') or {})}.items())}"
-                      f"{'; ' + _applied['notice'] if _applied.get('notice') and 'identical' not in _applied['notice'] else ''}", flush=True)
-                if _applied.get("state") == "soft":
-                    print("[strata] this PC or engine changed since it was saved (" + "; ".join(_applied["reasons"]) +
-                          "): a short re-check is available (strata presets recheck)", flush=True)
-            elif _applied.get("why_not"):
-                print(f"[strata] saved tuning '{_applied['preset']['name']}' {_applied['why_not']}; re-tune with strata tune auto", flush=True)
-        except Exception as _e:  # noqa: BLE001
-            print(f"[strata] saved tuning could not be read ({type(_e).__name__}); starting with the configuration as it is", flush=True)
+    if a.config and a.engine == "strata":
+        cfg = apply_saved_tuning(cfg)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)
     launch_attestation = None
     if a.owner_fd is not None:

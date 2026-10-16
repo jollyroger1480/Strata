@@ -431,7 +431,10 @@ def record_recheck(ref: str, outcome: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- applying the active preset at every start
 
 def notice(preset: dict[str, Any]) -> str:
-    return tune_knobs.ANSWER_NOTICE.get((preset.get("answers") or {}).get("class", "exact"), "")
+    a = preset.get("answers") or {}
+    if a.get("default_repeatable") is False and a.get("class", "exact") in tune_knobs.ANSWER_NOTICE_UNSTEADY:
+        return tune_knobs.ANSWER_NOTICE_UNSTEADY[a.get("class", "exact")]
+    return tune_knobs.ANSWER_NOTICE.get(a.get("class", "exact"), "")
 
 
 def overlay(cfg: dict[str, Any], *, now: dict[str, Any] | None = None, use: str = "chat") -> tuple[dict[str, Any], dict[str, Any]]:

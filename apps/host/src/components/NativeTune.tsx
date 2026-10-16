@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Btn, Dialog, Icon, Select } from './ui';
 import { TuneRunView, TuneResultView } from './TuneRunView';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
-import { ANSWER_NOTICE, tunePresetAction, tuneStatus, tuneUndo, type TuneProgress, type TunePreset, type TuneResult, type TuneStatus } from '../lib/native-tune';
+import { answerNotice, tunePresetAction, tuneStatus, tuneUndo, type TuneProgress, type TunePreset, type TuneResult, type TuneStatus } from '../lib/native-tune';
 
 type Phase = 'idle' | 'running' | 'result';
 
@@ -57,7 +57,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
     const ratio = progress && progress.runsPlanned ? Math.min(0.96, progress.runsDone / progress.runsPlanned) : 0;
     const active = status?.active ?? null;
 
-    const notice = (cls?: string) => cls ? <p className="small muted">{tr(ANSWER_NOTICE[cls] ?? '')}</p> : null;
+    const notice = (cls?: string, steady?: boolean) => cls ? <p className="small muted">{tr(answerNotice(cls, steady))}</p> : null;
     let body;
     let actions;
     if (phase === 'running') {
@@ -65,9 +65,9 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
         actions = <><Btn onClick={() => void act(() => nativeAction(`operations/${job!.id}/cancel`))} disabled={busy}>{tr("Stop")}</Btn></>;
     } else if (phase === 'result') {
         const improved = result?.outcome === 'improved' || result?.verdict === 'keep';
-        const text = stopped ? tr("Stopped. Your settings were not changed.") : job?.state === 'error' ? tr("The tune did not finish. Your settings were not changed.") : result?.verdict ? (result.verdict === 'keep' ? tr("Still as fast as when it was saved.") : result.verdict === 'retune' ? tr("It is slower than before. You can tune again.") : tr("Could not tell right now. Your tuning was kept.")) : result?.outcome === 'improved' ? tr("+{0}% faster answers, saved as '{1}'", [Math.max(0, Math.round(result.gain_pct ?? 0)), result.preset?.name ?? '']) : result?.outcome === 'default_confirmed' ? tr("Your current settings are already the fastest we found.") : (result?.message ?? tr("Nothing was changed."));
+        const text = stopped ? tr("Stopped. Your settings were not changed.") : job?.state === 'error' ? tr("The tune did not finish. Your settings were not changed.") : result?.verdict ? (result.verdict === 'keep' ? tr("Still as fast as when it was saved.") : result.verdict === 'retune' ? tr("It is slower than before. You can tune again.") : tr("Could not tell right now. Your tuning was kept.")) : result?.outcome === 'improved' ? tr("+{0}% faster answers, saved as '{1}'", [Math.max(0, Math.round(result.gain_pct ?? 0)), result.preset?.name ?? '']) : result?.code === 'busy_pc' ? tr("Your PC was busy, so the measurements were not reliable. Nothing was changed. Try again when it is quiet.") : result?.outcome === 'default_confirmed' ? tr("Your current settings are already the fastest we found.") : (result?.message ?? tr("Nothing was changed."));
         const good = improved || result?.outcome === 'default_confirmed';
-        body = result?.outcome === 'improved' ? <div className="stack"><TuneResultView result={result} saved={result.preset?.name ?? null}/>{notice(result.answers?.class)}</div> : <div className="tune-progress"><div className="tune-orbit" data-complete={good}><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50"/><circle cx="60" cy="60" r="50" pathLength="100" strokeDasharray={`${good ? 100 : 4} 100`}/></svg><Icon name={good ? 'check' : 'gauge'} size={42}/></div><h3 role="status">{text}</h3>
+        body = result?.outcome === 'improved' ? <div className="stack"><TuneResultView result={result} saved={result.preset?.name ?? null}/>{notice(result.answers?.class, result.answers?.default_repeatable)}</div> : <div className="tune-progress"><div className="tune-orbit" data-complete={good}><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50"/><circle cx="60" cy="60" r="50" pathLength="100" strokeDasharray={`${good ? 100 : 4} 100`}/></svg><Icon name={good ? 'check' : 'gauge'} size={42}/></div><h3 role="status">{text}</h3>
             {result?.outcome === 'default_confirmed' && result.preset ? <p className="small muted">{tr("Saved as '{0}', so it is not tuned again when you reopen the app.", [result.preset.name])}</p> : null}
             
             {job?.state === 'error' ? <p className="small inline-error" role="alert">{job.error}</p> : null}</div>;
@@ -78,7 +78,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
             {error ? <p className="small inline-error" role="alert">{error}</p> : null}
             {active ? <div><p className="strong">{tr("Saved tuning in use: {0}", [active.name])}</p>
                 {active.gain_pct ? <p className="small muted">{tr("+{0}% faster answers", [Math.round(active.gain_pct)])}</p> : null}
-                {notice(active.answers?.class)}
+                {notice(active.answers?.class, active.answers?.default_repeatable)}
                 {stale ? <p className="small">{status?.state === 'hard' ? tr("This PC changed since it was tuned, so these settings are not used until you tune again.") : tr("This PC or the engine changed since it was tuned. A short check takes about 2 minutes.")}</p> : null}</div>
                 : <p className="small muted">{tr("No saved tuning for these choices yet.")}</p>}
             <p className="small muted">{tr("Strata tries different settings on this PC and keeps the ones that make answers faster. Your model is unloaded while this runs, and the computer will be busy.")}</p>

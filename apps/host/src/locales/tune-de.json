@@ -35,5 +35,11 @@
  "tune34": "Verwenden",
  "tune35": "Erneut abstimmen",
  "tune36": "Abstimmung starten",
- "tune37": "Dein Modell wird abgestimmt"
+ "tune37": "Dein Modell wird abgestimmt",
+ "tune38": "Auf diesem PC können die Antworten von Lauf zu Lauf abweichen, auch mit der Standardeinstellung; diese Einstellung verstärkt das nicht.",
+ "tune39": "Deine Abstimmung „{0}“ wird verwendet",
+ "tune40": "Ausschalten",
+ "tune41": "Einschalten",
+ "tune42": "Deine Abstimmung ist aus. Es gelten die Standardeinstellungen.",
+ "tune43": "Dein PC war ausgelastet, daher waren die Messungen nicht zuverlässig. Es wurde nichts geändert. Versuche es erneut, wenn er ruhig ist."
 }

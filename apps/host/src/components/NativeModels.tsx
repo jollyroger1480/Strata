@@ -17,6 +17,7 @@ import { RunImageModel } from './RunImageModel';
 import { useStore } from '../lib/store';
 import { NativePresets } from './NativePresets';
 import { NativeTune } from './NativeTune';
+import { NativeTuneBadge } from './NativeTuneBadge';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine }: {
     onOtherModels: () => void;
@@ -119,6 +120,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     {tr(active ? <NativeProgress job={active}/> : null)}
     {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
     {tr(error ? <ErrorNotice message={error}/> : null)}
+    {selectedSize && installed?.ready ? <NativeTuneBadge model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
     <div className="native-model-actions">{tr(loadedSelected ? <><Btn disabled={pending || !!active} onClick={() => void perform(() => nativeAction(`instances/${loadedSelected.id}/unload`))}>{tr("Unload")}</Btn>{tr(onReady ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <span className="native-ready">{tr("Ready")}</span>)}</> : onReady && native?.instances.some(i => i.status === 'ready') ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <><Btn icon="gauge" disabled={!installed?.ready || !native?.available || !!active || !selectedSize} onClick={() => setTuneOpen(true)}>{tr("Tune model")}</Btn><Btn variant="primary" icon="models" disabled={pending || !native?.available || !!active || !selectedSize || expert && deviceChoice === 'split' && gpus.length < 2} onClick={() => void load()}>{tr(pending ? 'Checking…' : installed?.ready ? 'Load model' : 'Download & load')}</Btn></>)}</div>
    </div>
    <aside className="stack stack--lg"><PcFitCard gpuName={pcGpu?.name} ramGb={pcRam} vramGb={pcVram} fit={selectedSize ? fitOn(selectedSize, fitHardware) : null}/><section className="st-card"><h2 className="h4">{tr("Model files")}</h2><p className="small muted">{tr("Strata prepares all shards, the draft layer and shared files. Completed downloads are reused.")}</p><code className="native-path">{installed?.dataFolder ?? native?.downloadDirectory ?? native?.installed?.data_folder ?? 'Choose an installation'}</code><Btn size="sm" variant="ghost" onClick={() => { setSettingsSection('Storage'); go('settings'); }}>{tr("Storage settings")}</Btn></section><Btn size="sm" variant="ghost" onClick={onOtherModels}>{tr("Other local models\u2026")}</Btn></aside>
