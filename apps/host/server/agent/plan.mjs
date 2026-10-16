@@ -36,6 +36,7 @@ export function planPrompt(task) {
   return [
     'Make a plan for the request below. Do not change anything: you may only look (read files, list folders, search).',
     'When you have looked enough, end your reply with the plan as a numbered list: one short line per step, in the order they should be done.',
+    'Put a short heading line right before the list, like "## Pagoda page" (two to five words that name the plan).',
     'You may add the reason after a dash. Use 3 to 8 steps. Write nothing after the list.',
     '',
     `Request: ${task}`,
@@ -129,6 +130,24 @@ export function firstSentence(text, max = 140) {
   if (!s) return null;
   const m = /^(.{12,}?[.!?])(?:\s|$)/.exec(s);
   return clip(m ? m[1] : s, max);
+}
+
+/**
+ * The short summary of a finished step: what it changed (from the tool cards: "Wrote pagoda.html, Changed style.css"), else the first
+ * sentence of its closing words when that reads as a result. A sentence about what is NOT done, or about later steps, is never a summary.
+ */
+export function stepSummary(cards, closing) {
+  const done = [];
+  for (const c of cards ?? []) {
+    const verb = /^(Wrote|Changed|Created|Edited|Deleted|Removed|Moved|Renamed)\b/.exec(String(c?.verb ?? ''))?.[1];
+    const target = String(c?.target ?? '').split(/[\\/]/).filter(Boolean).at(-1);
+    if (!verb || !target) continue;
+    const line = verb + ' ' + clip(target, 40);
+    if (!done.includes(line)) done.push(line);
+  }
+  if (done.length) return clip(done.slice(0, 3).join(', ') + (done.length > 3 ? ' and more' : ''), 140);
+  const s = firstSentence(closing);
+  return s && !/not done|not yet|remaining|handled separately|next steps?|later steps?|still (?:need|to)|todo/i.test(s) ? s : null;
 }
 
 /** The words a person sees for the plan, as one message the model can carry out (the plain Approve path). */

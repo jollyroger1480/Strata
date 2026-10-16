@@ -20,6 +20,7 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { standardPreset } from './preset.mjs';
+import { BUDGETS, isPrivateHost } from './llm-shape.mjs';
 import { DDG_PROVIDER_ID } from '../web-search-ddg.mjs';
 
 const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'openai-responses', anthropic: 'anthropic-messages' };
@@ -150,7 +151,7 @@ export function outputBudget(context, maxOutput = null) {
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -159,6 +160,20 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   let slots = 0;
   /** Per-model compaction timing (see compactionHeadroom). */
   const compaction = [];
+  /** Routes the person's Response settings can reach: a copy of the provider whose address is this host's forwarding endpoint (see llm-shape.mjs). */
+  const shapeTargets = {};
+  function addShaped(route, def, realBase) {
+    if (!proxyBase) return null;
+    const keys = {};
+    for (const budget of [0, ...BUDGETS]) {
+      const key = `${route}~s${budget}`;
+      providers[key] = { ...def, displayName: `${def.displayName} (with your response settings)`, baseURL: `${proxyBase}/${key}/v1`, ...(budget ? { headers: { ...(def.headers ?? {}), 'x-strata-budget': String(budget) } } : {}) };
+      shapeTargets[key] = realBase;
+      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out) }); }
+      keys[budget] = key;
+    }
+    return keys;
+  }
 
   local.forEach((inst, index) => {
     const route = index === 0 ? 'strata-local' : `strata-local-${slug(inst.id)}`;
@@ -183,7 +198,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     };
     compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
-    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context });
+    const shaped = addShaped(route, providers[route], inst.baseUrl);
+    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
   });
 
   connections.forEach(conn => {
@@ -210,8 +226,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
+    const shaped = protocol === 'openai-completions' && isPrivateHost(baseURL) ? addShaped(route, providers[route], baseURL) : null;
     for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
-    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT });
+    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 
   const defaultRoute = routes.find(r => r.kind === 'local') ?? null;
@@ -260,7 +277,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   // What the agent is offered (tool groups, web search, tool servers, the person's own tools) decides whether a running agent must be
   // restarted for the next message; the routes are compared separately (a changed context size alone does not restart it).
   const toolsSignature = createHash('sha256').update(JSON.stringify([mcp, ownRows, webRows, entries.find(e => e.id === 'preset-standard'), env.STRATA_SEARCH_KEY ?? '', mcpEnv])).digest('hex').slice(0, 16);
-  return { patch, env, routes, defaultRoute, signature, toolsSignature };
+  return { patch, env, routes, defaultRoute, signature, toolsSignature, shapeTargets };
 }
 
 /** Find the route for a chat's model choice. */

@@ -192,6 +192,32 @@ ${filler(n)}`}, { quiet: true });
   }
   frames = await stream({ ...common, message: 'What was the code word I asked you to remember at the very start? Answer with the code word only.' }, { quiet: true });
   console.log(`${stamp()}  ANSWER: ${frames.filter(f => f.type === "delta").map(f => f.text).join("").trim().slice(0, 120)}`);
+} else if (command === 'effort') {
+  // The same question at each reasoning level (and optional thinking budget): what really changes is the thinking the model did.
+  const [question = 'What is 17 times 23, and is the result divisible by 3? Explain briefly.', budget = '0'] = rest;
+  const rows = [];
+  for (const level of ['Off', 'Low', 'Medium', 'High', 'Max']) {
+    const t = Date.now();
+    const frames = await stream({ sessionId: `ef-${level}-${Date.now()}`, message: question, mode: 'bypass', remoteModel: await model(), thinking: level, thinkingBudget: Number(budget), agent: process.env.PLAIN ? false : undefined }, { quiet: true });
+    const reasoning = frames.filter(x => x.type === 'reasoning').map(x => x.text ?? '').join('').length;
+    const answer = frames.filter(x => x.type === 'delta').map(x => x.text ?? '').join('');
+    const done = frames.at(-1);
+    rows.push({ level, budget: Number(budget), reasoningChars: reasoning, answerChars: answer.length, tokensOut: done.tokensOut, seconds: Math.round((Date.now() - t) / 1000), answer: answer.replace(/\s+/g, ' ').slice(0, 90) });
+    console.log(JSON.stringify(rows.at(-1)));
+  }
+} else if (command === 'sampling') {
+  // Set Expert sampling through the engine settings route (as the Response settings dialog does), then ask for a random word a few times.
+  const [temp = '0', seed = '1', n = '3'] = rest;
+  const before = await j('/api/engine');
+  const set = async values => j('/api/engine', { expert: Object.entries(values).map(([id, value]) => ({ id, value })) }, 'PATCH');
+  await set({ 'sample.temp': Number(temp), 'sample.seed': Number(seed) });
+  const words = [];
+  for (let i = 0; i < Number(n); i++) {
+    const frames = await stream({ sessionId: `sm-${Date.now()}-${i}`, message: 'Reply with one random everyday English word and nothing else.', mode: 'bypass', remoteModel: await model(), thinking: 'Off' }, { quiet: true });
+    words.push(frames.filter(x => x.type === 'delta').map(x => x.text ?? '').join('').trim().slice(0, 30));
+  }
+  console.log(JSON.stringify({ temp: Number(temp), seed: Number(seed), words }));
+  await set({ 'sample.temp': 0.6, 'sample.seed': -1 });
 } else {
-  console.error('commands: connect | stream | goal | timeskip | plan | modeswitch | long'); process.exit(2);
+  console.error('commands: connect | stream | goal | timeskip | plan | modeswitch | long | effort | sampling'); process.exit(2);
 }

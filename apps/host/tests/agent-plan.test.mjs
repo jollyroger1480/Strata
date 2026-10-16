@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parsePlan, parsePoints, stepObjective, stepLine, firstSentence, editedSteps, planAsPrompt, PlanStore, planPrompt } from '../server/agent/plan.mjs';
+import { stepSummary, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, editedSteps, planAsPrompt, PlanStore, planPrompt } from '../server/agent/plan.mjs';
 
 test('a plan is the last numbered list of the reply, with reasons after a dash and indented detail kept', () => {
   const p = parsePlan([
@@ -58,6 +58,13 @@ test('a step goal names its step, what is done and what is not its job', () => {
   assert.equal(firstSentence('   '), null);
 });
 
+test('a step summary says what it changed, and is empty rather than wrong', () => {
+  assert.equal(stepSummary([{ verb: 'Wrote a file', target: 'C:\\work\\pagoda.html' }, { verb: 'Changed a file', target: 'style.css' }, { verb: 'Read a file', target: 'a.txt' }, { verb: 'Wrote a file', target: 'pagoda.html' }], 'Done.'), 'Wrote pagoda.html, Changed style.css');
+  assert.equal(stepSummary([], 'The roof is tiled and checked. Next I will glow.'), 'The roof is tiled and checked.');
+  assert.equal(stepSummary([], 'Not done yet (these are the remaining steps, which will be handled separately): the CSS.'), null);
+  assert.equal(stepSummary([], ''), null);
+});
+
 test('an edit keeps order, drops empty lines and refuses an empty plan', () => {
   const steps = editedSteps(['  one ', '', { text: 'two', detail: 'why' }, { text: '   ' }]);
   assert.deepEqual(steps.map(s => [s.id, s.text, s.detail]), [['s1', 'one', ''], ['s2', 'two', 'why']]);
@@ -79,10 +86,11 @@ test('plans survive a restart', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-import { parseSources, researchPrompt } from '../server/agent/plan.mjs';
+import { parseSources, researchPrompt, researchWritePrompt } from '../server/agent/plan.mjs';
 
 test('research: the answer shape is asked for, and the sources are read back as [{n, title, url}]', () => {
-  assert.ok(researchPrompt('heat pumps').includes('web_search') && researchPrompt('heat pumps').includes('## Sources'));
+  assert.ok(researchPrompt('heat pumps').includes('web_search') && researchPrompt('heat pumps').includes('web_fetch'));
+  assert.ok(researchWritePrompt('heat pumps').includes('## Sources') && researchWritePrompt('heat pumps').includes('## Summary'));
   const answer = [
     '## Summary', 'Heat pumps move heat.', '## Key findings', '- They are efficient [1].', '- They cost more up front [2].',
     '## Sources',

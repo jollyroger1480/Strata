@@ -50,6 +50,7 @@ import { EventHub, error, json, readBody, uid } from './util.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
+import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUpdater } from './app-updater.mjs';
 import { createImageModels } from './image-models.mjs';
@@ -110,12 +111,16 @@ const native=createNativeControl({control,appUpdater,hardwareProbe:()=>(hardware
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
 // What the person chose in Settings -> Tools (tool groups, web search service and key, the browser, their own tools).
+const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 agentTools.ensureFile();
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
   onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
+  // The person's Response settings (thinking budget, Expert sampling) reach the agent's model through this host's own forwarding endpoint.
+  proxyBase: `http://127.0.0.1:${PORT}/api/internal/agent-llm`,
+  expertSampling: () => samplingFromExpert(store.get().expert),
   onPlan: (chatId, event, plan) => hub.send('plan', { chatId, event, plan }),
   onQueue: (chatId, queue) => hub.send('queue', { chatId, queue }),
   dataDir: store.DATA_DIR,
@@ -525,7 +530,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
-    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
@@ -1605,6 +1610,9 @@ async function api(req, res, path, method, url) {
 
   // --- agent --------------------------------------------------------------
   if (path === '/api/agent/status' && method === 'GET') return json(res, 200, agent.status());
+  // The assistant's model requests, with the person's Response settings added (llm-shape.mjs). This computer only.
+  const llmRoute = /^\/api\/internal\/agent-llm\/([A-Za-z0-9_.~-]+)(\/.*)$/.exec(path);
+  if (llmRoute) { llmProxy(req, res, llmRoute[1], llmRoute[2] + (url.search ?? '')); return undefined; }
   // The goal bar (notes-split-agent3.md): the state, and the instant actions. Resume runs rounds, so it is a chat stream with {goalAction:'resume'}.
   if (path === '/api/goal' && method === 'GET') {
     try { return json(res, 200, { goal: await agent.goalState(url.searchParams.get('chatId') ?? '') }); } catch (e) { return error(res, 400, e.message); }

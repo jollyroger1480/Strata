@@ -23,7 +23,8 @@ import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
-import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
+import { nearestBudget } from './llm-shape.mjs';
+import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -56,7 +57,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, expertSampling = () => null, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -97,6 +98,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     signal?.addEventListener('abort', () => { clearTimeout(timer); idleWaiters.delete(done); reject(signal.reason ?? new Error('aborted')); }, { once: true });
   });
 
+  /** The agent's profile now, plus where its shaped routes really lead (read by the forwarding endpoint). */
+  let shapeTargets = {};
+  function buildProfileNow() {
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir(), proxyBase });
+    shapeTargets = profile.shapeTargets ?? {};
+    return profile;
+  }
+  const llmTarget = key => shapeTargets[key] ?? null;
+
   function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
   /** Where the agent component is (the browser tool server lives inside it), or null. */
   const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
@@ -105,7 +115,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   function status() {
     const h = harnessInfo();
     if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
-    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir() });
+    const profile = buildProfileNow();
     return {
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
       reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
@@ -153,7 +163,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   async function ensureRuntime(choice, signal) {
     for (;;) {
       if (starting) { await starting.catch(() => {}); continue; }
-      const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir() });
+      const profile = buildProfileNow();
       const route = routeFor(profile, choice);
       if (!route) {
         throw new AgentUnavailable(choice?.connectionId
@@ -246,7 +256,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, planTask = null, planRun = null, researchTopic = null }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, planTask = null, planRun = null, researchTopic = null }) {
     let send = onFrame; let attached = true;
     // A research run gathers first; what the assistant writes while gathering is notes, not the answer, so it is not shown.
     let hideDeltas = !!researchTopic;
@@ -271,9 +281,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
     // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
     const level = effortOf(thinking ?? 'Medium');   // the menu's default is Medium
-    const wanted = `${route.route}/${route.modelId}/${level ?? ''}`;
+    // Response settings the Harness cannot send itself (the thinking budget, the Expert sampling) go through this host's forwarding
+    // endpoint, on a copy of the route; with every setting at its default the route is used directly, as before.
+    const budget = level === 'off' ? 0 : nearestBudget(thinkingBudget);
+    const sampling = proxyBase && route.shaped ? expertSampling() : null;
+    const provider = route.shaped && (budget || sampling) ? route.shaped[budget] : route.route;
+    const wanted = `${provider}/${route.modelId}/${level ?? ''}`;
     if (c.route !== wanted || c.routeGeneration !== runtime.generation) {
-      const select = effort => runtime.gw.rpc('session/selectModel', { request: { sessionId, provider: route.route, model: route.modelId, ...(effort ? { reasoningEffort: effort } : {}) } });
+      const select = effort => runtime.gw.rpc('session/selectModel', { request: { sessionId, provider, model: route.modelId, ...(effort ? { reasoningEffort: effort } : {}) } });
       try {
         try { await select(level); } catch (e) { if (!level || e.code === 'session/not-found') throw e; await select(null); }
       } catch (e) {
@@ -487,7 +502,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       plans.update(chatId, p => { p.state = 'running'; p.goalStarted = true; p.steps[index].state = 'running'; });
       const now = plans.get(chatId);
       await runtime.gw.rpc('goals/create', { agentId: sessionId, request: { objective: stepObjective(now, index) } });
-      written.step = '';
+      written.step = ''; written.stepAt = Date.now();
       emit(stepFrame(now, index));
       emit(publishPlan('step', now));
       const st = now.steps[index];
@@ -501,7 +516,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (!run || !plan || plan.id !== run.id) return false;
       const at = currentStep(plan);
       if (at < 0) return false;
-      const summary = firstSentence(written.step.split(/\n\s*\n/).filter(Boolean).at(-1) ?? written.step);
+      const cards = [...projector.tools.values()].filter(x => x.calledAt >= (written.stepAt ?? 0) - 50 && x.card?.state === 'done').map(x => x.card);
+      const summary = stepSummary(cards, written.step.split(/\n\s*\n/).filter(Boolean).at(-1) ?? written.step);
       plans.update(chatId, p => { p.steps[at].state = 'done'; p.steps[at].summary = summary; });
       let now = plans.get(chatId);
       emit(stepFrame(now, at));
@@ -1007,7 +1023,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
