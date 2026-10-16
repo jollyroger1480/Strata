@@ -34,6 +34,21 @@ export interface TimeSkipJob {
   needsUserReview: boolean;
   error: string | null;
   finishedAt?: number | null;
+  /** The files the run changed (saved original against the revision), read from the job's own folders. */
+  files?: TimeSkipFile[];
+  /** More changed files than are listed. */
+  moreFiles?: number;
+  /** The revision attempt "Keep the update" applies when the checks did not keep one themselves. */
+  applyAttempt?: number | null;
+}
+
+export interface TimeSkipFile {
+  path: string;
+  status: 'added' | 'changed' | 'removed';
+  original?: string;
+  updated?: string;
+  /** Too big or not text: listed, but not shown. */
+  unreadable?: boolean;
 }
 
 export type TimeSkipVersion = 'original' | 'updated';
@@ -72,7 +87,7 @@ export function withTimeSkipResult(run: TimeSkipRun, version: TimeSkipVersion, n
 }
 
 export function timeSkipResultState(run: TimeSkipRun, now: number) {
-  if (run.job) return realResultState(run.job);
+  if (run.job) return realResultState(run.job, run.retainedVersion);
   const frame = timeSkipFrame(run, now);
   const ready = frame.index >= 3;
   const kept: TimeSkipVersion = frame.done && run.retainedVersion === 'original' ? 'original' : frame.chosen === 'b' ? 'updated' : 'original';
@@ -95,7 +110,7 @@ export function timeSkipResultState(run: TimeSkipRun, now: number) {
  *   * `unknown` check outcomes are surfaced as unknown. A phase is not a percentage and this
  *     returns none.
  */
-function realResultState(job: TimeSkipJob) {
+function realResultState(job: TimeSkipJob, chosen?: TimeSkipVersion) {
   const done = ['completed', 'cancelled', 'failed', 'interrupted'].includes(job.phase);
   const index =
     job.phase === 'queued' ? 0
@@ -107,7 +122,7 @@ function realResultState(job: TimeSkipJob) {
   // The decision's `improvements` is the job's own answer about what got better; nothing here
   // re-derives a verdict from the attempt list.
   const improved = (job.decision?.improvements?.length ?? 0) > 0;
-  const kept: TimeSkipVersion = improved ? 'updated' : 'original';
+  const kept: TimeSkipVersion = chosen ?? (improved ? 'updated' : 'original');
   const outcome = job.decision?.outcome ?? null;
 
   let status: string;
@@ -120,8 +135,12 @@ function realResultState(job: TimeSkipJob) {
       : job.phase === 'checking' ? 'Checking the changes…'
       : job.phase === 'decision' ? 'Deciding from the checks…'
       : 'Starting…';
+  } else if (chosen === 'updated') {
+    status = 'Update kept · your files now have it';
+  } else if (chosen === 'original') {
+    status = 'Original kept · your files are unchanged';
   } else if (job.needsUserReview || outcome === 'inconclusive' || outcome === 'conflict') {
-    status = 'Ready to compare · the checks were inconclusive';
+    status = 'Ready to compare · you choose which to keep';
   } else if (outcome === 'accepted') {
     status = 'Update kept · the checks improved';
   } else {
@@ -157,6 +176,8 @@ export interface TimeSkipDocument {
   successCheck: string;
   code?: string;
   image?: { url: string; alt: string };
+  /** A real run has no sample "success check" to show. */
+  hideCheck?: boolean;
 }
 
 /** Immutable paired sample outputs, separate from the later rejected attempt. */
@@ -182,7 +203,26 @@ export function timeSkipDocuments(prompt: string): Record<TimeSkipVersion | 'rev
 }
 
 export function timeSkipDocumentMarkdown(document: TimeSkipDocument) {
+  if (document.hideCheck) return `# ${document.title}\n\n\`\`\`\n${document.code ?? ''}\n\`\`\``;
   return `# ${document.title}\n\n${document.image ? `![${document.image.alt}](${document.image.url})` : document.code ? `\`\`\`html\n${document.code}\n\`\`\`` : document.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n## Success check\n\n${document.successCheck}\n\n*Time-skip example · sample output, simulated checks.*`;
+}
+
+const FILE_VERB = { added: 'Added', changed: 'Changed', removed: 'Removed' } as const;
+
+/** The two sides of a real run as documents: the changed files, one after another. */
+export function realTimeSkipDocuments(job: TimeSkipJob): Record<TimeSkipVersion | 'revision', TimeSkipDocument> & { changes: string[] } {
+  const files = job.files ?? [];
+  const side = (which: 'original' | 'updated') => files.map(f => {
+    const text = f.unreadable ? '(too big or not text, so it is not shown here)'
+      : which === 'original' ? (f.status === 'added' ? '(this file did not exist)' : f.original ?? '')
+      : (f.status === 'removed' ? '(this file was removed)' : f.updated ?? '');
+    return files.length === 1 ? text : '── ' + f.path + ' ──\n' + text;
+  }).join('\n\n');
+  const title = files.length === 1 ? files[0].path : files.length ? files.length + ' files' : 'Nothing changed';
+  const make = (which: 'original' | 'updated'): TimeSkipDocument => ({ title, steps: [], successCheck: '', hideCheck: true, code: files.length ? side(which) : '(nothing changed)' });
+  const changes = files.map(f => FILE_VERB[f.status] + ' ' + f.path);
+  if (job.moreFiles) changes.push('and ' + job.moreFiles + ' more files');
+  return { original: make('original'), updated: make('updated'), revision: make('updated'), changes };
 }
 
 export function timeSkipExample(prompt: string) {

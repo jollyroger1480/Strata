@@ -1,13 +1,14 @@
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
-import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
+import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
+import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
-import { setTranslationLanguage, validLanguage, type Language } from './i18n';
+import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
  *
@@ -1076,7 +1077,7 @@ const timeSkipTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function scheduleTimeSkip(sessionId: string, run: TimeSkipRun) {
   const timerId = `${sessionId}:${run.id}`;
   clearTimeout(timeSkipTimers.get(timerId));
-  if (run.completedAt) return;
+  if (run.completedAt || run.job) return;
   timeSkipTimers.set(timerId, setTimeout(() => {
     timeSkipTimers.delete(timerId);
     const session = state.sessions.find(s => s.id === sessionId);
@@ -1102,9 +1103,125 @@ export function replayTimeSkip(sessionId: string, runId: string) {
 export function setTimeSkipResult(sessionId: string, runId: string, version: TimeSkipVersion) {
   const run = state.sessions.find(s => s.id === sessionId)?.timeSkips?.find(r => r.id === runId);
   if (!run) return;
+  if (run.job) { void keepTimeSkip(sessionId, runId, version); return; }
   const next = withTimeSkipResult(run, version, Date.now());
   if (next === run) return;
   patchSession(sessionId, s => ({ ...s, timeSkips: s.timeSkips?.map(r => r.id === runId ? next : r) }));
+}
+
+/* ------------------------------------------------------- Time-skip, for real
+   The host copies the chat's folder, lets the assistant change the copy, checks it and keeps the original untouched until the
+   person chooses. The sidebar follows the job's own record; nothing here invents progress. */
+const TS_TERMINAL = ['completed', 'cancelled', 'failed', 'interrupted'];
+const TS_WORKING = () => tr('Working on a copy of your files. Your files are not touched until you choose to keep the update. Follow the progress in the sidebar.');
+const TS_READY = () => tr('The result is ready. Switch between Original and Updated, or compare them side by side. Your files stay as they are until you keep the update.');
+
+function patchRun(sessionId: string, runId: string, fn: (run: TimeSkipRun) => TimeSkipRun, content?: string) {
+  patchSession(sessionId, s => ({ ...s, updatedAt: new Date().toISOString(),
+    timeSkips: s.timeSkips?.map(r => r.id === runId ? fn(r) : r),
+    messages: content === undefined ? s.messages : s.messages.map(m => m.timeSkipId === runId && m.role === 'assistant' ? { ...m, content } : m),
+  }));
+}
+
+/** The job's error in a sentence a person can use. */
+export function plainTimeSkipError(raw: string | null | undefined): string {
+  const text = String(raw ?? '').trim();
+  if (!text) return tr('Something went wrong.');
+  const afterExit = /\(exit \d+\):\s*([\s\S]*)$/.exec(text);
+  const body = (afterExit?.[1] ?? text).replace(/^\w*Error:\s*/, '').trim();
+  if (/destination changed|refusing to overwrite/i.test(body)) return tr('Your files changed after this trial started, so nothing was overwritten. Run Time-skip again.');
+  if (/too big/i.test(body)) return body;
+  if (/Load a model|model first/i.test(body)) return tr('Load a model first, then try Time-skip again.');
+  if (/needs the Strata app|could not be reached/i.test(body)) return tr('The assistant could not be reached. Try again.');
+  return body.length > 300 ? body.slice(0, 299) + '…' : body;
+}
+
+function timeSkipEnding(job: TimeSkipJob, files: TimeSkipFile[]): string {
+  if (job.phase === 'failed') return tr('Time-skip stopped. {0} Your files were not changed.', [plainTimeSkipError(job.error)]);
+  if (job.phase === 'cancelled' || job.phase === 'interrupted') return tr('Time-skip was stopped before it finished. Your files were not changed.');
+  if (!files.length) return tr('The assistant did not change anything, so there is nothing to compare. Your files were not changed.');
+  return TS_READY();
+}
+
+async function startTimeSkipReal(prompt: string) {
+  const sessionId = state.activeSession ?? newSession().id;
+  const run: TimeSkipRun = { id: uid('ts'), prompt, startedAt: Date.now(),
+    job: { id: '', phase: 'queued', attempts: [], checkpoints: [], selectedCheckpoint: null, decision: null, needsUserReview: false, error: null } };
+  const at = new Date().toISOString();
+  patchSession(sessionId, s => ({ ...s,
+    defaultTitle: false,
+    title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
+    timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
+    messages: [...s.messages,
+      { id: uid('m'), role: 'user', at, content: '/time-skip ' + prompt, timeSkipId: run.id },
+      { id: uid('m'), role: 'assistant', at, timeSkipId: run.id, content: TS_WORKING() },
+    ],
+  }));
+  go('chat', sessionId);
+  try {
+    const started = await api.post<{ run: TimeSkipJob }>('/api/timeskip/start', { prompt, workspaceId: state.activeWorkspace, attempts: 1 });
+    patchRun(sessionId, run.id, r => ({ ...r, job: started.run }));
+    void followTimeSkip(sessionId, run.id);
+  } catch (e) {
+    const message = plainTimeSkipError(e instanceof Error ? e.message : String(e));
+    patchRun(sessionId, run.id, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, phase: 'failed', error: message } }), tr('Time-skip could not start. {0}', [message]));
+  }
+}
+
+const followingTimeSkips = new Set<string>();
+/** Read the job's record until it ends. Safe to call again for a run already being followed. */
+export async function followTimeSkip(sessionId: string, runId: string) {
+  const key = sessionId + ':' + runId;
+  if (followingTimeSkips.has(key)) return;
+  followingTimeSkips.add(key);
+  let misses = 0;
+  try {
+    for (;;) {
+      const run = state.sessions.find(s => s.id === sessionId)?.timeSkips?.find(r => r.id === runId);
+      if (!run?.job?.id || run.completedAt) return;
+      let job: TimeSkipJob | null = null;
+      try { job = (await api.get<{ run: TimeSkipJob }>('/api/timeskip/status?id=' + encodeURIComponent(run.job.id))).run; misses = 0; }
+      catch { misses += 1; }
+      if (job && TS_TERMINAL.includes(job.phase)) {
+        let files: TimeSkipFile[] = [], extra: Partial<TimeSkipJob> = {};
+        try {
+          const found = await api.get<{ files: TimeSkipFile[]; applyAttempt: number | null; more: number }>('/api/timeskip/files?id=' + encodeURIComponent(job.id));
+          files = found.files; extra = { files: found.files, applyAttempt: found.applyAttempt, moreFiles: found.more };
+        } catch { /* the list is a convenience; the job's record stands */ }
+        const finished = job;
+        patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, ...finished, ...extra } }), timeSkipEnding(finished, files));
+        return;
+      }
+      if (job) { const live = job; patchRun(sessionId, runId, r => ({ ...r, job: { ...r.job!, ...live } })); }
+      if (misses >= 6) {
+        patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, phase: 'interrupted' } }), tr('Time-skip lost contact with the app and stopped. Your files were not changed.'));
+        return;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } finally { followingTimeSkips.delete(key); }
+}
+
+/** Ask the host to stop a running trial. The saved version stays. */
+export async function stopTimeSkip(sessionId: string, runId: string) {
+  const id = state.sessions.find(s => s.id === sessionId)?.timeSkips?.find(r => r.id === runId)?.job?.id;
+  if (id) await api.post('/api/timeskip/stop', { id }).catch(() => undefined);
+}
+
+/** Put the update into the person's files, or put the original back. Both are checked and undoable. */
+export async function keepTimeSkip(sessionId: string, runId: string, version: TimeSkipVersion) {
+  const run = state.sessions.find(s => s.id === sessionId)?.timeSkips?.find(r => r.id === runId);
+  const job = run?.job;
+  if (!run || !job?.id || !job.phase || !TS_TERMINAL.includes(job.phase)) return;
+  if ((run.retainedVersion ?? 'original') === version) { patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version })); return; }
+  try {
+    if (version === 'updated') await api.post('/api/timeskip/apply', { id: job.id, attempt: job.applyAttempt ?? null });
+    else await api.post('/api/timeskip/apply', { id: job.id, restore: true });
+    patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version }));
+    pushToast('success', version === 'updated' ? tr('The update is now in your files') : tr('Your original files are back'), version === 'updated' ? tr('You can switch back to the original any time from this panel.') : undefined);
+  } catch (e) {
+    pushToast('error', tr('Your files were not changed'), plainTimeSkipError(e instanceof Error ? e.message : String(e)));
+  }
 }
 
 function startTimeSkipDemo(prompt: string) {
@@ -1255,10 +1372,72 @@ export function exportConversation() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function sendMessage(text: string) {
+/* ---------------------------------------------------------------- /loop
+   The same message, again and again, while the chat is open. See lib/loop.ts. */
+interface LoopState { everyMs: number; prompt: string; runs: number; timer: ReturnType<typeof setTimeout> | null }
+const loops = new Map<string, LoopState>();
+
+/** A line from the app itself (not the model) in the transcript. It is never sent to the model. */
+function addNote(sessionId: string, content: string) {
+  const at = new Date().toISOString();
+  patchSession(sessionId, s => ({ ...s, updatedAt: at, messages: [...s.messages, { id: uid('m'), role: 'assistant', at, content, local: true }] }));
+}
+
+export function loopIsRunning(sessionId: string | null): boolean { return !!sessionId && loops.has(sessionId); }
+
+function stopLoop(sessionId: string): boolean {
+  const loop = loops.get(sessionId);
+  if (!loop) return false;
+  if (loop.timer) clearTimeout(loop.timer);
+  loops.delete(sessionId);
+  return true;
+}
+
+function scheduleLoop(sessionId: string) {
+  const loop = loops.get(sessionId);
+  if (!loop) return;
+  loop.timer = setTimeout(() => void tickLoop(sessionId), loop.everyMs);
+}
+
+async function tickLoop(sessionId: string) {
+  const loop = loops.get(sessionId);
+  if (!loop) return;
+  if (!state.sessions.some(s => s.id === sessionId)) { stopLoop(sessionId); return; }
+  // Wait for a quiet moment: this chat is open and nothing is being answered.
+  if (state.activeSession !== sessionId || state.streaming) { loop.timer = setTimeout(() => void tickLoop(sessionId), 15_000); return; }
+  loop.runs += 1;
+  if (loop.runs > LOOP_MAX_RUNS) { stopLoop(sessionId); addNote(sessionId, tr('The loop stopped after {0} runs. Type /loop again to start it again.', [LOOP_MAX_RUNS])); return; }
+  await sendMessage(loop.prompt, { fromLoop: true });
+  scheduleLoop(sessionId);
+}
+
+async function runLoopCommand(command: LoopCommand) {
+  const sessionId = state.activeSession ?? newSession().id;
+  const say = (content: string) => { addNote(sessionId, content); go('chat', sessionId); };
+  if (command.kind === 'help') { say(tr(command.problem) + '\n\n' + tr(LOOP_USAGE)); return; }
+  if (command.kind === 'status') {
+    const loop = loops.get(sessionId);
+    say(loop ? tr('A loop is running in this chat: it sends "{0}" {1}, while this chat is open. Type /loop stop to stop it.', [loop.prompt, loopEvery(loop.everyMs)]) : tr('No loop is running in this chat.') + '\n\n' + tr(LOOP_USAGE));
+    return;
+  }
+  if (command.kind === 'stop') { say(stopLoop(sessionId) ? tr('The loop is stopped.') : tr('No loop is running in this chat.')); return; }
+  if (loops.has(sessionId)) { say(tr('This chat already has a loop. Type /loop stop first, then start a new one.')); return; }
+  loops.set(sessionId, { everyMs: command.everyMs, prompt: command.prompt, runs: 1, timer: null });
+  addNote(sessionId, tr('Loop started: "{0}" {1}, while this chat is open. Type /loop stop to stop it. For work that must go on with Strata closed, use the Tasks screen.', [command.prompt, loopEvery(command.everyMs)]));
+  go('chat', sessionId);
+  await sendMessage(command.prompt, { fromLoop: true });
+  scheduleLoop(sessionId);
+}
+
+export async function sendMessage(text: string, options: { fromLoop?: boolean } = {}) {
   if(state.streaming)return;
+  const loopCommand = options.fromLoop ? null : parseLoop(text.trim());
+  if (loopCommand) { await runLoopCommand(loopCommand); return; }
   const demoPrompt = timeSkipPrompt(text.trim());
-  if (demoPrompt !== null) { startTimeSkipDemo(demoPrompt); return; }
+  if (demoPrompt !== null) {
+    if (demoPrompt && nativeState()?.instances.some(i => i.status === 'ready') && !state.remoteModel) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
+    return;
+  }
   const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const canSendPictures=!state.remoteModel&&imageTarget?.status==='ready'&&imageTarget.vision;
   if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','Choose an image-reading model','Switch to a local model with Read pictures enabled, or remove the attachments.');return;}
   const pictures=takeChatPhotos(state.activeSession);
@@ -1290,7 +1469,7 @@ export async function sendMessage(text: string) {
      The context meter was reading the same empty array, which is why it sat at
      ~350 tokens however long the conversation grew. */
   const prior = (state.sessions.find((s) => s.id === sessionId)?.messages ?? [])
-    .filter(m => !m.timeSkipId)
+    .filter(m => !m.timeSkipId && !m.local)
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .filter((m) => m.content.trim())
     .map((m) => ({ role: m.role, content: m.content,photos:m.photos }))
@@ -1488,7 +1667,7 @@ export function go(route: Route, param?: string) {
 export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
-  for (const session of state.sessions) for (const run of session.timeSkips ?? []) scheduleTimeSkip(session.id, run);
+  for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) void followTimeSkip(session.id, run.id); }
   void bootstrap();
   void reconcileAgentTools();
 }

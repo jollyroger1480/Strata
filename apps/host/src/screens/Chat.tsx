@@ -374,7 +374,7 @@ export function ChatScreen() {
                 <Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }}/>{tr("Latest")}</button>) : null)}
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} onOpenLink={openLink}/>))))}
             </div>
           </div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
@@ -395,7 +395,9 @@ interface SlashCommand {
 function useSlashCommands(clear: () => void, setDraft: (value: string) => void): SlashCommand[] {
     const demo = useStore(s => s.library?.mode === 'simulated');
     return [
-        { id: 'time-skip', label: '/time-skip', hint: 'Try two versions and keep the better one', icon: 'branch', run: () => setDraft('/time-skip ') },
+        { id: 'time-skip', label: '/time-skip', hint: 'Try a change on a copy, check it, and keep it only if it is better', icon: 'branch', run: () => setDraft('/time-skip ') },
+        { id: 'goal', label: '/goal', hint: 'Set a goal and let the assistant keep working until it is done', icon: 'bolt', run: () => setDraft('/goal ') },
+        { id: 'loop', label: '/loop', hint: 'Repeat a message every few minutes while this chat is open', icon: 'refresh', run: () => setDraft('/loop 10m ') },
         { id: 'website', label: '/website', hint: 'Open a website in the preview sidebar', icon: 'link', run: () => { clear(); window.dispatchEvent(new Event('strata:open-website')); } },
         { id: 'preview', label: '/preview', hint: 'Open a local file in the preview sidebar', icon: 'file', run: () => { clear(); window.dispatchEvent(new Event('strata:open-preview')); } },
         ...(demo ? [{ id: 'subagents', label: '/subagents', hint: 'Preview subagent statistics', icon: 'experts' as const, run: () => { clear(); createSubagentExample(); } }] : []),
@@ -523,7 +525,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, }: {
+function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
@@ -531,6 +533,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     onOpenLink: (url: string) => void;
     onOpenTimeSkip: (id: string) => void;
     timeSkipDone: boolean;
+    timeSkipReal?: boolean;
 }) {
     const streaming = useStore(s => s.streaming);
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
@@ -566,7 +569,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
 
       <div className="st-bubble">
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(m.content ? (<Markdown text={m.timeSkipId ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.content ? (<Markdown text={m.timeSkipId && !timeSkipReal ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />

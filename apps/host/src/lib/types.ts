@@ -318,6 +318,8 @@ export interface ChatMessage {
   /** Reply came from a saved API connection, rather than the local engine. */
   remoteModel?: boolean;
   timeSkipId?: string;
+  /** A line from the app itself (for example from /loop), never sent to the model. */
+  local?: boolean;
   ttftMs?: number;
   example?: boolean;
   media?: {kind: 'image' | 'video' | 'gif'; src:string; title:string; caption?:string; poster?:string}[];

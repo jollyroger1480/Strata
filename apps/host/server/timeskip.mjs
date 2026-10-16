@@ -18,8 +18,8 @@
  * run id immediately and the client follows it with `/api/timeskip/status`.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { timeSkipDir } from './platform-paths.mjs';
 
 /** Where runs are recorded. Mirrors the CLI's own default resolution. */
@@ -87,6 +87,111 @@ function summarise(run) {
   };
 }
 
+const TERMINAL = new Set(['completed', 'cancelled', 'failed', 'interrupted']);
+const SKIP_DIRS = new Set(['.git', '.strata', '__pycache__', 'node_modules']);
+const MAX_TEXT_BYTES = 200_000;
+const MAX_LISTED = 60;
+const MAX_WITH_TEXT = 12;
+
+/** Every file under a folder, as relative forward-slash paths. */
+function walkFiles(root) {
+  const out = [];
+  if (!root || !existsSync(root)) return out;
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (out.length > 5000) return;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name)) walk(full); }
+      else if (entry.isFile()) out.push(relative(root, full).split('\\').join('/'));
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+function readText(path) {
+  try {
+    if (statSync(path).size > MAX_TEXT_BYTES) return { big: true };
+    const buffer = readFileSync(path);
+    if (buffer.subarray(0, 4096).includes(0)) return { binary: true };
+    return { text: buffer.toString('utf8') };
+  } catch { return { missing: true }; }
+}
+
+/** What the assistant is told for one revision attempt. It works on a copy, so it is told to stay in it and to say what it did. */
+export function timeskipRevisionMessage(request) {
+  return [
+    'You are improving a copy of the user\'s work. The current folder is that copy: the original is safe and you cannot see it.',
+    'Rules:',
+    '1. Work only inside the current folder. Never read or write outside it.',
+    '2. Make the change the user asked for by creating or editing files here. If the folder is empty, create the file(s) the request needs.',
+    '3. Do not delete the user\'s files unless the request says to.',
+    '4. Do not run long programs or start servers.',
+    '5. When you are done, answer in one or two plain sentences: what you changed.',
+    '',
+    'The request:',
+    String(request).trim(),
+  ].join('\n');
+}
+
+/** How big a folder is, stopping early once it is clearly too big to copy for a trial. */
+export function measureFolder(root, { maxFiles = 3000, maxBytes = 300 * 1024 * 1024 } = {}) {
+  let files = 0, bytes = 0, tooBig = false;
+  const walk = dir => {
+    if (tooBig) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name)) walk(full); }
+      else if (entry.isFile()) {
+        files += 1;
+        try { bytes += statSync(full).size; } catch { /* ignore */ }
+        if (files > maxFiles || bytes > maxBytes) { tooBig = true; return; }
+      }
+      if (tooBig) return;
+    }
+  };
+  walk(root);
+  return { files, bytes, tooBig };
+}
+
+/**
+ * What a run changed, file by file: the saved original against the revision, for the Compare view.
+ * Reads the folders the job itself kept; it decides nothing.
+ */
+export function diffRun(record) {
+  const baseline = (record.checkpoints ?? []).find(c => c.label === 'baseline');
+  const selected = (record.checkpoints ?? []).find(c => c.id === record.selected_checkpoint);
+  const attempts = record.attempts ?? [];
+  const last = attempts[attempts.length - 1] ?? null;
+  // A kept checkpoint is the revision; when nothing was kept (the checks could not decide) the person looks at the last attempt.
+  const useAttempt = !selected || selected.id === baseline?.id;
+  const updatedRoot = useAttempt ? last?.path : selected?.path;
+  const baseRoot = baseline?.path;
+  if (!baseRoot || !updatedRoot) return { files: [], applyAttempt: null, more: 0 };
+  const paths = [...new Set([...walkFiles(baseRoot), ...walkFiles(updatedRoot)])].sort();
+  const files = [];
+  let withText = 0, more = 0;
+  for (const path of paths) {
+    const a = readText(join(baseRoot, path)), b = readText(join(updatedRoot, path));
+    const status = a.missing ? 'added' : b.missing ? 'removed' : null;
+    const same = !status && a.text !== undefined && a.text === b.text;
+    if (same) continue;
+    if (!status && !a.text && !b.text && !a.big && !b.big) {
+      // Both binary: compare sizes only.
+      try { if (statSync(join(baseRoot, path)).size === statSync(join(updatedRoot, path)).size && readFileSync(join(baseRoot, path)).equals(readFileSync(join(updatedRoot, path)))) continue; } catch { /* treat as changed */ }
+    }
+    if (files.length >= MAX_LISTED) { more += 1; continue; }
+    const entry = { path, status: status ?? 'changed' };
+    const textual = (a.text !== undefined || a.missing) && (b.text !== undefined || b.missing);
+    if (textual && withText < MAX_WITH_TEXT) { entry.original = a.text ?? ''; entry.updated = b.text ?? ''; withText += 1; }
+    else entry.unreadable = true;
+    files.push(entry);
+  }
+  return { files, applyAttempt: useAttempt ? (last?.index ?? null) : null, more };
+}
+
 /**
  * Run one `strata timeskip …` command and collect its result.
  *
@@ -96,6 +201,10 @@ function summarise(run) {
  */
 export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 30 * 60 * 1000, env = process.env } = {}) {
   const cli = join(repoRoot, 'strata.py');
+
+  /** Runs this host started and is still driving. A run that is not terminal and not in here died with its host. */
+  const live = new Map();
+  const withLive = summary => (summary && !TERMINAL.has(summary.phase) && !live.has(summary.id) ? { ...summary, phase: 'interrupted' } : summary);
 
   function runCli(args, { signal } = {}) {
     return new Promise((resolve) => {
@@ -165,13 +274,28 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
     stateDir: () => stateDir(env),
 
     /** Every recorded run, newest first. */
-    list: () => listRuns(stateDir(env)),
+    list: () => listRuns(stateDir(env)).map(withLive),
 
     /** One run's durable record, or null. */
     status: (id) => {
       if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return null;
       const run = readRun(stateDir(env), id);
-      return run ? summarise(run) : null;
+      return run ? withLive(summarise(run)) : null;
+    },
+
+    /** The changed files of a run (saved original against the revision), for the Compare view. */
+    files: id => {
+      if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return null;
+      const run = readRun(stateDir(env), id);
+      return run ? diffRun(run) : null;
+    },
+
+    /** Stop a run this host is driving. The saved version stays; the run reads as interrupted. */
+    cancel: id => {
+      const child = live.get(id);
+      if (!child) return false;
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      return true;
     },
 
     /**
@@ -198,8 +322,54 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
       return run ? { ok: true, run: summarise(run) } : { ok: false, code: 6, error: 'the job reported success but wrote no run record' };
     },
 
+    /**
+     * Start a run and return as soon as its record exists; the job goes on without the caller waiting.
+     * The caller follows the run id with `status`. A command that ends before any record appears is an error, in the command's words.
+     */
+    async startDetached({ workspace, prompt, attempts = 1, reviseCommand = null, extraEnv = {} } = {}) {
+      if (!workspace || typeof workspace !== 'string') return { ok: false, code: 2, error: 'workspace is required' };
+      if (!prompt || typeof prompt !== 'string') return { ok: false, code: 2, error: 'prompt is required' };
+      const root = stateDir(env);
+      const before = new Set(existsSync(root) ? readdirSync(root) : []);
+      const args = ['timeskip', 'run', '--workspace', workspace, '--prompt', prompt,
+        '--attempts', String(Math.max(0, Math.min(10, Number(attempts) || 0))), '--output', 'json'];
+      if (reviseCommand) args.push('--revise-command', reviseCommand);
+      const child = spawn(python, [...pythonArgs, cli, ...args], {
+        cwd: repoRoot, windowsHide: true, env: { ...env, ...extraEnv, STRATA_TIMESKIP_DIR: root }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '', err = '', closed = null;
+      child.stdout.on('data', b => { out += b.toString(); });
+      child.stderr.on('data', b => { err += b.toString(); });
+      const ended = new Promise(resolve => {
+        child.on('error', e => { closed = { code: null, error: `could not start the Time-skip command: ${e.message}` }; resolve(); });
+        child.on('close', code => { closed = { code }; resolve(); });
+      });
+      const deadline = Date.now() + 20_000;
+      let id = null;
+      while (!id && Date.now() < deadline) {
+        if (existsSync(root)) {
+          for (const name of readdirSync(root)) {
+            if (before.has(name)) continue;
+            const run = readRun(root, name);
+            if (run && run.prompt === prompt) { id = name; break; }
+          }
+        }
+        if (id || closed) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!id) {
+        if (!closed) { try { child.kill('SIGTERM'); } catch { /* gone */ } return { ok: false, code: 6, error: 'the Time-skip job did not start in time' }; }
+        let message = closed.error ?? '';
+        try { const parsed = JSON.parse(out.trim().split('\n').filter(Boolean).pop() ?? ''); message = message || parsed?.error?.message || parsed?.error || ''; } catch { /* not JSON */ }
+        return { ok: false, code: closed.code ?? 6, error: String(message || err.trim() || out.trim() || 'the Time-skip command ended without a run').slice(0, 600) };
+      }
+      live.set(id, child);
+      void ended.then(() => live.delete(id));
+      return { ok: true, run: withLive(summarise(readRun(root, id))) };
+    },
+
     /** Apply the retained result, or preview it. Refuses when the destination changed. */
-    async apply({ id, workspace = null, dryRun = false, restore = false, signal } = {}) {
+    async apply({ id, workspace = null, dryRun = false, restore = false, attempt = null, signal } = {}) {
       if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) {
         return { ok: false, code: 2, error: 'a run id is required' };
       }
@@ -207,6 +377,7 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
       if (workspace) args.push('--workspace', workspace);
       if (dryRun) args.push('--dry-run');
       if (restore) args.push('--restore');
+      if (attempt !== null && attempt !== undefined) args.push('--attempt', String(Math.max(1, Math.floor(Number(attempt)) || 1)));
       const result = await runCli(args, { signal });
       if (!result.ok) {
         // Exit 6 is the documented "refused / uncertain" code, which is how a concurrent user edit

@@ -28,7 +28,7 @@ import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirS
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, extname, isAbsolute, join, normalize, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hardware from './hardware.mjs';
@@ -53,11 +53,11 @@ import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { validateChatImages } from './chat-images.mjs';
-import { createTimeSkip } from './timeskip.mjs';
+import { createTimeSkip, measureFolder, timeskipRevisionMessage } from './timeskip.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -618,8 +618,13 @@ const REVISE_SCRIPT = resolve(REPO_ROOT, 'integrations', 'harness', 'revise_once
 // script — which is a *Python* program, so it is invoked with the interpreter, not with Node.
 // This is a configured path, never a value an HTTP caller supplies: accepting one would hand a
 // remote caller command execution on the user's machine.
+// The default revision step is the app's own assistant (server/timeskip-revise.mjs, run by Node), not the Harness's Python bridge, which
+// needs a Harness build next to the checkout that the installed app does not have.
+const REVISE_NODE_SCRIPT = resolve(HERE, 'timeskip-revise.mjs');
 const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
-  ?? `${shellPrefix(PYTHON)} "${REVISE_SCRIPT}"`;
+  ?? `"${process.execPath}" "${REVISE_NODE_SCRIPT}"`;
+/** Proves a revision request comes from a job this host started, not from some other program on this PC. */
+const INTERNAL_SECRET = randomBytes(24).toString('hex');
 /**
  * Tuning, from the App Host.
  *
@@ -910,23 +915,61 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/start' && method === 'POST') {
     const body = await readBody(req);
-    const workspace = String(body.workspace ?? '').trim();
+    const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
+    const workspace = String(body.workspace ?? '').trim() || ((workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE);
     const prompt = String(body.prompt ?? '').trim().slice(0, 4000);
     const reviseCommand = body.useAgent === false ? null : TIMESKIP_REVISE;
-    const result = await timeskip.start({
+    // A trial copies the folder (twice), so a huge folder is refused in plain words instead of filling the disk.
+    if (existsSync(workspace)) {
+      const size = measureFolder(workspace);
+      if (size.tooBig) return error(res, 400, 'This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
+    }
+    const result = await timeskip.startDetached({
       workspace, prompt,
-      attempts: body.attempts ?? 2,
+      attempts: body.attempts ?? 1,
       reviseCommand,
-      signal: AbortSignal.timeout(Number(process.env.STRATA_TIMESKIP_TIMEOUT_MS ?? 30 * 60 * 1000)),
+      extraEnv: { STRATA_HOST_URL: `http://127.0.0.1:${PORT}`, STRATA_INTERNAL_SECRET: INTERNAL_SECRET },
     });
     if (!result.ok) return error(res, result.code === 2 ? 400 : 502, result.error);
     return json(res, 200, { run: result.run, simulated: false });
+  }
+  if (path === '/api/timeskip/files' && method === 'GET') {
+    const found = timeskip.files(url.searchParams.get('id'));
+    if (!found) return error(res, 404, 'No such Time-skip run.');
+    return json(res, 200, found);
+  }
+  if (path === '/api/timeskip/stop' && method === 'POST') {
+    const body = await readBody(req);
+    return json(res, 200, { stopped: timeskip.cancel(String(body.id ?? '')) });
+  }
+  // One revision attempt for a job this host started: the app's assistant works inside the candidate folder.
+  if (path === '/api/internal/timeskip-revise' && method === 'POST') {
+    const given = Buffer.from(String(req.headers['x-strata-internal'] ?? ''));
+    const want = Buffer.from(INTERNAL_SECRET);
+    if (given.length !== want.length || !timingSafeEqual(given, want)) return error(res, 403, 'Not allowed.');
+    const body = await readBody(req);
+    const cwd = String(body.cwd ?? '');
+    // Only the job's own candidate folders may be worked in.
+    const root = resolve(timeskip.stateDir());
+    if (!cwd || !resolve(cwd).startsWith(root + sep)) return error(res, 400, 'That folder is not part of a Time-skip run.');
+    const chosen = (() => { try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { return null; } })();
+    if (!chosen) return error(res, 503, 'Load a model first, then try Time-skip again.');
+    const chatId = `timeskip:${randomBytes(6).toString('hex')}`;
+    let text = '', failure = null;
+    try {
+      await agent.runTurn({ chatId, message: timeskipRevisionMessage(String(body.prompt ?? '')), workspacePath: cwd, choice: chosen, mode: 'bypass', thinking: 'low', history: [], onFrame: frame => {
+        if (frame.type === 'delta') text += frame.text ?? '';
+        else if (frame.type === 'error') failure = frame.message;
+      } });
+    } finally { agent.forget(chatId); }
+    if (failure) return error(res, 502, failure);
+    return json(res, 200, { text: text.slice(-600) });
   }
   if (path === '/api/timeskip/apply' && method === 'POST') {
     const body = await readBody(req);
     const result = await timeskip.apply({
       id: body.id, workspace: body.workspace ?? null,
-      dryRun: Boolean(body.dryRun), restore: Boolean(body.restore),
+      dryRun: Boolean(body.dryRun), restore: Boolean(body.restore), attempt: body.attempt ?? null,
     });
     if (!result.ok) {
       // A concurrent user edit is a conflict the caller must see, not a server error to retry.

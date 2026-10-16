@@ -346,6 +346,9 @@ def parser() -> argparse.ArgumentParser:
     ts_apply.add_argument("run_id")
     ts_apply.add_argument("--workspace", default=None,
                           help="destination (default: the workspace the run recorded)")
+    ts_apply.add_argument("--attempt", type=int, default=None,
+                          help="apply this revision attempt (chosen by the person after review) "
+                               "instead of the retained checkpoint")
     ts_apply.add_argument("--dry-run", action="store_true",
                           help="report what would change without writing anything")
     ts_apply.add_argument("--restore", action="store_true",
@@ -1243,7 +1246,7 @@ def _timeskip(a: argparse.Namespace) -> int:
                     return _success({"restore": outcome}, machine=True)
                 print(f"restored {outcome['checkpoint']} to {destination or data['workspace']}")
                 return 0
-            outcome = run.apply(destination, dry_run=a.dry_run)
+            outcome = run.apply(destination, dry_run=a.dry_run, attempt=a.attempt)
         except time_skip.TimeSkipError as e:
             return _error(str(e), 2, a.output == "json")
         if outcome.get("conflict"):

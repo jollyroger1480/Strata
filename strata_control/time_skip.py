@@ -592,15 +592,26 @@ class TimeSkipRun:
 
     # ---- applying --------------------------------------------------------
 
-    def apply(self, destination: Path | None = None, dry_run: bool = False) -> dict[str, Any]:
+    def apply(self, destination: Path | None = None, dry_run: bool = False,
+              attempt: int | None = None) -> dict[str, Any]:
         """Apply the retained checkpoint to the workspace, transactionally.
+
+        ``attempt`` names a revision attempt the *person* chose after looking at it (a run whose checks
+        could not decide leaves the baseline retained, and the person is asked). The same safety
+        applies: a changed destination is a conflict, and a failure rolls back.
 
         Refuses when the destination no longer matches what was captured, which is how a concurrent
         user edit becomes a conflict instead of being overwritten. On any failure the previous
         content is restored from the rollback copy.
         """
         dest = Path(destination or self.workspace)
-        kept = self._source_of(self.selected_checkpoint)
+        if attempt is None:
+            kept = self._source_of(self.selected_checkpoint)
+        else:
+            chosen = next((a for a in self.attempts if a.index == attempt), None)
+            if chosen is None or not Path(chosen.path).is_dir():
+                raise TimeSkipError(f"this run has no revision attempt {attempt} to apply")
+            kept = Path(chosen.path)
         baseline = next((c for c in self.checkpoints if c.label == "baseline"), None)
         if baseline is None:
             raise TimeSkipError("this run has no baseline to compare the destination against")
@@ -635,7 +646,8 @@ class TimeSkipRun:
             return {"applied": False, "rolled_back": True,
                     "reason": f"apply failed and was rolled back: {type(e).__name__}: {e}"}
         return {"applied": True, "wrote": applied, "removed": removed,
-                "rollback": str(rollback), "checkpoint": self.selected_checkpoint}
+                "rollback": str(rollback),
+                "checkpoint": self.selected_checkpoint if attempt is None else f"attempt{attempt}"}
 
     def restore_original(self, destination: Path | None = None) -> dict[str, Any]:
         """Put the baseline back, whatever else has happened."""
