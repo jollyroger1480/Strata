@@ -6601,10 +6601,6 @@ def main() -> int:
     ok(f"size: {model}")
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
-    if family == "gyro":                               # a tip, nothing changes (recommend, never force)
-        say("  Tip: Gyro's prompt kernels come from agentionai's llama.cpp fork. The engine setup installs reads prompts "
-            "through a slower path (measured 20-30% slower on an AMD R9700; answers speed is the same); compile with "
-            "-DSTRATA_GGML_DIR=<agentionai/llama.cpp> for the fast one (docs/GYRO.md).")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072

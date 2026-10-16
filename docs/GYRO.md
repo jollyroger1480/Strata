@@ -40,16 +40,14 @@ ready-made engine that is older is replaced by one compiled from this source.
 gfx1201 with identical output to rc2). **Not supported:** Intel Arc (SYCL) and Apple Metal: the engines there have no
 trellis kernels; the Metal engine refuses the file at load with the reason. Images are off for these files.
 
-**Prompt speed and the ggml build.** The trellis prompt kernels (MMQ) come from agentionai's llama.cpp fork
-(MIT, `STRATA_GGML_DIR`). A build against upstream ggml works and gives the same answers, but reads prompts through the
-FP16 path, which is slower. For the fast prompt path compile with the fork's ggml:
-
-```sh
-git clone https://github.com/agentionai/llama.cpp ../agention-llama.cpp
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
-  -DCMAKE_CUDA_ARCHITECTURES=86 -DSTRATA_GGML_DIR=$PWD/../agention-llama.cpp
-# AMD: -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_GGML_DIR=...
-```
+**Prompt speed and the ggml build.** The trellis prompt kernels (MMQ) are agentionai's, from their llama.cpp fork (MIT).
+Strata builds against upstream ggml, which does not have them, so it adds them itself at configure time:
+`cmake/strata_ggml_tq_overlay.cmake` writes a copy of the pinned ggml-cuda headers into the build folder with the three
+trellis types routed like IQ2_XS (the tile loader is the fork's, `third_party/ggml-tq/`); only Strata's own MMQ library sees
+the copy, every other type is compiled from the untouched files (identity gate below). The ready-made engines read Gyro
+prompts through it as fast as rc2 does, and bit for bit the same. If the pinned ggml changes and an anchor of the script
+no longer matches, the overlay switches itself off with a message and prompts take the slower FP16 path. A build against the
+fork (`-DSTRATA_GGML_DIR=<agentionai/llama.cpp>`, as rc2 does) uses the fork's own instances instead.
 
 ## Credit and licenses
 
@@ -147,21 +145,24 @@ Gyro release (2026-10-07). A = agentionai/Strata rc2 9ff02c9, B = this port.
 | --- | --- | ---: | --- | ---: | ---: |
 | agentionai fork | Gyro-S | 85.4 / 89.7 (1.051) | 5/5 | 5418 / 5313 (0.98) | 14358 / 13859 (0.97) |
 | agentionai fork | Gyro-M | 72.7 / 82.7 (1.136) | 5/5 | 5183 / 5520 (1.07) | 13421 / 14164 (1.06) |
-| upstream | Gyro-S | 85.3 / 89.6 (1.050) | 5/5 | 5425 / 6939 (1.28) | 14364 / 21677 (1.51) |
+| upstream + overlay (the ready-made engine) | Gyro-S | 85.3 / 89.6 (1.050) | 5/5 | 5413 / 5298 (0.98) | 14372 / 13854 (0.96) |
+| upstream + overlay | Gyro-M | 72.6 / 82.6 (1.138) | 5/5 | 5682 / 5524 (0.97) | 15005 / 14160 (0.94) |
+| upstream, no overlay (FP16 prompt path) | Gyro-S | 85.3 / 89.6 (1.050) | 5/5 | 5425 / 6939 (1.28) | 14364 / 21677 (1.51) |
 
 Decode is faster than rc2's because the port sits on the newer Strata (0.1.45); the same engine change makes IQ3_XXS 7% faster
 (rc2 86.9, port 93.1 tok/s, 2 pairs). Prompts of the ISTA files gained 11-16% from it too (IQ3_XXS 4K 6184 to 5480 ms, 20K
-16587 to 13864 ms); Gyro-M's prompts did not and are 5-7% slower than rc2's, Gyro-S's are 2-3% faster. The cause for Gyro-M is
-not isolated (`STRATA_GFX12_DEFAULTS=0` does not give it back). With **upstream ggml** (the ready-made engine) the trellis
+16587 to 13864 ms). Gyro-M's first run against rc2 showed its prompts 5-7% slower; in the second rc2's own Gyro-M prompts
+took 15.0 s instead of 13.4 s (the 92 GB file's page-cache state), the port's stayed at 14.2 s, and Gyro-M's prompts are 3-6%
+faster than rc2's: that difference was rc2's baseline, not a regression. Without the overlay (plain upstream ggml) the trellis
 prompt kernels are missing and prompts go through the FP16 path: 28% (4K) to 51% (20K) slower than rc2, and a different
-rounding (the answer after a 4K prompt can differ). Decode is unaffected. That is why a source build against the fork's ggml is
-the fast configuration.
+rounding. Decode is unaffected either way.
 
 Identity (the fixed gate flags, 10 prompts, exact_pp 4096 and 20000 tokens, same card for both arms):
 
 - Q2_0 and IQ3_XXS, f-split against the port (upstream ggml): 10/10 identical, residual dumps and outputs IDENTICAL.
-- Gyro-S and Gyro-M, rc2 against the port (fork ggml): 10/10 identical; exact_pp 4096 / 20000 residual dumps and outputs
-  IDENTICAL when run alone (a run beside other engines on the box once showed a different dump: not reproducible alone).
+- Gyro-S and Gyro-M, rc2 against the port with the fork's ggml and with upstream + overlay: 10/10 identical; exact_pp 4096 /
+  20000 residual dumps and outputs IDENTICAL (run alone; a run beside other engines on the box once showed a different dump).
+- Q2_0 and IQ3_XXS, f-split against the port with the overlay on, on AMD gfx1201 and on NVIDIA sm_86: IDENTICAL.
 - The pack step (`tools/iq_pack.py --compat-bf16`) writes byte-identical files to rc2's tools for Gyro-S.
 
 ## Measured (the authors', rc2)
