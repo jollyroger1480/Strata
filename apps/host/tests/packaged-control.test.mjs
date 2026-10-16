@@ -95,6 +95,7 @@ function packagedFixture({ engineUsable = true, updater = null } = {}) {
     return { id, path };
   });
   const calls = [];
+  const saved = [];
   const spawned = [];
   const rpc = [];
   let startFailure = null, startFailureLeft = Infinity;
@@ -108,7 +109,7 @@ function packagedFixture({ engineUsable = true, updater = null } = {}) {
         : { usable: false, notice: 'No engine for this PC was found in E:\\c: the component folder holds no engine package. The app never downloads an engine while it starts or serves.', backend: 'cuda', engine: null, components_dir: 'E:\\c' };
     },
     async importPlan(path) { calls.push(['importPlan', path]); return { file_set_status: 'plausible', candidate_selection: { family: 'qwen', model: 'IQ3_S' }, file_count: 2, total_bytes: 1e9, issues: [] }; },
-    async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); return {}; },
+    async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); saved.push(JSON.parse(readFileSync(path, 'utf8'))); return {}; },
     async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure && startFailureLeft-- > 0) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
     ...(updater ? { async updateCheck() { calls.push(['updateCheck']); return updater.report; }, async update(options) { calls.push(['update', options.engine, options.control]); return updater.update(options); } } : {}),
@@ -146,7 +147,7 @@ function packagedFixture({ engineUsable = true, updater = null } = {}) {
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, saved, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -452,4 +453,22 @@ test('packaged: the app default of several requests at once and the memory retry
     assert.equal(job.state, 'error');
     assert.equal(g.calls.filter(c => c[0] === 'start').length, 2, 'memory change and parallel drop ride on the same single try');
   } finally { await g.native.close(); g.cleanup(); }
+});
+
+test('packaged: a tune measures the engine a load starts: same start args, slots included, for the same model and profile', async () => {
+  for (const vram of [11.9, 48]) {
+    const f = packagedFixture(); f.hardware.gpus[0].vram_gb = vram;
+    try {
+      await f.native.refresh(true);
+      const args = { model: 'iq2_xs', resourceProfile: 'work', vision: 'no' };
+      await f.native.tuneStatus(args).catch(() => {});      // the fake host cannot run Control's tuner; the config it would measure is written first
+      const tuned = JSON.parse(readFileSync(join(f.root, 'data', 'native-tune', 'iq2_xs.json'), 'utf8'));
+      const job = await finish(f.native, f.native.operation('load', args).id);
+      assert.equal(job.state, 'done', job.error);
+      const loaded = { ...f.saved.at(-1) }; delete loaded.port; delete loaded.api_key;
+      assert.deepEqual(tuned.args, loaded.args, 'the engine arguments are identical');
+      for (const [key, value] of Object.entries(tuned)) assert.deepEqual(loaded[key], value, `${key} is the same in the tune and the load`);   // a load adds only its own identity (aliases, model name, key, port)
+      if (vram > 40) assert.ok(tuned.parallel > 1, 'a big card gets the app default of several slots in the tune too');
+    } finally { await f.native.close(); f.cleanup(); }
+  }
 });
