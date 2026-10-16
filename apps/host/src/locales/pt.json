@@ -3067,12 +3067,10 @@
   "s3070": "Não havia memória livre suficiente para testar. Nada foi alterado. Feche outros programas e tente de novo.",
   "s3071": "O mecanismo não conseguiu iniciar com essas configurações. Nada foi alterado.",
   "s3072": "O mecanismo parou durante a medição. Nada foi alterado.",
-  "s3073": "Nada foi alterado.",
   "s3074": "Salvo como",
   "s3075": "Duração",
   "s3076": "{0} min",
   "s3077": "Mostrando os valores do seu ajuste “{0}”.",
   "s3078": "Seu ajuste “{0}” define",
-  "s3079": "era {0}",
-  "s3080": "Ajustar de novo"
+  "s3079": "era {0}"
 }

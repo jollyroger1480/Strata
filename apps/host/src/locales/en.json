@@ -3067,12 +3067,10 @@
   "s3070": "There wasn't enough free memory to test. Nothing was changed. Close other programs and try again.",
   "s3071": "The engine could not start with these settings. Nothing was changed.",
   "s3072": "The engine stopped while we were measuring. Nothing was changed.",
-  "s3073": "Nothing was changed.",
   "s3074": "Saved as",
   "s3075": "Took",
   "s3076": "{0} min",
   "s3077": "Showing the values of your tuning '{0}'.",
   "s3078": "Your tuning '{0}' sets",
-  "s3079": "was {0}",
-  "s3080": "Tune again"
+  "s3079": "was {0}"
 }

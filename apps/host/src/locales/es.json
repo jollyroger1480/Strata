@@ -3067,12 +3067,10 @@
   "s3070": "No había memoria libre suficiente para probar. No se cambió nada. Cierra otros programas e inténtalo de nuevo.",
   "s3071": "El motor no pudo iniciarse con estos ajustes. No se cambió nada.",
   "s3072": "El motor se detuvo mientras medíamos. No se cambió nada.",
-  "s3073": "No se cambió nada.",
   "s3074": "Guardado como",
   "s3075": "Duración",
   "s3076": "{0} min",
   "s3077": "Mostrando los valores de tu ajuste «{0}».",
   "s3078": "Tu ajuste «{0}» establece",
-  "s3079": "antes {0}",
-  "s3080": "Ajustar de nuevo"
+  "s3079": "antes {0}"
 }

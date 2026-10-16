@@ -3067,12 +3067,10 @@
   "s3070": "Es war nicht genug freier Speicher zum Testen vorhanden. Es wurde nichts geändert. Schließen Sie andere Programme und versuchen Sie es erneut.",
   "s3071": "Die Engine ließ sich mit diesen Einstellungen nicht starten. Es wurde nichts geändert.",
   "s3072": "Die Engine wurde während der Messung beendet. Es wurde nichts geändert.",
-  "s3073": "Es wurde nichts geändert.",
   "s3074": "Gespeichert als",
   "s3075": "Dauer",
   "s3076": "{0} Min.",
   "s3077": "Zeigt die Werte Ihrer Optimierung „{0}“.",
   "s3078": "Ihre Optimierung „{0}“ setzt",
-  "s3079": "war {0}",
-  "s3080": "Erneut optimieren"
+  "s3079": "war {0}"
 }
