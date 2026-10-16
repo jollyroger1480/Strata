@@ -102,7 +102,8 @@ test('a message typed while a goal without points runs is queued, can be taken b
   const back = r.bridge.cancelQueued({ chatId: 'q1', id: b.message.id });
   assert.deepEqual(back.queue.map(m => m.text), ['first thing']);
   assert.throws(() => r.bridge.cancelQueued({ chatId: 'q1', id: b.message.id }), /already sent or removed/);
-  await r.bridge.stop('q1');
+  // Stop may answer 'still stopping' on a busy machine: ask again until the run has ended
+  for (let i = 0; i < 5; i++) { const st = await r.bridge.stop('q1'); if (st.stopped || !r.bridge.isRunning('q1')) break; }
   await run;
   const rel = out.find(f => f.type === 'queued-release');
   assert.deepEqual(rel.messages.map(m => m.text), ['first thing']);
