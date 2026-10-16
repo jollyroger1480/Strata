@@ -502,3 +502,20 @@ test('a GGUF folder Control refuses (exit 5, ok:false) still comes back as a che
   const broken = createControl({ control: { dir: '/c', python: '/p', cli: '/c/strata.py', bundle: { version: '9' } }, run: async () => ({ code: 1, json: null, text: '', stderr: 'boom' }) });
   await assert.rejects(() => broken.importPlan('/some/folder'), /boom/);
 });
+
+test("preparing an adopted GGUF folder again never takes the folder's parent for the data folder (it is the person's, not Strata's)", async () => {
+  const f = packagedFixture();
+  try {
+    // The model is already adopted: its run config points at a GGUF in someone's own ".../models/IQ3_S" folder.
+    const own = join(f.root, 'own');
+    const configPath = join(f.install, 'strata-iq3_s.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    writeFileSync(configPath, JSON.stringify({ ...config, args: [...config.args, '--native', join(own, 'models', 'IQ3_S', 'a-00001-of-00002.gguf')] }));
+    f.catalog.families[0].sizes.push({ id: 'iq3_s', model: 'IQ3_S', download_gb: 83, ram_needed_gb: 62, about: 'x', on_this_pc: 'fits', installed: true, images: true, experimental: false });
+    await f.native.refresh(true);
+    await f.native.plan({ family: 'qwen', model: 'IQ3_S', gguf_dir: join(own, 'models', 'IQ3_S') });
+    const sent = f.rpc.at(-1).arguments;
+    assert.notEqual(sent.data_dir, own, "the person's own folder is not used for the packs");
+    assert.equal(sent.gguf_dir, join(own, 'models', 'IQ3_S'));
+  } finally { await f.native.close(); f.cleanup(); }
+});
