@@ -426,6 +426,25 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME qsa_slots_parity_lanecell COMMAND qsa_slots_parity)
     set_tests_properties(qsa_slots_parity qsa_slots_parity_lanecell PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(qsa_slots_parity_lanecell PROPERTIES ENVIRONMENT "STRATA_ATTN_LANECELL=1")
+    # fork: the Daily's decode attention (STRATA_ATTN_DAILY=1: PR #540's chunk kernel on every card and the bounded
+    # merge) against upstream's kernels, bitwise; the production entries checked with the variable off and on
+    add_executable(qsa_merge_daily_parity src/kernels/qsa_merge_daily_parity.cpp)
+    target_include_directories(qsa_merge_daily_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_merge_daily_parity PRIVATE strata_kernels CUDA::cudart)
+    add_test(NAME qsa_merge_daily_parity_default COMMAND qsa_merge_daily_parity)
+    add_test(NAME qsa_merge_daily_parity_daily COMMAND qsa_merge_daily_parity)
+    set_tests_properties(qsa_merge_daily_parity_default PROPERTIES ENVIRONMENT "STRATA_ATTN_DAILY=0"
+                         SKIP_RETURN_CODE 77)
+    set_tests_properties(qsa_merge_daily_parity_daily PROPERTIES ENVIRONMENT "STRATA_ATTN_DAILY=1"
+                         SKIP_RETURN_CODE 77)
+  endif()
+  # QSAROWS (docs/QSAROWS.md): what the T rows of a verification window cost in a QSA layer's decode kernels at a long
+  # context (block scores, top-k, attention over each row's selection, indexer append), row by row; GPU, synthetic, no
+  # model.  Not in the default build: `cmake --build <dir> --target qsa_rows_bench`.
+  if(STRATA_ENABLE_CUDA)
+    add_executable(qsa_rows_bench EXCLUDE_FROM_ALL src/kernels/qsa_rows_bench.cpp)
+    target_include_directories(qsa_rows_bench PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_rows_bench PRIVATE strata_kernels CUDA::cudart)
   endif()
   # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
   # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
@@ -895,6 +914,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # adds timings).  Not a ctest: whether the two agree is a property of the cuBLAS build, which this checks.
     add_executable(gemm_f32_parity src/prefill/gemm_f32_parity.cu)
     target_link_libraries(gemm_f32_parity PRIVATE strata_prefill )
+    # the hyper-connection read's fused up projection + mix (gr_upmix, STRATA_HC_UPMIX) against cuBLAS + gr_mix_r,
+    # bitwise where cuBLAS sums K in the same order, else within FP32 rounding and as close to FP64 (GPU, synthetic,
+    # no model; --bench adds timings)
+    add_executable(gr_upmix_parity src/prefill/gr_upmix_parity.cu)
+    target_link_libraries(gr_upmix_parity PRIVATE strata_prefill )
+    add_test(NAME gr_upmix_parity COMMAND gr_upmix_parity)
+    set_tests_properties(gr_upmix_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
@@ -920,6 +946,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(router_chain_bench src/kernels/router_chain_bench.cpp)
   target_include_directories(router_chain_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(router_chain_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  # B6: the dense projections' time per verify row at the model's shapes, default vs STRATA_B6_MMVQ_ROWS, bitwise
+  if(STRATA_ENABLE_CUDA)
+    add_executable(b6_mmvq_bench src/kernels/b6_mmvq_bench.cpp)
+    target_include_directories(b6_mmvq_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(b6_mmvq_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  endif()
   add_executable(gr_parity src/kernels/gr_parity.cpp)
   target_include_directories(gr_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1046,6 +1078,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+  # the register kernel from the smallest prompt batch (the line gfx1151 moves to 4096 blocks): same ids at every case
+  add_test(NAME qsa_topk_parity_reg_always COMMAND qsa_topk_parity --selftest)
+  set_tests_properties(qsa_topk_parity_reg_always PROPERTIES ENVIRONMENT "STRATA_TOPK_REG_MIN_BLOCKS=0")
 
   # ---- P2.S4: the PLE n-gram hash, the IQ4_NL table read, and the PLE block ----
   # `ngram.cpp` is host-only but lives in `strata_kernels` because `ple.cu` shares its geometry constants, and
@@ -1586,6 +1621,12 @@ if(STRATA_NATIVE_EXPERTS)
       target_link_libraries(prefill_fused_iq_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
       add_test(NAME prefill_fused_iq_test COMMAND prefill_fused_iq_test)
       set_tests_properties(prefill_fused_iq_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the MoE input quantized per token and scattered to its rows (mmq::quantize_scatter) against the per-row
+      # gather: the same q8_1 bytes for every MMQ layout (--bench: both at 2K, 8K and 32K tokens)
+      add_executable(prefill_mmq_scatter_test tests/cuda/prefill_mmq_scatter_test.cpp)
+      target_link_libraries(prefill_mmq_scatter_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
+      add_test(NAME prefill_mmq_scatter_test COMMAND prefill_mmq_scatter_test)
+      set_tests_properties(prefill_mmq_scatter_test PROPERTIES TIMEOUT 120)
     endif()
     if(STRATA_BUILD_TESTS AND _strata_mmq_tab_on)
       # STRATA_MMQ_DIRECT: the pointer-table MMQ bit for bit against the gathered MMQ (exit 77 below sm_80)
@@ -1706,6 +1747,13 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(q8_gemv_bench src/kernels/q8_gemv_bench.cpp)
     target_include_directories(q8_gemv_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(q8_gemv_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    if(STRATA_ENABLE_CUDA)
+      # EXPDEC (docs/EXPERTDEC.md): the grouped experts' default kernels against STRATA_EXPDEC=1 at T = 1..4, bit for bit
+      # and in microseconds, on synthetic blobs read cold from DRAM
+      add_executable(expdec_bench EXCLUDE_FROM_ALL src/kernels/expdec_bench.cpp)
+      target_include_directories(expdec_bench PRIVATE ${_strata_gpu_include_directories})
+      target_link_libraries(expdec_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    endif()
     if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
       # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
       # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float.
