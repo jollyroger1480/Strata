@@ -3083,9 +3083,13 @@
   "s3087": "In der Warteschlange — wird gesendet, wenn Schritt {0} fertig ist",
   "s3088": "In der Warteschlange — wird gesendet, wenn der Assistent fertig ist",
   "s3089": "Diese Nachricht abbrechen",
-  "s3090": "Die Nachricht wurde nicht abgebrochen",
-  "s3091": "in Arbeit",
-  "s3092": "fehlgeschlagen",
-  "s3093": "wartet",
-  "s3094": "Der Assistent schreibt zuerst einen Plan; nichts läuft, bevor Sie zustimmen"
+  "s3090": "Fortsetzen",
+  "s3091": "übersprungen",
+  "s3092": "Pausiert · {0} von {1} erledigt",
+  "s3093": "Plan genehmigt.",
+  "s3094": "Der Assistent antwortet noch",
+  "s3095": "Senden Sie Ihre Nachricht, wenn er fertig ist.",
+  "s3096": "Die Nachricht wurde nicht eingereiht",
+  "s3097": "In der Warteschlange — wird danach gesendet",
+  "s3098": "In der Warteschlange — wird gesendet, wenn das Ziel erreicht ist"
 }

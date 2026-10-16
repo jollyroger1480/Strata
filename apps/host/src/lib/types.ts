@@ -318,6 +318,8 @@ export interface ChatMessage {
   /** Reply came from a saved API connection, rather than the local engine. */
   remoteModel?: boolean;
   timeSkipId?: string;
+  /** The plan this reply proposed: shown as the plan card in place of the reply text. */
+  planId?: string;
   /** A line from the app itself (for example from /loop), never sent to the model. */
   local?: boolean;
   ttftMs?: number;

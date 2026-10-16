@@ -4,7 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
-import { applyPlanFrame, applyQueueFrame } from './plan';
+import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
@@ -641,7 +641,7 @@ function applyEvent(e: StreamEvent) {
       if (typeof data.chatId === 'string') applyPlanFrame(data.chatId, data.plan);
       break;
     case 'queue':
-      if (typeof data.chatId === 'string') applyQueueFrame(data.chatId, data.items);
+      if (typeof data.chatId === 'string') applyQueueFrame(data.chatId, data.queue);
       break;
     case 'timeskip':
       applyTimeSkipEvent(data);
@@ -1482,12 +1482,32 @@ async function runLoopCommand(command: LoopCommand) {
 /** Carry on a paused goal: the host runs its rounds again. No message is sent and no bubble is added. */
 export async function resumeGoal() { await sendMessage('', { goalAction: 'resume' }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume' } = {}) {
-  if(state.streaming)return;
+/** Approve a proposed plan and carry it out: the host answers with the message that does the work, which goes out as an ordinary turn. */
+export async function approvePlan(sessionId: string, planId: string) {
+  const { prompt } = await planApprove(sessionId, planId);
+  // A chat in Plan mode only reads; carrying the plan out needs a mode that may act.
+  if (state.sessions.find(s => s.id === sessionId)?.preferences?.mode === 'plan') setChatPreferences(sessionId, { mode: 'manual' });
+  if (prompt) await sendMessage(prompt, { shown: tr('Approved the plan.') });
+}
+
+/** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
+export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
+
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string } = {}) {
+  if (state.streaming) {
+    // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
+    const waiting = state.activeSession, line = text.trim();
+    if (waiting && line && !options.planId && !options.goalAction) {
+      try { if (!(await queueMessage(waiting, line))) pushToast('info', 'The assistant is still answering', 'Send your message when it has finished.'); }
+      catch (e) { pushToast('error', 'The message was not queued', plainFailureText(e instanceof Error ? e.message : String(e)).message); }
+    }
+    return;
+  }
   const resume = options.goalAction === 'resume';
-  const loopCommand = options.fromLoop || resume ? null : parseLoop(text.trim());
+  const planStart = options.planId;
+  const loopCommand = options.fromLoop || resume || planStart ? null : parseLoop(text.trim());
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
-  const demoPrompt = resume ? null : timeSkipPrompt(text.trim());
+  const demoPrompt = resume || planStart ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
     if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
     return;
@@ -1496,13 +1516,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','Choose an image-reading model','Switch to a local model with Read pictures enabled, or remove the attachments.');return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
-  if(!body&&!resume)return;
+  if(!body&&!resume&&!planStart)return;
 
   let sessionId = state.activeSession;
   if (!sessionId) sessionId = newSession().id;
 
-  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}) };
-  const assistantId = uid('m');
+  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}) };
+  let assistantId = uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
     role: 'assistant',
@@ -1533,9 +1553,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
     updatedAt: new Date().toISOString(),
-    messages: [...s.messages, ...(resume ? [] : [userMsg]), assistantMsg],
+    messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));
 
   const turnAbort = new AbortController();
@@ -1555,10 +1575,11 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const imageSlots=photoHistorySlots(prior,pictures.length);
   try {
     await streamPost(
-      '/api/chat/stream',
+      planStart ? '/api/plan/start-goal' : '/api/chat/stream',
       {
         sessionId,
-        ...(resume ? { goalAction: 'resume' } : { message: body }),
+        ...(planStart ? { planId: planStart } : {}),
+        ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
         history:await Promise.all(prior.map(async(m,index)=>{const included=canSendPictures?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
@@ -1587,8 +1608,24 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           applyGoalFrame(sessionId, frame.goal);
         } else if (type === 'plan') {
           applyPlanFrame(sessionId, frame.plan);
-        } else if (type === 'queue') {
-          applyQueueFrame(sessionId, frame.items);
+          // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
+          const planned = frame.plan as { id?: unknown } | null;
+          if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+        } else if (type === 'queued-message') {
+          applyQueueFrame(sessionId, frame.queue);
+          const sent = frame.message as { text?: unknown } | undefined;
+          if (frame.state === 'delivered' && sent && typeof sent.text === 'string') {
+            // The host has just sent it into the run: it becomes an ordinary message here, and the answer to it starts a new reply.
+            const before = assistantId; assistantId = uid('m');
+            const next: ChatMessage = { id: assistantId, role: 'assistant', content: '', at: new Date().toISOString(), streaming: true };
+            patchSession(sessionId, sess => ({ ...sess, messages: [...sess.messages.map(m => m.id === before ? { ...m, streaming: false } : m), { id: uid('m'), role: 'user', content: sent.text as string, at: new Date().toISOString() }, next] }));
+          }
+        } else if (type === 'queued-release') {
+          // The goal ended with messages left: they go out now, in order, as ordinary messages once this turn has finished.
+          const left = Array.isArray(frame.messages) ? frame.messages.flatMap(q => (q && typeof (q as { text?: unknown }).text === 'string' ? [String((q as { text: string }).text)] : [])) : [];
+          if (left.length) releasedMessages.set(sessionId, [...(releasedMessages.get(sessionId) ?? []), ...left]);
+        } else if (type === 'plan-step') {
+          /* the whole plan follows in a plan frame; the live status already says which step is running */
         } else if (type === 'reasoning') {
           patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
         } else if (type === 'notice') {
@@ -1660,8 +1697,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   } finally {
     clearStatus(sessionId);
     markTurn(sessionId, null);
+    const next = releasedMessages.get(sessionId)?.shift();
+    if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }
 }
+
+/** Messages the host handed back when a goal ended with some still waiting; sent one after another. */
+const releasedMessages = new Map<string, string[]>();
 
 /* -------------------------------------------------------------- tool grants */
 

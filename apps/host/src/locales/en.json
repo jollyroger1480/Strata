@@ -3083,9 +3083,13 @@
   "s3087": "Queued — sends when step {0} finishes",
   "s3088": "Queued — sends when the assistant is done",
   "s3089": "Cancel this message",
-  "s3090": "The message was not cancelled",
-  "s3091": "working on it",
-  "s3092": "failed",
-  "s3093": "waiting",
-  "s3094": "Have the assistant write a plan first; nothing runs until you approve it"
+  "s3090": "Resume",
+  "s3091": "skipped",
+  "s3092": "Paused · {0} of {1} done",
+  "s3093": "Approved the plan.",
+  "s3094": "The assistant is still answering",
+  "s3095": "Send your message when it has finished.",
+  "s3096": "The message was not queued",
+  "s3097": "Queued — sends after that",
+  "s3098": "Queued — sends when the goal finishes"
 }

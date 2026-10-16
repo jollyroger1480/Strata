@@ -3083,9 +3083,13 @@
   "s3087": "En cola — se envía cuando termine el paso {0}",
   "s3088": "En cola — se envía cuando el asistente termine",
   "s3089": "Cancelar este mensaje",
-  "s3090": "No se canceló el mensaje",
-  "s3091": "en curso",
-  "s3092": "falló",
-  "s3093": "en espera",
-  "s3094": "El asistente escribe primero un plan; no se ejecuta nada hasta que lo apruebes"
+  "s3090": "Reanudar",
+  "s3091": "omitido",
+  "s3092": "En pausa · {0} de {1} hechos",
+  "s3093": "Plan aprobado.",
+  "s3094": "El asistente aún está respondiendo",
+  "s3095": "Envía tu mensaje cuando haya terminado.",
+  "s3096": "No se pudo poner el mensaje en cola",
+  "s3097": "En cola — se envía después",
+  "s3098": "En cola — se envía cuando termine el objetivo"
 }

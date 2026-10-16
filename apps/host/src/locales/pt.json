@@ -3083,9 +3083,13 @@
   "s3087": "Na fila — enviada quando o passo {0} terminar",
   "s3088": "Na fila — enviada quando o assistente terminar",
   "s3089": "Cancelar esta mensagem",
-  "s3090": "A mensagem não foi cancelada",
-  "s3091": "em andamento",
-  "s3092": "falhou",
-  "s3093": "aguardando",
-  "s3094": "O assistente escreve um plano primeiro; nada é executado até você aprovar"
+  "s3090": "Retomar",
+  "s3091": "ignorado",
+  "s3092": "Pausado · {0} de {1} concluídos",
+  "s3093": "Plano aprovado.",
+  "s3094": "O assistente ainda está respondendo",
+  "s3095": "Envie sua mensagem quando ele terminar.",
+  "s3096": "A mensagem não foi colocada na fila",
+  "s3097": "Na fila — enviada depois disso",
+  "s3098": "Na fila — enviada quando a meta terminar"
 }

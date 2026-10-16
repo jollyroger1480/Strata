@@ -21,7 +21,8 @@ import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
-import { usePlan } from '../lib/plan';
+import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
+import { plainFailureText } from '../lib/plain-errors';
 import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
@@ -332,8 +333,16 @@ export function ChatScreen() {
     }, [setupVisible, readyForChat, session?.id, messageCount]);
     function submit() {
         const text = draft.trim();
-        if ((!text && !queuedPhotos.length) || streaming)
+        if (!text && !queuedPhotos.length)
             return;
+        if (streaming) {
+            // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
+            if (!text || !session)
+                return;
+            updateDraft('');
+            void queueMessage(session.id, text).then(ok => { if (!ok) { updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            return;
+        }
         const timeSkip = timeSkipPrompt(text);
         if (timeSkip === '') {
             pushToast('info', 'Add a prompt after /time-skip');
@@ -388,7 +397,7 @@ export function ChatScreen() {
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={timeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
-              <PlanCard chatId={session.id}/><QueuedMessages chatId={session.id}/>
+              <QueuedMessages chatId={session.id}/>
             </div>
           </div>
           <div className="jumplatest-row">{tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
@@ -558,6 +567,9 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     const streaming = useStore(s => s.streaming);
     const activeSession = useStore(s => s.activeSession);
     const liveStatus = useLiveStatus(m.role === 'assistant' && m.streaming ? activeSession : null);
+    // A reply that proposed a plan shows the plan card in place of its closing text (which is the plan in prose).
+    const storedPlan = usePlanQuiet(m.planId ? activeSession : null);
+    const planCard = !!m.planId && storedPlan?.id === m.planId;
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     if (m.role === 'user') {
         return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
@@ -583,8 +595,9 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
       {tr((m.tools ?? []).map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
 
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+        {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(m.content ? (<Markdown text={m.timeSkipId && !timeSkipReal ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.content && !planCard ? (<Markdown text={m.timeSkipId && !timeSkipReal ? timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />

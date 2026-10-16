@@ -8,6 +8,8 @@ export interface Goal {
   round: number;
   maxRounds: number;
   blocked?: string;
+  /** While a plan runs: which step the goal is on (notes-split-agent6.md). */
+  step?: { index: number; total: number; text: string };
 }
 
 const goals = new Map<string, Goal>();
@@ -24,7 +26,15 @@ export function readGoal(raw: unknown): Goal | null {
     objective: g.objective, phase: phase as Goal['phase'],
     round: Number(g.round) || 0, maxRounds: Number(g.maxRounds) || 0,
     ...(typeof g.blocked === 'string' && g.blocked ? { blocked: g.blocked } : {}),
+    ...readStep(g.step),
   };
+}
+
+function readStep(raw: unknown): { step?: Goal['step'] } {
+  if (!raw || typeof raw !== 'object') return {};
+  const s = raw as Record<string, unknown>;
+  const index = Number(s.index), total = Number(s.total);
+  return index > 0 && total >= index ? { step: { index, total, text: typeof s.text === 'string' ? s.text : '' } } : {};
 }
 
 export function applyGoalFrame(chatId: string, raw: unknown) {
@@ -60,5 +70,6 @@ export async function goalAction(chatId: string, action: 'pause' | 'edit' | 'cle
 export function goalProgress(goal: Goal): string {
   if (goal.phase === 'blocked') return goal.blocked ?? '';
   if (goal.phase === 'complete') return '';
+  if (goal.step) return `${goal.step.index}/${goal.step.total}`;
   return goal.maxRounds > 0 && goal.round > 0 ? `${goal.round}/${goal.maxRounds}` : '';
 }
