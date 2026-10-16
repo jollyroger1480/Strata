@@ -620,7 +620,8 @@ class Tuner:
         for work, is a promise about memory)."""
         if res.rss_peak_mib and base.rss_peak_mib and res.rss_peak_mib > base.rss_peak_mib * 1.05 + 512 and self.o.goal == "room":
             return "it needs more memory than your current settings, which would eat into the memory you wanted left free"
-        if res.min_avail_mib is not None and res.min_avail_mib < self.o.min_free_ram_mib and \n                (base.min_avail_mib is None or res.min_avail_mib < base.min_avail_mib - 512):   # a RAM-bound base itself may sit below the floor
+        if res.min_avail_mib is not None and res.min_avail_mib < self.o.min_free_ram_mib and (
+                base.min_avail_mib is None or res.min_avail_mib < base.min_avail_mib - 512):   # a RAM-bound base can sit below the floor itself
             return "it left the PC with too little free memory"
         if self.o.goal == "room" and self.o.ram_wish_pct and self.total_ram and res.min_avail_mib is not None and \
                 base.min_avail_mib is not None:
