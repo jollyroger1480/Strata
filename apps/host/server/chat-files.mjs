@@ -105,3 +105,69 @@ export function openFile(root, rawPath, how = 'app', { platform = process.platfo
   launch(cmd, args, { recorder });
   return { ok: true, started: true, path: file, url: pathToFileURL(file).href, how };
 }
+
+// ---- previews, raw bytes and "attach as context" -----------------------------------------------------------------------------------
+
+import { readFileSync as readBytes } from 'node:fs';
+import { fileType } from './agent/deliverables.mjs';
+
+const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', pdf: 'application/pdf' };
+export const mimeOf = file => MIME[String(file).split('.').pop().toLowerCase()] ?? 'application/octet-stream';
+const MAX_PREVIEW_TEXT = 1_000_000;
+
+/** A small CSV/TSV reader for the table preview: quotes, doubled quotes, commas/tabs inside quotes. */
+export function parseCsv(text, delimiter = ',', maxRows = 500) {
+  const rows = []; let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+    const ch = text[i];
+    if (quoted) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false; } else cell += ch; }
+    else if (ch === '"') quoted = true;
+    else if (ch === delimiter) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (rows.length < maxRows && (cell !== '' || row.length)) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+/**
+ * What the sidebar needs to show a file: { kind, name, size, text?, rows?, rawUrl? }.
+ * html: the text (the page renders it sandboxed); markdown: the text; csv: parsed rows; pdf and images: the address of the raw bytes
+ * (/api/files/raw), which only serves a file inside the chat's folder; code and text: the text. Too big to show: kind only and a plain note.
+ */
+export function previewFile(root, rawPath, sessionId) {
+  const file = resolveChatFile(root, rawPath);
+  const st = statSync(file); const kind = fileType(file);
+  const base = { kind, name: basename(file), path: file, size: st.size, url: pathToFileURL(file).href };
+  const raw = `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(file)}`;
+  if (kind === 'image' || kind === 'pdf') return { ...base, rawUrl: raw, mime: mimeOf(file) };
+  if (kind === 'other') return { ...base, note: 'This kind of file has no preview. Open it in its own app.' };
+  if (st.size > MAX_PREVIEW_TEXT) return { ...base, note: 'This file is too big to show here. Open it in its own app.' };
+  const buf = readBytes(file);
+  if (buf.subarray(0, 2048).includes(0)) return { ...base, kind: 'other', note: 'This file is not text, so it has no preview.' };
+  const text = buf.toString('utf8');
+  if (kind === 'csv') return { ...base, rows: parseCsv(text, file.toLowerCase().endsWith('.tsv') ? '\t' : ','), truncated: text.split('\n').length > 500 };
+  return { ...base, text };
+}
+
+/** The bytes of a picture or PDF inside the chat's folder. */
+export function rawFile(root, rawPath) {
+  const file = resolveChatFile(root, rawPath);
+  const mime = mimeOf(file);
+  if (mime === 'application/octet-stream') throw Object.assign(new Error('Only pictures and PDFs are served this way.'), { code: 'bad-type' });
+  return { bytes: readBytes(file), mime };
+}
+
+/** Files the person attached from a deliverable; the next message to the chat names them (@path), so the assistant reads them again. */
+export function createAttachments() {
+  const table = new Map();
+  return {
+    list: chatId => [...(table.get(chatId) ?? [])],
+    add(chatId, file) { const l = table.get(chatId) ?? []; if (!l.includes(file)) l.push(file); table.set(chatId, l.slice(-10)); return [...table.get(chatId)]; },
+    remove(chatId, file) { const l = (table.get(chatId) ?? []).filter(f => f !== file); table.set(chatId, l); return l; },
+    /** Take them for the next message (and forget them). */
+    take(chatId) { const l = table.get(chatId) ?? []; table.delete(chatId); return l; },
+  };
+}
+/** The message with its attachments named in front, as the assistant's instructions explain (@path is a file the person pointed at). */
+export const withAttachments = (message, files) => (files.length ? files.map(f => '@' + (/\s/.test(f) ? '"' + f + '"' : f)).join(' ') + ' ' + message : message);

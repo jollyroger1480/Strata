@@ -50,7 +50,7 @@ import { EventHub, error, json, readBody, uid } from './util.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
-import { createChatFolders, openFile, resolveChatFile } from './chat-files.mjs';
+import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUpdater } from './app-updater.mjs';
@@ -425,6 +425,7 @@ function loadWorkspaces() {
 
 let workspaces = loadWorkspaces();
 /* The folder each chat works in ("Select a folder"): the agent's working folder and sandbox for that chat. */
+const chatAttachments = createAttachments();
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
 
 function saveWorkspaces() {
@@ -530,6 +531,8 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
+    const attached = chatAttachments.take(chatId);
+    if (attached.length && !/^\//.test(message.trim())) message = withAttachments(message, attached);
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
@@ -1532,6 +1535,22 @@ async function api(req, res, path, method, url) {
   if (path === '/api/files/open' && method === 'POST') {
     const body = await readBody(req);
     try { return json(res, 200, openFile(chatFolders.get(String(body.sessionId ?? '')), body.path, String(body.how ?? 'app'))); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  if (path === '/api/files/preview' && method === 'GET') {
+    const sid = url.searchParams.get('sessionId') ?? '';
+    try { return json(res, 200, previewFile(chatFolders.get(sid), url.searchParams.get('path'), sid)); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  if (path === '/api/files/raw' && method === 'GET') {
+    try { const f = rawFile(chatFolders.get(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  /* "Attach as context": the file is named in the next message of the chat, so the assistant reads it again. */
+  if (path === '/api/chat/attachments' && method === 'GET') return json(res, 200, { files: chatAttachments.list(url.searchParams.get('sessionId') ?? '') });
+  if (path === '/api/chat/attachments' && method === 'POST') {
+    const body = await readBody(req); const id = String(body.sessionId ?? '');
+    try { const file = resolveChatFile(chatFolders.get(id), body.path); return json(res, 200, { files: body.remove === true ? chatAttachments.remove(id, file) : chatAttachments.add(id, file) }); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   if (path === '/api/files/path' && method === 'GET') {

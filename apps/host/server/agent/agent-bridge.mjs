@@ -24,6 +24,7 @@ import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profil
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
+import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
@@ -266,10 +267,24 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
     const written = { all: '', step: '' };
+    const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
+    // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
+    const tracker = new DeliverableTracker(workspacePath);
+    try { tracker.snapshot(); } catch { /* a folder that cannot be read has no deliverables */ }
+    const groups = new ActivityGroups({ emit: raw });
     const emit = frame => {
       if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (hideDeltas) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
-      try { send(frame); } catch { send = () => {}; attached = false; }
+      if (frame.type === 'delta' && frame.text) groups.text();
+      if (frame.type === 'agent-tool' && frame.tool) {
+        let made = null;
+        if (frame.tool.state === 'done' && (frame.tool.name === 'write' || frame.tool.name === 'edit')) { try { made = tracker.check(frame.tool.args?.file_path ?? frame.tool.args?.path); } catch { made = null; } }
+        raw(frame);
+        if (made) raw(made);
+        groups.card(frame.tool, made);
+        return;
+      }
+      raw(frame);
     };
     // What the assistant is doing right now, one small frame (status.mjs). Cleared before the final frame of the turn.
     const reporter = new StatusReporter({ emit });
@@ -346,6 +361,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
       const extra = [];
+      try { for (const d of tracker.sweep()) { emit(d); groups.addFile(d); } } catch { /* never blocks the end of a turn */ }
+      groups.end();
       if (researchTopic && !failure && !turn.stopping) { const sources = parseSources(written.all); if (sources.length) extra.push({ type: 'research', topic: researchTopic, sources }); }
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
       for (const f of extra) emit(f);
