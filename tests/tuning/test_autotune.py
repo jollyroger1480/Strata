@@ -126,6 +126,23 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(len(r.settings["args"]), 1)
         self.assertTrue(any("only the best one" in n for n in r.notes))
 
+    def test_a_box_whose_default_is_not_repeatable_says_so(self):
+        ctx = make_ctx()
+        self.assertFalse(tune_knobs.default_unsteady(ctx))
+        ctx.facts = {"workers": 6, "resident_ram": True}            # the RTX 3060 in resident-RAM mode
+        self.assertTrue(tune_knobs.default_unsteady(ctx))
+        sy = make_ctx()
+        sy.backend = "sycl"
+        self.assertTrue(tune_knobs.default_unsteady(sy))
+        from strata_control import presets
+        steady = {"answers": {"class": "exact", "default_repeatable": True}}
+        unsteady = {"answers": {"class": "exact", "default_repeatable": False}}
+        self.assertIn("identical", presets.notice(steady))
+        self.assertIn("even with the standard setup", presets.notice(unsteady))
+        # the class of the knob does not change: exact knobs are still auto-picked there, nonrepeatable ones stay behind their switch
+        ids = [p.arm.id for p in tune_knobs.plan_arms(ctx, mode="quick")[0]]
+        self.assertNotIn("adapt_async", ids)
+
     def test_hybrid_cpu_affinity_never(self):
         ctx = make_ctx()
         ctx.hybrid_cpu = True

@@ -42,6 +42,7 @@ KEYS = [
     "Tune again",
     "Start tuning",
     "Tuning your model",
+    'Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.',
 ]
 
 T = {
@@ -60,6 +61,7 @@ T = {
         "请先完成当前操作。", "花多长时间", "快速（约 20 分钟）", "彻底（最多 2 小时）", "你主要做什么",
         "长提示的编程", "允许可能略微改变回答的设置", "已保存的调优", "使用中", "使用",
         "再次检查（约 2 分钟）", "再次调优", "开始调优", "正在调优你的模型",
+        '在这台电脑上，即使使用标准设置，每次运行的回答也可能不同；此设置不会增加这种差异。',
     ],
     "ja": [
         "このモデルをチューニング", "あなたの PC で最も速い設定を探しています…", "残り約 {0} 分",
@@ -76,6 +78,7 @@ T = {
         "先に現在の操作を終えてください。", "かける時間", "クイック（約 20 分）", "じっくり（最大 2 時間）", "主な用途",
         "長いプロンプトでのコーディング", "回答がわずかに変わる可能性のある設定も許可する", "保存済みチューニング", "使用中", "使用する",
         "もう一度チェック（約 2 分）", "もう一度チューニング", "チューニングを開始", "モデルをチューニング中",
+        'このPCでは標準設定でも実行のたびに回答が変わることがあります。この設定がそれを増やすことはありません。',
     ],
     "de": [
         "Dieses Modell abstimmen", "Die schnellsten Einstellungen für deinen PC werden gesucht…", "noch etwa {0} Min.",
@@ -92,6 +95,7 @@ T = {
         "Beende zuerst den aktuellen Vorgang.", "Wie lange soll es dauern?", "Schnell (etwa 20 Minuten)", "Gründlich (bis zu 2 Stunden)", "Was du hauptsächlich machst",
         "Programmieren mit langen Prompts", "Einstellungen erlauben, die Antworten leicht verändern können", "Gespeicherte Abstimmungen", "In Gebrauch", "Verwenden",
         "Erneut prüfen (etwa 2 Minuten)", "Erneut abstimmen", "Abstimmung starten", "Dein Modell wird abgestimmt",
+        'Auf diesem PC können die Antworten von Lauf zu Lauf abweichen, auch mit der Standardeinstellung; diese Einstellung verstärkt das nicht.',
     ],
     "es": [
         "Ajustar este modelo", "Buscando los ajustes más rápidos para tu PC…", "faltan unos {0} min",
@@ -108,6 +112,7 @@ T = {
         "Termina primero la operación actual.", "Cuánto tiempo dedicar", "Rápido (unos 20 minutos)", "A fondo (hasta 2 horas)", "Qué haces sobre todo",
         "Programar con prompts largos", "Permitir ajustes que pueden cambiar ligeramente las respuestas", "Ajustes guardados", "En uso", "Usar",
         "Comprobar de nuevo (unos 2 minutos)", "Ajustar de nuevo", "Empezar a ajustar", "Ajustando tu modelo",
+        'En este PC las respuestas pueden variar de una ejecución a otra incluso con el ajuste estándar; este ajuste no lo aumenta.',
     ],
     "ru": [
         "Настроить эту модель", "Ищем самые быстрые настройки для вашего ПК…", "осталось примерно {0} мин.",
@@ -124,6 +129,7 @@ T = {
         "Сначала завершите текущую операцию.", "Сколько времени потратить", "Быстро (около 20 минут)", "Тщательно (до 2 часов)", "Чем вы в основном занимаетесь",
         "Программирование с длинными промптами", "Разрешить настройки, которые могут немного изменить ответы", "Сохранённые настройки", "Используется", "Использовать",
         "Проверить снова (около 2 минут)", "Настроить снова", "Начать настройку", "Настройка вашей модели",
+        'На этом ПК ответы могут отличаться от запуска к запуску даже при стандартных настройках; эта настройка этого не усиливает.',
     ],
     "pt": [
         "Ajustar este modelo", "Procurando as configurações mais rápidas para o seu PC…", "faltam cerca de {0} min",
@@ -140,6 +146,7 @@ T = {
         "Termine primeiro a operação atual.", "Quanto tempo dedicar", "Rápido (cerca de 20 minutos)", "Completo (até 2 horas)", "O que você mais faz",
         "Programação com prompts longos", "Permitir configurações que podem mudar um pouco as respostas", "Ajustes salvos", "Em uso", "Usar",
         "Verificar de novo (cerca de 2 minutos)", "Ajustar de novo", "Iniciar ajuste", "Ajustando o seu modelo",
+        'Neste PC as respostas podem variar de uma execução para outra mesmo com a configuração padrão; esta configuração não aumenta isso.',
     ],
     "ko": [
         "이 모델 최적화", "내 PC에서 가장 빠른 설정을 찾는 중…", "약 {0}분 남음",
@@ -156,6 +163,7 @@ T = {
         "먼저 현재 작업을 끝내세요.", "얼마나 오래 할까요", "빠름 (약 20분)", "꼼꼼히 (최대 2시간)", "주로 하는 일",
         "긴 프롬프트로 코딩", "답변을 조금 바꿀 수 있는 설정 허용", "저장된 최적화", "사용 중", "사용",
         "다시 점검 (약 2분)", "다시 최적화", "최적화 시작", "모델을 최적화하는 중",
+        '이 PC에서는 표준 설정에서도 실행할 때마다 답변이 달라질 수 있으며, 이 설정이 그 차이를 키우지는 않습니다.',
     ],
 }
 

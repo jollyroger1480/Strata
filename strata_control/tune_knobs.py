@@ -29,6 +29,19 @@ ANSWER_NOTICE = {
     "quality": "Includes a quality setting that changes the numbers.",
 }
 
+#: On some cards the standard setup itself is not repeatable run to run (the RTX 3060 in resident-RAM mode and the Arc A750:
+#: 2 and 3 of 10 gate prompts identical between two runs of the default, spec 3.3 note). There "exact" can only mean "no worse
+#: than the default's own variation", so the notice must not promise identical answers.
+ANSWER_NOTICE_UNSTEADY = {
+    "exact": "Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.",
+}
+
+
+def default_unsteady(ctx: "Context") -> bool:
+    """True where the setup default is itself not repeatable: the low-RAM resident mode (adaptive tier and draft timing) and SYCL."""
+    return ctx.backend == "sycl" or condition_holds("resident_ram", ctx)
+
+
 #: Flags that take no value (present = on, absent = off).
 BOOL_FLAGS = frozenset({"--kv-grow", "--trim-stage-weights", "--no-host-worker", "--no-pool", "--mmap-experts",
                         "--resident-experts", "--prompt-cache-tail", "--vram-elastic", "--split-skip-if-fits",

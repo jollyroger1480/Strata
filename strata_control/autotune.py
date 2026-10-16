@@ -601,7 +601,7 @@ class Tuner:
                     cls = row["answer"]
                 if row["key"] == key and row["answer"] != "exact":
                     fields.append(key)
-        r.answers = {"class": cls, "fields": sorted(set(fields))}
+        r.answers = {"class": cls, "fields": sorted(set(fields)), "default_repeatable": not tune_knobs.default_unsteady(self.ctx)}
         if final_pairs:
             fu = fu_final
             ratios = [metric(c, fu) / metric(b, fu) for b, c in final_pairs if metric(c, fu) and metric(b, fu)]

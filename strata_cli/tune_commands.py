@@ -264,7 +264,9 @@ def _human_result(r: dict[str, Any], saved: dict[str, Any] | None) -> str:
         lines.append(f"  Measured: {r['base'].get('decode_tok_s')} -> {r['chosen'].get('decode_tok_s')} tok/s "
                      f"({r['faster_pairs']} of {r['pairs']} pairs faster)")
         from strata_control.tune_knobs import ANSWER_NOTICE
-        lines.append("  " + ANSWER_NOTICE.get(r["answers"]["class"], ""))
+        from strata_control.tune_knobs import ANSWER_NOTICE_UNSTEADY
+        unsteady = r["answers"].get("default_repeatable") is False and r["answers"]["class"] in ANSWER_NOTICE_UNSTEADY
+        lines.append("  " + (ANSWER_NOTICE_UNSTEADY if unsteady else ANSWER_NOTICE).get(r["answers"]["class"], ""))
     else:
         lines.append(r["message"] or r["outcome"])
         if saved:

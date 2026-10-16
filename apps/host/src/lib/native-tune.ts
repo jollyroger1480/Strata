@@ -6,7 +6,7 @@ export interface TunePreset {
   name: string;
   active: boolean;
   created?: string;
-  answers?: { class: 'exact' | 'placement' | 'nonrepeatable' | 'quality'; fields: string[] };
+  answers?: { class: 'exact' | 'placement' | 'nonrepeatable' | 'quality'; fields: string[]; default_repeatable?: boolean };
   settings?: { args: Record<string, unknown>; env: Record<string, unknown>; per_request: Record<string, unknown> };
   gain_pct?: number | null;
   decode_tok_s?: number | null;
@@ -39,7 +39,7 @@ export interface TuneResult {
   faster_pairs?: number;
   base?: { decode_tok_s?: number | null };
   chosen?: { decode_tok_s?: number | null };
-  answers?: { class: TunePreset['answers'] extends infer A ? (A extends { class: infer C } ? C : never) : never; fields: string[] };
+  answers?: { class: 'exact' | 'placement' | 'nonrepeatable' | 'quality'; fields: string[]; default_repeatable?: boolean };
   preset?: { id: string; name: string } | null;
   notes?: string[];
   verdict?: 'keep' | 'retune' | 'inconclusive';
@@ -62,3 +62,7 @@ export const ANSWER_NOTICE: Record<string, string> = {
   nonrepeatable: 'Answers are not repeatable run to run.',
   quality: 'Includes a quality setting that changes the numbers.',
 };
+
+/** Where the standard setup is itself not repeatable (RTX 3060 in low-RAM mode, Arc A750), an exact setting cannot promise identical answers. */
+export const answerNotice = (cls?: string, defaultRepeatable?: boolean) =>
+  cls === 'exact' && defaultRepeatable === false ? 'Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.' : ANSWER_NOTICE[cls ?? ''] ?? '';
