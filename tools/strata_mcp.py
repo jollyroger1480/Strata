@@ -77,6 +77,14 @@ FALLBACK_MODELS = {
     "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
              "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
              "vision": True},
+    "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
+                        "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
+               "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
+               "vision": False},
+    "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
+                        "about 20% slower than Q2_0 on 12 GB cards",
+               "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
+               "vision": False},
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
                        "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "vision": True},
@@ -95,10 +103,15 @@ FALLBACK_FAMILIES = {
                                                                   "~80 GB (UD-IQ4_XS) to ~136 GB (Q8_0) of RAM, else "
                                                                   "part of them read from the SSD",
                 "tag": "unsloth-", "vision": True},
+    "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest "
+                                                              "sizes, for PCs with little memory; 58 and 92 GB "
+                                                              "downloads (the files include the n-gram table)",
+             "tag": "gyro-"},
     "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, "
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
 }
+GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
@@ -773,6 +786,14 @@ class Strata:
         elif low_fits("IQ1_M"):
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but the GPU's "
                                                  f"{vram:.0f} GB make up for it (setup's low-RAM mode: slower)")
+        elif "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"] + GYRO_ROOM_GB:
+            # Gyro (agentionai): only where the sizes above do not fit.  Their memory figure (Gyro-S 27.6 GB, Gyro-M 35 GB)
+            # is VRAM + RAM together and the system needs room beside it, so GYRO_ROOM_GB more is asked for here.
+            # Gyro-M when this PC has that much, else Gyro-S.
+            model = "Gyro-M" if ram + vram >= models["Gyro-M"]["ram_gb"] + GYRO_ROOM_GB else "Gyro-S"
+            fam, why = "gyro", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but RAM + VRAM = {ram + vram:.0f} GB "
+                                f"holds {model} ({models[model]['ram_gb']} GB of memory in total; the quality is lower "
+                                "than the 2-3-bit sizes, and it needs the whole download on a fast SSD)")
         else:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
@@ -806,7 +827,8 @@ class Strata:
                 tag = (fd.get("tag", "") + m).lower()
                 verdict = None
                 if ram is not None:
-                    verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+                    have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
+                    verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
                         if d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
                             verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
@@ -816,7 +838,7 @@ class Strata:
                                        if ram >= d["ram_gb"] else
                                        "slow here: part of its experts in RAM, the rest read from the SSD (setup "
                                        "asks first)" if ram >= 48 else "does not fit")
-                        elif S and S.low_ram_needed(m, ram) and S.low_ram_fits(m, ram, vram):
+                        elif not d.get("mem_total") and S and S.low_ram_needed(m, ram) and S.low_ram_fits(m, ram, vram):
                             verdict = "fits in the low-RAM mode (slower: the GPU holds part of the experts)"
                     except Exception:                   # noqa: BLE001
                         pass

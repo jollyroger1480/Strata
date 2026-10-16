@@ -144,6 +144,26 @@ speed bound and NVIDIA/AMD/Intel details: [QUANTS.md](QUANTS.md); the files: [UD
 START-HERE.bat --setup --family unsloth --model UD-Q5_K_XL
 ```
 
+<a id="gyro"></a>
+
+### Gyro-S and Gyro-M (agentionai)
+
+The fifth version in setup's menu (`--family gyro`) is **agentionai's Gyro quantizations** of the same model: trellis-coded
+experts in a rotated basis. They are the smallest options and never setup's default. The download includes the
+28 GB n-gram table; the memory figure is VRAM and RAM together.
+
+| Size | Download | Memory it needs (VRAM + RAM) | In plain words |
+| --- | ---: | ---: | --- |
+| **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
+| **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory; decodes about 20% slower than Q2_0 on 12 GB cards |
+
+NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Images are off. Details, measurements and credit:
+[GYRO.md](GYRO.md).
+
+```
+START-HERE.bat --setup --family gyro --model Gyro-S
+```
+
 ### OrcaRouter Uncensored IQ3_XXS
 
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an

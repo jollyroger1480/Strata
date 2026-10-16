@@ -44,6 +44,14 @@ test('only the two requested display families exist; engine IDs and per-version 
  assert.deepEqual(nativeCatalogModels([]),[]);
 });
 
+test('the Gyro sizes join the Qwen3.8 group as their own edition, without images',()=>{
+ setTranslationLanguage('en');
+ const groups=nativeCatalogModels([family('qwen','Qwen3.8-Flash-Next',true,[size('q2_0','Q2_0')]),family('gyro','Qwen3.8-Flash-Next (Gyro)',false,[size('gyro-gyro-s','Gyro-S'),size('gyro-gyro-m','Gyro-M')])]);
+ assert.deepEqual(groups[0].sizes.map(item=>[item.sourceFamily,item.model,item.edition,item.images]),[['qwen','Q2_0','',true],['gyro','Gyro-S','Gyro',false],['gyro','Gyro-M','Gyro',false]]);
+ assert.equal(catalogVersionLabel(groups[0].sizes[1]),'Gyro · Smallest');assert.equal(catalogVersionLabel(groups[0].sizes[2]),'Gyro · Small memory');
+ assert.equal(groups[1].sizes.length,0);
+});
+
 test('empty default chat titles follow the interface language while chosen names stay verbatim',()=>{
  setTranslationLanguage('de');const empty={title:'New conversation',messages:[]};assert.notEqual(sessionTitle(empty),'New conversation');assert.equal(sessionTitle({...empty,defaultTitle:false}),'New conversation');assert.equal(sessionTitle({title:'Ready',messages:[]}), 'Ready');assert.equal(sessionTitle({...empty,messages:[{role:'user',content:'hello'}]}),'New conversation');setTranslationLanguage('en');
 });
