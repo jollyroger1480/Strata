@@ -38,17 +38,29 @@ test('sizing: the slots may take at most a fifth of the expert cache the card wo
   assert.doesNotMatch(small.note + some.note, /--|batch|VRAM|GiB|tok|cache/i, 'no engine words');
 });
 
-test('batch-mtp is off by default (measured: it does not pay on a 12 GB card); where the policy is on it applies to one card with a draft layer only', () => {
-  const mtp = c => chooseParallel({ config: c, hardware: hw(32) });
-  assert.equal(BATCH_MTP_POLICY, 'off');
-  assert.equal(mtp(cfg(32768)).batchMtp, false);
-  const applied = applyParallel(cfg(32768), mtp(cfg(32768)));
-  assert.equal(applied.cfg.parallel, 4); assert.ok(!applied.cfg.args.includes('--batch-mtp'));
-  // the rule itself, for the day the policy is turned on
-  if (BATCH_MTP_POLICY === 'on') {
-    assert.equal(mtp(cfg(32768)).batchMtp, true);
-    assert.equal(mtp(cfg(32768, { gpu: [0, 1] })).batchMtp, false);
-  }
+test('batch-mtp is automatic on big single cards only: 24 GB and up with room for the drafters, never on small cards or a layer split; Expert mode overrides either way', () => {
+  assert.equal(BATCH_MTP_POLICY, 'auto');
+  const mtp = (gb, extra = {}, cards = 1, values = {}, context = 32768) => chooseParallel({ config: cfg(context, extra), hardware: hw(gb, cards), values });
+  assert.deepEqual([12, 16, 20].map(gb => mtp(gb).batchMtp), [false, false, false], 'small cards: it did not pay (3060: -6% for one chat, 400 MiB less cache)');
+  assert.deepEqual([24, 32, 48, 72].map(gb => mtp(gb).batchMtp), [true, true, true, true]);
+  assert.equal(mtp(72).slots, 4);
+  assert.equal(mtp(24, {}, 1, {}, 131072).batchMtp, false, 'one slot only at this context: nothing to batch');
+  assert.equal(mtp(72, { gpu: [0, 1] }, 2).batchMtp, false, 'a layer split: -22% with all experts in VRAM');
+  assert.equal(chooseParallel({ config: { args: ['--max-context', '32768'], gpu: 0 }, hardware: hw(72) }).batchMtp, false, 'no draft layer, nothing to batch');
+  assert.equal(chooseParallel({ config: cfg(32768, { args: ['--max-context', '32768', '--mtp', '/m', '--batch-mtp'] }), hardware: hw(72) }).batchMtp, false, 'already there: not added twice');
+  const applied = applyParallel(cfg(32768), mtp(72));
+  assert.ok(applied.cfg.args.includes('--batch-mtp')); assert.equal(applied.cfg.parallel, 4);
+  // Expert mode: off wins on a big card; on wins on a small one-card setup; an explicit slot count can still ask for it
+  assert.equal(mtp(72, {}, 1, { batchMtp: false }).batchMtp, false);
+  assert.equal(mtp(72, { batchMtp: false }).batchMtp, false);
+  assert.equal(mtp(20, {}, 1, { batchMtp: true }).batchMtp, true, '20 GB: 2 slots, asked for by hand');
+  assert.equal(mtp(72, { gpu: [0, 1] }, 2, { batchMtp: true }).batchMtp, false, 'never forced on a layer split');
+  const manual = chooseParallel({ config: cfg(32768), values: { parallel: 2, batchMtp: true }, hardware: hw(12) });
+  assert.deepEqual([manual.slots, manual.explicit, manual.batchMtp], [2, true, true]);
+  assert.ok(applyParallel(cfg(32768), manual).cfg.args.includes('--batch-mtp'));
+  assert.ok(!applyParallel(cfg(32768, { parallel: 2 }), chooseParallel({ config: cfg(32768, { parallel: 2 }), hardware: hw(72) })).cfg.args.includes('--batch-mtp'), 'a number the person chose alone does not add it');
+  // the retry with one request at a time takes it away again
+  assert.ok(!withoutParallel(applied.cfg).args.includes('--batch-mtp'));
 });
 
 test("a number the person chose is kept exactly: Expert mode's value, the saved settings, an explicit --batch", () => {
@@ -106,7 +118,7 @@ test('the installed app loads with 4 request slots by default', async () => {
     assert.equal(job.state, 'done', job.error);
     assert.equal(f.saved.length, 1);
     assert.equal(f.saved[0].parallel, 4);
-    assert.ok(!f.saved[0].args.includes('--batch-mtp'));
+    assert.ok(f.saved[0].args.includes('--batch-mtp'), 'a 32 GB card: MTP per request is on automatically');
     assert.equal(f.native.state().instances[0].parallel, 4, 'the agent reads the slot count from here');
   } finally { await f.native.close(); f.cleanup(); }
 });
