@@ -237,7 +237,7 @@ test('the output budget is not the old 8192, and the Reasoning menu reaches the 
   const off = await ask('think-off', 'Off');
   assert.equal(ctk(off).enable_thinking, false); assert.equal(ctk(off).reasoning_effort, undefined);
   assert.equal(off.enable_thinking, undefined, 'a top-level enable_thinking is the field the Strata server ignores');
-  assert.ok(off.max_completion_tokens > 40000, `budget ${off.max_completion_tokens} (the window minus the prompt, never the old 8192)`);
+  assert.ok(off.max_completion_tokens >= 32000 && off.max_completion_tokens <= 32768, `budget ${off.max_completion_tokens} (half the window, at most 32K: never the old 8192, and room is left for the conversation to be compacted)`);
   const high = await ask('think-high', 'High');
   assert.equal(ctk(high).enable_thinking, true); assert.equal(ctk(high).reasoning_effort, 'high');
   const low = await ask('think-low', 'Low');

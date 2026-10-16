@@ -92,8 +92,11 @@ test('a message typed while a goal without points runs is queued, can be taken b
   assert.throws(() => r.bridge.queueMessage({ chatId: 'q1', text: 'hello' }), /No goal is running/);
   const out = [];
   const run = r.bridge.runTurn({ ...r.base('q1', f => out.push(f)), goal: { action: 'create', objective: 'keep going', maxRounds: 50 } });
-  await wait(3000);
-  const a = r.bridge.queueMessage({ chatId: 'q1', text: 'first thing' });
+  // the goal turn may take a while to start on a busy machine: queue as soon as it runs
+  let a = null;
+  for (let i = 0; i < 150 && !a; i++) { try { a = r.bridge.queueMessage({ chatId: 'q1', text: 'first thing' }); } catch { await wait(100); } }
+  assert.ok(a, 'the goal was running');
+  await wait(500);
   const b = r.bridge.queueMessage({ chatId: 'q1', text: 'second thing' });
   assert.equal(a.message.deliverAt, 'end'); assert.deepEqual(b.queue.map(m => m.text), ['first thing', 'second thing']);
   const back = r.bridge.cancelQueued({ chatId: 'q1', id: b.message.id });
