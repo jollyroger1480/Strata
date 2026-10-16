@@ -44,6 +44,14 @@ export function plainAgentFailure(raw) {
   return text;
 }
 
+/** Attached pictures (data addresses) as the Harness's image prompt parts. */
+export function imageParts(images) {
+  return (Array.isArray(images) ? images : []).map(i => {
+    const m = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(String(i?.url ?? ''));
+    return m ? { type: 'image', mediaType: m[1], data: m[2], name: String(i.name ?? 'Picture').slice(0, 120) } : null;
+  }).filter(Boolean);
+}
+
 /** A timer that never keeps the process alive by itself. */
 const after = (ms, fn) => { const t = setTimeout(fn, ms); t.unref?.(); return t; };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -260,7 +268,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, planTask = null, planRun = null, researchTopic = null }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, images = [], planTask = null, planRun = null, researchTopic = null }) {
     let send = onFrame; let attached = true;
     // A research run gathers first; what the assistant writes while gathering is notes, not the answer, so it is not shown.
     let hideDeltas = !!researchTopic;
@@ -683,7 +691,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       let prompt = message;
       if (fresh && history.length) prompt = withEarlierConversation(history, message);
       try {
-        await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } });
+        await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }, ...imageParts(images)] } });
       } catch (e) {
         finishTurn(`The agent did not accept the message: ${e.message}`);
         return { error: true };
