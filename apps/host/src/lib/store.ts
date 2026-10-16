@@ -1684,7 +1684,7 @@ export function go(route: Route, param?: string) {
 export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
-  for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) void followTimeSkip(session.id, run.id); }
+  for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) { markTurn(session.id, { abort: new AbortController(), agent: false }); void followTimeSkip(session.id, run.id); } }
   void bootstrap();
   void reconcileAgentTools();
 }
