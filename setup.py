@@ -296,7 +296,7 @@ FP4LOCAL_PREPARED = "prepared"                       # <models>/nvidia--Qwen3.8-
 # the first release engine with NVFP4 experts (a source build of this checkout has them whatever its number says)
 NVFP4_ENGINE = (0, 1, 44)
 # the first engine that reads NVIDIA's NVFP4 n-gram table (strata.ple.format = nvfp4x16); a source build of this checkout has it
-FP4LOCAL_ENGINE = (0, 1, 46)
+FP4LOCAL_ENGINE = (0, 1, 45)
 
 # agentionai's Gyro files (Qwen3.8-Flash-Next with trellis-coded, Hadamard-rotated experts, TQ2_T / TQK6 / TQK7): one
 # GGUF per size, the n-gram table inside it (hence the 58 / 92 GB downloads for 27.6 / 35 GB of memory).  The engine
