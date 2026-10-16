@@ -23,6 +23,8 @@
  *   SCRIPT:read <file>              the `read` tool on <file>
  *   SCRIPT:spawn <n> <script...>    n `subagent` calls in one reply; each child's prompt is SCRIPT:<script...>. When a child's
  *                                   completion notice wakes the parent, it answers with a short text quoting the notice.
+ *   SCRIPT:goalstep                 one goal round: get_goal, then update_goal complete, then a short closing text
+ *   SCRIPT:planreply                a reply ending with a numbered plan of three steps (each step's text carries SCRIPT:goalstep)
  *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
@@ -106,6 +108,16 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
 `, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' }
         : { command: shellCommand(file, value), description: `Append one line to ${file}`, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' });
     }
+    if (directive?.[1] === 'goalstep') {
+      // A goal round: read the goal, mark it complete, then say so.
+      if (!toolMessages.length) return toolCall('get_goal', {});
+      if (toolMessages.length === 1 && last.role === 'tool') {
+        const t = text(last); const id = /"id"\s*:\s*"([^"]+)"/.exec(t)?.[1]; const revision = Number(/"revision"\s*:\s*(\d+)/.exec(t)?.[1] ?? 1);
+        if (id) return toolCall('update_goal', { goal_id: id, revision, action: 'complete' });
+      }
+      return say(['Step finished. The result is checked.']);
+    }
+    if (directive?.[1] === 'planreply') return say(['I looked around the folder first.\n\n## The pagoda plan\n\n', '1. First thing SCRIPT:goalstep\n', '2. Second thing SCRIPT:goalstep\n', '3. Third thing SCRIPT:goalstep\n']);
     if (last.role === 'tool') {
       const result = text(last).replace(/\s+/g, ' ').slice(0, 120);
       return say(['Tool finished. ', `Result: ${result}`]);
