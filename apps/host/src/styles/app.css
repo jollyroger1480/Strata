@@ -7004,7 +7004,7 @@ textarea {
 .st-bubble .st-code pre, .st-bubble .st-code pre code, .st-bubble .st-code .syntax-text { font-size: calc(var(--st-content-fs, 14px) * .8125); }
 .st-msg--assistant .st-collapse__body { font-size: calc(var(--st-content-fs, 14px) * .8125); }
 .error-notice .error-detail { margin-top: 6px; }
-.error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
+.error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); max-height: 3.3em; overflow-y: auto; }
 .error-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
 /* What you type and the small print under each message follow the reading size too, so the whole conversation changes together. */
 .st-composer textarea { font-size: var(--st-content-fs, 14px); }

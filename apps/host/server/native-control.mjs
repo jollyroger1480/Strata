@@ -233,7 +233,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
     try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
-    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2===said?said2:`${said2} (after one automatic second try with a safer setting: ${detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}}
+    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;

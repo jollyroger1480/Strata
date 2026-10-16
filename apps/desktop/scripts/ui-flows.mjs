@@ -540,7 +540,7 @@ await scenario('polish', { installed: true }, async ({ base, api, browser, dirs,
   await clickText(page, /Go straight to the app/i);
   await page.waitForURL(/#\/models/, { timeout: 15000 }).catch(() => {});
   await page.getByText(/Conversation context/i).first().waitFor({ timeout: 30000 });
-  check(await page.getByRole('button', { name: /Tune model/i }).count() === 0, 'the Models tab has no "Tune model" button');
+  check(await page.getByRole('button', { name: /^Tune model$/ }).count() === 1, 'the Models tab has the Tune model button (the real tuner, not the old short benchmark)');
   await clickText(page, /Manage models/i);
   await delay(500);
   const rows = await page.locator('.native-manage-row').count();
