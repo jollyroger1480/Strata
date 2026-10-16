@@ -4,6 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
+import { appendText, mergeDeliverable, readDeliverable, readGroup, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
@@ -1650,7 +1651,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+        } else if (type === 'deliverable') {
+          const file = readDeliverable(frame);
+          if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
+        } else if (type === 'activity-group') {
+          const group = readGroup(frame);
+          if (group) patchAssistant(m => ({ ...m, blocks: upsertGroup(m.blocks ?? (m.content ? appendText(undefined, m.content) : undefined), group) }));
         } else if (type === 'artifacts' && Array.isArray(frame.artifacts)) {
           patchAssistant(m => ({ ...m, artifacts: frame.artifacts as PreviewArtifact[] }));
         } else if(type==='native-tool'){
