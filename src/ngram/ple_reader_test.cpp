@@ -249,7 +249,9 @@ void all_formats_round_trip(const std::string& dir) {
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
         CHECK((int) f.id == i, "%s: the table is not in PleFormat order", f.name);
-        CHECK(k::ple_format_for_type(f.gguf_type) == &f, "%s: type lookup", f.name);
+        // NVFP4 and F8_E4M3 are both I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks NVFP4 in PleTable::open
+        const k::PleFormatInfo* want = f.id == k::PleFormat::NVFP4 ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
+        CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
     }
     CHECK(k::ple_format_for_type("Q6_K") == nullptr, "Q6_K must not be a PLE format");
