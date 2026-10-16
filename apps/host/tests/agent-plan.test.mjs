@@ -96,5 +96,6 @@ test('research: the answer shape is asked for, and the sources are read back as 
     { n: 2, title: 'Costs explained', url: 'https://costs.example.com/page?x=1' },
     { n: 3, title: 'plain.example.net', url: 'https://plain.example.net/a' },
   ]);
-  assert.deepEqual(parseSources('No sources section here, see https://x.example'), []);
+  assert.deepEqual(parseSources('No sources section here, see https://x.example'), [{ n: 1, title: 'x.example', url: 'https://x.example' }], 'without a Sources section the linked pages are listed');
+  assert.deepEqual(parseSources('Nothing to link.'), []);
 });

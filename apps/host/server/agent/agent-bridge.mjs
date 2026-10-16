@@ -23,7 +23,7 @@ import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
-import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView, researchPrompt, parseSources } from './plan.mjs';
+import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -248,11 +248,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
   async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, planTask = null, planRun = null, researchTopic = null }) {
     let send = onFrame; let attached = true;
+    // A research run gathers first; what the assistant writes while gathering is notes, not the answer, so it is not shown.
+    let hideDeltas = !!researchTopic;
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
     const written = { all: '', step: '' };
     const emit = frame => {
-      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; }
+      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (hideDeltas) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
       try { send(frame); } catch { send = () => {}; attached = false; }
     };
@@ -295,6 +297,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
       plan: null, advancing: false, goalRun: false,
+      research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
     function finishTurn(failure) {
@@ -404,6 +407,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       switch (e.type) {
         case 'turn/start':
           turn.parentOpen = true;
+          if (turn.research) turn.research.waitingStart = false;
           clearTimeout(turn.settleTimer);
           // After Stop, a helper's report would start a new turn that nobody asked for.
           if (turn.stopping) void runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
@@ -547,6 +551,21 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           const current = await goalGet();
           if (turn.finished || turn.parentOpen) return;
           if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
+          // Research: gather (search and read pages), then write the answer in the fixed shape. A step that did not open pages is sent back once.
+          if (turn.research && !turn.stopping) {
+            const r = turn.research;
+            if (r.waitingStart) { turn.settleTimer = after(300, armSettle); return; }
+            const opened = [...projector.tools.values()].filter(x => x.card?.name === 'web_fetch' && x.card.state === 'done').length;
+            const prompt = r.phase === 'write' ? null : (opened < 2 && !r.nudged) ? RESEARCH_NUDGE : researchWritePrompt(researchTopic);
+            if (prompt) {
+              if (prompt !== RESEARCH_NUDGE) { r.phase = 'write'; hideDeltas = false; written.all = ''; reporter.set({ phase: 'waiting', code: 'research-writing', text: 'Writing the answer…', key: 'Writing the answer…', values: [], args: {} }); } else r.nudged = true;
+              r.waitingStart = true;
+              try { await runtime.gw.rpc('session/prompt', { request: { requestId: `research-${randomUUID()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } }); }
+              catch { r.waitingStart = false; hideDeltas = false; finishTurn(null); return; }
+              turn.settleTimer = after(500, armSettle);
+              return;
+            }
+          }
           // A plan step's goal is complete: record it, deliver queued messages, start the next step.
           if (turn.plan && current && current.phase === 'complete' && !turn.advancing) {
             turn.advancing = true;

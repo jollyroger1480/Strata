@@ -62,6 +62,7 @@ async function stream(body, { quiet = false, path = '/api/chat/stream', onFrame 
         else if (f.type === 'plan-step') out = `PLAN-STEP ${f.line}${f.summary ? ' | summary: ' + f.summary : ''}`;
         else if (f.type === 'queued-message') out = `QUEUED-MESSAGE ${f.state} "${f.message.text.slice(0, 50)}" deliverAt=${f.message.deliverAt}${f.afterStep ? ' afterStep=' + f.afterStep : ''} queue=${f.queue.length}`;
         else if (f.type === 'queued-release') out = `QUEUED-RELEASE ${f.messages.map(m => m.text.slice(0, 40)).join(' | ')}`;
+        else if (f.type === 'research') out = `RESEARCH sources=${f.sources.map(x => x.n + ':' + x.url).join(' ')}`;
         else if (f.type === 'done') out = `done ${f.finishReason} tokensOut=${f.tokensOut}`;
         else if (f.type === 'error') out = `ERROR ${f.message}`;
         if (!quiet && out !== lastLine) console.log(`${stamp()}  ${out}`);
@@ -71,6 +72,7 @@ async function stream(body, { quiet = false, path = '/api/chat/stream', onFrame 
     if (done) break;
   }
   flushCounters();
+  if (process.env.SHOWTEXT && !quiet) console.log(['---- answer text ----', frames.filter(f => f.type === 'delta').map(f => f.text).join(''), '---- end ----'].join(String.fromCharCode(10)));
   return frames;
 }
 

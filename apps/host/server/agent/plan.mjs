@@ -190,24 +190,34 @@ export const planView = plan => (plan ? JSON.parse(JSON.stringify(plan)) : null)
 
 // ---- /research ------------------------------------------------------------------------------------------------------------------
 
-/** The instruction a research turn gets in front of the person's topic. */
+/** The first research prompt: find and read pages, take notes. What the assistant writes here is not shown; the answer is written in a second step. */
 export function researchPrompt(topic) {
   return [
-    `Research this topic for me using the web: ${topic}`,
+    `Research task: ${topic}`,
     '',
-    'How to work:',
-    '1. Search the web with the web_search tool (try two or three different searches).',
-    '2. Open the most useful pages with the web_fetch tool and read them. Use at least three different sources when you can find them.',
-    '3. Write only what the pages say. If sources disagree or you could not find something, say so plainly.',
-    '',
-    'Then write your answer in exactly this shape, in plain words:',
+    'Do these steps in order. Do not skip a step.',
+    '1. Call web_search to find pages about the task.',
+    '2. Call web_fetch to open at least two of the pages you found, and read them. Do not rely on the search results alone.',
+    '3. When you have read them, reply with short notes: the facts you found, each with the web address of the page it came from.',
+  ].join('\n');
+}
+
+/** Sent when the assistant answered without opening pages. */
+export const RESEARCH_NUDGE = 'You have not opened enough pages yet. Call web_fetch now on at least two of the pages from your search, read them, then reply with short notes and the web address of each page.';
+
+/** The second research prompt: write the answer in the fixed shape. */
+export function researchWritePrompt(topic) {
+  return [
+    `Now write the final answer to the research task: ${topic}`,
+    'Use only what you read on the pages. Do not call any tool. Start your reply with the line "## Summary" and use exactly these three headings:',
     '## Summary',
-    'Three to five sentences.',
+    'Three to five sentences, in plain words. If the sources disagree or something could not be found, say so.',
     '## Key findings',
     '- One finding per line, each ending with its source number in square brackets, like [1].',
     '## Sources',
     '1. Page title - web address',
     '2. Page title - web address',
+    'List only pages you opened.',
   ].join('\n');
 }
 
@@ -215,7 +225,7 @@ export function researchPrompt(topic) {
 export function parseSources(text) {
   const lines = String(text ?? '').replace(/\r/g, '').split('\n');
   const at = lines.map(l => /^\s{0,3}#{1,6}\s*sources\b/i.test(l) || /^\s*\*{0,2}sources\*{0,2}:?\s*$/i.test(l)).lastIndexOf(true);
-  if (at < 0) return [];
+  if (at < 0) return linkSources(text);
   const out = [];
   for (const line of lines.slice(at + 1)) {
     if (/^\s{0,3}#{1,6}\s/.test(line)) break;
@@ -227,4 +237,18 @@ export function parseSources(text) {
     if (!out.some(s => s.url === url)) out.push({ n: out.length + 1, title: clip(title, 120), url });
   }
   return out.slice(0, 20);
+}
+
+/** No Sources section: the pages the answer links to, in the order they appear, so the page can still list where it came from. */
+function linkSources(text) {
+  const out = [];
+  const re = /\[([^\]]{1,160})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)>\]"']+)/g;
+  let m;
+  while ((m = re.exec(String(text ?? ''))) && out.length < 8) {
+    const url = (m[2] ?? m[3]).replace(/[.,;]+$/, '');
+    if (out.some(x => x.url === url)) continue;
+    let host = url; try { host = new URL(url).hostname; } catch { /* keep the address */ }
+    out.push({ n: out.length + 1, title: clip(clean(m[1] ?? '') || host, 120), url });
+  }
+  return out;
 }
