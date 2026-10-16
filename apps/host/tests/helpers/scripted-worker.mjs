@@ -123,6 +123,8 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       return say(['Tool finished. ', `Result: ${result}`]);
     }
     const [name, args] = [directive?.[1], (directive?.[2] ?? '').trim()];
+    // The Harness's compaction request (its summarizer prompt asks for the person's evolving goals): answer with a short summary.
+    if (messages.some(m => /evolving goals/.test(text(m)))) { requests.at(-1).summary = true; return say(['Summary of the earlier conversation: the person asked for echoes of a word and got them.']); }
     // The Harness's session-title request carries the same user text but offers no tools.
     if (!(body.tools ?? []).length && messages.some(m => /concise title/i.test(text(m)))) return say(['Scripted title']);
     if (name === 'slow') {

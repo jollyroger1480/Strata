@@ -104,7 +104,20 @@ function fingerprint(provider, secret) {
  */
 export function localOutputBudget(context) {
   const c = Number.isFinite(context) && context > 0 ? context : 32768;
-  return Math.max(8192, c - 4096);
+  // Half the window, at most 32K: still far more than the old 8192 that cut big answers off, and it leaves the other half for the
+  // conversation. The Harness's automatic compaction reads this number as the room the reply reserves: with nearly the whole window
+  // reserved it had no room left to measure pressure in, and a long chat or a long helper task never compacted.
+  return Math.max(4096, Math.min(32768, Math.floor(c / 2)));
+}
+
+/**
+ * When the Harness's automatic compaction starts condensing old history, for one model: its own default keeps 64K tokens of headroom,
+ * which on a local window of 32K to 128K leaves no room at all (it then reports a configuration error once and never compacts). A quarter
+ * of what the window has left after the reply's room works from 16K up to the largest windows. Compaction then starts at about 70 percent.
+ */
+export function compactionHeadroom(context, outputBudget) {
+  const room = Math.max(0, (Number.isFinite(context) && context > 0 ? context : 32768) - outputBudget);
+  return Math.max(512, Math.min(65536, Math.floor(room * 0.25)));
 }
 
 /**
@@ -144,6 +157,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   const mcpEnv = {};
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
+  /** Per-model compaction timing (see compactionHeadroom). */
+  const compaction = [];
 
   local.forEach((inst, index) => {
     const route = index === 0 ? 'strata-local' : `strata-local-${slug(inst.id)}`;
@@ -166,6 +181,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
         reasoning: true, reasoningEfforts: LOCAL_EFFORTS,
       }],
     };
+    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context });
   });
@@ -194,6 +210,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
+    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
     for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT });
   });
 
@@ -226,7 +243,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
-    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir }) },
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir, compaction }) },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },
