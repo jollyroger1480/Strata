@@ -4522,7 +4522,7 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
 # user's own (STRATA_ROUTE_TAIL_SKIP=0 to turn the tail skip off, STRATA_MMQ_KQ=1 ...): a setup run again keeps them there
@@ -4876,13 +4876,17 @@ def calibrate_config(cfg_path: Path) -> bool:
             say(f"       the engine said: {why}")
         return False
     cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    if "env" in res:                                   # HIP: the engine variables it measured (STRATA_SH_STREAM)
+        cfg["env"] = CAL.apply_env(cfg.get("env"), res["env"])
     write_config(cfg_path, cfg)
     st = load_settings()
-    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
+    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
+                                                           "tok_s": res["report"].get("tok_s"),
                                                            "date": time.strftime("%Y-%m-%d")}
     save_settings(st)
-    if res["settings"]:
-        ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in res["settings"].items())
+    chosen = {**res["settings"], **(res.get("env") or {})}
+    if chosen:
+        ok("tuned for this PC: " + ", ".join(f"{k} {v}" if k.startswith("--") else f"{k}={v}" for k, v in chosen.items())
            + (f" ({res['report']['tok_s']} tok/s)" if res["report"].get("tok_s") else ""))
     else:
         ok("tuned for this PC: the default settings are already the fastest here"
@@ -7033,6 +7037,14 @@ def main() -> int:
             # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
             # them and turning the opt-in off takes them out again.
             cfg.setdefault("env", {}).update(GFX1150_SWITCHES)
+        # RDNA2 (gfx103x): the prompt's FP16 GEMMs through rocBLAS's best kernel per shape (tools/hip/tune_rocblas;
+        # the GDN input projection 6x faster below 1,152 tokens on a 6900 XT).  The ids are valid for one rocBLAS
+        # build, which only the engine can read, so setup points it at the directory and the engine picks the file
+        # <arch>-rocblas-<version>.txt for its own library, or runs the default kernels and says so in its log.
+        rocblas_tables = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{gpu['arch']}-rocblas-*.txt"))
+        if rocblas_tables:
+            cfg.setdefault("env", {})["STRATA_ROCBLAS_TUNING"] = str(ROOT / "tools" / "hip")
+            ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
@@ -7094,6 +7106,8 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        if "env" in cal:                               # a calibration from before the env step leaves "env" as it is
+            cfg["env"] = CAL.apply_env(cfg.get("env"), cal["env"])
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])

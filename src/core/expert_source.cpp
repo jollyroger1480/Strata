@@ -527,8 +527,18 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
     // #1194: the experts read from the files are a skewed set: a cache holding a twentieth of them (at least 1.5 GiB)
     // serves most of the repeats, and beat the unbuffered reads at every room measured (it reads 2 to 7 times less from
     // the drive).  `avail` already has what this process and the cgroup hold taken off, so 1 GiB is left for the rest.
-    const bool keepable = strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes, 1ull << 30, 0.05,
-                                                             3ull << 29);
+    // #1752 (KevinX8): ROCm queues are suspended while the kernel reclaims around the process's HMM-tracked arena
+    // (#1691) on an MI50 (gfx906): the cached reads churn the page cache and reclaim unmaps the arena, so the gfx906
+    // backend keeps the old room >= read_bytes rule.  Other HIP cards (gfx1201 measured: not affected) keep the new
+    // rule; STRATA_FILE_CACHE_OLD_RULE=1 / 0 forces the old rule on / off on any Linux build.
+    bool old_rule = false;
+#if defined(STRATA_HIP_GFX906)
+    old_rule = true;
+#endif
+    if (const char* r = std::getenv("STRATA_FILE_CACHE_OLD_RULE"); r != nullptr && r[0] != '\0') old_rule = r[0] != '0';
+    const bool keepable = old_rule
+        ? strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes)
+        : strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes, 1ull << 30, 0.05, 3ull << 29);
     char msg[256];
     std::snprintf(msg, sizeof msg, "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
                   "of experts read from the files: the file cache %s keep the ones that come back",

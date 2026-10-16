@@ -12,6 +12,13 @@
 
 namespace strata::prefill {
 
+/// STRATA_F16_RANGE: count what the gfx103x FP16 route converts on this device - the BF16 weights to FP16 (slot 0)
+/// and the FP16 GEMM outputs widened to FP32 (slot 1): the largest |value| and how many were beyond 65504 or not
+/// finite.  gemm_f16_range_read returns them (and resets when asked); false where the route does not exist (CUDA).
+void gemm_set_f16_range(bool on);
+bool gemm_f16_range_read(float max_abs[2], unsigned long long over[2], bool reset);
+
+
 class Gemm {
 public:
     Gemm() = default;
@@ -67,6 +74,7 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
+    void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;
     /// cuBLAS 12 answers the default FP16 algorithm of a few (N, K) shapes with CUBLAS_STATUS_INTERNAL_ERROR once
     /// another CUDA device in the process has initialized its context (issue #1650, Turing + Pascal).  A fixed
@@ -75,7 +83,11 @@ private:
     static constexpr int kF16AlgoSlots = 32;
     int64_t f16_algo_shape_[kF16AlgoSlots] = {};
     int f16_algo_n_ = 0;
-    // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16)
+    // RDNA2 (gfx103x, HIP): the product as an SGEMM on FP32 copies (tc_w_, tc_x_); false: the native call runs (gemm.cu)
+    bool rdna2_sgemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                     float beta, bool bf16);
+    // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16);
+    // RDNA2: FP32 copies of the weight and an activation slice (Gemm::rdna2_sgemm)
     uint16_t* tc_w_ = nullptr;
     int64_t tc_w_elems_ = 0;
     uint16_t* tc_x_ = nullptr;
