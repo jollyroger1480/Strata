@@ -217,3 +217,30 @@ guarded (`GGML_USE_HIP`). Neither was built for HIP here.
 - `nvfp4_avx512_parity`: the CPU rows against ggml-cpu (with `--expert`: one whole expert).
 - `mmq_nvfp4_parity`: the prompt path's products against FP64 (with `--real`: rows dumped by `STRATA_DUMP_MOE_INPUT`).
 - `tools/nvfp4_verify.py` and `tools/nvfp4_verify_gguf.py`: the conversion, bit for bit.
+
+## NVIDIA's FP4-Local checkpoint
+
+`nvidia/Qwen3.8-Flash-Next-FP4-Local` (setup size **NVFP4-QAD**) is NVIDIA's own retrained 4-bit model: ModelOpt 0.47
+safetensors, experts retrained by quantization-aware distillation. Strata reads it by converting it on the user's PC;
+nothing of NVIDIA's weights is redistributed (licenses: NVIDIA Open Model Agreement and Qwen Community License 1.0).
+
+What the checkpoint holds, and what `tools/nvfp4_local_pack.py` does with it:
+
+| In the checkpoint | Becomes |
+| --- | --- |
+| routed experts: NVFP4 (E2M1, E4M3 scale per 16, F32 scale per tensor); the scales stored in NVIDIA's "CSF" form (`.nvfp4_csf_fixed` U8 + `.nvfp4_csf_exceptions` U32) | the scales are decoded to the plain E4M3 matrix (byte-exact; the format is the one vLLM's loader documents), then repacked exactly like every other NVFP4 pack: `experts.bin` with the same 36-byte super-blocks and the 16-byte scale tail. Checked: 304 complete experts and the whole `experts.bin` (SHA-256) equal the route through a full GGUF |
+| attention, GDN projections, shared experts, indexer: MXFP8 (E4M3 values, E8M0 scale per 32) | dequantized exactly, then Q8_0 (same 32-value blocks; +0.6% RMS on top of MXFP8's own ~3%), or BF16 for the small projections the BF16 kernels read |
+| n-gram (PLE) table, 26.8 GiB: NVFP4 rows of 160 values | a one-tensor GGUF of 90-byte rows (80 B codes + 10 E4M3 scales, one F32 for the table), read by the new PLE format `NVFP4` (`strata.ple.format = nvfp4x16`) in `ngram.cpp`; same row size as IQ4_NL |
+| MTP head: NVFP4 experts, BF16 rest | a Q2_0 draft layer built with `mtp_pack.py` / `mtp_rt.py` (88.7% of drafts accepted over 225 test requests) |
+| vision tower | not converted yet (text only) |
+
+`python tools/nvfp4_local_pack.py prepare --model <checkpoint> --out <dir>` runs every step (setup does this): the n-gram
+table, the dense GGUF (no experts), the pack (experts written straight from the checkpoint) and the draft layer. It needs
+about 110 GB of free disk beside the 102 GB download, which can be deleted afterwards. On a Threadripper PRO with the files
+on NVMe it took about 12 minutes.
+
+Measured on an RTX PRO 5000 72 GB (Blackwell), 128K context, int8 KV, every expert in VRAM (`tools/strata_bench.py`):
+decode 159 tokens/s (median of chat answers, 137-216), 4K prompt 3,981 tokens/s, 16K 4,813, 32K 4,916 (first token 6.6 s),
+agent session 151 tokens/s; the engine holds 69 GB of RAM beside 72 GB of VRAM. Quality is in the table below
+(`tools/quant_quality.py`, set v1, against Unsloth's Q8_0): top-1 90.5%, mean KL 0.085, perplexity 3.95 (Q8_0: 4.05).
+This is a retrained model, so its distance to the original's Q8_0 includes real weight changes, not only rounding.
