@@ -240,8 +240,15 @@ await scenario('models', { installed: true }, async ({ base, api, browser, shot 
   await page.getByText(/Conversation context/i).first().waitFor({ timeout: 30000 });
   await delay(1500);
   await shot(page, '1-models');
-  await page.locator('.native-toolbar-summary').first().waitFor({ timeout: 20000 }).catch(async () => { await shot(page, '0-models-missing-summary'); console.log('info  page text:', JSON.stringify((await page.locator('body').innerText()).slice(0, 500))); });
-  const summary = await page.locator('.native-toolbar-summary').first().textContent({ timeout: 5000 }).catch(() => '');
+  await page.locator('.version-trigger').first().waitFor({ timeout: 20000 }).catch(async () => { await shot(page, '0-models-missing-summary'); console.log('info  page text:', JSON.stringify((await page.locator('body').innerText()).slice(0, 500))); });
+  const summary = await page.locator('.version-trigger').first().textContent({ timeout: 5000 }).catch(() => '');
+  // the Models tab fits the first view: nothing to scroll while no list is open and Expert mode is closed
+  if (await page.getByRole('button', { name: /^Close expert mode$/ }).count()) { await page.getByRole('button', { name: /^Close expert mode$/ }).click(); await delay(500); }
+  await shot(page, '1b-models-one-view');
+  const overflow = await page.evaluate(() => { const el = document.querySelector('.main__body'); return el ? el.scrollHeight - el.clientHeight : 0; });
+  check(overflow <= 2, 'the Models tab fits the first view without scrolling', String(overflow) + ' px over');
+  check(await page.locator('.family-switch').count() === 1, 'the model family switch is in the navbar');
+  check(await page.locator('h1').filter({ hasText: /^Model$/ }).count() === 0, 'and the navbar does not say "Model"');
   check(/IQ3_S|High quality/.test(summary ?? ''), 'Models selects the model that is on this PC, not the recommendation', (summary ?? '').replace(/\s+/g, ' ').trim());
   check(!/IQ3_XXS|Balanced/.test(summary ?? ''), 'the recommendation (IQ3_XXS) is not what is selected');
   const load = page.getByRole('button', { name: /^Load model$/ }).first();
@@ -380,7 +387,7 @@ for (const scheme of ['light', 'dark']) await scenario(scheme === 'light' ? 'ui2
   }
   check(sawRun, `${scheme}: a step is shown as running`);
   check(sawSpeed, `${scheme}: the live speed shows a number while it runs`);
-  if (sawSpeed) { fakePhase = 'done'; await page.locator('.tune-hero').waitFor({ timeout: 15000 }).catch(() => {}); check(/\+18%/.test((await page.locator('.tune-hero').textContent().catch(() => '')) ?? ''), `${scheme}: the result card shows the gain large`); check(/Fast/.test((await page.locator('.tune-compare').textContent().catch(() => '')) ?? ''), `${scheme}: and what it was saved as`); }
+  if (sawSpeed) { fakePhase = 'done'; await page.locator('.tune-outcome').waitFor({ timeout: 15000 }).catch(() => {}); check(/18% faster/.test((await page.locator('.tune-outcome__body h3').textContent().catch(() => '')) ?? ''), `${scheme}: the result card shows the gain as its headline`); check(/Fast/.test((await page.locator('.tune-outcome__facts').textContent().catch(() => '')) ?? ''), `${scheme}: and what it was saved as`); }
   await shot(page, `4-tune-result-${scheme}`);
   await page.getByRole('button', { name: /^Close$/ }).first().click({ timeout: 10000 }).catch(() => {});
   // a task: the opened task is skimmable, with pause / delete / Edit / Run now
@@ -391,7 +398,7 @@ for (const scheme of ['light', 'dark']) await scenario(scheme === 'light' ? 'ui2
   await page.getByRole('button', { name: /^Edit$/ }).first().waitFor({ timeout: 15000 });
   console.log('info  header buttons', await page.getByRole('button', { name: /^Pause / }).count(), await page.getByRole('button', { name: /^Delete / }).count(), await page.getByRole('button', { name: /Run now/ }).count(), JSON.stringify(await page.locator('.task-header-actions button').evaluateAll(b => b.map(x => (x.getAttribute('aria-label') ?? x.textContent ?? '').trim()))));
   check(await page.getByRole('button', { name: /^Pause / }).count() === 1 && await page.getByRole('button', { name: /^Delete / }).count() >= 1 && await page.getByRole('button', { name: /Run now/ }).count() >= 1, `${scheme}: pause, delete, Edit and Run now are in the header`);
-  check(await page.locator('.main__back').count() === 1, `${scheme}: a back link sits before the title`);
+  check(await page.locator('.main__back').count() === 0 && await page.locator('.main__title-line .task-state').count() === 0, `${scheme}: nothing sits on the left of an opened task's navbar`);
   const factsText = ((await page.locator('.task-facts').textContent()) ?? '').replace(/\s+/g, ' ');
   check(/Weekdays/.test(factsText) && /Schedule/i.test(factsText) && /Last result/i.test(factsText), `${scheme}: schedule, what it may do and the last result are at the top`, factsText.slice(0, 160));
   await shot(page, `5-task-${scheme}`);
