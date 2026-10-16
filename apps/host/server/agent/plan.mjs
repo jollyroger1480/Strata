@@ -113,6 +113,7 @@ export function stepObjective(plan, index) {
     `Overall aim: ${plan.title}.`,
     `You are on step ${index + 1} of ${n}: ${s.text}${s.detail ? ` (${s.detail})` : ''}.`,
     done ? `Already done: ${done}.` : '',
+    plan.briefing ? String(plan.briefing) : '',
     'Do only this step, check that it worked, and then finish the goal.',
     index + 1 < n ? 'The next steps are handled separately: do not start them.' : '',
   ].filter(Boolean).join(' ');
