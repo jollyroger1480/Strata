@@ -8,6 +8,8 @@ export async function monitorPng(element: HTMLElement) {
   clone.style.width = `${element.getBoundingClientRect().width}px`;
   clone.style.position = 'fixed'; clone.style.left = '-100000px'; clone.style.top = '0';
   clone.setAttribute('aria-hidden', 'true');
+  // What is only live state (the model state and the conversation cache) is not part of the picture.
+  clone.querySelectorAll('[data-snapshot-skip]').forEach(node => node.remove());
   for (const use of clone.querySelectorAll('svg use')) {
     const id = use.getAttribute('href')?.split('#')[1];
     const symbol = id && sprite.getElementById(id), svg = use.parentElement;
