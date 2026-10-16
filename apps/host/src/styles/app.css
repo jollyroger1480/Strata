@@ -7474,3 +7474,8 @@ textarea {
 .tsf__lane[data-state="waiting"] .tsf__name, .tsf__lane[data-state="pending"] .tsf__name { opacity: .6; }
 @media (prefers-reduced-motion: reduce) { .tsf__prog i { transition: none; } }
 .ts-keep__buttons { display: inline-flex; gap: 8px; }
+
+/* A neutral, theme-following button for content cards: no green (round 8 follow-up) */
+.st-btn.btn-neutral { background: var(--st-surface); color: var(--st-ink); border: 1px solid var(--st-line); box-shadow: none; }
+.st-btn.btn-neutral:hover:not(:disabled) { background: var(--st-surface-2); }
+.native-vision-missing { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }

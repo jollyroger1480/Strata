@@ -3117,8 +3117,8 @@
   "s3121": "Conservar una versión",
   "s3122": "La versión A está en tus archivos.",
   "s3123": "La versión B está en tus archivos.",
-  "s3124": "Versión A conservada",
-  "s3125": "Versión B conservada",
+  "s3124": "Para leer imágenes faltan algunos archivos que aún no están en este equipo.",
+  "s3125": "Descargar los archivos para leer imágenes",
   "s3126": "Dos versiones para comparar",
   "s3127": "A y B llegaron hasta el final. Conserva la que prefieras.",
   "s3128": "Time-skip funciona con un modelo cargado. Elige uno en la pestaña Modelos y vuelve a intentarlo."

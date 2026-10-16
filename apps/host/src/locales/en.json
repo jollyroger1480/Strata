@@ -3117,8 +3117,8 @@
   "s3121": "Keep a version",
   "s3122": "Version A is in your files.",
   "s3123": "Version B is in your files.",
-  "s3124": "Version A kept",
-  "s3125": "Version B kept",
+  "s3124": "Picture reading needs a few more files that are not on this computer yet.",
+  "s3125": "Download picture-reading files",
   "s3126": "Two versions to compare",
   "s3127": "A and B each went all the way through. Keep the one you like.",
   "s3128": "Time-skip works on a loaded model. Choose one on the Models tab, then try again."

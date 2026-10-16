@@ -10,7 +10,7 @@ import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabI
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
-import { photoData, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
+import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
@@ -1595,7 +1595,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
-        images:await Promise.all(pictures.map(photoData)),
+        ...(pictures.length ? { imageIds: await uploadChatPhotos(pictures, sessionId) } : {}),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         // A chat set to plain talk (preferences.agent === false) never runs a tool: the host answers it directly.
         ...(state.sessions.find(s=>s.id===sessionId)?.preferences?.agent===false?{agent:false}:{}),
