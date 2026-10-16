@@ -108,6 +108,13 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
 `, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' }
         : { command: shellCommand(file, value), description: `Append one line to ${file}`, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' });
     }
+    // Time-skip's two own questions (they quote the plan, whose steps carry directives, so they are recognised by their words first).
+    {
+      const t = messages.filter(m => m.role === 'user').map(text).join(' ');
+      const answered = messages.some(m => m.role === 'assistant');
+      if (/biggest lever/.test(t) && !answered && last.role !== 'tool') return say(['{"step": 2, "why": "The layout decided in step 1 shapes everything after it."}']);
+      if (/IMPROVEMENT PLAN/.test(t) && !answered && last.role !== 'tool') return say(['## Better path\n\n', '1. Improve the first attempt SCRIPT:goalstep\n', '2. Polish and check SCRIPT:goalstep\n']);
+    }
     if (directive?.[1] === 'goalstep') {
       // A goal round: read the goal, mark it complete, then say so.
       if (!toolMessages.length) return toolCall('get_goal', {});

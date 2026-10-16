@@ -52,6 +52,7 @@ import { isPrivateHost } from './agent/llm-shape.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
+import { createForkTimeskip } from './timeskip-fork.mjs';
 import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
@@ -65,7 +66,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { validateChatImages } from './chat-images.mjs';
-import { createTimeSkip, measureFolder, timeskipRevisionMessage } from './timeskip.mjs';
+import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -808,6 +809,8 @@ function createTuning({ repoRoot, python, pythonArgs = [], env = process.env } =
 
 const tuning = createTuning({ repoRoot: REPO_ROOT, python: TS_PYTHON, pythonArgs: PYTHON.args });
 
+/* Time-skip: plan, lever, A all the way, B forked at the lever (notes-split-agent8.md). The older revise-the-draft job above stays reachable with legacy:true. */
+const forkTs = createForkTimeskip({ agent, dir: join(store.DATA_DIR, 'timeskip-fork'), notify: (type, data) => hub.send(type, data) });
 const timeskip = createTimeSkip({
   repoRoot: REPO_ROOT,
   python: TS_PYTHON,
@@ -1007,10 +1010,11 @@ async function api(req, res, path, method, url) {
   // These routes only start it, follow it and apply its result; they never compute a status or a
   // score of their own, so the UI cannot show progress the job did not report.
   if (path === '/api/timeskip' && method === 'GET') {
-    return json(res, 200, { runs: timeskip.list(), stateDir: timeskip.stateDir() });
+    return json(res, 200, { runs: [...forkTs.list(), ...timeskip.list()], stateDir: timeskip.stateDir() });
   }
   if (path === '/api/timeskip/status' && method === 'GET') {
     const id = url.searchParams.get('id');
+    if (id && forkTs.has(id)) return json(res, 200, { run: forkTs.status(id) });
     const run = id ? timeskip.status(id) : null;
     if (!run) return error(res, 404, 'No such Time-skip run.');
     return json(res, 200, { run: { ...run, activity: trialActivity(run) } });
@@ -1020,6 +1024,20 @@ async function api(req, res, path, method, url) {
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
     const workspace = String(body.workspace ?? '').trim() || ((workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE);
     const prompt = String(body.prompt ?? '').trim().slice(0, 4000);
+    if (body.legacy !== true) {
+      if (!prompt) return error(res, 400, 'Say what you want made or improved after /time-skip.');
+      if (!existsSync(workspace)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a folder for this chat, then try again.');
+      const cwd = chatFolders.get(typeof body.sessionId === 'string' ? body.sessionId : '') ?? workspace;
+      if (resolve(cwd) === resolve(ROOT) || resolve(cwd).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
+      if (measureFolder(cwd).tooBig) return error(res, 400, 'This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
+      let choice, slots = 1;
+      if (body.remoteModel?.connectionId && body.remoteModel?.modelId) { choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) }; slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
+      else { try { const inst = native.resolveInstance(native.state().defaultId); choice = { instanceId: inst.id }; slots = inst.metrics?.live?.slots?.length || inst.parallel || 1; } catch { return error(res, 503, 'Load a model first, then try Time-skip again.'); } }
+      const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
+      if (chatId && forkTs.byChat(chatId)) return error(res, 409, 'A Time-skip is already running in this chat.');
+      const run = forkTs.start({ prompt, workspace: cwd, chatId, choice, thinking: typeof body.thinking === 'string' ? body.thinking : 'Low', slots });
+      return json(res, 200, { run, simulated: false });
+    }
     const reviseCommand = body.useAgent === false ? null : TIMESKIP_REVISE;
     // The folder of the app itself is never a person's work: "Keep the update" would write into the installation.
     if (resolve(workspace) === resolve(ROOT) || resolve(workspace).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
@@ -1043,13 +1061,15 @@ async function api(req, res, path, method, url) {
     return json(res, 200, { run: { ...result.run, activity: trialActivity(result.run) }, simulated: false });
   }
   if (path === '/api/timeskip/files' && method === 'GET') {
-    const found = timeskip.files(url.searchParams.get('id'));
+    const fid = url.searchParams.get('id');
+    const found = forkTs.has(fid) ? forkTs.files(fid) : timeskip.files(fid);
     if (!found) return error(res, 404, 'No such Time-skip run.');
     return json(res, 200, found);
   }
   /* One picture of a run, original or updated, for the Compare view. Only pictures inside the run's own folders; served as an image and nothing else. */
   if (path === '/api/timeskip/file' && method === 'GET') {
-    const found = timeskip.image(url.searchParams.get('id'), url.searchParams.get('path'), url.searchParams.get('version'));
+    const iid = url.searchParams.get('id');
+    const found = forkTs.has(iid) ? (() => { const p = forkTs.image(iid, url.searchParams.get('path'), url.searchParams.get('version')); return p ? { path: p, type: imageTypeOf(p) } : null; })() : timeskip.image(iid, url.searchParams.get('path'), url.searchParams.get('version'));
     if (!found) return error(res, 404, 'No such picture in this Time-skip run.');
     res.writeHead(200, { 'content-type': found.type, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
     createReadStream(found.path).pipe(res);
@@ -1057,6 +1077,7 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/stop' && method === 'POST') {
     const body = await readBody(req);
+    if (forkTs.has(String(body.id ?? ''))) return json(res, 200, { stopped: await forkTs.stop(String(body.id)) });
     return json(res, 200, { stopped: await stopTrial(String(body.id ?? '')) });
   }
   // One revision attempt for a job this host started: the app's assistant works inside the candidate folder.
@@ -1101,6 +1122,10 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/apply' && method === 'POST') {
     const body = await readBody(req);
+    if (forkTs.has(String(body.id ?? ''))) {
+      try { return json(res, 200, { apply: forkTs.apply({ id: String(body.id), which: body.which === 'a' ? 'a' : 'b', restore: Boolean(body.restore) }) }); }
+      catch (e) { return error(res, 400, e.message); }
+    }
     const result = await timeskip.apply({
       id: body.id, workspace: body.workspace ?? null,
       dryRun: Boolean(body.dryRun), restore: Boolean(body.restore), attempt: body.attempt ?? null,

@@ -892,6 +892,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   }
   const mustBeOpen = plan => { if (plan.state !== 'proposed' && plan.state !== 'approved') throw new AgentUnavailable('This plan has already been used. Ask for a new one with /plan.', 'plan-used'); };
 
+  /** A short note added to every step of the chat's plan (the Time-skip B path: where its work comes from). */
+  function setPlanBriefing(chatId, text) { plans.update(chatId, p => { p.briefing = String(text ?? '').slice(0, 600); }); }
+
   /** The plan of a chat, or null. */
   const planState = chatId => planView(plans.get(chatId));
 
@@ -1072,7 +1075,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
