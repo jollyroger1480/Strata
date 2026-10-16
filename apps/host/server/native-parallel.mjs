@@ -43,12 +43,21 @@ export const CACHE_LOSS_SHARE = 0.2;
 export const FIRST_CARD_OTHER_GB = 6.9;
 export const NEXT_CARD_OTHER_GB = 2.0;
 /**
- * `--batch-mtp` lets each slot verify draft tokens. Measured on a 12 GB RTX 3060 (docs/BATCHING.md says it pays on larger
- * cards): a lone chat 35.6 tok/s with it against 37.8 without, 2 chats 37.2 against 33.8 together, 4 chats 42.5 against 38.4 -
- * a small gain for several chats, a small loss for one, and 400 MiB less expert cache. Off until a card shows it pays; Expert
- * mode adds it by hand (`--batch-mtp` in the engine arguments).
+ * `--batch-mtp` lets each slot verify draft tokens. Where it pays and where it does not (all measured):
+ *   - RTX PRO 5000 72 GB, 32K (FP4-Local): 1 stream 140 tok/s either way; 2 streams 129 -> 160 (+24%) with it; 4 streams 177 either way;
+ *     the text is exactly the batch text.
+ *   - 12 GB RTX 3060: a lone chat 35.6 tok/s with it against 37.8 without, 2 chats 37.2 against 33.8, 4 chats 42.5 against 38.4, and
+ *     400 MiB less expert cache: not worth it on a small card.
+ *   - 2 cards in a layer split with all experts in VRAM: -22% (docs/BATCHING.md): never on a layer split.
+ * 'auto' turns it on for one card of at least BATCH_MTP_MIN_VRAM_GB with a draft layer, 2 or more slots, and room for the slot drafters
+ * with a margin. 'off' never adds it. Expert mode decides either way: `--batch-mtp` in the engine arguments, or "batchMtp": true / false
+ * in the model's settings (or the load's values).
  */
-export const BATCH_MTP_POLICY = 'off';
+export const BATCH_MTP_POLICY = 'auto';
+export const BATCH_MTP_MIN_VRAM_GB = 24;
+/** Memory the slot drafters need per slot (their K/V ring and buffers; measured about 0.1 GiB, rounded up) and the cache that must remain after them. */
+export const BATCH_MTP_DRAFTER_GB = 0.25;
+export const BATCH_MTP_MARGIN_GB = 2;
 
 const argValue = (args, flag) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : undefined; };
 
@@ -90,19 +99,25 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
   // A number someone chose (including 1) is the person's decision, and so is an explicit --batch in the engine arguments.
   if (facts.explicitBatch || (chosen !== null && Number.isFinite(chosen))) {
     const slots = facts.explicitBatch ? null : Math.max(1, Math.min(1024, Math.trunc(chosen)));
-    return { slots: slots ?? 0, batchMtp: false, explicit: true, requested, note: null, slotGb: slot };
+    const wantMtp = (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
+    return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).
   if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };
   const total = cards.reduce((a, b) => a + b, 0);
+  const oneCard = facts.gpus.length === 1 && cards.length === 1;
   const soloCache = Math.max(0, total - FIRST_CARD_OTHER_GB - NEXT_CARD_OTHER_GB * (cards.length - 1));
   let slots = requested;
   if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > CACHE_LOSS_SHARE * soloCache) slots -= 1;
   const note = slots >= requested ? null
     : slots > 1 ? `Your graphics card has room for ${slots} requests at once with this context size, so Strata set that. A smaller context size leaves room for more.`
       : 'Strata set this model to one request at a time: your graphics card is best used that way, because more at once would make every answer slower. Helper agents and a second chat take their turn instead. A smaller context size leaves room for more at once.';
-  return { slots, batchMtp: BATCH_MTP_POLICY === 'on' && slots > 1 && facts.mtp && !facts.batchMtp && facts.gpus.length === 1, explicit: false, requested, note, slotGb: slot };
+  const wish = values.batchMtp ?? config.batchMtp;   // Expert mode: true adds it by hand, false keeps it off
+  const roomLeft = soloCache - slots * (slot + BATCH_MTP_DRAFTER_GB);
+  const auto = BATCH_MTP_POLICY === 'auto' && oneCard && cards[0] >= BATCH_MTP_MIN_VRAM_GB && roomLeft >= BATCH_MTP_MARGIN_GB;
+  const batchMtp = slots > 1 && facts.mtp && !facts.batchMtp && wish !== false && (wish === true ? oneCard : auto);
+  return { slots, batchMtp, explicit: false, requested, note, slotGb: slot };
 }
 
 /**
@@ -110,8 +125,11 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
  * Returns the configuration and the plain-words note (or null).
  */
 export function applyParallel(cfg, choice) {
-  if (choice.explicit) return { cfg, note: null };
-  const next = { ...cfg };
+  // `batchMtp` is the app's own setting (Expert mode); the engine's config does not know it, the argument is what it reads.
+  const { batchMtp: _wish, ...clean } = cfg;
+  if (choice.explicit && !choice.batchMtp) return { cfg: 'batchMtp' in cfg ? clean : cfg, note: null };
+  if (choice.explicit) return { cfg: { ...clean, args: [...(clean.args ?? []), '--batch-mtp'] }, note: null };
+  const next = { ...clean };
   if (choice.slots > 1) next.parallel = choice.slots; else delete next.parallel;
   if (choice.batchMtp) next.args = [...(next.args ?? []), '--batch-mtp'];
   return { cfg: next, note: choice.note };
