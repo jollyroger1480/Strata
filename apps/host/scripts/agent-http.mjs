@@ -32,8 +32,8 @@ async function model() {
 }
 
 /** One chat stream; returns the frames. `print` shows a compact line per frame, deltas and reasoning as counters. */
-async function stream(body, { quiet = false } = {}) {
-  const res = await fetch(BASE + '/api/chat/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+async function stream(body, { quiet = false, path = '/api/chat/stream', onFrame = null } = {}) {
+  const res = await fetch(BASE + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`stream -> ${res.status} ${await res.text()}`);
   const frames = []; let buffer = '', text = 0, reasoning = 0, lastLine = '';
   const flushCounters = () => { if (text || reasoning) { console.log(`${stamp()}  ... ${reasoning} reasoning chars, ${text} answer chars`); text = 0; reasoning = 0; } };
@@ -45,6 +45,7 @@ async function stream(body, { quiet = false } = {}) {
       const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
       for (const line of lines.filter(Boolean)) {
         const f = JSON.parse(line); f._at = Date.now(); frames.push(f);
+        try { onFrame?.(f); } catch (e) { console.log('onFrame error', e.message); }
         if (f.type === 'delta') { text += (f.text ?? '').length; continue; }
         if (f.type === 'reasoning') { reasoning += (f.text ?? '').length; continue; }
         if (f.type === 'stats') continue;
@@ -57,6 +58,10 @@ async function stream(body, { quiet = false } = {}) {
           // ANSWER=approve|deny answers every card that asks (the card is the real Approve/Deny card of Manual mode)
           if (f.tool.state === 'proposed' && process.env.ANSWER) void j('/api/chat/approval', { sessionId: body.sessionId, toolId: f.tool.id, decision: process.env.APPROVE_MATCH && new RegExp(process.env.APPROVE_MATCH, 'i').test(`${f.tool.target} ${f.tool.effect}`) ? 'approve' : process.env.ANSWER }).then(() => console.log(`${stamp()}  -> ${process.env.ANSWER} ${f.tool.id}`), e => console.log(`${stamp()}  answer failed: ${e.message}`));
         }
+        else if (f.type === 'plan') out = `PLAN ${f.event} ${f.plan.state} "${f.plan.title}" steps=${f.plan.steps.map(x => x.state[0] + ':' + x.text.slice(0, 40)).join(' | ')}`;
+        else if (f.type === 'plan-step') out = `PLAN-STEP ${f.line}${f.summary ? ' | summary: ' + f.summary : ''}`;
+        else if (f.type === 'queued-message') out = `QUEUED-MESSAGE ${f.state} "${f.message.text.slice(0, 50)}" deliverAt=${f.message.deliverAt}${f.afterStep ? ' afterStep=' + f.afterStep : ''} queue=${f.queue.length}`;
+        else if (f.type === 'queued-release') out = `QUEUED-RELEASE ${f.messages.map(m => m.text.slice(0, 40)).join(' | ')}`;
         else if (f.type === 'done') out = `done ${f.finishReason} tokensOut=${f.tokensOut}`;
         else if (f.type === 'error') out = `ERROR ${f.message}`;
         if (!quiet && out !== lastLine) console.log(`${stamp()}  ${out}`);
@@ -71,7 +76,7 @@ async function stream(body, { quiet = false } = {}) {
 
 if (command === 'connect') {
   const [baseUrl, modelId] = rest;
-  await j('/api/model-providers', { kind: 'custom', name: 'Cloud model', baseUrl, protocol: 'openai-chat', apiKey: '', models: [{ id: modelId, name: 'Test model' }] });
+  await j('/api/model-providers', { kind: 'custom', name: 'Cloud model', baseUrl, protocol: 'openai-chat', apiKey: '', models: [{ id: modelId, name: 'Test model', ...(process.env.CTX ? { contextMax: Number(process.env.CTX) } : {}), ...(process.env.MAXOUT ? { maxOutput: Number(process.env.MAXOUT) } : {}) }] });
   console.log('saved');
 } else if (command === 'stream') {
   const [message, mode = 'bypass'] = rest;
@@ -134,6 +139,57 @@ if (command === 'connect') {
     }
     await sleep(4000);
   }
+} else if (command === 'plan') {
+  // /plan <task>, then (unless STOP_AT_PLAN) Start as goal with an optional queued message: plan "<task>" ["<queued message>"]
+  const [task, queued] = rest;
+  const chat = process.env.CHAT ?? `pl-${Date.now()}`;
+  const common = { sessionId: chat, mode: process.env.MODE ?? 'manual', remoteModel: await model(), workspaceId: process.env.WORKSPACE_ID };
+  console.log(`${stamp()}  -- /plan`);
+  const frames = await stream({ ...common, message: `/plan ${task}`});
+  const plan = frames.find(f => f.type === 'plan')?.plan;
+  if (!plan) { console.log('NO PLAN FRAME (the reply stays plain text)'); process.exit(1); }
+  console.log(JSON.stringify(plan.steps.map(x => x.text)));
+  console.log(`${stamp()}  -- GET /api/plan`, (await j(`/api/plan?sessionId=${chat}`)).plan?.state);
+  if (process.env.EDIT_LAST) { const steps = plan.steps.map(x => x.text); steps.push(process.env.EDIT_LAST); console.log(`${stamp()}  -- edit`, (await j('/api/plan/edit', { sessionId: chat, planId: plan.id, steps })).plan.steps.length, 'steps'); }
+  if (process.env.STOP_AT_PLAN) { console.log(`${stamp()}  -- ${process.env.STOP_AT_PLAN}`, JSON.stringify((await j('/api/plan/' + process.env.STOP_AT_PLAN, { sessionId: chat, planId: plan.id })).plan.state)); process.exit(0); }
+  console.log(`${stamp()}  -- start as goal`);
+  let sent = false;
+  const run = stream({ ...common, planId: plan.id }, { path: '/api/plan/start-goal', onFrame: f => {
+    if (queued && !sent && f.type === 'plan-step' && f.state === 'running') { sent = true; setTimeout(async () => { try { console.log(`${stamp()}  -- queue`, JSON.stringify((await j('/api/chat/queue', { sessionId: chat, message: queued })).message)); } catch (e) { console.log('queue failed', e.message); } }, Number(process.env.QUEUE_AFTER ?? 8) * 1000); }
+  } });
+  await run;
+  console.log(`${stamp()}  -- final plan`, JSON.stringify((await j(`/api/plan?sessionId=${chat}`)).plan?.steps.map(x => x.state + ':' + x.text.slice(0, 30))));
+} else if (command === 'modeswitch') {
+  // Manual run that needs several approvals; after the first card the chat is switched to Bypass: no further card may ask.
+  const [message] = rest;
+  const chat = process.env.CHAT ?? `ms-${Date.now()}`;
+  const common = { sessionId: chat, mode: 'manual', remoteModel: await model(), workspaceId: process.env.WORKSPACE_ID };
+  let asked = 0, switched = false;
+  const frames = await stream({ ...common, message }, { onFrame: async f => {
+    if (f.type === 'agent-tool' && f.tool.state === 'proposed') {
+      asked++;
+      if (!switched) { switched = true; console.log(`${stamp()}  -- switching to Bypass`, JSON.stringify(await j('/api/chat/mode', { sessionId: chat, mode: 'bypass' }))); }
+    }
+  } });
+  const done = frames.filter(f => f.type === 'agent-tool' && f.tool.state === 'done').length;
+  console.log(`${stamp()}  RESULT cards that asked=${asked} (expected 1), tools done=${done}`);
+} else if (command === 'long') {
+  // Fill the context with long pastes so the Harness has to compact, then ask about the first one: long <rounds> <chars>
+  const [rounds = '6', chars = '16000'] = rest;
+  const chat = process.env.CHAT ?? `lg-${Date.now()}`;
+  const common = { sessionId: chat, mode: 'bypass', remoteModel: await model(), workspaceId: process.env.WORKSPACE_ID };
+  const filler = n => Array.from({ length: Math.ceil(Number(chars) / 60) }, (_, i) => `Entry ${n}-${i}: the quick brown fox number ${i * 7 + n} jumps over the lazy dog.`).join('\n');
+  let frames = await stream({ ...common, message: 'Remember this code word for later: PAGODA-7731. Reply with just OK.' }, { quiet: true });
+  console.log(`${stamp()}  round 0 done, ctx=${frames.at(-1).contextTokens ?? "?"}`);
+  for (let n = 1; n <= Number(rounds); n++) {
+    frames = await stream({ ...common, message: `Here is log chunk ${n}. Reply with just the word OK.
+
+${filler(n)}`}, { quiet: true });
+    const d = frames.at(-1);
+    console.log(`${stamp()}  round ${n} ${d.type} ${d.finishReason ?? d.message ?? ""} tokensIn=${d.tokensIn} ctx=${d.contextTokens ?? d.context ?? "?"}`);
+  }
+  frames = await stream({ ...common, message: 'What was the code word I asked you to remember at the very start? Answer with the code word only.' }, { quiet: true });
+  console.log(`${stamp()}  ANSWER: ${frames.filter(f => f.type === "delta").map(f => f.text).join("").trim().slice(0, 120)}`);
 } else {
-  console.error('commands: connect | stream | goal | timeskip'); process.exit(2);
+  console.error('commands: connect | stream | goal | timeskip | plan | modeswitch | long'); process.exit(2);
 }

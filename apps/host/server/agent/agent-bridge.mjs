@@ -23,7 +23,7 @@ import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
-import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView } from './plan.mjs';
+import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView, researchPrompt, parseSources } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -246,7 +246,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, planTask = null, planRun = null }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, planTask = null, planRun = null, researchTopic = null }) {
     let send = onFrame; let attached = true;
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
@@ -306,6 +306,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
       const extra = [];
+      if (researchTopic && !failure && !turn.stopping) { const sources = parseSources(written.all); if (sources.length) extra.push({ type: 'research', topic: researchTopic, sources }); }
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
       for (const f of extra) emit(f);
       const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
@@ -788,6 +789,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     return runTurn({ ...options, message: planPrompt(task), planTask: task, mode: 'plan' });
   }
 
+  /**
+   * "/research <topic>": the assistant searches the web, opens and reads pages, and writes a short structured answer (Summary, Key findings,
+   * Sources). The host also sends the sources as a `research` frame before the end of the turn. Needs web search turned on.
+   */
+  async function researchCommand(options) {
+    const topic = String(options.line ?? '').trim();
+    if (!topic) return sayOnce(options, 'Type /research followed by what you want to know, for example: /research how do heat pumps compare with gas boilers. I will search the web, read the pages and answer with sources.');
+    if (tools()?.off?.has('search')) return sayOnce(options, 'Research needs web search, which is turned off. Turn it on in Settings, Tools (DuckDuckGo needs no key), then try again.');
+    return runTurn({ ...options, message: researchPrompt(topic), researchTopic: topic });
+  }
+
   const planGone = () => new AgentUnavailable('There is no plan waiting in this chat. Ask for one with /plan followed by what you want done.', 'plan-gone');
   function planOf(chatId, planId) {
     const plan = plans.get(chatId);
@@ -976,7 +988,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

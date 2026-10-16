@@ -187,3 +187,44 @@ export class PlanStore {
 
 /** What the page gets: a copy with no host-only fields. */
 export const planView = plan => (plan ? JSON.parse(JSON.stringify(plan)) : null);
+
+// ---- /research ------------------------------------------------------------------------------------------------------------------
+
+/** The instruction a research turn gets in front of the person's topic. */
+export function researchPrompt(topic) {
+  return [
+    `Research this topic for me using the web: ${topic}`,
+    '',
+    'How to work:',
+    '1. Search the web with the web_search tool (try two or three different searches).',
+    '2. Open the most useful pages with the web_fetch tool and read them. Use at least three different sources when you can find them.',
+    '3. Write only what the pages say. If sources disagree or you could not find something, say so plainly.',
+    '',
+    'Then write your answer in exactly this shape, in plain words:',
+    '## Summary',
+    'Three to five sentences.',
+    '## Key findings',
+    '- One finding per line, each ending with its source number in square brackets, like [1].',
+    '## Sources',
+    '1. Page title - web address',
+    '2. Page title - web address',
+  ].join('\n');
+}
+
+/** The numbered sources at the end of a research answer: [{ n, title, url }]. Empty when there are none. */
+export function parseSources(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n');
+  const at = lines.map(l => /^\s{0,3}#{1,6}\s*sources\b/i.test(l) || /^\s*\*{0,2}sources\*{0,2}:?\s*$/i.test(l)).lastIndexOf(true);
+  if (at < 0) return [];
+  const out = [];
+  for (const line of lines.slice(at + 1)) {
+    if (/^\s{0,3}#{1,6}\s/.test(line)) break;
+    const url = /(https?:\/\/[^\s)>\]"']+)/.exec(line)?.[1]?.replace(/[.,;]+$/, '');
+    if (!url) continue;
+    const md = /\[([^\]]+)\]\(https?:\/\//.exec(line);
+    const before = line.slice(0, line.indexOf(url)).replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/[\s\-–—:(<[]+$/, '').replace(/\*\*|`/g, '').trim();
+    const title = clean(md?.[1] ?? before) || (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    if (!out.some(s => s.url === url)) out.push({ n: out.length + 1, title: clip(title, 120), url });
+  }
+  return out.slice(0, 20);
+}

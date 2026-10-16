@@ -78,3 +78,23 @@ test('plans survive a restart', () => {
     b.clear('chat-1'); assert.equal(new PlanStore(file).get('chat-1'), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+import { parseSources, researchPrompt } from '../server/agent/plan.mjs';
+
+test('research: the answer shape is asked for, and the sources are read back as [{n, title, url}]', () => {
+  assert.ok(researchPrompt('heat pumps').includes('web_search') && researchPrompt('heat pumps').includes('## Sources'));
+  const answer = [
+    '## Summary', 'Heat pumps move heat.', '## Key findings', '- They are efficient [1].', '- They cost more up front [2].',
+    '## Sources',
+    '1. Heat pump basics - https://energy.example.org/heat-pumps',
+    '2. [Costs explained](https://costs.example.com/page?x=1).',
+    '3. https://plain.example.net/a',
+    '4. Heat pump basics - https://energy.example.org/heat-pumps',
+  ].join('\n');
+  assert.deepEqual(parseSources(answer), [
+    { n: 1, title: 'Heat pump basics', url: 'https://energy.example.org/heat-pumps' },
+    { n: 2, title: 'Costs explained', url: 'https://costs.example.com/page?x=1' },
+    { n: 3, title: 'plain.example.net', url: 'https://plain.example.net/a' },
+  ]);
+  assert.deepEqual(parseSources('No sources section here, see https://x.example'), []);
+});
