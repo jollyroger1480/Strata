@@ -2709,8 +2709,6 @@
   "s2708": "The loop is stopped.",
   "s2709": "The loop stopped after {0} runs. Type /loop again to start it again.",
   "s2710": "This chat already has a loop. Type /loop stop first, then start a new one.",
-  "s2711": "Working on a copy of your files. Your files are not touched until you choose to keep the update. Follow the progress in the sidebar.",
-  "s2712": "The result is ready. Switch between Original and Updated, or compare them side by side. Your files stay as they are until you keep the update.",
   "s2713": "Your files changed after this trial started, so nothing was overwritten. Run Time-skip again.",
   "s2714": "Load a model first, then try Time-skip again.",
   "s2715": "The assistant could not be reached. Try again.",
@@ -2721,7 +2719,6 @@
   "s2720": "Time-skip lost contact with the app and stopped. Your files were not changed.",
   "s2721": "The update is now in your files",
   "s2722": "Your original files are back",
-  "s2723": "You can switch back to the original any time from this panel.",
   "s2724": "Your files were not changed",
   "s2725": "Loading the tool list…",
   "s2726": "Choose what the assistant may use in your chats. A change applies from your next message. In Manual mode, anything that changes your computer still asks you first.",
@@ -2803,5 +2800,7 @@
   "s2802": "The change could not be saved.",
   "s2803": "The tool could not be saved.",
   "s2804": "The tool could not be removed.",
-  "s2805": "The browser tool is not part of this installation."
+  "s2805": "The browser tool is not part of this installation.",
+  "s2806": "Working on a copy of your files. Follow the progress in the sidebar.",
+  "s2807": "The result is ready. Switch between Original and Updated, or compare them side by side."
 }

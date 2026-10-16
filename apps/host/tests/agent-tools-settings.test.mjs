@@ -149,6 +149,7 @@ test('profile: the person\'s instruction and command tools are the app\'s own to
 test('the gate: instruction tools only hand back text, so they do not ask; commands, servers and the browser ask in Manual and are refused in Plan', () => {
   assert.equal(manualDecision({ name: 'mcp__strata-instructions__notes', arguments: {} }), null);
   assert.equal(manualDecision({ name: 'mcp__strata-commands__run_it', arguments: {} })?.kind, 'ask');
+  assert.equal(manualDecision({ name: 'mcp__strata-commands__check_site', arguments: { input: 'example.com' } }).reason, 'Run your tool “check site” with: example.com');
   assert.equal(manualDecision({ name: 'mcp__custom-remote__lookup', arguments: {} })?.kind, 'ask');
   assert.equal(planDecision({ name: 'mcp__strata-instructions__notes' }), null);
   assert.equal(planDecision({ name: 'read' }), null);

@@ -2709,8 +2709,6 @@
   "s2708": "Die Schleife ist gestoppt.",
   "s2709": "Die Schleife wurde nach {0} Durchläufen gestoppt. Tippe erneut /loop, um sie neu zu starten.",
   "s2710": "Dieser Chat hat bereits eine Schleife. Tippe zuerst /loop stop und starte dann eine neue.",
-  "s2711": "Es wird an einer Kopie deiner Dateien gearbeitet. Deine Dateien bleiben unberührt, bis du die Aktualisierung behältst. Den Fortschritt siehst du in der Seitenleiste.",
-  "s2712": "Das Ergebnis ist fertig. Wechsle zwischen Original und Aktualisiert oder vergleiche beide nebeneinander. Deine Dateien bleiben unverändert, bis du die Aktualisierung behältst.",
   "s2713": "Deine Dateien haben sich nach dem Start dieses Versuchs geändert, daher wurde nichts überschrieben. Starte Time-skip erneut.",
   "s2714": "Lade zuerst ein Modell und versuche Time-skip dann erneut.",
   "s2715": "Der Assistent war nicht erreichbar. Versuche es erneut.",
@@ -2721,7 +2719,6 @@
   "s2720": "Time-skip hat die Verbindung zur App verloren und wurde gestoppt. Deine Dateien wurden nicht geändert.",
   "s2721": "Die Aktualisierung ist jetzt in deinen Dateien",
   "s2722": "Deine ursprünglichen Dateien sind wieder da",
-  "s2723": "Du kannst jederzeit in diesem Bereich zum Original zurückwechseln.",
   "s2724": "Deine Dateien wurden nicht geändert",
   "s2725": "Die Werkzeugliste wird geladen…",
   "s2726": "Wähle, was der Assistent in deinen Chats verwenden darf. Eine Änderung gilt ab deiner nächsten Nachricht. Im manuellen Modus fragt alles, was deinen Computer verändert, weiterhin zuerst bei dir nach.",
@@ -2803,5 +2800,7 @@
   "s2802": "Die Änderung konnte nicht gespeichert werden.",
   "s2803": "Das Werkzeug konnte nicht gespeichert werden.",
   "s2804": "Das Werkzeug konnte nicht entfernt werden.",
-  "s2805": "Das Browser-Werkzeug gehört nicht zu dieser Installation."
+  "s2805": "Das Browser-Werkzeug gehört nicht zu dieser Installation.",
+  "s2806": "Es wird an einer Kopie deiner Dateien gearbeitet. Den Fortschritt siehst du in der Seitenleiste.",
+  "s2807": "Das Ergebnis ist fertig. Wechsle zwischen Original und Aktualisiert oder vergleiche beide nebeneinander."
 }

@@ -61,7 +61,17 @@ The chat's Mode menu is real Harness behaviour. Each turn the page sends the cha
 
 ## Tools
 
-`preset.mjs` is the agent preset: the Harness `standard` preset minus the scheduler (Tasks is the only one), web search (needs a key the app has none of; `search: true` switches it on), the agent's own question tool (no place to answer) and the Harness's plan mode. `tests/agent-tools.test.mjs` compares the list with the pinned Harness's own preset file and the tools it actually offers. The model's tool servers (Settings, Tools) are connected as Harness MCP client rows (`mcpRows` in `profile.mjs`); their secrets travel in the agent's environment, never in the profile file.
+`preset.mjs` is the agent preset: the Harness `standard` preset minus the scheduler (Tasks is the only one), the agent's own question tool (no place to answer) and the Harness's plan mode. `tests/agent-tools.test.mjs` compares the list with the pinned Harness's own file, so a Harness update that adds or renames a plugin fails a test instead of silently dropping a tool.
+
+### Settings -> Tools
+
+What the person chose is saved by `tools-settings.mjs` (inside the host's settings file) and shown by `src/components/SettingsTools.tsx` (`GET/PUT /api/agent/tools`, `POST/PATCH/DELETE /api/agent/tools/custom[/id]`). A change reaches the agent from the next message: the profile carries a `toolsSignature`, and the bridge restarts the Harness (after the running turns end) when it differs.
+
+- Tool groups (`tools-catalog.mjs`): each is one switch in plain words and is one or more preset plugins (`withoutDisabled`); `fetch` and `search` are the two halves of the Harness's `tool-web` (both off drops it). Goals off: `/goal` answers that goals are turned off.
+- Web search needs no account. The default is DuckDuckGo's HTML result page (`../web-search-ddg.mjs`): a browser User-Agent, one request at a time at least 1.5 s apart, at most 20 a minute, a 10 minute cache per query, a 15 s limit, the lite page as a fallback, and a plain message when DuckDuckGo asks for a human check ("limiting searches from this computer"). **The results come from DuckDuckGo**; they are not ranked or filtered here. The person may switch to Exa, Perplexity or DeepSeek with their own key (`../web-search-keyed.mjs`; DeepSeek uses the Harness's own provider): the key is saved in the settings file, reaches the agent only as the environment variable `STRATA_SEARCH_KEY`, never the profile file and never the screen (it only learns `keySet`). A keyed service without its key falls back to DuckDuckGo. The profile pins `web.searchProvider` to the chosen id so two usable backends cannot make the choice ambiguous.
+- The browser: Playwright's MCP server (`@playwright/mcp`, staged next to the Harness by `apps/desktop/scripts/stage-harness.mjs`) on the person's own Chrome, Edge or Chromium (`browser-probe.mjs`), `--isolated` so it never sees their profile. Tools appear as `mcp__browser__browser_*`. In Manual, opening a page, clicking, typing, uploading, running a script in the page and closing tabs ask (plain reasons: "Open the web page ...", "Click on the page: ..."); looking (snapshot, screenshot, console, network, waiting, listing tabs) does not. Plan refuses every connected tool. The screen says plainly when no browser, or no tool server, is found.
+- The person's own tools: `instructions` (the tool returns their text; look-only, never asks), `command` (runs their command with the assistant's text in the `STRATA_INPUT` environment variable, never spliced into the command line; asks in Manual, refused in Plan) and `server` (a web address or a program, added as `mcp__custom-<name>__*`; asks in Manual). Instruction and command tools are served by `custom-tools-mcp.mjs` (stdio MCP) from a JSON file the settings module rewrites on every change, so a switch in Settings is seen without a restart.
+- `strata-gate.mjs` implements the Manual/Plan rules above (`planDecision`, `browserDecision`, the look-only instruction server).
 
 ## Helper agents (subagents)
 
@@ -90,6 +100,6 @@ Failures the person sees are plain sentences with a next step (`AgentUnavailable
 
 ## Tests
 
-`tests/agent-events.test.mjs` (pure), `tests/agent-bridge.test.mjs`, `tests/agent-modes.test.mjs` and `tests/agent-host.test.mjs` (need a built Harness:
+`tests/agent-events.test.mjs` (pure), `tests/agent-tools-settings.test.mjs` (Settings -> Tools, web search, the browser and the person's own tools; the Harness-backed ones need STRATA_HARNESS_DIR and the browser one also Chrome or Edge), `tests/agent-bridge.test.mjs`, `tests/agent-modes.test.mjs` and `tests/agent-host.test.mjs` (need a built Harness:
 `STRATA_HARNESS_DIR=<checkout>`, otherwise they skip and say so). The model in those tests is `tests/helpers/scripted-worker.mjs`.
 `scripts/agent-flow.mjs` drives the real app in Chrome and takes screenshots.

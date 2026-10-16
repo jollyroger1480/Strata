@@ -2709,8 +2709,6 @@
   "s2708": "O loop foi parado.",
   "s2709": "O loop parou após {0} execuções. Digite /loop novamente para reiniciá-lo.",
   "s2710": "Este chat já tem um loop. Digite /loop stop primeiro e depois inicie um novo.",
-  "s2711": "Trabalhando numa cópia dos seus arquivos. Seus arquivos não são alterados até você escolher manter a atualização. Acompanhe o progresso na barra lateral.",
-  "s2712": "O resultado está pronto. Alterne entre Original e Atualizado, ou compare lado a lado. Seus arquivos ficam como estão até você manter a atualização.",
   "s2713": "Seus arquivos mudaram depois que esta tentativa começou, então nada foi sobrescrito. Execute o Time-skip novamente.",
   "s2714": "Carregue um modelo primeiro e tente o Time-skip novamente.",
   "s2715": "Não foi possível alcançar o assistente. Tente novamente.",
@@ -2721,7 +2719,6 @@
   "s2720": "O Time-skip perdeu contato com o app e parou. Seus arquivos não foram alterados.",
   "s2721": "A atualização agora está nos seus arquivos",
   "s2722": "Seus arquivos originais voltaram",
-  "s2723": "Você pode voltar ao original a qualquer momento neste painel.",
   "s2724": "Seus arquivos não foram alterados",
   "s2725": "Carregando a lista de ferramentas…",
   "s2726": "Escolha o que o assistente pode usar nos seus chats. Uma alteração vale a partir da sua próxima mensagem. No modo Manual, tudo o que altera o seu computador continua pedindo sua permissão antes.",
@@ -2803,5 +2800,7 @@
   "s2802": "Não foi possível salvar a alteração.",
   "s2803": "Não foi possível salvar a ferramenta.",
   "s2804": "Não foi possível remover a ferramenta.",
-  "s2805": "A ferramenta de navegador não faz parte desta instalação."
+  "s2805": "A ferramenta de navegador não faz parte desta instalação.",
+  "s2806": "Trabalhando numa cópia dos seus arquivos. Acompanhe o progresso na barra lateral.",
+  "s2807": "O resultado está pronto. Alterne entre Original e Atualizado, ou compare lado a lado."
 }

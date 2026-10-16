@@ -2709,8 +2709,6 @@
   "s2708": "El bucle se ha detenido.",
   "s2709": "El bucle se detuvo tras {0} ejecuciones. Escribe /loop otra vez para iniciarlo de nuevo.",
   "s2710": "Este chat ya tiene un bucle. Escribe primero /loop stop y luego inicia uno nuevo.",
-  "s2711": "Trabajando en una copia de tus archivos. Tus archivos no se tocan hasta que elijas conservar la actualización. Sigue el progreso en la barra lateral.",
-  "s2712": "El resultado está listo. Cambia entre Original y Actualizado, o compáralos lado a lado. Tus archivos siguen igual hasta que conserves la actualización.",
   "s2713": "Tus archivos cambiaron después de empezar esta prueba, así que no se sobrescribió nada. Ejecuta Time-skip de nuevo.",
   "s2714": "Carga primero un modelo y vuelve a probar Time-skip.",
   "s2715": "No se pudo contactar con el asistente. Inténtalo de nuevo.",
@@ -2721,7 +2719,6 @@
   "s2720": "Time-skip perdió el contacto con la aplicación y se detuvo. Tus archivos no han cambiado.",
   "s2721": "La actualización ya está en tus archivos",
   "s2722": "Tus archivos originales han vuelto",
-  "s2723": "Puedes volver al original en cualquier momento desde este panel.",
   "s2724": "Tus archivos no han cambiado",
   "s2725": "Cargando la lista de herramientas…",
   "s2726": "Elige qué puede usar el asistente en tus chats. Un cambio se aplica desde tu próximo mensaje. En modo Manual, todo lo que cambie tu ordenador sigue pidiéndote permiso antes.",
@@ -2803,5 +2800,7 @@
   "s2802": "No se pudo guardar el cambio.",
   "s2803": "No se pudo guardar la herramienta.",
   "s2804": "No se pudo quitar la herramienta.",
-  "s2805": "La herramienta de navegador no forma parte de esta instalación."
+  "s2805": "La herramienta de navegador no forma parte de esta instalación.",
+  "s2806": "Trabajando en una copia de tus archivos. Sigue el progreso en la barra lateral.",
+  "s2807": "El resultado está listo. Cambia entre Original y Actualizado, o compáralos lado a lado."
 }

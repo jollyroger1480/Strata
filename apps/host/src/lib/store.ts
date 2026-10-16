@@ -1113,8 +1113,8 @@ export function setTimeSkipResult(sessionId: string, runId: string, version: Tim
    The host copies the chat's folder, lets the assistant change the copy, checks it and keeps the original untouched until the
    person chooses. The sidebar follows the job's own record; nothing here invents progress. */
 const TS_TERMINAL = ['completed', 'cancelled', 'failed', 'interrupted'];
-const TS_WORKING = () => tr('Working on a copy of your files. Your files are not touched until you choose to keep the update. Follow the progress in the sidebar.');
-const TS_READY = () => tr('The result is ready. Switch between Original and Updated, or compare them side by side. Your files stay as they are until you keep the update.');
+const TS_WORKING = () => tr('Working on a copy of your files. Follow the progress in the sidebar.');
+const TS_READY = () => tr('The result is ready. Switch between Original and Updated, or compare them side by side.');
 
 function patchRun(sessionId: string, runId: string, fn: (run: TimeSkipRun) => TimeSkipRun, content?: string) {
   patchSession(sessionId, s => ({ ...s, updatedAt: new Date().toISOString(),
@@ -1218,7 +1218,7 @@ export async function keepTimeSkip(sessionId: string, runId: string, version: Ti
     if (version === 'updated') await api.post('/api/timeskip/apply', { id: job.id, attempt: job.applyAttempt ?? null });
     else await api.post('/api/timeskip/apply', { id: job.id, restore: true });
     patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version }));
-    pushToast('success', version === 'updated' ? tr('The update is now in your files') : tr('Your original files are back'), version === 'updated' ? tr('You can switch back to the original any time from this panel.') : undefined);
+    pushToast('success', version === 'updated' ? tr('The update is now in your files') : tr('Your original files are back'));
   } catch (e) {
     pushToast('error', tr('Your files were not changed'), plainTimeSkipError(e instanceof Error ? e.message : String(e)));
   }
