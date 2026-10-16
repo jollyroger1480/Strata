@@ -23,6 +23,7 @@ import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
+import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, planAsPrompt, editedSteps, planView } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -55,7 +56,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -78,6 +79,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   let lastError = null;
   let starting = null;
   const chats = new Map();         // chatId -> { turn, route, routeGeneration }
+  const plans = new PlanStore(join(root, 'plans.json'));
+  /** chatId -> messages the person typed while a goal ran: [{ id, text, at, deliverAt }]; delivered between steps or when the goal ends */
+  const queues = new Map();
+  const queueView = chatId => (queues.get(chatId) ?? []).map(({ id, text, at, deliverAt }) => ({ id, text, at, deliverAt }));
   const pending = new Map();       // `${sessionId}:${callId}` -> { eventId, sessionId, callId, at }
   const idleWaiters = new Set();
 
@@ -241,10 +246,16 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     try { return await runTurnInner(c, options); } finally { c.starting = false; }
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null }) {
-    let send = onFrame;
-    signal?.addEventListener('abort', () => { send = () => {}; }, { once: true });
-    const emit = frame => { try { send(frame); } catch { send = () => {}; } };
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, planTask = null, planRun = null }) {
+    let send = onFrame; let attached = true;
+    signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
+    // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
+    const written = { all: '', step: '' };
+    const emit = frame => {
+      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; }
+      if (frame.own) { const { own, ...rest } = frame; frame = rest; }
+      try { send(frame); } catch { send = () => {}; attached = false; }
+    };
     // What the assistant is doing right now, one small frame (status.mjs). Cleared before the final frame of the turn.
     const reporter = new StatusReporter({ emit });
 
@@ -272,7 +283,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     // The chat's permission mode is read once, here, for this whole turn. A change the user makes while the
     // turn runs applies to the next one, so a running turn never sees its permissions move under it.
-    const appliedMode = modeOf(mode);
+    const appliedMode = planTask ? 'plan' : modeOf(mode);
     await applyMode(runtime, sessionId, appliedMode);
 
     const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval });
@@ -283,6 +294,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
+      plan: null, advancing: false, goalRun: false,
     };
     c.turn = turn;
     function finishTurn(failure) {
@@ -293,14 +305,23 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       for (const child of turn.children.values()) child.follow?.close();
       if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
+      const extra = [];
+      try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
+      for (const f of extra) emit(f);
       const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
-      for (const f of frames) emit(f);
+      for (const f of frames.slice(0, -1)) emit(f);
+      // Messages typed while the goal ran and not delivered between steps go back to the page now, to be sent as ordinary messages.
+      if (turn.goalRun && attached) {
+        const left = queueView(chatId);
+        if (left.length) { queues.delete(chatId); onQueue(chatId, []); emit({ type: 'queued-release', messages: left.map(({ id, text }) => ({ id, text })) }); }
+      }
+      for (const f of frames.slice(-1)) emit(f);
       c.turn = null;
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
     }
 
-    emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [] });
+    emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], ...(planTask ? { planning: true } : {}) });
 
     turn.follow = runtime.gw.openStream('session/follow', { request: { address: { kind: 'session', sessionId }, assistantStream: true } }, {
       onItem: item => {
@@ -418,6 +439,95 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       }
     }
 
+    // -- plans and goal steps ----------------------------------------------------------------------------------
+
+    const planFrame = (event, plan, extra = {}) => ({ type: 'plan', event, plan: planView(plan), ...extra });
+    const publishPlan = (event, plan) => { onPlan(chatId, event, planView(plan)); return planFrame(event, plan); };
+    const stepFrame = (plan, index) => {
+      const st = plan.steps[index];
+      return { type: 'plan-step', planId: plan.id, stepId: st.id, index: index + 1, total: plan.steps.length, state: st.state, text: st.text, summary: st.summary ?? null, line: stepLine(index, plan.steps.length, st.text, st.state === 'running' ? 'started' : st.state) };
+    };
+    const currentStep = plan => plan.steps.findIndex(x => x.state !== 'done' && x.state !== 'skipped');
+
+    /** What the end of the turn means for the plan: a plan turn makes one; a step run records where it stopped. */
+    function settlePlan(failure) {
+      if (planTask) {
+        if (failure || turn.stopping) return [];
+        const parsed = parsePlan(written.all, planTask);
+        if (!parsed) return [];
+        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask });
+        return [publishPlan('proposed', plan)];
+      }
+      const run = turn.plan;
+      if (!run) return [];
+      const plan = plans.get(chatId);
+      if (!plan || plan.id !== run.id) return [];
+      if (plan.state !== 'running') return [];
+      const out = [];
+      const at = currentStep(plan);
+      plans.update(chatId, p => {
+        if (at < 0) { p.state = 'done'; return; }
+        // The step that was running goes back to waiting, so Resume runs it again.
+        p.steps[at].state = 'pending';
+        p.state = 'paused';
+      });
+      const updated = plans.get(chatId);
+      if (at >= 0) out.push(stepFrame(updated, at));
+      out.push(publishPlan(updated.state === 'done' ? 'done' : 'paused', updated));
+      return out;
+    }
+
+    /** The goal the Harness runs for the plan's next waiting step, and the frames that say so. */
+    async function startStep(plan, index) {
+      plans.update(chatId, p => { p.state = 'running'; p.goalStarted = true; p.steps[index].state = 'running'; });
+      const now = plans.get(chatId);
+      await runtime.gw.rpc('goals/create', { agentId: sessionId, request: { objective: stepObjective(now, index) } });
+      written.step = '';
+      emit(stepFrame(now, index));
+      emit(publishPlan('step', now));
+      const st = now.steps[index];
+      reporter.set({ phase: 'goal', code: 'goal-step', text: stepLine(index, now.steps.length, st.text, 'started'), key: 'Step {0} of {1}: {2}', values: [index + 1, now.steps.length, st.text], args: { step: index + 1, steps: now.steps.length } });
+    }
+
+    /** One goal step finished: say so, hand over queued messages, and begin the next step (or end the plan). */
+    async function advancePlan() {
+      const run = turn.plan;
+      const plan = plans.get(chatId);
+      if (!run || !plan || plan.id !== run.id) return false;
+      const at = currentStep(plan);
+      if (at < 0) return false;
+      const summary = firstSentence(written.step.split(/\n\s*\n/).filter(Boolean).at(-1) ?? written.step);
+      plans.update(chatId, p => { p.steps[at].state = 'done'; p.steps[at].summary = summary; });
+      let now = plans.get(chatId);
+      emit(stepFrame(now, at));
+      emit({ type: 'delta', own: true, text: `\n\n${stepLine(at, now.steps.length, now.steps[at].text, 'done')}\n` });
+      const next = currentStep(now);
+      emit(publishPlan(next < 0 ? 'done' : 'step', next < 0 ? (plans.update(chatId, p => { p.state = 'done'; }), plans.get(chatId)) : now));
+      await deliverQueued(at + 1);
+      if (turn.stopping || turn.finished) return true;
+      if (next < 0) return false;
+      await startStep(plans.get(chatId), next);
+      void announceGoal();
+      return true;
+    }
+
+    /** Hand the person's queued messages to the assistant, one at a time, each answered before the next. */
+    async function deliverQueued(afterStep) {
+      const list = queues.get(chatId) ?? [];
+      while (list.length && !turn.stopping && !turn.finished) {
+        const item = list.shift();
+        if (!list.length) queues.delete(chatId);
+        onQueue(chatId, queueView(chatId));
+        emit({ type: 'queued-message', state: 'delivered', message: { id: item.id, text: item.text, at: item.at, deliverAt: item.deliverAt }, afterStep, queue: queueView(chatId) });
+        try { await runtime.gw.rpc('session/prompt', { request: { requestId: `queued-${randomUUID()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: item.text }] } }); }
+        catch { emit({ type: 'queued-release', messages: [{ id: item.id, text: item.text }] }); continue; }
+        // Wait for the answer: the parent opens a turn for it and closes it again.
+        const t0 = Date.now();
+        while (!turn.parentOpen && Date.now() - t0 < 4000 && !turn.finished) await new Promise(r => setTimeout(r, 50));
+        while (turn.parentOpen && !turn.finished && !turn.stopping) await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
     /**
      * The run is over when the parent is idle and every helper has finished and reported back. A helper's report
      * wakes the parent a moment after the helper ends, so a helper that ended but has not reported yet keeps the run
@@ -427,7 +537,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       clearTimeout(turn.settleTimer);
       if (turn.finished) return;
       turn.settleTimer = after(turn.stopping ? 1200 : turn.children.size ? 600 : 0, async () => {
-        if (turn.finished || turn.parentOpen) return;
+        if (turn.finished || turn.parentOpen || turn.advancing) return;
         const open = [...turn.children.values()];
         if (open.some(c => !c.done)) return;
         if (!turn.stopping) {
@@ -436,6 +546,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           const current = await goalGet();
           if (turn.finished || turn.parentOpen) return;
           if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
+          // A plan step's goal is complete: record it, deliver queued messages, start the next step.
+          if (turn.plan && current && current.phase === 'complete' && !turn.advancing) {
+            turn.advancing = true;
+            let more = false;
+            try { more = await advancePlan(); } catch (e) { emit({ type: 'delta', own: true, text: `\n\nThe plan stopped: ${plainGoalError(e)}\n` }); }
+            turn.advancing = false;
+            if (more && !turn.finished && !turn.stopping) { turn.settleTimer = after(700, armSettle); return; }
+          }
+
           if (turn.goalRun && current) { const line = goalEnding(current); if (line) emit({ type: 'delta', text: line }); }
           if (turn.goalRun) await announceGoal(true);
         }
@@ -447,12 +566,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     async function announceGoal(final = false) {
       const view = await goalGet();
       if (turn.finished && !final) return;
-      const goal = goalObject(view);
+      const goal = goalObject(view, chatId);
       emit({ type: 'goal', goal });
       onGoal(chatId, goal);
       if (!final && goal && goal.phase === 'active' && turn.goalRound) reporter.set({ phase: 'goal', code: 'goal-step', text: `Working on the goal, step ${turn.goalRound}`, key: 'Working on the goal, step {0}', values: [turn.goalRound], args: { round: turn.goalRound, max: goal.maxRounds } });
     }
     turn.announceGoal = announceGoal;
+    turn.announceQueue = frame => emit(frame);
 
     const snapshotTimer = {};
     await Promise.race([turn.snapshot.promise, new Promise((_, rej) => { snapshotTimer.t = after(20_000, () => rej(new Error('the session stream did not open'))); })])
@@ -464,8 +584,22 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     if (goal) {
       // A goal run has no prompt of its own: the Harness's goal driver starts the rounds. Everything from now on is ours.
       turn.live = true; turn.goalRun = true;
-      try { await startGoal(runtime, sessionId, goal); }
-      catch (e) { finishTurn(plainGoalError(e)); return { error: true }; }
+      try {
+        if (planRun) {
+          const plan = plans.get(chatId);
+          if (!plan || plan.id !== planRun.planId) throw new AgentUnavailable('That plan is no longer there. Ask for a new one with /plan.', 'plan-gone');
+          turn.plan = { id: plan.id };
+          const at = currentStep(plan);
+          if (at < 0) throw new AgentUnavailable('Every step of this plan is already done.', 'plan-done');
+          if (goal.action === 'resume' && plan.goalStarted) {
+            plans.update(chatId, p => { p.state = 'running'; p.steps[at].state = 'running'; });
+            await startGoal(runtime, sessionId, goal);
+            emit(publishPlan('step', plans.get(chatId)));
+          } else await startStep(plan, at);
+        } else {
+          await startGoal(runtime, sessionId, goal);
+        }
+      } catch (e) { finishTurn(e instanceof AgentUnavailable ? e.message : plainGoalError(e)); return { error: true }; }
       reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
       void announceGoal();
     } else {
@@ -519,17 +653,22 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   }
 
   /** The goal as the page and the goal bar see it (notes-split-agent3.md), or null. */
-  function goalObject(view) {
+  function goalObject(view, chatId = null) {
     if (!view) return null;
     const phase = ['active', 'paused', 'complete', 'blocked'].includes(view.phase) ? view.phase : 'blocked';
-    return { objective: String(view.objective ?? ''), phase, round: view.roundsStarted ?? 0, maxRounds: view.maxGoalRounds ?? null, ...(phase === 'blocked' ? { blocked: plainBlocker(view.blockedReason) } : {}) };
+    // A goal that is running a plan (or the points of a goal) shows the plan's title and which step it is on.
+    const plan = chatId ? plans.get(chatId) : null;
+    const running = plan && plan.goalStarted && ['running', 'paused'].includes(plan.state) ? plan : null;
+    const at = running ? running.steps.findIndex(x => x.state !== 'done' && x.state !== 'skipped') : -1;
+    const step = running && at >= 0 ? { index: at + 1, total: running.steps.length, text: running.steps[at].text } : null;
+    return { objective: step ? running.title : String(view.objective ?? ''), ...(step ? { step } : {}), phase, round: view.roundsStarted ?? 0, maxRounds: view.maxGoalRounds ?? null, ...(phase === 'blocked' ? { blocked: plainBlocker(view.blockedReason) } : {}) };
   }
 
   /** The goal of a chat now, from the Harness (null: none, or the agent is not running). */
   async function goalState(chatId) {
     const known = sessionMap[chatId]?.sessionId;
     if (!known || !rt?.hp.running) return null;
-    return goalObject(await rt.gw.rpc('goals/get', { agentId: known }).catch(() => undefined));
+    return goalObject(await rt.gw.rpc('goals/get', { agentId: known }).catch(() => undefined), chatId);
   }
 
   /** Pause, edit or remove the goal from the goal bar. Instant; resume runs rounds and goes through the chat stream. */
@@ -548,7 +687,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         await rt.gw.rpc('goals/edit', { agentId: known, ref, request: { objective } });
       } else throw new AgentUnavailable('That goal action is not known.', 'goal-action');
     } catch (e) { throw e instanceof AgentUnavailable ? e : new AgentUnavailable(plainGoalError(e), 'goal-failed', e.message); }
-    const goal = action === 'clear' ? null : goalObject(await rt.gw.rpc('goals/get', { agentId: known }).catch(() => undefined));
+    if (action === 'clear') { const plan = plans.get(chatId); if (plan && ['running', 'paused'].includes(plan.state)) { plans.update(chatId, p => { p.state = 'stopped'; for (const st of p.steps) if (st.state === 'running') st.state = 'pending'; }); onPlan(chatId, 'stopped', planView(plans.get(chatId))); } }
+    const goal = action === 'clear' ? null : goalObject(await rt.gw.rpc('goals/get', { agentId: known }).catch(() => undefined), chatId);
     onGoal(chatId, goal);
     return { goal };
   }
@@ -605,9 +745,165 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         }
       } catch (e) { return say(plainGoalError(e)); }
     }
-    if (verb === 'resume') return runTurn({ ...options, goal: { action: 'resume' } });
+    if (verb === 'resume') {
+      const plan = plans.get(chatId);
+      const goalPlan = plan && plan.goalStarted && plan.state === 'paused' ? { planId: plan.id } : null;
+      return runTurn({ ...options, goal: { action: 'resume' }, ...(goalPlan ? { planRun: goalPlan } : {}) });
+    }
+    // A goal whose own words hold numbered points ("1. ... 2. ... 3. ...") runs point by point, each one reported.
+    const points = parsePoints(text);
+    if (points) {
+      const plan = plans.create(chatId, { title: points.title, steps: points.steps, request: text, source: 'goal', state: 'approved' });
+      onPlan(chatId, 'approved', planView(plan));
+      return runTurn({ ...options, goal: { action: 'create', objective: text }, planRun: { planId: plan.id } });
+    }
     // Any other text is a new goal. One unfinished goal at a time (the Harness's rule): say so in plain words.
     return runTurn({ ...options, goal: { action: 'create', objective: text } });
+  }
+
+  // -- /plan -----------------------------------------------------------------------------------------------
+
+  /** A short answer in the chat (no model): the same frames a turn sends. */
+  function sayOnce(options, reply) {
+    const { onFrame } = options;
+    onFrame({ type: 'queued', requestId: `plan-${randomUUID()}` });
+    onFrame({ type: 'start', model: '', contextMax: 0, demo: false, remoteModel: false, agent: true, mode: modeOf(options.mode), skills: [] });
+    onFrame({ type: 'delta', text: reply });
+    onFrame({ type: 'done', finishReason: 'stop', tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0 });
+    return { plan: true };
+  }
+
+  /**
+   * "/plan <what you want>": the assistant looks around (the chat is put in Plan mode for this turn, so nothing can change), writes the
+   * plan, and the host sends it as a `plan` frame. Nothing runs until the person approves it.
+   */
+  async function planCommand(options) {
+    const task = String(options.line ?? '').trim();
+    if (!task) {
+      const open = plans.get(options.chatId);
+      return sayOnce(options, open && ['proposed', 'approved'].includes(open.state)
+        ? 'A plan is waiting for you above. Approve it, edit it or reject it, or type /plan followed by something else to make a new one.'
+        : 'Type /plan followed by what you want done, for example: /plan build a small pagoda page. I will look around and write a plan; nothing changes until you approve it.');
+    }
+    return runTurn({ ...options, message: planPrompt(task), planTask: task, mode: 'plan' });
+  }
+
+  const planGone = () => new AgentUnavailable('There is no plan waiting in this chat. Ask for one with /plan followed by what you want done.', 'plan-gone');
+  function planOf(chatId, planId) {
+    const plan = plans.get(chatId);
+    if (!plan || (planId && plan.id !== planId)) throw planGone();
+    return plan;
+  }
+  const mustBeOpen = plan => { if (plan.state !== 'proposed' && plan.state !== 'approved') throw new AgentUnavailable('This plan has already been used. Ask for a new one with /plan.', 'plan-used'); };
+
+  /** The plan of a chat, or null. */
+  const planState = chatId => planView(plans.get(chatId));
+
+  /** Approve, edit or reject the plan; instant. Approve also returns the message that carries the plan out as an ordinary turn. */
+  function planControl({ chatId, planId, action, steps, title }) {
+    const plan = planOf(chatId, planId);
+    if (action === 'edit') {
+      mustBeOpen(plan);
+      const next = editedSteps(steps, plan.steps);
+      const t = String(title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      plans.update(chatId, p => { p.steps = next; if (t) p.title = t; p.state = 'proposed'; });
+      onPlan(chatId, 'edited', planView(plans.get(chatId)));
+      return { plan: planView(plans.get(chatId)) };
+    }
+    if (action === 'approve') {
+      mustBeOpen(plan);
+      plans.update(chatId, p => { p.state = 'approved'; });
+      const approved = plans.get(chatId);
+      onPlan(chatId, 'approved', planView(approved));
+      return { plan: planView(approved), prompt: planAsPrompt(approved) };
+    }
+    if (action === 'reject') {
+      mustBeOpen(plan);
+      plans.update(chatId, p => { p.state = 'rejected'; });
+      onPlan(chatId, 'rejected', planView(plans.get(chatId)));
+      return { plan: planView(plans.get(chatId)) };
+    }
+    throw new AgentUnavailable('That plan action is not known.', 'plan-action');
+  }
+
+  /** "Start as goal": each step of the plan becomes a goal step, run one after another and reported. Streams like a chat turn. */
+  async function planGoal(options) {
+    const { chatId, planId } = options;
+    let plan;
+    try { plan = planOf(chatId, planId); } catch (e) { return sayOnce(options, e.message); }
+    if (modeOf(options.mode) === 'plan') return sayOnce(options, 'Plan mode only looks, so it cannot carry out a plan. Switch this chat to Manual or Bypass, then start it again.');
+    if (plan.state === 'paused' && plan.goalStarted) return goalCommand({ ...options, line: 'resume' });
+    try { mustBeOpen(plan); } catch (e) { return sayOnce(options, e.message); }
+    if (tools()?.off?.has('goals')) return sayOnce(options, 'Goals are turned off. You can turn them back on in Settings, Tools.');
+    plans.update(chatId, p => { p.state = 'approved'; });
+    onPlan(chatId, 'approved', planView(plans.get(chatId)));
+    return runTurn({ ...options, goal: { action: 'create', objective: plan.title }, planRun: { planId: plan.id } });
+  }
+
+  // -- messages typed while a goal runs ----------------------------------------------------------------------
+
+  /** Queue a message for the running goal. It is delivered between steps, or handed back to the page when the goal ends or pauses. */
+  function queueMessage({ chatId, text }) {
+    const turn = chats.get(chatId)?.turn;
+    if (!turn || !turn.goalRun || turn.stopping || turn.finished) throw new AgentUnavailable('No goal is running in this chat, so there is nothing to queue behind. Send the message as usual.', 'queue-idle');
+    const clean = String(text ?? '').trim().slice(0, 8000);
+    if (!clean) throw new AgentUnavailable('Type a few words to queue.', 'queue-empty');
+    const list = queues.get(chatId) ?? [];
+    if (list.length >= 20) throw new AgentUnavailable('Twenty messages are already waiting. Wait for some to be delivered.', 'queue-full');
+    const item = { id: randomUUID(), text: clean, at: new Date().toISOString(), deliverAt: turn.plan ? 'step' : 'end' };
+    list.push(item); queues.set(chatId, list);
+    const message = { id: item.id, text: item.text, at: item.at, deliverAt: item.deliverAt };
+    onQueue(chatId, queueView(chatId));
+    turn.announceQueue?.({ type: 'queued-message', state: 'queued', message, queue: queueView(chatId) });
+    return { message, queue: queueView(chatId) };
+  }
+
+  /** Take a queued message back (the x on it). A message already being delivered cannot be taken back. */
+  function cancelQueued({ chatId, id }) {
+    const list = queues.get(chatId) ?? [];
+    const at = list.findIndex(m => m.id === id);
+    if (at < 0) throw new AgentUnavailable('That message was already sent or removed.', 'queue-gone');
+    const [item] = list.splice(at, 1);
+    if (!list.length) queues.delete(chatId);
+    onQueue(chatId, queueView(chatId));
+    chats.get(chatId)?.turn?.announceQueue?.({ type: 'queued-message', state: 'cancelled', message: { id: item.id, text: item.text, at: item.at, deliverAt: item.deliverAt }, queue: queueView(chatId) });
+    return { queue: queueView(chatId) };
+  }
+
+  /** Messages waiting for a chat, and (after a goal ended while the page was away) the ones it should now send. */
+  function takeQueue(chatId, { release = false } = {}) {
+    const turn = chats.get(chatId)?.turn;
+    const list = queueView(chatId);
+    if (release && !turn && list.length) { queues.delete(chatId); onQueue(chatId, []); return { queue: [], released: list.map(({ id, text }) => ({ id, text })) }; }
+    return { queue: list, released: [] };
+  }
+
+  /**
+   * The person changed the chat's mode while a turn (a goal and its helpers included) is running. The new preset
+   * is put on the session at once, the running turn's own bookkeeping follows, and questions already waiting are
+   * settled the way the new mode would have settled them: Bypass allows them, Plan rejects them.
+   */
+  async function setMode(chatId, mode) {
+    const want = modeOf(mode);
+    const c = chats.get(chatId);
+    const sessionId = sessionMap[chatId]?.sessionId;
+    if (!rt || !sessionId) return { applied: false, mode: want, reason: 'no session yet' };
+    if (c?.turn && c.turn.mode === want) return { applied: true, mode: want, settled: 0 };
+    await applyMode(rt, sessionId, want);
+    let settled = 0;
+    if (c?.turn) {
+      c.turn.mode = want;
+      c.turn.projector.policy = MODE_PRESETS[want].approval;
+      if (want !== 'manual') {
+        const helpers = c.turn.children;
+        for (const [key, entry] of [...pending.entries()]) {
+          if (entry.sessionId !== sessionId && !helpers?.has(entry.sessionId)) continue;
+          pending.delete(key);
+          try { await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome: want === 'bypass' ? 'allowed-once' : 'rejected' }); settled++; } catch { /* already answered */ }
+        }
+      }
+    }
+    return { applied: true, mode: want, settled };
   }
 
   /** Answer one pending approval. `decision` is `approve` or `deny`. */
@@ -680,7 +976,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

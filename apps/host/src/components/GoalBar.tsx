@@ -11,7 +11,7 @@ export function goalStatusText(goal: Goal): string {
     case 'paused': return tr('Paused');
     case 'blocked': return goal.blocked || tr('Needs you');
     case 'complete': return tr('Done');
-    default: return goal.round > 0 && goal.maxRounds > 0 ? tr('step {0} of {1}', [goal.round, goal.maxRounds]) : tr('Working');
+    default: return goal.step ? tr('step {0} of {1}', [goal.step.index, goal.step.total]) : goal.round > 0 && goal.maxRounds > 0 ? tr('step {0} of {1}', [goal.round, goal.maxRounds]) : tr('Working');
   }
 }
 

@@ -246,3 +246,39 @@ test('goal bar: the state, pause, edit and remove work from outside a turn, and 
   assert.equal(await r.bridge.goalState('bar'), null);
   await assert.rejects(r.bridge.goalControl({ chatId: 'bar', action: 'explode' }), /no goal|not known/i);
 });
+
+test('mode change mid-run: Manual to Bypass settles the question already waiting and the very next tool call does not ask again', { skip }, async (t) => {
+  const r = await rig(t);
+  const first = join(r.ws, 'before.txt');
+  let asked = null; const cards = [];
+  const run = r.run('mid', `SCRIPT:spawn 1 call write ${JSON.stringify({ file_path: fwd(first), content: 'one' })}`, { mode: 'manual', onFrame: f => { if (f.type === 'agent-tool') { cards.push(f.tool); if (f.tool.state === 'proposed') asked = f.tool; } } });
+  for (let i = 0; i < 200 && !asked; i++) await new Promise(res => setTimeout(res, 50));
+  assert.ok(asked, 'Manual asked first');
+  const switched = await r.bridge.setMode('mid', 'bypass');
+  assert.deepEqual({ applied: switched.applied, mode: switched.mode }, { applied: true, mode: 'bypass' });
+  assert.equal(switched.settled, 1, 'the waiting question was settled by the new mode');
+  await run;
+  assert.equal(readFileSync(first, 'utf8').trim(), 'one');
+  assert.equal(r.bridge.pendingFor('mid').length, 0);
+  // Bypass then Plan: nothing waiting, and the chat now reports Plan to the next call.
+  assert.equal((await r.bridge.setMode('mid', 'plan')).mode, 'plan');
+  assert.deepEqual(await r.bridge.setMode('nobody-yet', 'manual'), { applied: false, mode: 'manual', reason: 'no session yet' });
+});
+
+test('the gate stops a helper asking once the chat has left Manual', async () => {
+  const { apply, MANUAL_PRESET } = await import('../server/agent/plugins/strata-gate.mjs');
+  let handler; const appended = [];
+  const parent = { header: { origin: 'user' } };
+  const child = { header: { origin: 'subagent', parentSession: 'p' }, append: (type, data) => appended.push([type, data.policy]) };
+  let preset = MANUAL_PRESET; let override = 'ask';
+  apply({ on: (_e, h) => { handler = h; }, inject: () => {}, sessions: new Map([['p', parent]]), permissionPresets: { current: () => preset }, approval: { overrideOf: () => override } });
+  const exec = { name: 'write', agent: { session: child }, input: { file_path: 'x' } };
+  await handler(exec, async () => ({ kind: 'allow' }));
+  assert.deepEqual(appended, [], 'in Manual the helper keeps asking');
+  preset = 'strata-bypass-ish';
+  await handler(exec, async () => ({ kind: 'allow' }));
+  assert.deepEqual(appended, [['approval/policy', 'never']], 'the first call after the switch un-pins the helper');
+  override = 'never';
+  await handler(exec, async () => ({ kind: 'allow' }));
+  assert.equal(appended.length, 1, 'and does it once');
+});

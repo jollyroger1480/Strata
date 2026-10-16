@@ -25,7 +25,8 @@ export function StatusLine({ sessionId, startedAt, tokens }: { sessionId: string
   const count = frame.tokens ?? tokens;
   return <div className="live-status" data-phase={frame.phase} aria-live="off">
     <span className="live-status__pulse" aria-hidden="true"><i/><i/></span>
-    <span className="live-status__verb" key={playful ? rotation : frame.code + String(frame.args?.target ?? '')}>{statusWords(frame, rotation)}</span>
-    <span className="live-status__meta">{elapsedText(startedAt, now)}{count ? ` · ${tr('{0} tokens', [count.toLocaleString()])}` : ''}</span>
+    <span className="live-status__verb" key={playful ? rotation : frame.code + String(frame.args?.target ?? '')} title={statusWords(frame, rotation)}>{statusWords(frame, rotation)}</span>
+    <span className="live-status__time">{elapsedText(startedAt, now)}</span>
+    <span className="live-status__tokens">{count ? tr('{0} tokens', [count.toLocaleString()]) : ''}</span>
   </div>;
 }

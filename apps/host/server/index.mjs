@@ -116,6 +116,8 @@ const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
   onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
+  onPlan: (chatId, event, plan) => hub.send('plan', { chatId, event, plan }),
+  onQueue: (chatId, queue) => hub.send('queue', { chatId, queue }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
@@ -521,8 +523,11 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
+    const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
-    const result = goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
+    const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
+      : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
+      : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
@@ -1607,6 +1612,26 @@ async function api(req, res, path, method, url) {
     const body = await readBody(req);
     try { return json(res, 200, await agent.goalControl({ chatId: String(body.chatId ?? body.sessionId ?? ''), action: goalAct[1], text: body.text })); } catch (e) { return error(res, 400, e.message); }
   }
+  // Plans (notes-split-agent6.md): the plan of a chat, and the instant actions. "Start as goal" streams, so it is /api/plan/start-goal below.
+  if (path === '/api/plan' && method === 'GET') return json(res, 200, { plan: agent.planState(url.searchParams.get('sessionId') ?? url.searchParams.get('chatId') ?? '') });
+  const planAct = /^\/api\/plan\/(approve|edit|reject)$/.exec(path);
+  if (planAct && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, agent.planControl({ chatId: String(body.sessionId ?? body.chatId ?? ''), planId: typeof body.planId === 'string' ? body.planId : null, action: planAct[1], steps: body.steps, title: body.title })); }
+    catch (e) { return error(res, e.code === 'plan-gone' || e.code === 'plan-used' ? 409 : 400, e.message); }
+  }
+  // Messages typed while a goal runs: queued (shown as queued), taken back, or listed.
+  if (path === '/api/chat/queue' && method === 'GET') return json(res, 200, agent.takeQueue(url.searchParams.get('sessionId') ?? '', { release: url.searchParams.get('release') === '1' }));
+  if (path === '/api/chat/queue' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, agent.queueMessage({ chatId: String(body.sessionId ?? ''), text: body.message })); }
+    catch (e) { return error(res, e.code === 'queue-idle' ? 409 : 400, e.message); }
+  }
+  if (path === '/api/chat/queue/cancel' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, agent.cancelQueued({ chatId: String(body.sessionId ?? ''), id: String(body.id ?? '') })); }
+    catch (e) { return error(res, e.code === 'queue-gone' ? 409 : 400, e.message); }
+  }
   if (path === '/api/agent/tools' && method === 'GET') return json(res, 200, agentTools.view());
   if (path === '/api/agent/tools' && method === 'PUT') {
     try { return json(res, 200, agentTools.update(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
@@ -1633,6 +1658,12 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, await agent.approve({ chatId: b.sessionId, callId: b.toolId, decision: b.decision })); }
     catch (e) { return error(res, e.code === 'approval-gone' ? 409 : 400, e.message); }
   }
+  /* The person changed the chat's mode while a turn runs: it applies to the next tool call, goal and helpers included. */
+  if (path === '/api/chat/mode' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || !['manual', 'plan', 'bypass'].includes(b.mode)) return error(res, 400, 'sessionId and mode (manual, plan or bypass) are required');
+    try { return json(res, 200, await agent.setMode(b.sessionId, b.mode)); } catch (e) { return error(res, e.code === 'mode-unavailable' ? 409 : 502, e.message); }
+  }
   /* Stop one chat's turn. Resolves once the turn has really ended, not when the cancel was admitted. */
   if (path === '/api/chat/stop' && method === 'POST') {
     const b = await readBody(req);
@@ -1644,8 +1675,9 @@ async function api(req, res, path, method, url) {
   }
 
   // --- chat ---------------------------------------------------------------
-  if (path === '/api/chat/stream' && method === 'POST') {
+  if ((path === '/api/chat/stream' || path === '/api/plan/start-goal') && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
+    if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
     let images;try{images=validateChatImages(body.images);}catch(e){return error(res,400,e.message);}
     if(images.length){if(body.remoteModel)return error(res,409,'Choose a local image-reading model before sending attached pictures.');let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
     // The goal bar's Resume has no words of its own: it is the same turn as "/goal resume".

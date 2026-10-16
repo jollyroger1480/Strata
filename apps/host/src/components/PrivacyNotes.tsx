@@ -1,18 +1,17 @@
 import { tr } from '../lib/i18n';
-import { Icon, type IconName } from './ui';
 
-const NOTES: { icon: IconName; text: string; strong?: boolean }[] = [
-  { icon: 'shield', text: 'Strata sends no usage telemetry.', strong: true },
-  { icon: 'file', text: 'Conversations stay in browser storage.' },
-  { icon: 'link', text: 'When you choose an API model, that conversation and enabled skill instructions are sent to its provider.' },
-  { icon: 'activity', text: 'The UI request log keeps client, timing and token metadata in memory.' },
-  { icon: 'memory', text: 'Native API monitoring can retain request content in memory when enabled.' },
-  { icon: 'tool', text: 'Connected tools access the resources you configure.' },
+const NOTES = [
+  'Strata sends no usage telemetry.',
+  'Conversations stay in browser storage.',
+  'When you choose an API model, that conversation and enabled skill instructions are sent to its provider.',
+  'The UI request log keeps client, timing and token metadata in memory.',
+  'Native API monitoring can retain request content in memory when enabled.',
+  'Connected tools access the resources you configure.',
 ];
 
-/** What Strata collects and where things go: short lines across the box, nothing long to read through. */
+/** What Strata collects and where things go: plain lines of text, nothing else. */
 export function PrivacyNotes() {
-  return <ul className="privacy-notes" aria-label={tr("Collection and logs")}>
-    {NOTES.map(n => <li key={n.text} data-strong={n.strong || undefined}><Icon name={n.icon} size={15}/><span>{tr(n.text)}</span></li>)}
-  </ul>;
+  return <div className="privacy-notes" aria-label={tr("Collection and logs")}>
+    {NOTES.map(text => <p key={text}>{tr(text)}</p>)}
+  </div>;
 }
