@@ -574,6 +574,7 @@ await scenario('polish', { installed: true }, async ({ base, api, browser, dirs,
   const engine = await page.locator('body').innerText();
   check(/Update component/.test(engine) && /Diagnostics/.test(engine), 'Settings > Engine has Update component and Diagnostics');
   check(!/Performance|Model settings|Calibrate|Engine installation/.test(engine), 'and nothing else');
+  await page.getByRole('button', { name: /^View logs$/ }).click();      // the logs open in a pop-up that holds Save logs
   await page.getByRole('button', { name: /^Save logs$/ }).click();
   await page.getByText(/Saved to/).first().waitFor({ timeout: 15000 }).catch(() => {});
   const savedText = await page.getByText(/Saved to/).first().innerText().catch(() => '');
