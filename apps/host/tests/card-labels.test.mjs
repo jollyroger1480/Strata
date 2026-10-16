@@ -28,7 +28,7 @@ test('the approval and result texts of a chat card exist in every language, tran
 test('the card shows "Ran" unless the person approved, and never "Demo approval"', () => {
   const chat = readFileSync(resolve(root, 'src/screens/Chat.tsx'), 'utf8');
   assert.ok(!/Demo approval/i.test(chat));
-  assert.match(chat, /t\.live && !t\.approved \? 'Ran' : 'Approved'/);
+  assert.match(chat, /t\.live && t\.state === 'done' && t\.approved \? 'Approved' : 'Done'/);
   const store = readFileSync(resolve(root, 'src/lib/store.ts'), 'utf8');
   assert.ok(!/Demo approval/i.test(store));
   assert.match(store, /mode:state\.sessions\.find\(s=>s\.id===sessionId\)\?\.preferences\?\.mode\?\?'manual'/, 'the Mode menu choice travels with the turn');

@@ -30,7 +30,7 @@ const nodeExe = resolve(args.node ?? join(staged, 'node', process.platform === '
 const work = mkdtempSync(join(tmpdir(), 'strata-ui-flows-'));
 const shots = resolve(args.shots ?? join(work, 'shots'));
 mkdirSync(shots, { recursive: true });
-const only = new Set(String(args.only ?? 'download,models,tune,fail,delete,theme,restart,perf,polish,stop,latest').split(','));
+const only = new Set(String(args.only ?? 'download,models,profile,tune,fail,delete,theme,restart,perf,polish,stop,latest').split(','));
 const isWin = process.platform === 'win32';
 const { chromium } = await import(pathToFileURL(join(repoHost, 'node_modules/playwright-core/index.mjs')).href).catch(() => import('playwright-core'));
 const CHROME = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find(existsSync);
@@ -266,6 +266,59 @@ await scenario('models', { installed: true }, async ({ base, api, browser, shot 
   check(page.problems.length === 0, 'no page error', page.problems.join('; '));
 });
 
+// ------------------------------------------------------------------------------------------------ the profile used, the popover, the pop-up
+await scenario('profile', { installed: true }, async ({ base, api, browser, shot }) => {
+  const page = await newPage(browser, base);
+  await clickText(page, /Go straight to the app/i);
+  await page.getByText(/Conversation context/i).first().waitFor({ timeout: 30000 });
+  await delay(1500);
+  const work = () => page.getByRole('button', { name: /Leave 20% for my work/ }).first();
+  const full = () => page.getByRole('button', { name: /Full performance/ }).first();
+  await work().click();
+  check(await work().getAttribute('aria-pressed') === 'true', 'Leave 20% is chosen before loading');
+  await page.getByRole('button', { name: /^Load model$/ }).first().click();
+  let ready = false;
+  for (let i = 0; i < 90 && !ready; i++) { const s = (await api('/api/native')).body; ready = s.instances.some(x => x.status === 'ready'); await delay(500); }
+  check(ready, 'the model loads');
+  const inst = (await api('/api/native')).body.instances.find(x => x.status === 'ready');
+  check(inst?.resourceProfile === 'work', 'the running model reports the profile it was started with', String(inst?.resourceProfile));
+  await delay(1500);
+  check(await work().getAttribute('aria-pressed') === 'true' && await full().getAttribute('aria-pressed') === 'false', 'after the load the page still shows Leave 20%, not Full performance');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /^Unload$/ }).first().waitFor({ timeout: 30000 });
+  await delay(1000);
+  check(await work().getAttribute('aria-pressed') === 'true', 'and after a reload it is still the profile in use');
+  await shot(page, '1-profile-used');
+  // the reasoning popover names the loaded model
+  await page.evaluate(() => { location.hash = '#/chat'; });
+  const effort = page.getByRole('button', { name: /^Reasoning effort/ }).first();
+  await effort.waitFor({ timeout: 30000 });
+  await effort.click();
+  const header = await page.locator('.reasoning-menu-model strong').first().textContent({ timeout: 10000 });
+  check(header && !/No model loaded/i.test(header), 'the Reasoning popover names the loaded model, not "No model loaded"', String(header));
+  await shot(page, '2-reasoning-popover');
+  await page.keyboard.press('Escape');
+  // an installed model asked for with other settings: the pop-up never speaks of downloading
+  await page.evaluate(() => { location.hash = '#/models'; });
+  await page.getByRole('button', { name: /^Unload$/ }).first().waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: /^Unload$/ }).first().click();
+  await page.getByRole('button', { name: /^Load model$/ }).first().waitFor({ timeout: 30000 });
+  await page.getByRole('combobox', { name: 'Conversation context' }).first().click();
+  const options = page.getByRole('option');
+  const pick = (await options.allTextContents()).findIndex(t => /^8K$/.test(t.trim()));
+  if (pick >= 0) await options.nth(pick).click();
+  await page.getByRole('button', { name: /^Load model$|^Checking/ }).first().click();
+  const dialog = page.getByRole('dialog').first();
+  await dialog.waitFor({ timeout: 15000 }).catch(() => {});
+  const text = (await dialog.textContent().catch(() => '')) ?? '';
+  await shot(page, '3-apply-dialog');
+  if (text) {
+    check(!/Download and prepare|Download . load|approximately|[0-9] GB/i.test(text), 'for a downloaded model the pop-up has no download wording or size', text.replace(/\s+/g, ' ').slice(0, 600));
+    check(/Apply/.test(text), 'it says what happens: apply settings and load');
+  } else console.log('info  the settings were the saved ones, so loading needed no pop-up at all');
+  check(page.problems.length === 0, 'no page error', page.problems.join('; '));
+});
+
 // ------------------------------------------------------------------------------------------------ tune + reading size
 await scenario('tune', { installed: true, env: { FAKE_TOKEN_DELAY: '0.02', FAKE_REPLY: ['I am thinking about it.', '</think>', '', 'Here is a list:', '', '- one', '- two', '', '## Heading', '', 'Some `code` and **bold** text.', '', '| a | b |', '|---|---|', '| 1 | 2 |', '', '```', 'code line', '```', ''].join(String.fromCharCode(10)) } }, async ({ base, api, browser, dirs, shot }) => {
   const page = await newPage(browser, base);
@@ -363,7 +416,7 @@ await scenario('delete', { installed: true }, async ({ base, api, browser, dirs,
   await delay(600);
   await shot(page, '1-delete-confirm');
   const dialog = await page.getByRole('dialog').last().innerText();
-  check(/Delete this version\?/.test(dialog) && /Remove 83\.6 GB of downloaded files\. You can download this version again\./.test(dialog), 'the confirm dialog uses the existing words and the real size', dialog.replace(/\s+/g, ' ').slice(0, 200));
+  check(/Delete this version\?/.test(dialog) && /Remove 83\.6 GB of downloaded files\. You can download this version again\./.test(dialog), 'the confirm dialog uses the existing words and the real size', dialog.replace(/\s+/g, ' ').slice(0, 600));
   check(/running model will be unloaded/i.test(dialog), 'and says the loaded model is unloaded first');
   await page.getByRole('button', { name: /^Delete version$/ }).click();
   let state = null;

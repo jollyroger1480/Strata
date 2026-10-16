@@ -105,7 +105,7 @@ test('the agent is offered exactly these tools: everything useful, no scheduler,
   const r = await rig(t);
   await r.run('inv', 'SCRIPT:echo hi');
   const offered = [...r.worker.requests].reverse().find(q => q.toolNames.length)?.toolNames.sort();
-  assert.deepEqual(offered, ['create_goal', 'edit', 'get_goal', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'skill', 'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'workflow', 'working_directory', 'write'].sort());
+  assert.deepEqual(offered, ['edit', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'subagent', 'todo_write', 'web_fetch', 'working_directory', 'write'].sort());
   assert.ok(!offered.some(n => n.startsWith('schedule_')) && !offered.includes('web_search') && !offered.includes('ask_user_question') && !offered.includes('exit_plan_mode'));
 });
 
@@ -120,10 +120,9 @@ test('a tool from each family runs and shows a card the page can render', { skip
   assert.match(last(await r.call('fam-s', 'grep', { pattern: 'needle' })).result, /Line 2/);
   assert.equal(last(await r.call('fam-w', 'working_directory', {})).state, 'done');
   assert.equal(last(await r.call('fam-j', 'job_list', {})).state, 'done');
-  // plan / goal / list family
+  // plan / list family
   assert.equal(last(await r.call('fam-t', 'todo_write', { todos: [{ content: 'check the build', status: 'pending' }] })).state, 'done');
-  const goal = last(await r.call('fam-goal', 'create_goal', { objective: 'finish the notes' }));
-  assert.equal(goal.state, 'done'); assert.equal(goal.effect, 'Sets a goal to work towards.');
+  // (the goal tools are not offered since the prompt trim: tests/functional-fixes.test.mjs pins that)
   // write family (Bypass: no card asks)
   const wrote = await r.call('fam-fs', 'write', { file_path: fwd(join(r.ws, 'new.txt')), content: 'made\n' });
   assert.equal(last(wrote).state, 'done'); assert.equal(readFileSync(join(r.ws, 'new.txt'), 'utf8').trim(), 'made');

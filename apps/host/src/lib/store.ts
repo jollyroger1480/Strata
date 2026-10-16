@@ -1332,6 +1332,8 @@ export async function sendMessage(text: string) {
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
         images:await Promise.all(pictures.map(photoData)),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
+        // A chat set to plain talk (preferences.agent === false) never runs a tool: the host answers it directly.
+        ...(state.sessions.find(s=>s.id===sessionId)?.preferences?.agent===false?{agent:false}:{}),
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'High',
         thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
@@ -1393,6 +1395,7 @@ export async function sendMessage(text: string) {
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : undefined,
             ttftMs: typeof frame.ttftMs === 'number' ? frame.ttftMs : undefined,
             inputTokens: typeof frame.tokensIn === 'number' ? frame.tokensIn : undefined,
+            contextUsed: typeof frame.contextTokens === 'number' ? frame.contextTokens : undefined,
             usageSource: frame.usageSource === 'reported' || frame.usageSource === 'demo' ? frame.usageSource : 'unavailable',
             tps: typeof frame.tps === 'number' ? frame.tps : undefined,
           }));

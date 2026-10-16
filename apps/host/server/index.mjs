@@ -1441,7 +1441,7 @@ async function api(req, res, path, method, url) {
        detaches from the turn (it keeps running in the Harness); Stop is its own request. */
     const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
     const agentSkip = process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
-      : body.agent === false ? 'This chat runs without the agent.'
+      : body.agent === false || body.tools === false ? 'This chat runs without the agent.'
       : !chatId ? 'This request did not name a chat.'
       : images.length ? 'The agent does not take attached pictures yet; this message was sent directly.'
       : !(body.remoteModel || native.hasLive()) ? 'The agent needs a loaded Strata model or an API model.'
@@ -1454,7 +1454,7 @@ async function api(req, res, path, method, url) {
         return undefined;
       }
       res.write(`${JSON.stringify({ type: 'notice', code: 'agent-unavailable', message: `${capability.reason}`, ...(capability.detail ? { details: capability.detail } : {}) })}\n`);
-    } else if (agentSkip && chatId && body.agent !== false && process.env.STRATA_AGENT !== 'off') {
+    } else if (agentSkip && chatId && body.agent !== false && body.tools !== false && process.env.STRATA_AGENT !== 'off') {
       res.write(`${JSON.stringify({ type: 'notice', code: 'agent-skipped', message: agentSkip })}\n`);
     }
 

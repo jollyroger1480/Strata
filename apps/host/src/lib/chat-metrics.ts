@@ -6,7 +6,11 @@ export function chatMetrics(session:Session|null, monitor:MonitorState|null, con
   const latest=[...replies].reverse().find(m=>m.inputTokens!==undefined);
   const remote=replies.at(-1)?.remoteModel===true;
   const active=!remote&&monitor?.context?.sessionId===session?.id&&!!session;
-  const used=active?monitor!.context.usedTokens:latest?latest.inputTokens!+(latest.tokens??0):null;
+  // One source: what the context held after the last reply (the engine's own count for that request); the monitor's live figure only while a reply streams.
+  const finished=latest?(latest.contextUsed??latest.inputTokens!+(latest.tokens??0)):null;
+  const liveUsed=active&&Number.isFinite(monitor!.context.usedTokens)&&monitor!.context.usedTokens>0?monitor!.context.usedTokens:null;
+  const live=replies.some(m=>m.streaming)||(active&&['reading','thinking','generating'].includes(monitor!.phase));
+  const used=live?(liveUsed??finished):(finished??liveUsed);
   const max=remote?(replies.at(-1)?.contextMax||null):configuredContext??(active?monitor!.context.maxTokens:latest?.contextMax??null);
   const streaming=replies.find(m=>m.streaming);
   const speed=streaming?.tps??[...replies].reverse().find(m=>m.tps!==undefined)?.tps??null;

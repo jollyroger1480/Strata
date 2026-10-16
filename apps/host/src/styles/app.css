@@ -7009,3 +7009,7 @@ textarea {
 /* What you type and the small print under each message follow the reading size too, so the whole conversation changes together. */
 .st-composer textarea { font-size: var(--st-content-fs, 14px); }
 .st-msg__meta, .st-msg__meta time { font-size: calc(var(--st-content-fs, 14px) * .8125); }
+
+/* What an approval is about, shown without opening the card: the file or the command. */
+.toolcard__what { display: block; margin: 4px 0 2px; padding: 6px 10px; background: var(--st-surface-2); color: var(--st-ink); border: 1px solid var(--st-line); border-radius: var(--st-r-sm); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6.5em; overflow: auto; font-size: 12px; }
+.tool-summary__target { min-width: 0; max-width: 28em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-mono, monospace); font-size: 12px; }

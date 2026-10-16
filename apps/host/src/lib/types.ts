@@ -325,6 +325,8 @@ export interface ChatMessage {
   requestId?: string;
   model?: string;
   inputTokens?: number;
+  /** What the context held after this reply (the last model request's prompt + reply); an agent turn's inputTokens add every request up. */
+  contextUsed?: number;
   contextMax?: number;
   usageSource?: 'reported' | 'demo' | 'unavailable' | 'estimated';
   skillsUsed?: string[];
@@ -352,6 +354,10 @@ export interface ToolCall {
   preview: string;
   effect: string;
   scope: 'read' | 'write' | 'shell' | 'connected';
+  /** The card's headline in plain words for its current state ("Wrote a file"); the host sends it, the UI translates it. */
+  verb?: string;
+  /** What the action is on: a file path, the command, a web address. */
+  target?: string;
   state: ToolState;
   result?: string;
   durationMs?: number;
@@ -388,7 +394,7 @@ export interface Session {
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
+  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;

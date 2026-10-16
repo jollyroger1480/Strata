@@ -17,6 +17,10 @@
  *     preset (nothing can change); the Harness's plan mode needs an interactive review the app does not have.
  *   - `tool-bash` / `tool-pwsh`: exactly one, by operating system (the Harness chooses the same at load).
  *   - `tool-plugin-manager` stays disabled, as in `standard`.
+ *   - Prompt size: a local model reads every tool schema and every instruction on every first message (about 9,000 tokens at
+ *     the start, 20 s before the first word on a 64K model). The goal tools, the skill tool (no skill ships), and the
+ *     workflow tool (3.4 KB of schema on its own) are left out; they are the largest and the least used. Helper agents,
+ *     files, shell, search, todo, web fetch and present stay.
  */
 
 /** Plugin ids of the pinned Harness `standard` preset, in its order (the drift check). */
@@ -26,7 +30,22 @@ export const STANDARD_PLUGIN_IDS = [
   'tool-ask-user', 'tool-todo', 'tool-web', 'present', 'tool-plugin-manager',
 ];
 /** What we leave out of it. */
-export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning'];
+export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning', 'skill-filesystem', 'tool-skill', 'command-goal', 'tool-goal'];
+/** Plugins removed from inside the `delegation` group (the group stays: helper agents are a feature). */
+export const REMOVED_DELEGATION_IDS = ['workflow-ptc', 'tool-workflow', 'tool-subagent-fork'];
+
+/**
+ * The whole system prompt of an app chat. The Harness's own text is about 4.8 KB (about 1,200 tokens) of guidance for working on
+ * the Harness itself (its checkout, its web page, its plugins): a local model pays for it on every first message and the person
+ * can see its words in the chat ("DSH", "sandbox"). This one says what a chat needs and nothing else. The tools state their own rules.
+ */
+export const AGENT_PROMPT = [
+  'You are a helpful assistant that can also work on this computer through your tools. You are running as {{model}}.',
+  'Answer questions directly and briefly; use a tool only when the task needs one. The person reads your replies in a chat: use plain words, not tool names or technical jargon.',
+  'Look before you change: read a file before you edit or overwrite it, and prefer a small edit to a rewrite. Search with the glob and grep tools and read files with the read tool; use the shell for running programs.',
+  'When you start a program or open a folder or file for the person, the command returning without an error means it worked: say plainly that it is open. Do not say you could not confirm it. If a command fails, say what went wrong in one sentence and what you will try next.',
+  'Tokens prefixed with @ are files or folders the person pointed at. A failed or refused action changed nothing; say so, and do not claim work you did not do.',
+].join('\n\n');
 
 /**
  * @param {{platform?: string, search?: boolean}} [options]
@@ -35,7 +54,7 @@ export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning']
 export function standardPreset({ platform = process.platform, search = false } = {}) {
   const windows = platform === 'win32';
   const plugins = [
-    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: 'You are a coding agent powered by the {{model}} model.' } },
+    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
     { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
     { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
     windows
@@ -44,10 +63,6 @@ export function standardPreset({ platform = process.platform, search = false } =
     { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
     { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
-    { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem' },
-    { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
-    { id: 'command-goal', name: '@deepseek-ai/dsh-command-goal' },
-    { id: 'tool-goal', name: '@deepseek-ai/dsh-tool-goal' },
     {
       id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
       config: [
@@ -62,9 +77,6 @@ export function standardPreset({ platform = process.platform, search = false } =
         { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control' },
         { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents' },
         { id: 'tool-subagent', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true } },
-        { id: 'tool-subagent-fork', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'fork', toolName: 'subagent_fork' } },
-        { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc', config: { provider: 'spawn' } },
-        { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
       ],
     },
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },

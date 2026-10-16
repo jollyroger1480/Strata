@@ -59,6 +59,35 @@ const WORDS = {
   lsp: a => ['Looks up how the code fits together.', a.file_path],
 };
 
+/**
+ * What a card says it is doing, in the person's words: [while it runs, when it worked, when it failed]. The UI translates
+ * these fixed sentences and writes the target (a file path, the command) beside them, so a row never shows `pwsh · Ran`.
+ */
+const VERBS = {
+  write: ['Writing a file', 'Wrote a file', "Couldn't write the file"],
+  edit: ['Changing a file', 'Changed a file', "Couldn't change the file"],
+  read: ['Reading a file', 'Read a file', "Couldn't read the file"],
+  read_image: ['Looking at a picture', 'Looked at a picture', "Couldn't look at the picture"],
+  glob: ['Searching for files', 'Searched for files', "Couldn't search for files"],
+  grep: ['Searching inside files', 'Searched inside files', "Couldn't search inside files"],
+  pwsh: ['Running a command', 'Ran a command', 'The command failed'],
+  bash: ['Running a command', 'Ran a command', 'The command failed'],
+  web_fetch: ['Opening a web page', 'Opened a web page', "Couldn't open the web page"],
+  web_search: ['Searching the web', 'Searched the web', "Couldn't search the web"],
+  todo_write: ['Updating its to-do list', 'Updated its to-do list', "Couldn't update its to-do list"],
+  present: ['Showing you a result', 'Showed you a result', "Couldn't show the result"],
+  working_directory: ['Checking the folder', 'Checked the folder', "Couldn't check the folder"],
+  job_list: ['Checking background tasks', 'Checked background tasks', "Couldn't check background tasks"],
+  job_output: ['Reading a background task', 'Read a background task', "Couldn't read the background task"],
+  job_kill: ['Stopping a background task', 'Stopped a background task', "Couldn't stop the background task"],
+};
+const GENERIC_VERBS = ['Using a tool', 'Used a tool', 'The tool failed'];
+
+/** The sentence for a card in this state (the first for a running or waiting card). */
+export function toolVerb(name, state) {
+  const v = VERBS[name] ?? GENERIC_VERBS;
+  return state === 'error' ? v[2] : state === 'done' ? v[1] : v[0];
+}
 /** The ToolCall fields the card needs, from one Harness tool call. */
 export function presentTool({ callId, name, args, reason = null }) {
   const scope = toolScope(name);
@@ -69,7 +98,7 @@ export function presentTool({ callId, name, args, reason = null }) {
   const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');
-  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope };
+  return { id: callId, name, args, preview: clip(preview, 600), effect: clip(effect, 400), scope, verb: toolVerb(name, 'running'), target: clip(name in VERBS ? preview : name, 300) };
 }
 
 /** A tool's failure in plain words, or null when there is nothing better than the original text. */
@@ -91,18 +120,24 @@ export function withPlain(raw) {
   return plain ? `${plain}\n\nDetails: ${raw.replace(/^Error:\s*/, '')}` : raw;
 }
 
+/** A command whose whole point is to open something: it has no output to show when it worked. */
+const LAUNCH = /(^|[\s;|&(])(start-process|start|invoke-item|ii|explorer(?:\.exe)?|xdg-open|open|notepad(?:\.exe)?|code)(?=[\s;|&)]|$)/i;
+
 /**
  * A command that succeeded and printed nothing says so in words (the card used to show "(no output)" under a "Ran" that could not
  * tell the person whether anything happened). Opening a folder or a window is not something a command can prove it did, so the
  * sentence says only what is known.
  */
-export function outcomeText(tool, text) {
+export function outcomeText(tool, text, args = {}) {
   if (tool === 'pwsh' || tool === 'bash') {
     // In the read-only modes PowerShell runs in Constrained Language Mode and complains about the Harness's own output-encoding line:
     // noise appended after a command that worked. It says nothing about the command, so it is not shown.
     text = text.replace(/\r?\n?\[stderr\]\r?\n(?:Cannot create type\. Only core types are supported in this language mode\.[\s\S]*?CannotCreateTypeConstrainedLanguage\s*)+$/, '');
     if (!text.trim()) text = '(no output)';
   }
+  // Starting a program or opening a folder prints nothing when it worked. The model used to read "finished, nothing to show" as "cannot tell
+  // whether it opened" and told the person so; a launch that returned without an error did start, and the result says that plainly.
+  if ((tool === 'pwsh' || tool === 'bash') && /^\(no output\)$/.test(text.trim()) && LAUNCH.test(String(args?.command ?? ''))) return 'Started. The program, folder or file was opened.';
   if ((tool === 'pwsh' || tool === 'bash') && /^\(no output\)$/.test(text.trim())) return 'The command finished without any error. It printed nothing, so there is nothing more to show.';
   return text;
 }
@@ -131,8 +166,11 @@ export class TurnProjector {
     this.tools = new Map();          // callId -> { card, calledAt }
     this.tokensIn = 0;
     this.tokensOut = 0;
+    this.contextTokens = null;       // the LAST model request's prompt + reply: what the context holds now (the sums above count every request again)
     this.usageSeen = false;
     this.firstTokenAt = null;
+    this.streams = new Map();        // attemptId -> { first, last, chunks, chars }: the time a model request actually spent producing
+    this.lastStats = 0;
     this.emittedText = new Map();    // attemptId -> chars sent live
     this.ended = null;               // the turn/end reason, once seen
     this.denied = new Set();         // callIds a human or the policy rejected
@@ -143,7 +181,29 @@ export class TurnProjector {
     const entry = this.tools.get(callId);
     if (!entry) return null;
     entry.card = { ...entry.card, ...patch };
+    entry.card.verb = toolVerb(entry.card.name, entry.card.state);
     return { type: 'agent-tool', tool: entry.card };
+  }
+
+  /* The speed shown while a reply streams, and after it: everything the model generated (reasoning included) over the time its
+     requests spent producing it, not over the whole turn (tool runs and the wait for the prompt are not decoding). One stream per model
+     request; tokens are one per streamed chunk, or characters / 4 when a server batches. */
+  #produced(attemptId, text, out) {
+    const now = Date.now();
+    const s = this.streams.get(attemptId) ?? { first: now, last: now, chunks: 0, chars: 0 };
+    s.last = now; s.chunks += 1; s.chars += text.length;
+    this.streams.set(attemptId, s);
+    if (now - this.lastStats < 400) return;
+    const { tokens, seconds } = this.decode();
+    if (seconds < 0.5) return;
+    this.lastStats = now;
+    out.push({ type: 'stats', tokensOut: tokens, tps: Number((tokens / seconds).toFixed(1)), source: 'stream' });
+  }
+
+  decode() {
+    let tokens = 0, ms = 0;
+    for (const s of this.streams.values()) { tokens += s.chars / Math.max(1, s.chunks) < 8 ? s.chunks : Math.ceil(s.chars / 4); ms += s.last - s.first; }
+    return { tokens, seconds: ms / 1000 };
   }
 
   /** Process one `session/follow` item (event or assistant-stream). Returns frames. */
@@ -155,16 +215,19 @@ export class TurnProjector {
         const c = f.chunk;
         if (c.type === 'text-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
+          this.#produced(f.attemptId, c.text, out);
           this.emittedAny = true;
           this.emittedText.set(f.attemptId, (this.emittedText.get(f.attemptId) ?? 0) + c.text.length);
           out.push({ type: 'delta', text: c.text });
         } else if (c.type === 'reasoning-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
+          this.#produced(f.attemptId, c.text, out);
           out.push({ type: 'reasoning', text: c.text });
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
           this.tokensIn += Number(c.usage.inputTokens) || 0;
           this.tokensOut += Number(c.usage.outputTokens) || 0;
+          this.contextTokens = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.outputTokens) || 0);
         }
       }
       return out;
@@ -220,7 +283,7 @@ export class TurnProjector {
         const frame = this.#card(callId, {
           state: denied ? 'denied' : isError ? 'error' : 'done',
           // A card the person (or the mode) refused keeps its plain sentence; the model's own error text ("the user rejected ...") is not for them.
-          result: this.byPolicy.has(callId) ? NOT_IN_MODE : denied ? (entry.card.result ?? 'Denied. Nothing ran.') : isError ? withPlain(resultText(d.message)) : outcomeText(entry.card.name, resultText(d.message)),
+          result: this.byPolicy.has(callId) ? NOT_IN_MODE : denied ? (entry.card.result ?? 'Denied. Nothing ran.') : isError ? withPlain(resultText(d.message)) : outcomeText(entry.card.name, resultText(d.message), entry.card.args),
           durationMs: Math.max(0, (e.time ?? 0) - entry.calledAt),
         });
         if (frame) out.push(frame);
@@ -256,7 +319,10 @@ export class TurnProjector {
     const usage = this.usageSeen
       ? { tokensIn: this.tokensIn, tokensOut: this.tokensOut, usageSource: 'reported' }
       : { tokensIn: null, tokensOut: null, usageSource: 'unavailable' };
-    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax };
+    const decoded = this.decode();
+    const generated = this.usageSeen && this.tokensOut > 0 ? this.tokensOut : decoded.tokens;
+    const tps = decoded.seconds >= 0.3 && generated > 0 ? Number((generated / decoded.seconds).toFixed(1)) : null;
+    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax, tps, contextTokens: this.contextTokens };
     switch (reason.kind) {
       case 'completed':
         return [{ type: 'done', ...base, ...usage, finishReason: 'stop' }];

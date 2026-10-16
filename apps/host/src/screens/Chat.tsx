@@ -622,12 +622,13 @@ function ToolCard({ messageId, tool: t }: {
     const scope = SCOPE[t.scope];
     const pending = t.state === 'proposed';
     if (!pending && t.state !== 'running')
-        return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{t.name}<span>·</span><Icon name={t.state === 'denied' ? 'x' : 'check'} size={14}/>{tr(t.state === 'done' && t.scope !== 'read' ? (t.live && !t.approved ? 'Ran' : 'Approved') : t.state === 'denied' ? 'Denied' : t.state === 'done' ? 'Done' : t.state)}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
+        return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{tr(t.verb ?? t.name)}{t.target ? <><span>·</span><span className="tool-summary__target" title={t.target}>{t.target}</span></> : null}<span>·</span><Icon name={t.state === 'denied' || t.state === 'error' ? 'x' : 'check'} size={14}/>{tr(t.state === 'denied' ? 'Denied' : t.state === 'error' ? 'Failed' : t.live && t.state === 'done' && t.approved ? 'Approved' : 'Done')}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
     return <section className="toolcard toolcard--compact" data-state={t.state} aria-label={t.name}>
     <details className="toolcard__disclosure">
-      <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{t.name}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>
+      <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{tr(t.verb ?? t.name)}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>
       <div className="toolcard__body"><code className="toolcard__preview">{t.preview}</code><p className="small muted">{tr(t.effect)}</p>{tr(t.result ? <p className="small">{t.result}</p> : null)}</div>
     </details>
+    {tr(pending && t.target ? <code className="toolcard__what" title={t.target}>{t.target}</code> : null)}
     {tr(pending ? <div className="toolcard__quick-actions"><span className="xs muted">{tr("Needs your approval")}</span><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" icon="check" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div> : <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>)}
   </section>;
 }

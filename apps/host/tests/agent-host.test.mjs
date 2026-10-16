@@ -238,3 +238,16 @@ test('Mode over HTTP: the chat body carries the Mode menu choice; Plan refuses a
   assert.equal(lines(join(s.ws, 'manual-http.txt')), 1);
   assert.equal(manual.filter(f => f.type === 'agent-tool').at(-1).tool.approved, true);
 });
+
+test('item 9: a chat that asks for no tools never runs one (agent:false and tools:false answer directly)', { skip }, async t => {
+  const s = await setup(t);
+  for (const [chatId, flag] of [['chat-plain-a', { agent: false }], ['chat-plain-t', { tools: false }]]) {
+    s.worker.requests.length = 0;
+    const frames = await s.host.chat({ sessionId: chatId, message: 'SCRIPT:tool plain-never.txt x', remoteModel: s.remoteModel, workspaceId: null, history: [], ...flag });
+    assert.equal(frames.filter(f => f.type === 'agent-tool').length, 0, `${chatId}: no tool card`);
+    assert.ok(!frames.some(f => f.type === 'start' && f.agent === true), `${chatId}: not an agent turn`);
+    assert.ok(!frames.some(f => f.type === 'notice' && f.code === 'agent-skipped'), `${chatId}: asking for plain chat is not a surprise to explain`);
+    assert.equal(existsSync(join(s.ws, 'plain-never.txt')), false);
+    assert.ok(s.worker.requests.length >= 1 && s.worker.requests.every(r => r.toolNames.length === 0), `${chatId}: the model was offered no tool`);
+  }
+});
