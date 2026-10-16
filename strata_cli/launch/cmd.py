@@ -1,0 +1,551 @@
+"""The `strata launch` and `strata connect` commands: the flags, the plain-text (no TUI) run, and the hand-over to the TUI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+from strata_cli.launch import settings as S
+
+EXAMPLES = """\
+examples:
+  strata launch                                    open the guided screens (saved presets, then set up from the beginning)
+  strata launch --preset "IQ3_XXS 128K"            start a saved preset (opens the monitor)
+  strata launch --model iq3_xxs --context 128k --parallel 4 --vision off --tune quick \\
+                --access lan --port 8080 --save-preset "Office" --no-tui
+                                                   set everything on the command line, serve, print the address
+  strata launch --model-path /data/models/IQ3_XXS --no-tui
+                                                   use model files you already have (a folder or one .gguf)
+  strata launch --preset Office --set prefill=65536 --set STRATA_PIN_BY_NEED=1 --no-tui
+                                                   change one advanced setting for this start
+  strata launch --plan --model q2_0                show what would happen, change nothing
+  strata launch --list-presets | --delete-preset NAME | --status | --stop [--preset NAME]
+  strata connect                                   list the apps Strata can be connected to
+  strata connect opencode --write                  write OpenCode's config for the running server (keeps a backup)
+"""
+
+
+def _choice(label: str, options: tuple[str, ...]):
+    def convert(value: str) -> str:
+        v = str(value).strip().lower()
+        if v in options:
+            return v
+        near = S.closest(v, list(options))
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not {label}." + (f" Did you mean '{near}'?" if near else "") + f" Choose one of: {', '.join(options)}.")
+    return convert
+
+
+def _context(value: str) -> int:
+    try:
+        return S.parse_context(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def _port(value: str) -> int:
+    try:
+        p = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a port number. Use a number from 1 to 65535, for example 8080.") from None
+    if not 1 <= p <= 65535:
+        raise argparse.ArgumentTypeError(f"port {p} does not exist. Use a number from 1 to 65535, for example 8080.")
+    return p
+
+
+def _parallel(value: str) -> int:
+    try:
+        p = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 8, or leave it out to fit your card.") from None
+    if not 1 <= p <= 8:
+        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 8.")
+    return p
+
+
+def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]:
+    p = sp.add_parser(
+        "launch", help="guided setup, serve and monitor (the screens), or the same with flags", epilog=EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Set up a model, tune it, start serving and watch it, in one place. With no flags it opens the guided screens: "
+                    "start from a saved preset or set up from the beginning, one decision per screen. With flags it does the same "
+                    "without asking, and opens the monitor (or, with --no-tui, prints the address and returns). "
+                    "Presets are shared with the Strata app's profiles and tuning presets.")
+    g = p.add_argument_group("what to run")
+    g.add_argument("--preset", metavar="NAME", help="start a saved preset (other flags change it for this start)")
+    g.add_argument("--model", metavar="NAME", help="the model size, e.g. iq3_xxs, q2_0, ud-q4_k_xl (any case)")
+    g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
+    g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
+    g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
+    g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
+    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
+    g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
+                   help="let the model read pictures (default off)")
+    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
+    g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
+    g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
+    g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
+    a = p.add_argument_group("who can use it")
+    a.add_argument("--access", type=_choice("a way to share Strata", S.ACCESS_KINDS), metavar="local|lan|cloudflare|tailscale",
+                   help="local: this computer only; lan: your network; cloudflare: a quick tunnel; tailscale: your tailnet")
+    a.add_argument("--port", type=_port, metavar="N", help=f"port (default {S.DEFAULT_PORT})")
+    a.add_argument("--api-key", metavar="KEY", help="the key clients must send (made for you when you share beyond this computer)")
+    a.add_argument("--api-key-env", metavar="NAME", help="read the key from this environment variable")
+    a.add_argument("--new-key", action="store_true", help="make a new API key")
+    o = p.add_argument_group("running")
+    o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
+    o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
+    o.add_argument("--plan", action="store_true", help="show what would happen and exit; nothing is changed")
+    o.add_argument("--feed", metavar="URL|DIR", help="where the signed update feed (engine downloads) is; default: STRATA_UPDATE_FEED or the project's")
+    o.add_argument("--output", choices=("human", "json"), default="human")
+    m = p.add_argument_group("manage")
+    m.add_argument("--list-presets", action="store_true", help="list saved presets")
+    m.add_argument("--delete-preset", metavar="NAME", help="delete a saved preset")
+    m.add_argument("--status", action="store_true", help="show what this command is serving now")
+    m.add_argument("--stop", action="store_true", help="stop what this command started (with --preset NAME: that one)")
+    m.add_argument("--show-key", action="store_true", help="print the API key of --preset NAME (or of the running launch)")
+
+    c = sp.add_parser(
+        "connect", help="print (or write) the setup for an app that uses the running server", epilog=EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Shows the settings file and environment an app needs to talk to the Strata server that `strata launch` started. "
+                    "Without a name it lists the apps. With --write it writes the file after asking, keeping a backup of any file it replaces.")
+    c.add_argument("harness", nargs="?", help="opencode, codex, claude-code, omp, pi, hermes, openclaw, deepseek-harness")
+    c.add_argument("--url", metavar="URL", help="the server address (default: the running launch, else http://127.0.0.1:8080)")
+    c.add_argument("--key", metavar="KEY", help="the API key (default: the running launch's)")
+    c.add_argument("--key-env", metavar="NAME", help="read the key from this environment variable")
+    c.add_argument("--model", metavar="NAME", help="the model name the server reports (default: the running launch's)")
+    c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
+    c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
+    c.add_argument("--yes", action="store_true", help="do not ask before --write")
+    c.add_argument("--show-key", action="store_true", help="print the real key instead of a masked one")
+    c.add_argument("--output", choices=("human", "json"), default="human")
+    return [p, c]
+
+
+def unknown_option_message(command: str, extras: list[str], parser: argparse.ArgumentParser) -> str:
+    """A plain sentence for flags the parser did not know, with the closest real one."""
+    sub = None
+    for action in parser._actions:                              # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):      # noqa: SLF001
+            sub = action.choices.get(command)
+    known = sorted({o for act in (sub._actions if sub else []) for o in act.option_strings if o.startswith("--")})   # noqa: SLF001
+    lines = []
+    for bad in extras:
+        if not bad.startswith("-"):
+            lines.append(f"'{bad}' was not expected here.")
+            continue
+        name = bad.split("=", 1)[0]
+        near = S.closest(name, known)
+        lines.append(f"'{name}' is not a strata {command} option." + (f" Did you mean '{near}'?" if near else ""))
+    return " ".join(lines) + f" See: strata {command} --help"
+
+
+# ------------------------------------------------------------------------------------------------ settings from flags
+
+def _gpus(text: str | None) -> list[int] | None:
+    if not text:
+        return None
+    try:
+        return [int(x) for x in str(text).replace(" ", "").split(",") if x != ""]
+    except ValueError:
+        raise ValueError(f"'{text}' is not a list of graphics card numbers. Use 0 or 0,1.") from None
+
+
+def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSettings, list[str]]:
+    """The preset (if named) with the flags on top; model names resolved against the catalog. Returns (settings, warnings)."""
+    from strata_cli.launch import store
+    notices: list[str] = []
+    s = store.load(a.preset) if a.preset else S.LaunchSettings()
+    if a.preset:
+        s.name = s.name or a.preset
+    if a.model_path:
+        s.model_path = str(Path(a.model_path).expanduser())
+        if not a.model:
+            s.family = s.model = None
+    if a.model:
+        if catalog is None:
+            raise ValueError("The model list is not available in this Terminal; run it from the full Terminal install.")
+        s.family, s.model = catalog.resolve(a.model, a.family)
+        if not a.model_path:
+            s.model_path = None
+    elif a.family and s.model:
+        s.family = a.family
+    if a.data_dir:
+        s.data_dir = a.data_dir
+    if a.context:
+        s.context = a.context
+    if a.kv:
+        s.kv = a.kv
+    if a.vision:
+        s.vision = a.vision
+    if a.parallel:
+        s.parallel = a.parallel
+    if a.gpu:
+        s.gpus = _gpus(a.gpu)
+    if a.tune:
+        s.tune = a.tune
+    if a.tune_allow_small:
+        s.tune_allow_small = True
+    if a.access:
+        s.access = a.access
+    if a.port:
+        s.port = a.port
+    if a.api_key:
+        s.api_key = a.api_key
+    if a.api_key_env:
+        val = os.environ.get(a.api_key_env)
+        if not val:
+            raise ValueError(f"The environment variable {a.api_key_env} is empty or not set.")
+        s.api_key = val
+    if a.set:
+        s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if a.save_preset:
+        s.name = a.save_preset
+    return s, notices
+
+
+def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
+    """Fill what was left open with the recommendation for this computer, and collect warnings (never errors for a bad fit)."""
+    notices: list[S.Notice] = []
+    comp = catalog.computer()
+    hw = comp.raw
+    if not (s.family and s.model) and not s.model_path:
+        rec = catalog.recommendation(hw)
+        if rec.get("model"):
+            s.family, s.model = rec["family"], rec["model"]
+            notices.append(S.Notice("warn", f"No model was named, so Strata picked {rec['title']} for this computer ({rec['why']}).", ""))
+        else:
+            notices.append(S.Notice("error", "No model fits this computer by Strata's rules, and none was chosen.",
+                                    "Name one with --model (strata launch --help lists them); a bigger one will run slowly."))
+    if s.family and s.model:
+        if s.context is None:
+            s.context = catalog.max_context(s.family, s.model, hw)
+        rows = [r for r in catalog.rows(hw) if r.family == s.family and r.model == s.model]
+        if rows:
+            r = rows[0]
+            if r.verdict == "no":
+                notices.append(S.Notice("warn", f"{r.title} does not fit this computer ({r.words}).", "It can still start; expect it to be slow or to run out of memory."))
+            elif r.verdict == "tight":
+                notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
+            if s.vision != "off" and not r.images:
+                notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
+                s.vision = "off"
+        notices += S.check_context(s, max_fit_tokens=None)
+    if s.access != "local" and not s.api_key:
+        from strata_cli.launch import access
+        s.api_key = access.new_key()
+        notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
+                                "It is saved with the preset; show it with: strata launch --show-key"))
+    notices += S.check_access(s)
+    vram = comp.main_vram_gb or None
+    notices += S.check_parallel(s, vram_gb=vram)
+    return s, notices
+
+
+# ------------------------------------------------------------------------------------------------ plain-text run
+
+def _say(line: str = "") -> None:
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
+def _printer(quiet: bool = False):
+    """An emit callback that prints readable lines: new text once, progress in steps of 10% when not on a terminal."""
+    state = {"last": None, "pct": -10, "stage": None}
+    isatty = sys.stdout.isatty()
+
+    def emit(ev) -> None:
+        if quiet:
+            return
+        text = ev.text
+        if ev.pct is not None and ev.stage in ("model", "engine", "tune"):
+            if isatty:
+                sys.stdout.write(f"\r  {text}  {ev.pct:.0f}%   " + ("\n" if ev.pct >= 100 else ""))
+                sys.stdout.flush()
+                return
+            if ev.pct < 100 and ev.pct < state["pct"] + 10 and state["stage"] == ev.stage:
+                return
+            state["pct"] = ev.pct
+        if ev.stage != state["stage"] or text != state["last"]:
+            marker = {"warn": "[!] ", "error": "[X] "}.get(ev.level, "    ")
+            _say(f"{marker}{text}")
+        state["last"], state["stage"] = text, ev.stage
+    return emit
+
+
+def _stop_all(name: str | None) -> int:
+    from strata_cli.launch import access, store
+    from strata_control import profiles, runtime
+    targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
+    stopped = 0
+    for prof in targets:
+        prof = prof if prof.startswith("launch-") else "launch-" + S.slug(prof)
+        st = runtime.status(prof)
+        if st.get("state") in ("ready", "starting", "failed", "stale"):
+            r = runtime.stop(prof, timeout=180)
+            _say(f"Stopped {prof[7:]}." if r.get("ok") else f"Could not stop {prof[7:]}: {r.get('error') or r.get('state')}.")
+            stopped += 1 if r.get("ok") else 0
+        access.stop_tunnel(prof)
+    if not stopped and not targets:
+        _say("Nothing from `strata launch` is running.")
+    elif not stopped:
+        _say("Nothing from `strata launch` is running.")
+    return 0
+
+
+def running_launches() -> list[dict]:
+    """Launch profiles whose server is up now: [{name, profile, url, state}]."""
+    from strata_control import profiles, runtime
+    out = []
+    try:
+        listing = profiles.list_profiles()
+    except Exception:                                          # noqa: BLE001
+        return out
+    for p in listing:
+        if not p["id"].startswith("launch-"):
+            continue
+        try:
+            st = runtime.status(p["id"])
+        except Exception:                                      # noqa: BLE001
+            continue
+        if st.get("state") not in ("ready", "starting"):
+            continue
+        try:
+            prof, _rev = profiles.load(p["id"])
+            ov = prof.get("overrides") or {}
+        except Exception:                                      # noqa: BLE001
+            ov = {}
+        port = ov.get("port", S.DEFAULT_PORT)
+        out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
+                    "url": f"http://127.0.0.1:{port}", "host": ov.get("host", "127.0.0.1"), "config": prof.get("source_config")})
+    return out
+
+
+def launch_info(name: str | None = None) -> dict | None:
+    """Address, key and model name of a launch that is running (or the named preset), for `connect` and the monitor's Connect view."""
+    from strata_cli.launch import store
+    running = running_launches()
+    pick = None
+    if name:
+        pick = next((r for r in running if r["name"] == S.slug(name)), None)
+    elif running:
+        pick = running[0]
+    cfg = {}
+    cfg_path = (pick or {}).get("config")
+    if cfg_path:
+        try:
+            cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            cfg = {}
+    preset = store.load(name, missing_ok=True) if name else None
+    if pick is None and preset is None:
+        return None
+    port = (pick or {}).get("port") or (preset.port if preset else S.DEFAULT_PORT)
+    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": cfg.get("api_key") or (preset.api_key if preset else None),
+            "model": cfg.get("model_name") or "strata", "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
+            "port": port, "access": preset.access if preset else None}
+
+
+def run_launch(a: argparse.Namespace) -> int:
+    from strata_cli.launch import store
+    from strata_cli.launch.catalog import Catalog, CatalogUnavailable
+    from strata_cli.launch.runner import LaunchError, Runner
+    machine = a.output == "json"
+
+    def fail(text: str, code: int = 2) -> int:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": text}}))
+        else:
+            print(f"strata: {text}", file=sys.stderr)
+        return code
+
+    try:
+        if a.list_presets:
+            items = store.list_presets()
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, "presets": [i.to_dict(with_key=False) for i in items]}))
+            elif not items:
+                _say("No saved presets yet. Save one with: strata launch --model ... --save-preset NAME")
+            else:
+                for i in items:
+                    sm = store.summary(i)
+                    _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
+                         f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
+                         f"{('tuned ' + (i.tuned_at or '')) if i.tuned_preset else 'not tuned':<16} {i.last_used or ''}")
+            return 0
+        if a.delete_preset:
+            store.delete(a.delete_preset)
+            _say(f"Deleted the preset '{a.delete_preset}'. Models and tuning results were not touched.")
+            return 0
+        if a.stop:
+            return _stop_all("launch-" + S.slug(a.preset) if a.preset else None)
+        if a.status:
+            rows = running_launches()
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, "running": rows}))
+            elif not rows:
+                _say("Nothing from `strata launch` is running.")
+            for r in rows:
+                _say(f"{r['name']}: {r['state']} at {r['url']}")
+            return 0
+        if a.show_key:
+            info = launch_info(a.preset)
+            if not info or not info.get("key"):
+                return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME."), 5)
+            _say(info["key"])
+            return 0
+
+        try:
+            catalog = Catalog()
+        except CatalogUnavailable as e:
+            catalog = None
+            if a.model or a.model_path:
+                return fail(str(e), 5)
+        s, notices = settings_from_args(a, catalog)
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
+        if interactive and not have_choices:
+            from strata_cli.launch import app
+            return app.run_tui(None, catalog=catalog, feed=a.feed)
+        if catalog is None:
+            return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
+        s, notes = apply_defaults(s, catalog)
+        errors = [n for n in notes if n.level == "error"]
+        if errors:
+            return fail(errors[0].line(), 2)
+        if a.new_key:
+            from strata_cli.launch import access
+            s.api_key = access.new_key()
+        if not s.name:
+            s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed)
+        if a.plan:
+            plan = runner.plan()
+            plan["warnings"] = [n.line() for n in notes]
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, "plan": plan}))
+            else:
+                _say(f"Plan for '{s.name}':")
+                _say(f"  model     {s.family} {s.model}" if s.model else f"  model     your files at {s.model_path}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {s.vision}    parallel {s.parallel or 'fit to your card'}")
+                _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
+                     + ("    API key on" if s.api_key else ""))
+                for n in notes:
+                    _say(f"  [!] {n.line()}")
+                _say(f"  same as   {S.flags_text(s)}")
+                _say("Nothing was changed.")
+            return 0
+        for n in notes:
+            if not machine:
+                _say(f"[!] {n.line()}")
+        if interactive and have_choices:
+            from strata_cli.launch import app
+            return app.run_tui(s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))
+        try:
+            result = runner.run()
+        except LaunchError as e:
+            return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
+        if a.save_preset or a.preset:
+            saved = store.save(s, s.name)
+            store.touch_used(saved.name)
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls,
+                              "api_key": "set" if result.key else None, "tuned": result.tune_word,
+                              "notices": result.notices + [n.line() for n in notes]}))
+            return 0
+        _say("")
+        _say("Strata is serving.")
+        for i, u in enumerate(result.urls):
+            _say(f"  {'This computer' if i == 0 and '127.0.0.1' in u else 'Address':<14} {u}/v1")
+        if result.key:
+            from strata_cli.launch import access
+            _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key --preset \"{s.name}\")")
+        for n in result.notices:
+            _say(f"[!] {n}")
+        _say(f"  Watch it:    strata monitor --url {result.urls[0] if result.urls else ''}")
+        _say(f"  Connect an app:  strata connect opencode      Stop:  strata launch --stop --preset \"{s.name}\"")
+        return 0
+    except store.PresetError as e:
+        return fail(str(e), 2)
+    except ValueError as e:
+        return fail(str(e), 2)
+    except KeyboardInterrupt:
+        return fail("Stopped.", 130)
+
+
+# ------------------------------------------------------------------------------------------------ connect
+
+def run_connect(a: argparse.Namespace) -> int:
+    from strata_cli.launch import access, harness
+    machine = a.output == "json"
+    if not a.harness:
+        rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status} for h in harness.HARNESSES]
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "harnesses": rows}))
+        else:
+            _say(f"{'App':<20}{'Works with':<22}Status")
+            for r in rows:
+                _say(f"{r['id']:<20}{r['speaks']:<22}{r['status']}")
+            _say("")
+            _say("Show one: strata connect opencode        Write it for you: strata connect opencode --write")
+        return 0
+    h = harness.find(a.harness)
+    if h is None:
+        near = harness.closest_name(a.harness)
+        msg = f"There is no app called '{a.harness}'." + (f" Did you mean '{near}'?" if near else "") + \
+              " Apps: " + ", ".join(x.id for x in harness.HARNESSES) + "."
+        print(f"strata: {msg}", file=sys.stderr)
+        return 2
+    info = launch_info(a.preset) or {}
+    url = a.url or info.get("url") or f"http://127.0.0.1:{S.DEFAULT_PORT}"
+    key = a.key or (os.environ.get(a.key_env) if a.key_env else None) or info.get("key") or ""
+    model = a.model or info.get("model") or "strata"
+    out = harness.render(h, url=url, key=key or "<your API key>", model=model)
+    shown_key = key if a.show_key else None
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": True, **{k: (harness.mask(json.dumps(v), key) if False else v) for k, v in out.items()}}))
+        return 0
+    _say(f"{h.title}  ({h.speaks}; {h.status})")
+    if not info.get("running") and not a.url:
+        _say("[!] No running Strata server was found, so this uses the default address. Start one with: strata launch")
+    if not h.built_in and not h.tested:
+        _say("[!] This setup has not been tested with this app yet; treat it as a starting point.")
+    for n in h.notes:
+        _say(f"  {n}")
+    for f in out["files"]:
+        _say("")
+        _say(f"File: {f['path']}" + ("   (merged into an existing file)" if f["merge"] else ""))
+        for line in (f["text"] if shown_key else harness.mask(f["text"], key)).splitlines():
+            _say("  " + line)
+    if out["env"]:
+        _say("")
+        _say("Environment:" if True else "")
+        for k, v in out["env"].items():
+            _say(f"  {k}={v if shown_key else harness.mask(v, key)}" if os.name != "nt" else f"  set {k}={v if shown_key else harness.mask(v, key)}")
+    if h.install:
+        _say("")
+        _say(f"Install the app (if you have not): {h.install}")
+    if a.write:
+        if not out["files"]:
+            _say("Nothing to write for this app.")
+            return 0
+        if not a.yes:
+            if not sys.stdin.isatty():
+                print("strata: --write asks first; run it in a terminal or add --yes.", file=sys.stderr)
+                return 2
+            ans = input("\nWrite these files now? A file that exists is copied to a backup first. [y/N] ").strip().lower()
+            if ans not in ("y", "yes"):
+                _say("Nothing was written.")
+                return 0
+        for f in out["files"]:
+            r = harness.write_file(f)
+            _say(f"{r['action'].capitalize()} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
+    return 0
