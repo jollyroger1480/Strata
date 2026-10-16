@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from strata_control import atomic
+
 SCHEMA_VERSION = 1
 
 # --------------------------------------------------------------------------- phases and states
@@ -367,7 +369,7 @@ class TimeSkipRun:
     def save(self) -> None:
         tmp = self.state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_file)
+        atomic.replace(tmp, self.state_file)
 
     @staticmethod
     def load(root: Path, run_id: str) -> dict[str, Any]:
