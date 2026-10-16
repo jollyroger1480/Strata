@@ -611,3 +611,40 @@ class Helpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoveMissingFilesTest(unittest.TestCase):
+    """Deleting a model whose plan lists files that are already gone (or inside a folder removed earlier) is a success, not 'Some files could not be removed'."""
+
+    def test_missing_paths_are_already_removed(self):
+        import importlib.util, tempfile, threading
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("strata_mcp_rm", Path(__file__).with_name("strata_mcp.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            folder = root / "Gyro-M"
+            folder.mkdir()
+            (folder / "a.gguf").write_bytes(b"x")
+            (folder / "b.gguf").write_bytes(b"y")
+            gone = root / "already-gone.gguf"
+            cfg = root / "model.json"
+            cfg.write_text("{}")
+            plan = {"model": "gyro-m", "gb": 0.1, "remove": [
+                {"path": str(folder)}, {"path": str(folder / "a.gguf")}, {"path": str(gone)}, {"path": str(cfg)}]}
+
+            class S:
+                lock = threading.RLock()
+                def find_config(self, model): return cfg
+                def removal_plan(self, config): return plan
+                def install_job(self): return None
+                def tracked_server(self): return None
+                def model_paths(self, c): return ([], [])
+                def read_config(self, c): return {}
+
+            result = mod.Tools(S()).strata_remove(model="gyro-m", confirm=True)
+            self.assertEqual(result["failed"], [], result)
+            self.assertFalse(folder.exists()); self.assertFalse(cfg.exists())
+            again = mod.Tools(S()).strata_remove(model="gyro-m", confirm=True)
+            self.assertEqual(again["failed"], [], "a second delete of the same model finds nothing left and still succeeds")

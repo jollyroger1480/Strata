@@ -168,7 +168,11 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   job.summary='Deleting downloaded files…';emit();
   const result=await tool('strata_remove',{model:args.model,confirm:true});
   if(result.failed?.length)throw new Error(`Some files could not be removed: ${result.failed.slice(0,3).join('; ')}`);
-  await refresh(true);return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
+  await refresh(true);
+  /* Verify it is really gone: the model must no longer be listed as installed, and the files the plan named must not exist. */
+  const still=(result.plan?.remove??[]).map(i=>i.path).filter(p=>{try{return existsSync(p);}catch{return false;}});
+  if(still.length)throw new Error(`Some files could not be removed: ${still.slice(0,3).map(p=>basename(p)).join('; ')}`);
+return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /* The configuration a load starts the engine with (before its port and key): the saved model config, the user's choices and the resource profile. The tuner measures exactly this, so a saved tuning belongs to the same choices a load makes. */
  function buildConfig(args,config){
   const vision=runtimeVision(config,args.vision);
