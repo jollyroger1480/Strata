@@ -18,7 +18,7 @@ import { buildProfile, CUSTOM_TOOLS_SCRIPT } from '../server/agent/profile.mjs';
 import { standardPreset } from '../server/agent/preset.mjs';
 import { TOOL_GROUPS } from '../server/agent/tools-catalog.mjs';
 import { createAgentTools } from '../server/agent/tools-settings.mjs';
-import { findBrowser, browserCandidates } from '../server/agent/browser-probe.mjs';
+import { findBrowser, browserCandidates, findPlaywrightMcp } from '../server/agent/browser-probe.mjs';
 import { manualDecision, planDecision } from '../server/agent/plugins/strata-gate.mjs';
 import { createDuckDuckGoSearch, looksBlocked, parseHtmlResults, parseLiteResults, realUrl, BLOCKED_MESSAGE } from '../server/web-search-ddg.mjs';
 import { createExaSearch, createPerplexitySearch } from '../server/web-search-keyed.mjs';
@@ -332,4 +332,79 @@ test('real Harness: switching a tool off in Settings takes it away from the next
   const after = r.offered();
   assert.ok(!after.includes('web_search') && !after.includes('subagent') && !after.includes('job_list'), 'the three groups are gone');
   assert.ok(after.includes('web_fetch') && after.includes('read') && after.includes('pwsh') !== after.includes('bash'), 'the rest stays');
+});
+
+// ------------------------------------------------------------------------------------------------------------ browser
+
+test('gate: in Manual the browser asks before opening a page, clicking or typing, and not before looking; Plan refuses it', () => {
+  const nav = manualDecision({ name: 'mcp__browser__browser_navigate', arguments: { url: 'https://example.com/a' } });
+  assert.equal(nav.kind, 'ask'); assert.equal(nav.reason, 'Open the web page https://example.com/a');
+  assert.match(manualDecision({ name: 'mcp__browser__browser_click', arguments: { element: 'Sign in button' } }).reason, /^Click on the page: Sign in button/);
+  assert.match(manualDecision({ name: 'mcp__browser__browser_type', arguments: { element: 'Search box' } }).reason, /^Type into the page/);
+  assert.equal(manualDecision({ name: 'mcp__browser__browser_file_upload', arguments: {} }).kind, 'ask');
+  assert.match(manualDecision({ name: 'mcp__browser__browser_evaluate', arguments: {} }).reason, /small program/);
+  for (const name of ['browser_snapshot', 'browser_take_screenshot', 'browser_console_messages', 'browser_network_requests', 'browser_wait_for']) assert.equal(manualDecision({ name: `mcp__browser__${name}`, arguments: {} }), null, name);
+  assert.equal(manualDecision({ name: 'mcp__browser__browser_tabs', arguments: { action: 'list' } }), null);
+  assert.equal(manualDecision({ name: 'mcp__browser__browser_tabs', arguments: { action: 'close' } }).kind, 'ask');
+  assert.equal(planDecision({ name: 'mcp__browser__browser_snapshot' }).kind, 'deny');
+});
+
+test('browser: the tool server is found in the agent component; the screen can say what is missing', () => {
+  const exists = p => p.replaceAll(String.fromCharCode(92), '/').endsWith('/node_modules/@playwright/mcp/cli.js') && p.replaceAll(String.fromCharCode(92), '/').includes('/pkg/node_modules/@playwright/');
+  assert.equal(findPlaywrightMcp('', {}), null);
+  assert.ok(findPlaywrightMcp('/pkg', { exists }).replaceAll(String.fromCharCode(92), '/').endsWith('/pkg/node_modules/@playwright/mcp/cli.js'));
+  assert.equal(findPlaywrightMcp('/nowhere', { exists: () => false, list: () => { throw new Error('none'); } }), null);
+  const dir = tmp();
+  try {
+    const only = createAgentTools({ read: () => ({ browser: { enabled: true } }), write: () => {}, dataDir: dir, browser: () => ({ found: true, name: 'Google Chrome', path: 'C:/chrome.exe', cli: null }) });
+    assert.deepEqual(only.view().browser, { enabled: true, found: false, name: 'Google Chrome', missing: 'component' });
+    assert.equal(only.profileView().browserEnabled, false, 'no tool server, no browser rows');
+    const ready = createAgentTools({ read: () => ({ browser: { enabled: true } }), write: () => {}, dataDir: dir, browser: () => ({ found: true, name: 'Google Chrome', path: 'C:/chrome.exe', cli: 'C:/pw/cli.js' }) });
+    assert.equal(ready.view().browser.found, true);
+    const rows = entriesOf(buildProfile({ local: [], connections: [], tools: ready.profileView() })).flatMap(x => x.insert ?? []).filter(r => r.config?.serverName === 'browser');
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0].config.args, ['C:/pw/cli.js', '--browser', 'chromium', '--isolated', '--executable-path', 'C:/chrome.exe']);
+    const off = createAgentTools({ read: () => ({ browser: { enabled: false } }), write: () => {}, dataDir: dir, browser: () => ({ found: true, name: 'x', path: 'p', cli: 'c' }) });
+    assert.equal(entriesOf(buildProfile({ local: [], connections: [], tools: off.profileView() })).flatMap(x => x.insert ?? []).some(r => r.config?.serverName === 'browser'), false);
+  } finally { cleanup(dir); }
+});
+
+const browserNow = findBrowser();
+const playwrightCli = HARNESS ? findPlaywrightMcp(HARNESS) : null;
+const browserSkip = skip || !browserNow.found || !playwrightCli ? 'needs STRATA_HARNESS_DIR with the browser tool server and Chrome or Edge on this computer' : false;
+
+test('real browser: the assistant opens a local page in the person\'s Chrome or Edge and reads it; Manual asks before opening it, Plan refuses', { skip: browserSkip, timeout: 240000 }, async (t) => {
+  const http = await import('node:http');
+  const page = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<html><head><title>Strata browser test</title></head><body><h1>Hello from the browser test</h1><button>Press me</button></body></html>'); });
+  await new Promise(r => page.listen(0, '127.0.0.1', r));
+  t.after(() => page.close());
+  const url = `http://127.0.0.1:${page.address().port}/`;
+  const previous = process.env.STRATA_BROWSER_HEADLESS;
+  process.env.STRATA_BROWSER_HEADLESS = '1';
+  t.after(() => { if (previous === undefined) delete process.env.STRATA_BROWSER_HEADLESS; else process.env.STRATA_BROWSER_HEADLESS = previous; });
+  const worker = await startScriptedWorker({});
+  const dir = tmp();
+  const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const real = createAgentTools({ read: () => ({ browser: { enabled: true } }), write: () => {}, dataDir: dir, browser: () => ({ ...browserNow, cli: playwrightCli }) });
+  const local = [{ id: 'inst-b', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }];
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], tools: () => real.profileView(), env: process.env, startTimeoutMs: 120_000 });
+  t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
+  const go = async (chatId, tool, args, mode, answer) => {
+    const frames = [];
+    await bridge.runTurn({ chatId, message: `SCRIPT:call ${tool} ${JSON.stringify(args)}`, workspacePath: ws, mode, onFrame: f => {
+      frames.push(f);
+      if (answer && f.type === 'agent-tool' && f.tool.state === 'proposed') void bridge.approve({ chatId, callId: f.tool.id, decision: answer }).catch(() => {});
+    } });
+    return frames.filter(f => f.type === 'agent-tool').map(f => f.tool);
+  };
+  const plan = await go('b0', 'mcp__browser__browser_navigate', { url }, 'plan');
+  assert.ok(!plan.some(c => c.state === 'done' && /Hello from the browser test/.test(c.result ?? '')), 'Plan did not open the page');
+  const denied = await go('b1', 'mcp__browser__browser_navigate', { url }, 'manual', 'deny');
+  assert.ok(denied.some(c => c.state === 'proposed' && /Open the web page/.test(c.effect ?? '')), 'Manual asked first');
+  const opened = await go('b2', 'mcp__browser__browser_navigate', { url }, 'manual', 'approve');
+  assert.ok(opened.some(c => c.state === 'proposed'));
+  assert.equal(opened.at(-1).state, 'done');
+  const looked = await go('b2', 'mcp__browser__browser_snapshot', {}, 'manual', 'approve');
+  assert.ok(!looked.some(c => c.state === 'proposed'), 'looking at the page does not ask');
+  assert.match(looked.at(-1).result, /Hello from the browser test/);
 });

@@ -35,7 +35,7 @@ export interface CustomTool {
 export interface ToolsState {
   groups: ToolGroup[];
   search: { provider: 'builtin' | 'exa' | 'perplexity' | 'deepseek'; keySet: boolean };
-  browser: { enabled: boolean; found: boolean; name: string | null };
+  browser: { enabled: boolean; found: boolean; name: string | null; missing?: 'component' };
   custom: CustomTool[];
 }
 
@@ -145,7 +145,7 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
     <section className="settings-section">
       <h2 className="h4" style={{ marginBottom: 10 }}>{tr('Web browser')}</h2>
       <div className="st-card st-card--flush">
-        <Field label={tr('Use a web browser')} hint={tr(state.browser.found ? `The assistant can open pages, click and type in ${state.browser.name ?? 'your browser'}. In Manual mode every action asks first.` : 'Chrome or Edge was not found on this computer. Install one, then come back and turn this on.')}>
+        <Field label={tr('Use a web browser')} hint={state.browser.found ? tr('The assistant can open pages, click and type in {0}. In Manual mode every action asks first.', [state.browser.name ?? tr('your browser')]) : tr(state.browser.missing === 'component' ? 'The browser tool is not part of this installation.' : 'Chrome or Edge was not found on this computer. Install one, then come back and turn this on.')}>
           <button className="st-toggle" role="switch" aria-checked={state.browser.enabled && state.browser.found} aria-label={tr('Use a web browser')} disabled={busy || !state.browser.found} onClick={() => void save({ browser: { enabled: !state.browser.enabled } })} />
         </Field>
       </div>
@@ -184,7 +184,7 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
       </div> : null}
     </Dialog>
     <Dialog open={remove !== null} title={tr('Remove this tool?')} compact onClose={() => setRemove(null)} actions={<><Btn onClick={() => setRemove(null)}>{tr('Keep it')}</Btn><Btn variant="primary" onClick={() => { const id = remove!.id; setRemove(null); void (async () => { try { setState(await api.del<ToolsState>(`/api/agent/tools/custom/${encodeURIComponent(id)}`)); } catch (e) { setError(e instanceof Error ? e.message : 'The tool could not be removed.'); } })(); }}>{tr('Remove')}</Btn></>}>
-      <p>{tr(remove ? `“${remove.name}” will no longer be available to the assistant.` : '')}</p>
+      <p>{remove ? tr('“{0}” will no longer be available to the assistant.', [remove.name]) : null}</p>
     </Dialog>
   </div>;
 }

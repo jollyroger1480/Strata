@@ -77,7 +77,7 @@ const idFor = (name, existing) => {
 };
 
 /**
- * @param {{read: () => object|undefined, write: (value: object) => void, dataDir: string, browser?: () => {found: boolean, name: string|null}}} deps
+ * @param {{read: () => object|undefined, write: (value: object) => void, dataDir: string, browser?: () => {found: boolean, name: string|null, path?: string|null, cli?: string|null}}} deps
  */
 export function createAgentTools({ read, write, dataDir, browser = () => ({ found: false, name: null }) }) {
   const state = () => normalize(read());
@@ -106,7 +106,8 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
     return {
       groups: TOOL_GROUPS.map(g => ({ id: g.id, name: g.name, about: g.about, area: g.area, asks: g.asks, enabled: !s.off.includes(g.id) })),
       search: { provider: s.search.provider, keySet: !!s.search.key },
-      browser: { enabled: s.browser.enabled, found: !!probe.found, name: probe.name ?? null },
+      // `found` means the browser tool can run: a browser on this computer AND the tool server in the agent component.
+      browser: { enabled: s.browser.enabled, found: !!(probe.found && probe.cli), name: probe.name ?? null, ...(probe.found && !probe.cli ? { missing: 'component' } : {}) },
       custom: s.custom.map(t => ({
         id: t.id, name: t.name, about: t.about, kind: t.kind, enabled: t.enabled,
         summary: t.kind === 'instructions' ? t.instructions.slice(0, 80) : t.kind === 'command' ? t.command : t.address,
@@ -130,7 +131,9 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
       return {
         off: new Set(s.off),
         search: s.search,
-        browserEnabled: s.browser.enabled && !!browser().found,
+        browserEnabled: s.browser.enabled && !!(browser().found && browser().cli),
+        browserPath: browser().path ?? null,
+        browserCli: browser().cli ?? null,
         servers,
         hasInstructionTools: custom.some(t => t.kind === 'instructions'),
         hasCommandTools: custom.some(t => t.kind === 'command'),

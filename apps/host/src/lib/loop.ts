@@ -1,3 +1,5 @@
+import { tr } from './i18n';
+
 /**
  * /loop: send the same message again and again, every few minutes, while this chat is open.
  *
@@ -42,7 +44,7 @@ export function parseLoop(text: string): LoopCommand | null {
 
 /** "every 10 minutes", "every hour". */
 export function loopEvery(ms: number): string {
-  if (ms % 3_600_000 === 0) { const h = ms / 3_600_000; return h === 1 ? 'every hour' : `every ${h} hours`; }
+  if (ms % 3_600_000 === 0) { const h = ms / 3_600_000; return h === 1 ? tr('every hour') : tr('every {0} hours', [h]); }
   const m = Math.round(ms / 60_000);
-  return m === 1 ? 'every minute' : `every ${m} minutes`;
+  return m === 1 ? tr('every minute') : tr('every {0} minutes', [m]);
 }

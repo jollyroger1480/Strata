@@ -149,7 +149,7 @@ try {
     await send('/time-skip Add a second line to notes.md that says: second line added.');
     await page.waitForTimeout(2500);
     await shot('04a-timeskip-working');
-    await page.waitForFunction(() => /Ready to compare|Update kept|Saved version kept|could not|stopped/i.test(document.querySelector('#time-skip-content')?.innerText ?? ''), null, { timeout: 1200000 }).catch(() => {});
+    await page.waitForFunction(() => /Ready to compare|Update kept|Saved version kept|could not be completed|stopped|interrupted/i.test(document.querySelector('#time-skip-content .ts-heading')?.innerText ?? ''), null, { timeout: 1200000 }).catch(() => {});
     await shot('04b-timeskip-ready');
     const panel = await page.locator('#time-skip-content').innerText().catch(() => '');
     check(/Ready to compare/.test(panel), 'the sidebar says the result is ready to compare');

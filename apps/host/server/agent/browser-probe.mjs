@@ -2,7 +2,7 @@
  * Finds a browser already installed on this computer (Chrome, then Edge, then Chromium) for the assistant's browser tool, so nothing
  * big has to be downloaded. Returns the program's path and the name the screen shows.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -42,4 +42,20 @@ export function findBrowser({ platform = process.platform, env = process.env, ex
     }
   }
   return { found: false, name: null, path: null };
+}
+
+/**
+ * The browser tool server (Playwright's MCP, MIT/Apache) inside the agent component. The installer ships it next to the Harness; a source
+ * checkout of the Harness keeps it under node_modules/.pnpm. Returns the file to run with Node, or null.
+ */
+export function findPlaywrightMcp(harnessDir, { exists = existsSync, list = readdirSync } = {}) {
+  if (!harnessDir) return null;
+  const direct = join(harnessDir, 'node_modules', '@playwright', 'mcp', 'cli.js');
+  if (exists(direct)) return direct;
+  try {
+    const store = join(harnessDir, 'node_modules', '.pnpm');
+    const hit = list(store).filter(n => /^@playwright\+mcp@/.test(n)).sort().at(-1);
+    const nested = hit ? join(store, hit, 'node_modules', '@playwright', 'mcp', 'cli.js') : null;
+    return nested && exists(nested) ? nested : null;
+  } catch { return null; }
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 
-const bundled = await build({ entryPoints: ['src/lib/loop.ts'], bundle: true, write: false, format: 'esm', platform: 'node' });
+const bundled = await build({ entryPoints: ['src/lib/loop.ts'], bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
 const { parseLoop, loopEvery, LOOP_MIN_MS } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 
 test('/loop reads how often, then what to do', () => {
@@ -49,4 +49,22 @@ test('the store sends /loop to the loop and /time-skip to a real job when a loca
   assert.match(store, /startTimeSkipReal\(demoPrompt\)/);
   assert.match(store, /nativeState\(\)\?\.instances\.some\(i => i\.status === 'ready'\)/);
   assert.match(store, /!m\.timeSkipId && !m\.local/, 'notes from the app and trial turns are not sent back to the model');
+});
+
+test('the new slash-command, Time-skip and Tools words are translated in every language, with their slots', async () => {
+  const i18n = await build({ stdin: { contents: "export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
+  const { tr, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(i18n.outputFiles[0].text).toString('base64')}`);
+  const cases = [
+    ['Keep the update', 'de', 'Aktualisierung behalten'],
+    ['Put the original back', 'ja', '元に戻す'],
+    ['Repeat a message every few minutes while this chat is open', 'es', 'Repite un mensaje cada pocos minutos mientras este chat esté abierto'],
+    ['Search the web', 'zh', '搜索网络'],
+  ];
+  for (const [text, lang, want] of cases) { setTranslationLanguage(lang); assert.equal(tr(text), want, `${lang}: ${text}`); }
+  setTranslationLanguage('de');
+  assert.equal(tr('Revision {0}', [2]), 'Überarbeitung 2');
+  assert.equal(tr('every {0} minutes', [10]), 'alle 10 Minuten');
+  assert.equal(tr('Time-skip stopped. The model rejected the credentials. Your files were not changed.'), 'Time-skip wurde gestoppt. The model rejected the credentials. Deine Dateien wurden nicht geändert.');
+  setTranslationLanguage('en');
+  assert.equal(tr('Keep the update'), 'Keep the update');
 });

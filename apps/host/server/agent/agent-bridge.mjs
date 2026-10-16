@@ -92,6 +92,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   });
 
   function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
+  /** Where the agent component is (the browser tool server lives inside it), or null. */
+  const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
   /** The capability state the app shows. Never carries a token or a key. */
   function status() {
@@ -616,7 +618,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { harnessDir, status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
