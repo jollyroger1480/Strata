@@ -54,7 +54,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -92,12 +92,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   });
 
   function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
+  /** Where the agent component is (the browser tool server lives inside it), or null. */
+  const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
   /** The capability state the app shows. Never carries a token or a key. */
   function status() {
     const h = harnessInfo();
     if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
-    const profile = buildProfile({ local: localInstances(), connections: connections(), gate });
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools() });
     return {
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
       reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
@@ -145,14 +147,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   async function ensureRuntime(choice, signal) {
     for (;;) {
       if (starting) { await starting.catch(() => {}); continue; }
-      const profile = buildProfile({ local: localInstances(), connections: connections(), gate });
+      const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools() });
       const route = routeFor(profile, choice);
       if (!route) {
         throw new AgentUnavailable(choice?.connectionId
           ? 'This API model is no longer available. Choose another model in the chat picker.'
           : 'No local model is ready for the agent. Load a model in Models, or choose an API model.', 'model-unavailable');
       }
-      const known = rt?.hp.running && rt.profile.routes.some(r => r.route === route.route && r.modelId === route.modelId && r.fp === route.fp);
+      const known = rt?.hp.running && rt.profile.toolsSignature === profile.toolsSignature && rt.profile.routes.some(r => r.route === route.route && r.modelId === route.modelId && r.fp === route.fp);
       if (known) return { rt, route };
       starting = (async () => {
         if (rt?.hp.running) {
@@ -517,6 +519,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       onFrame({ type: 'done', finishReason: 'stop', tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0 });
       return { goal: true };
     };
+    if (tools()?.off?.has('goals')) return say('Goals are turned off. You can turn them back on in Settings, Tools.');
     const known = sessionMap[chatId]?.sessionId;
     const quick = ['', 'clear', 'pause', 'edit', 'complete'].includes(verb) || (verb === 'status');
     let runtime = rt;
@@ -615,7 +618,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { harnessDir, status, runTurn, goalCommand, forget, approve, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

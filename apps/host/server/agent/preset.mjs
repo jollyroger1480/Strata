@@ -20,6 +20,8 @@
  *   - The goal, skill, workflow and fork tools are kept (owner decision): the first message is slower, and the short plain system prompt below keeps it as small as it can be.
  */
 
+import { withoutDisabled } from './tools-catalog.mjs';
+
 /** Plugin ids of the pinned Harness `standard` preset, in its order (the drift check). */
 export const STANDARD_PLUGIN_IDS = [
   'persona', 'agent-instructions', 'time-context', 'tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'tool-jobs',
@@ -48,7 +50,7 @@ export const AGENT_PROMPT = [
  * @param {{platform?: string, search?: boolean}} [options]
  * @returns {object} the `config` of the `preset-standard` row
  */
-export function standardPreset({ platform = process.platform, search = false } = {}) {
+export function standardPreset({ platform = process.platform, search = false, off = new Set() } = {}) {
   const windows = platform === 'win32';
   const plugins = [
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
@@ -84,9 +86,11 @@ export function standardPreset({ platform = process.platform, search = false } =
       ],
     },
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
-    { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, search, searchTimeoutMs: 60000 } },
+    { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: !off.has('fetch'), search: search && !off.has('search'), searchTimeoutMs: 60000 } },
     { id: 'present', name: '@deepseek-ai/dsh-tool-present' },
     { id: 'tool-plugin-manager', name: '@deepseek-ai/dsh-plugin-manager/tools', disabled: true },
   ];
-  return { id: 'standard', order: 1, plugins };
+  // The groups the person switched off in Settings -> Tools; a web plugin with both halves off is not loaded at all.
+  const kept = withoutDisabled(plugins, off).filter(p => p.id !== 'tool-web' || p.config.fetch || p.config.search);
+  return { id: 'standard', order: 1, plugins: kept };
 }

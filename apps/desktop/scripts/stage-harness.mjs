@@ -86,6 +86,32 @@ while (queue.length) {
 }
 if (added.length) console.log(`peer packages added: ${added.join(', ')}`);
 
+// --- the browser tool server ---------------------------------------------------------------------------------------------
+// Settings -> Tools can switch on a browser the assistant drives (Playwright's MCP server, Apache-2.0) on the person's own Chrome or Edge,
+// so no browser is downloaded. The server and the two Playwright libraries it needs are not part of the Harness's production closure;
+// they are copied from the source checkout's package store (~20 MB) and the host starts it with Node (server/agent/browser-probe.mjs).
+const pnpmStore = join(src, 'node_modules', '.pnpm');
+function storePackage(name, version) {
+  if (!existsSync(pnpmStore)) return null;
+  const prefix = `${name.replace('/', '+')}@`;
+  const hit = readdirSync(pnpmStore).filter(n => n.startsWith(prefix) && (!version || n === `${prefix}${version}` || n.startsWith(`${prefix}${version}_`))).sort().at(-1);
+  const dir = hit ? join(pnpmStore, hit, 'node_modules', ...name.split('/')) : null;
+  return dir && existsSync(dir) ? dir : null;
+}
+const browserDir = storePackage('@playwright/mcp');
+if (browserDir) {
+  const wanted = JSON.parse(readFileSync(join(browserDir, 'package.json'), 'utf8')).dependencies ?? {};
+  const parts = [['@playwright/mcp', browserDir], ...['playwright', 'playwright-core'].map(n => [n, storePackage(n, wanted[n])])];
+  if (parts.every(([, dir]) => dir)) {
+    for (const [name, dir] of parts) {
+      const to = join(out, 'node_modules', ...name.split('/'));
+      mkdirSync(join(to, '..'), { recursive: true });
+      cpSync(realpathSync(dir), to, { recursive: true, dereference: true, filter: f => !relative(dir, f).split(sep).includes('node_modules') });
+    }
+    console.log(`browser tool server added: ${parts.map(([n]) => n).join(', ')}`);
+  } else console.log('browser tool server NOT added: Playwright libraries missing from the package store');
+} else console.log('browser tool server NOT added: @playwright/mcp is not in the source checkout');
+
 // --- one real folder per package, no links -------------------------------------------------------------------------------
 // The installer copies files; pnpm's layout is links. See flatten-pnpm.mjs. The two packages the app does not use are never copied.
 const flat = flattenPnpm(out, { skip: /libreoffice-kit|sherpa-onnx/i });

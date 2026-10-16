@@ -26,6 +26,15 @@ export const inject = ['approval', 'permissionPresets', 'sessions', 'tools'];
 
 /** Preset key the host writes for Manual (apps/host/server/agent/profile.mjs MODE_PRESETS). */
 export const MANUAL_PRESET = 'strata-manual';
+/** Preset key the host writes for Plan (read-only, nothing may change). */
+export const PLAN_PRESET = 'strata-plan';
+/** The app's own look-only tool server (the person's instruction tools): it only hands back text. */
+const LOOK_ONLY_SERVER = 'mcp__strata-instructions__';
+/** The tools a person wrote as commands (Settings -> Tools): the card says which one runs and with what text. */
+const COMMANDS_SERVER = 'mcp__strata-commands__';
+/** The browser tool server's name in the agent (Settings -> Tools). Looking at the page does not ask; acting on it does. */
+const BROWSER_SERVER = 'mcp__browser__';
+const BROWSER_LOOKING = new Set(['browser_snapshot', 'browser_take_screenshot', 'browser_console_messages', 'browser_network_requests', 'browser_wait_for']);
 
 /** Tools that cannot change anything on this computer. Everything else asks. */
 export const READ_ONLY_TOOLS = new Set([
@@ -111,8 +120,34 @@ export function manualDecision(exec) {
   if (tool === 'write') return { kind: 'ask', reason: `Create or replace the file ${clip(args.file_path ?? args.path, 200)}` };
   if (tool === 'edit') return { kind: 'ask', reason: `Change the file ${clip(args.file_path ?? args.path, 200)}` };
   if (tool === 'job_kill') return { kind: 'ask', reason: 'Stop a background task' };
+  if (tool.startsWith(LOOK_ONLY_SERVER)) return null;
+  if (tool.startsWith(BROWSER_SERVER)) return browserDecision(tool.slice(BROWSER_SERVER.length), args);
+  if (tool.startsWith(COMMANDS_SERVER)) return { kind: 'ask', reason: `Run your tool “${tool.slice(COMMANDS_SERVER.length).replace(/_/g, ' ')}”${args.input ? ` with: ${clip(args.input, 120)}` : ''}` };
   if (tool.startsWith('mcp__')) return { kind: 'ask', reason: `Use the connected tool ${tool.split('__').slice(1).join(' / ')}` };
   return { kind: 'ask', reason: `Use the tool ${tool}` };
+}
+
+/** The browser in plain words: opening a page, clicking or typing asks; looking at what is already open does not. */
+function browserDecision(name, args) {
+  if (BROWSER_LOOKING.has(name) || (name === 'browser_tabs' && args.action === 'list')) return null;
+  const url = clip(args.url, 200);
+  if (name === 'browser_navigate') return { kind: 'ask', reason: `Open the web page ${url}` };
+  if (name === 'browser_click' || name === 'browser_hover' || name === 'browser_drag') return { kind: 'ask', reason: `Click on the page${args.element ? `: ${clip(args.element, 120)}` : ''}` };
+  if (name === 'browser_type' || name === 'browser_fill_form' || name === 'browser_press_key' || name === 'browser_select_option') return { kind: 'ask', reason: `Type into the page${args.element ? `: ${clip(args.element, 120)}` : ''}` };
+  if (name === 'browser_file_upload') return { kind: 'ask', reason: 'Send a file from this computer to the page' };
+  if (name === 'browser_evaluate' || name === 'browser_run_code') return { kind: 'ask', reason: 'Run a small program inside the web page' };
+  return { kind: 'ask', reason: `Use the browser (${name.replace(/^browser_/, '').replace(/_/g, ' ')})` };
+}
+
+/**
+ * Plan mode changes nothing. A connected tool (a person's tool server, a command they wrote, the browser) is not under the sandbox, so
+ * Plan refuses it instead of letting it run. The look-only instruction tools are fine.
+ * @returns {{kind:'deny', reason:string}|null}
+ */
+export function planDecision(exec) {
+  const tool = String(exec.name ?? '');
+  if (!tool.startsWith('mcp__') || tool.startsWith(LOOK_ONLY_SERVER)) return null;
+  return { kind: 'deny', reason: 'Plan mode only looks and changes nothing, so it cannot use this tool. Switch to Manual or Bypass to use it.' };
 }
 
 export function apply(ctx) {
@@ -131,6 +166,7 @@ export function apply(ctx) {
     if (!agent || exec.name === 'run_code') return next();
     let preset;
     try { preset = effectivePreset(agent.session); } catch { return next(); }
+    if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
     if (preset !== MANUAL_PRESET) return next();
     const gate = manualDecision(exec);
     if (!gate) return next();

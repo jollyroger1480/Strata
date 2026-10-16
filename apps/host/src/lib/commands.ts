@@ -39,7 +39,6 @@ export const DESTINATIONS: { route: Route; label: string; icon: IconName; keywor
   { route: 'settings', label: 'Settings', icon: 'settings', keywords: 'preferences theme appearance text size', key: '8' },
 ];
 export const APP_COMMANDS: AppCommand[] = [
-  { id: 'go:loop', label: 'Tasks', hint: 'Set up a repeating task', group: 'Navigation', icon: 'clock', palette: false, slash: ['loop'], run: () => go('tasks') },
   { id: 'new', label: 'New chat', hint: 'Start a new conversation; keep this one', group: 'Session', key: 'n', icon: 'new-chat', slash: ['new'], run: () => { const s = newSession(); go('chat', s.id); } },
   { id: 'palette', label: 'Command palette', group: 'Session', key: 'k', icon: 'search', palette: false, run: () => setPalette(!getState().paletteOpen) },
   { id: 'sidebar', label: 'Show or hide sidebar', group: 'Session', key: 'b', icon: 'panel', run: () => window.innerWidth < 1280 ? setNavOpen(!getState().navOpen) : toggleRail() },
