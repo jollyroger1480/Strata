@@ -109,6 +109,12 @@ class ExactArch(unittest.TestCase):
             self.assertNotIn(a, setup.AMD_ARCHS)
         self.assertIn("docs/STRIX_HALO.md", setup.AMD_CARDS)
 
+# gfx1151 arch defaults that setup does not copy to gfx1103 / gfx1150: HCD_EXACT copies the gfx1151 hipBLASLt table's
+# solutions, TOPK_REG_MIN_BLOCKS (#1943: the top-k register-kernel line at 4096 blocks, the crossover with the
+# cooperative scan) was measured on gfx1151 only
+_NOT_COPIED = ("STRATA_HCD_EXACT", "STRATA_TOPK_REG_MIN_BLOCKS")
+
+
 
 class Gfx1103Switches(unittest.TestCase):
     def test_is_the_gfx1151_defaults_less_hcd_exact(self):
@@ -121,7 +127,7 @@ class Gfx1103Switches(unittest.TestCase):
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
         self.assertIn("STRATA_HCD_EXACT", gfx1151)                       # the parse found the gfx1151 block
         self.assertEqual(setup.GFX1103_SWITCHES,
-                         {k: v for k, v in gfx1151.items() if k != "STRATA_HCD_EXACT"})
+                         {k: v for k, v in gfx1151.items() if k not in _NOT_COPIED})
         self.assertNotIn("STRATA_HCD_EXACT", setup.GFX1103_SWITCHES)
         for k in setup.GFX1103_SWITCHES:                                 # setup's own: a re-run refreshes them
             self.assertIn(k, setup.SETUP_ENV)
@@ -138,7 +144,7 @@ class Gfx1150Switches(unittest.TestCase):
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
         self.assertIn("STRATA_HCD_EXACT", gfx1151)                       # the parse found the gfx1151 block
         self.assertEqual(setup.GFX1150_SWITCHES,
-                         {k: v for k, v in gfx1151.items() if k != "STRATA_HCD_EXACT"})
+                         {k: v for k, v in gfx1151.items() if k not in _NOT_COPIED})
         self.assertNotIn("STRATA_HCD_EXACT", setup.GFX1150_SWITCHES)
         for k in setup.GFX1150_SWITCHES:                                 # setup's own: a re-run refreshes them
             self.assertIn(k, setup.SETUP_ENV)
