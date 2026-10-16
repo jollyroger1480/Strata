@@ -9,6 +9,7 @@ and talks to its Gateway. Nothing here downloads or builds anything.
 | `harness-runtime.mjs` | locate the component, start/stop the process, scrub its environment, clean up a leftover process from a dead host |
 | `gateway-client.mjs` | HTTP RPC plus the `remote.mux` WebSocket (`$events`, `session/follow`) |
 | `profile.mjs` | generate the Harness profile: one route per ready local instance and per saved API connection; credential names only |
+| `task-run.mjs` | a scheduled task as the agent |
 | `events.mjs` | pure projection of Harness session events into the chat's NDJSON frames |
 | `children.mjs` | pure projection of one helper agent's events into its row and its approval card |
 | `preset.mjs` | the agent preset (which tools the chat has) |
@@ -73,6 +74,15 @@ The chat's Mode menu is real Harness behaviour. Each turn the page sends the cha
 ## /goal
 
 `/goal` typed in a chat goes to `bridge.goalCommand`: nothing = show the goal, `clear`, `pause`, `resume`, `edit <text>`, `complete`, anything else = a new goal (one unfinished goal at a time). Create/resume use the Harness goal Remotes (`goals/create|get|resume|pause|edit|clear|complete`); the Harness's goal driver runs the rounds and they stream into the chat ("Working on the goal, step N"); the run ends when the goal stops (complete, paused, blocked, round limit - the default cap is the Harness's 256, a run with `maxRounds` is capped) and says how in plain words. After a restart an active goal stays disarmed until `/goal resume`.
+
+## Thinking and the output budget
+
+- A local route is reasoning-capable (`reasoning: true`) with `compat.thinkingFormat: 'chat-template'`: the request carries `chat_template_kwargs {enable_thinking, reasoning_effort}`, which the Strata server reads (a top-level `enable_thinking` is ignored by it, which is why pi-ai's `qwen` format left the model thinking). The chat's Reasoning menu travels as `thinking` in the stream body; the bridge sends it with `session/selectModel` (`reasoningEffort`) whenever the model or the level changed; a level a route does not have is dropped (never an error). API routes keep the provider default (the menu is disabled for them in the UI).
+- `localOutputBudget(context)` = context minus 4096 (it was context/4 capped at 8192, which cut big answers off at exactly 8192 tokens); pi-ai sends the window minus the prompt. App-loaded models get `fit_max_tokens: true` so the engine clamps instead of answering 400. Sampling is not set here: the Harness sends none, so the server's own defaults apply.
+
+## Tasks
+
+`task-run.mjs` runs a scheduled task as the agent: a Harness session of its own (`task:<id>`, dropped after every run), the task's mode (`plan` default, `manual`, `bypass`), and a result built by `../task-report.mjs`. Nobody is at the screen: an approval request is answered "no" at once and reported ("Nothing was changed"). `server/tasks.mjs` stays the only scheduler; it sends a `task` event when a run ends (the page shows a toast).
 
 ## Plain words
 
