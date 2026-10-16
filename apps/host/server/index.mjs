@@ -14,6 +14,7 @@ import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge } from './agent/agent-bridge.mjs';
 import { createAgentTools } from './agent/tools-settings.mjs';
+import { withPlainStatus } from './agent/status.mjs';
 import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
 /**
  * Strata engine host.
@@ -112,6 +113,7 @@ const agentTools = createAgentTools({ read: () => store.get().agentTools, write:
 agentTools.ensureFile();
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
+  onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
@@ -1488,6 +1490,15 @@ async function api(req, res, path, method, url) {
 
   // --- agent --------------------------------------------------------------
   if (path === '/api/agent/status' && method === 'GET') return json(res, 200, agent.status());
+  // The goal bar (notes-split-agent3.md): the state, and the instant actions. Resume runs rounds, so it is a chat stream with {goalAction:'resume'}.
+  if (path === '/api/goal' && method === 'GET') {
+    try { return json(res, 200, { goal: await agent.goalState(url.searchParams.get('chatId') ?? '') }); } catch (e) { return error(res, 400, e.message); }
+  }
+  const goalAct = /^\/api\/goal\/(pause|edit|clear)$/.exec(path);
+  if (goalAct && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, await agent.goalControl({ chatId: String(body.chatId ?? body.sessionId ?? ''), action: goalAct[1], text: body.text })); } catch (e) { return error(res, 400, e.message); }
+  }
   if (path === '/api/agent/tools' && method === 'GET') return json(res, 200, agentTools.view());
   if (path === '/api/agent/tools' && method === 'PUT') {
     try { return json(res, 200, agentTools.update(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
@@ -1526,7 +1537,8 @@ async function api(req, res, path, method, url) {
     const body = await readBody(req,12*1024*1024);
     let images;try{images=validateChatImages(body.images);}catch(e){return error(res,400,e.message);}
     if(images.length){if(body.remoteModel)return error(res,409,'Choose a local image-reading model before sending attached pictures.');let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
-    const message = String(body.message ?? '').trim();
+    // The goal bar's Resume has no words of its own: it is the same turn as "/goal resume".
+    const message = body.goalAction === 'resume' ? '/goal resume' : String(body.message ?? '').trim();
     if (!message) return error(res, 400, 'message is required');
     /* Which workspace the caller is in, so a skill narrowed to one project
        does not fire in another. */
@@ -1561,10 +1573,13 @@ async function api(req, res, path, method, url) {
       res.write(`${JSON.stringify({ type: 'notice', code: 'agent-skipped', message: agentSkip })}\n`);
     }
 
+    // A plain chat turn says what it is doing too (reading the message, thinking with a token count, writing).
+    const plain = withPlainStatus(frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); });
+    res.on('close', () => plain.dispose());
     await runTurn({
       message,
       history: Array.isArray(body.history) ? body.history : [],
-      onFrame: (frame) => res.write(`${JSON.stringify(frame)}\n`),
+      onFrame: plain,
       signal: controller.signal,
       req,
       client: 'Strata chat',

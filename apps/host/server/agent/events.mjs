@@ -7,6 +7,7 @@
  * reasoning deltas, usage).
  */
 
+import { toolStatusText, TokenCount, fmtTokens } from './status.mjs';
 import { askFor } from './ask.mjs';
 
 const SHELL = new Set(['pwsh', 'bash', 'job_kill', 'job_output', 'job_list']);
@@ -206,6 +207,20 @@ export class TurnProjector {
     this.ended = null;               // the turn/end reason, once seen
     this.denied = new Set();         // callIds a human or the policy rejected
     this.asked = new Map();          // approval id -> callId
+    this.onStatus = null;            // (update) => void: what the assistant is doing now (status.mjs); set by the bridge
+    this.reasoning = new TokenCount();
+    this.composing = new Map();      // callId -> { name, head, bytes }: a tool call the model is still writing
+    this.running = [];               // callIds of tools that are running, oldest first
+  }
+
+  #status(update) { if (this.onStatus) this.onStatus(update); }
+
+  /** After a tool ends: another tool still running is what is happening, otherwise the model is working out what to do next. */
+  #afterTool() {
+    const id = this.running.at(-1);
+    const card = id ? this.tools.get(id)?.card : null;
+    if (card) this.#status({ phase: 'tool', code: 'tool', text: toolStatusText(card.name, card.args), args: { tool: card.name, verb: card.verb, target: card.target } });
+    else this.#status({ phase: 'waiting', code: 'model-working', text: 'Working out the next step…' });
   }
 
   #card(callId, patch) {
@@ -248,12 +263,29 @@ export class TurnProjector {
           this.firstTokenAt ??= Date.now();
           this.#produced(f.attemptId, c.text, out);
           this.emittedAny = true;
+          this.#status({ phase: 'answering', code: 'answering', text: 'Writing the answer…' });
           this.emittedText.set(f.attemptId, (this.emittedText.get(f.attemptId) ?? 0) + c.text.length);
           out.push({ type: 'delta', text: c.text });
         } else if (c.type === 'reasoning-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
           this.#produced(f.attemptId, c.text, out);
+          this.reasoning.add(c.text);
+          this.#status({ phase: 'thinking', code: 'thinking', text: `Thinking… ${fmtTokens(this.reasoning.tokens)} tokens`, tokens: this.reasoning.tokens, args: { tokens: this.reasoning.tokens } });
           out.push({ type: 'reasoning', text: c.text });
+        } else if (c.type === 'tool-call-delta' && c.id) {
+          // The model is writing a tool call. For a big file this is the long silent part: nothing else arrives until it is finished.
+          const call = this.composing.get(c.id) ?? { name: c.name ?? '', head: '', bytes: 0 };
+          if (c.name) call.name = c.name;
+          const piece = String(c.argumentsDelta ?? '');
+          call.bytes += piece.length;
+          if (call.head.length < 4000) call.head += piece;
+          this.composing.set(c.id, call);
+          if (call.name && !NO_CARD.has(call.name)) {
+            const raw = (/"(?:file_path|path|filePath)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head) ?? /"url"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head))?.[1];
+            let target = raw; try { if (raw !== undefined) target = JSON.parse('"' + raw + '"'); } catch { /* a half-written escape: show it as it is */ }
+            const args = target ? { file_path: target, url: target } : {};
+            this.#status({ phase: 'preparing', code: 'preparing-tool', text: toolStatusText(call.name, args, { bytes: call.bytes }), args: { tool: call.name, verb: toolVerb(call.name, 'running'), target: target ?? '', bytes: call.bytes } });
+          }
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
           // The Harness counts input, cache reads and cache writes apart (a prompt the server's conversation cache already held is `cacheReadTokens`,
@@ -283,6 +315,9 @@ export class TurnProjector {
         const args = parseArguments(d.arguments);
         const card = { ...presentTool({ callId: d.callId, name: d.name, args }), state: 'running' };
         this.tools.set(d.callId, { card, calledAt: e.time });
+        this.composing.delete(d.callId);
+        this.running.push(d.callId);
+        this.#status({ phase: 'tool', code: 'tool', text: toolStatusText(d.name, args), args: { tool: d.name, verb: card.verb, target: card.target } });
         out.push({ type: 'agent-tool', tool: card });
         break;
       }
@@ -291,6 +326,7 @@ export class TurnProjector {
         this.asked.set(d.id, d.callId);
         if (this.policy === 'never') break;
         const entry = this.tools.get(d.callId);
+        this.#status({ phase: 'approval', code: 'waiting-approval', text: 'Waiting for your answer…', args: { tool: entry?.card.name ?? '' } });
         const patch = { state: 'proposed', effect: clip(d.reason ?? entry?.card.effect ?? 'Needs your approval.', 400) };
         const frame = this.#card(d.callId, patch);
         if (frame) out.push(frame);
@@ -304,6 +340,7 @@ export class TurnProjector {
           if (frame) out.push(frame);
           break;
         }
+        this.#afterTool();
         const frame = callId ? this.decide(callId, d.outcome) : null;
         if (frame) out.push(frame);
         break;
@@ -312,6 +349,8 @@ export class TurnProjector {
         const callId = d.message?.toolCallId;
         const entry = this.tools.get(callId);
         if (!entry) break;
+        this.running = this.running.filter(id => id !== callId);
+        this.#afterTool();
         const isError = d.message?.isError === true;
         const denied = this.denied.has(callId);
         const frame = this.#card(callId, {
