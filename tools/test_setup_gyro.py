@@ -76,5 +76,13 @@ class GyroCatalog(unittest.TestCase):
         self.assertFalse(by["Gyro-S"]["images"])
 
 
+class GyroEngineVersionTest(unittest.TestCase):
+    def test_gyro_needs_the_split_release_engine(self):
+        self.assertEqual(setup.GYRO_ENGINE, (0, 1, 45))
+        sizes = [m for m in setup.MODELS.values() if "gyro" in str(m.get("file", "")).lower()]
+        self.assertEqual(len(sizes), 2)
+        self.assertTrue(all(m["engine"] == (0, 1, 45) for m in sizes))
+
+
 if __name__ == "__main__":
     unittest.main()

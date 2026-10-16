@@ -33,7 +33,7 @@ trellis family (types 147-149) that the engine does not have.
 
 Setup downloads the pinned revision of the file (size and SHA-256 checked), prepares the pack (`tools/iq_pack.py
 --compat-bf16`: the Hadamard table and the dense weights, 1.5 GB), the draft head (Strata's own MTP head, prepared from
-the original model as for every Qwen3.8-Flash-Next file) and the start script. Needs engine 0.1.46 or newer; a
+the original model as for every Qwen3.8-Flash-Next file) and the start script. Needs engine 0.1.45 or newer (the split release); a
 ready-made engine that is older is replaced by one compiled from this source.
 
 **Supported:** NVIDIA (CUDA, Linux and Windows) and AMD (HIP, experimental: the authors validated gfx1151; we ran

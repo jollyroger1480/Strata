@@ -261,9 +261,9 @@ NVFP4_ENGINE = (0, 1, 44)
 
 # agentionai's Gyro files (Qwen3.8-Flash-Next with trellis-coded, Hadamard-rotated experts, TQ2_T / TQK6 / TQK7): one
 # GGUF per size, the n-gram table inside it (hence the 58 / 92 GB downloads for 27.6 / 35 GB of memory).  The engine
-# reads them from 0.1.46 on (ported from agentionai/Strata rc2, MIT); the sizes and SHA-256 are the Hub's LFS pointers
+# reads them from 0.1.45 on (the split release) (ported from agentionai/Strata rc2, MIT); the sizes and SHA-256 are the Hub's LFS pointers
 # of the revision pinned in HF_REVISIONS.  The model's license is Qwen's.
-GYRO_ENGINE = (0, 1, 46)
+GYRO_ENGINE = (0, 1, 45)
 GYRO_FILES = {
     "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf":
         (58487015808, "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87"),
