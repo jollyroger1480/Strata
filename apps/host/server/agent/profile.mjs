@@ -105,20 +105,21 @@ function fingerprint(provider, secret) {
  */
 export function localOutputBudget(context) {
   const c = Number.isFinite(context) && context > 0 ? context : 32768;
-  // Half the window, at most 32K: still far more than the old 8192 that cut big answers off, and it leaves the other half for the
-  // conversation. The Harness's automatic compaction reads this number as the room the reply reserves: with nearly the whole window
-  // reserved it had no room left to measure pressure in, and a long chat or a long helper task never compacted.
-  return Math.max(4096, Math.min(32768, Math.floor(c / 2)));
+  // 30 percent of the window, at most 32K (9,830 tokens at 32K, 19,660 at 64K): far more than the old 8192 that cut big answers off, and it leaves
+  // the rest for the conversation. The Harness's automatic compaction reads this number as the room the reply reserves: with nearly the whole
+  // window reserved it had no room left to measure pressure in and never compacted; with half of it reserved a 32K window compacted every few
+  // steps (the system prompt and tool list alone are about 7K tokens), which slowed a long task to a crawl.
+  return Math.max(4096, Math.min(32768, Math.floor(c * 0.3)));
 }
 
 /**
  * When the Harness's automatic compaction starts condensing old history, for one model: its own default keeps 64K tokens of headroom,
- * which on a local window of 32K to 128K leaves no room at all (it then reports a configuration error once and never compacts). A quarter
- * of what the window has left after the reply's room works from 16K up to the largest windows. Compaction then starts at about 70 percent.
+ * which on a local window of 32K to 128K leaves no room at all (it then reports a configuration error once and never compacts). An eighth
+ * of what the window has left after the reply's room works from 16K up to the largest windows. Compaction then starts at about 60 percent.
  */
 export function compactionHeadroom(context, outputBudget) {
   const room = Math.max(0, (Number.isFinite(context) && context > 0 ? context : 32768) - outputBudget);
-  return Math.max(512, Math.min(65536, Math.floor(room * 0.25)));
+  return Math.max(512, Math.min(65536, Math.floor(room * 0.125)));
 }
 
 /**
@@ -220,6 +221,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
     // without it the Reasoning menu did nothing for a connection to another Strata machine.
     const ownServer = protocol === 'openai-completions' && isPrivateHost(baseURL);
+    // A model server on this computer or network has a window of its own size like a local model: the reply keeps half of it, so the Harness can compact the conversation
+    // before the window is full (with nearly all of it reserved for the reply a long task ended with "the prompt leaves no room to answer").
+    const reply = m => (ownServer && Number.isFinite(m.contextMax) && m.contextMax > 0 && !m.maxOutput ? localOutputBudget(m.contextMax) : outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput));
     providers[route] = {
       displayName: conn.name,
       api: protocol,
@@ -228,14 +232,14 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       ...(ownServer ? { compat: THINKING_COMPAT } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
-        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
-        input: ['text'],
+        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
+        input: ownServer ? ['text', 'image'] : ['text'],
         ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
     const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;
-    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
+    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, reply(m)) }); }
     for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 
