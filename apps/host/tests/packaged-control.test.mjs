@@ -494,3 +494,11 @@ test('packaged: a profile an elevated run locked (PermissionError) is repaired o
     assert.match(job.error, /PermissionError/);
   } finally { await g.native.close(); g.cleanup(); }
 });
+
+test('a GGUF folder Control refuses (exit 5, ok:false) still comes back as a checked plan with its reasons, so the page can say it in words', async () => {
+  const plan = { file_set_status: 'invalid_or_incomplete', candidate_selection: null, issues: ['x.gguf: GGUF tensor or metadata count exceeds the inspection limit', 'unrecognized_or_unsupported_model_variant'] };
+  const control = createControl({ control: { dir: '/c', python: '/p', cli: '/c/strata.py', bundle: { version: '9' } }, run: async () => ({ code: 5, json: { ok: false, plan }, text: '', stderr: '' }) });
+  assert.deepEqual(await control.importPlan('/some/folder'), plan);
+  const broken = createControl({ control: { dir: '/c', python: '/p', cli: '/c/strata.py', bundle: { version: '9' } }, run: async () => ({ code: 1, json: null, text: '', stderr: 'boom' }) });
+  await assert.rejects(() => broken.importPlan('/some/folder'), /boom/);
+});

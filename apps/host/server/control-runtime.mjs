@@ -199,6 +199,9 @@ export function createControl({ control = findControl(), env = process.env, run 
     async importPlan(path) {
       const result = await call(['models', 'import', path, '--plan', '--output', 'json'], { timeoutMs: 120_000 });
       if (result.json && result.code === 0) return result.json.plan ?? result.json;
+      // A set that cannot be used is still a checked set: Control answers (exit 5, ok:false) with the plan and the reasons, and the page says them in
+      // words ("Strata can't run these files yet"). Only a check that could not run at all is a failure.
+      if (result.json?.plan && Array.isArray(result.json.plan.issues)) return result.json.plan;
       throw failure(result, 'The files could not be checked.');
     },
     async saveProfile(name, configPath) {
