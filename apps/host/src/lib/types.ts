@@ -358,6 +358,8 @@ export interface ToolCall {
   verb?: string;
   /** What the action is on: a file path, the command, a web address. */
   target?: string;
+  /** The question an approval card asks in plain words (server/agent/ask.mjs); the page translates it. */
+  ask?: { id: string; params?: (string | number)[]; why?: string; detail?: string };
   state: ToolState;
   result?: string;
   durationMs?: number;

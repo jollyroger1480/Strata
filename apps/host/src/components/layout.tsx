@@ -2,7 +2,8 @@ import { tr } from '../lib/i18n';
 /** Screen chrome: a titled header pinned above a scrolling body. */
 import type { ReactNode } from 'react';
 import { cx } from '../lib/format';
-export function Screen({ title, sub, actions, children, width = 'normal', bare, plainHeader, titleDetail, }: {
+import { Icon } from './ui';
+export function Screen({ title, sub, actions, children, width = 'normal', bare, plainHeader, titleDetail, back, }: {
     title: ReactNode;
     sub?: ReactNode;
     actions?: ReactNode;
@@ -11,11 +12,13 @@ export function Screen({ title, sub, actions, children, width = 'normal', bare, 
     bare?: boolean;
     plainHeader?: boolean;
     titleDetail?: ReactNode;
+    /** A way back to the list this screen was opened from, shown before the title (as the chat's navbar shows its own title). */
+    back?: { label: string; onClick: () => void };
 }) {
     return (<>
       <header className={cx("st-header main__head", plainHeader && "main__head--plain")}>
         <div className="main__titles">
-          <div className="main__title-line"><h1 className="main__title">{tr(title)}</h1>{tr(titleDetail ? <span className="main__title-detail">{tr(titleDetail)}</span> : null)}</div>
+          <div className="main__title-line">{tr(back ? <button type="button" className="main__back" onClick={back.onClick}><Icon name="chevron" size={14}/>{tr(back.label)}</button> : null)}<h1 className="main__title">{tr(title)}</h1>{tr(titleDetail ? <span className="main__title-detail">{tr(titleDetail)}</span> : null)}</div>
           {tr(sub ? <p className="main__sub">{tr(sub)}</p> : null)}
         </div>
         {tr(actions ? <div className="main__actions">{tr(actions)}</div> : null)}

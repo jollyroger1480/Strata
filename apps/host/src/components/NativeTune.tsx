@@ -1,6 +1,7 @@
 import { tr } from '../lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { Btn, Dialog, Icon, Select } from './ui';
+import { TuneRunView, TuneResultView } from './TuneRunView';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { ANSWER_NOTICE, tunePresetAction, tuneStatus, tuneUndo, type TuneProgress, type TunePreset, type TuneResult, type TuneStatus } from '../lib/native-tune';
 
@@ -54,26 +55,21 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
     const result = job?.state === 'done' ? (job.result as TuneResult | null) : null;
     const stopped = job?.state === 'cancelled';
     const ratio = progress && progress.runsPlanned ? Math.min(0.96, progress.runsDone / progress.runsPlanned) : 0;
-    const left = progress?.minutesLeft ?? null;
     const active = status?.active ?? null;
 
-    const orbit = (complete: boolean) => <div className="tune-orbit" data-complete={complete}><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50"/><circle cx="60" cy="60" r="50" pathLength="100" strokeDasharray={`${complete ? 100 : Math.max(4, Math.round(ratio * 100))} 100`}/></svg><Icon name={complete ? 'check' : 'gauge'} size={42}/></div>;
     const notice = (cls?: string) => cls ? <p className="small muted">{tr(ANSWER_NOTICE[cls] ?? '')}</p> : null;
-
     let body;
     let actions;
     if (phase === 'running') {
-        body = <div className="tune-progress">{orbit(false)}<h3 role="status">{tr("Finding the fastest settings for your PC…")}</h3>
-            <p className="small muted">{left != null ? tr("about {0} min left", [left]) : tr("This takes about 20 minutes.")}</p>
-            {progress?.step ? <p className="xs muted">{progress.step}</p> : null}
-            <div className="tune-steps">{[0, 1, 2, 3].map(i => <span key={i} data-done={ratio >= i / 4 && ratio > 0}/>)}</div></div>;
+        body = <TuneRunView progress={progress} ratio={ratio} saving={false}/>;
         actions = <><Btn onClick={() => void act(() => nativeAction(`operations/${job!.id}/cancel`))} disabled={busy}>{tr("Stop")}</Btn></>;
     } else if (phase === 'result') {
         const improved = result?.outcome === 'improved' || result?.verdict === 'keep';
         const text = stopped ? tr("Stopped. Your settings were not changed.") : job?.state === 'error' ? tr("The tune did not finish. Your settings were not changed.") : result?.verdict ? (result.verdict === 'keep' ? tr("Still as fast as when it was saved.") : result.verdict === 'retune' ? tr("It is slower than before. You can tune again.") : tr("Could not tell right now. Your tuning was kept.")) : result?.outcome === 'improved' ? tr("+{0}% faster answers, saved as '{1}'", [Math.max(0, Math.round(result.gain_pct ?? 0)), result.preset?.name ?? '']) : result?.outcome === 'default_confirmed' ? tr("Your current settings are already the fastest we found.") : (result?.message ?? tr("Nothing was changed."));
-        body = <div className="tune-progress">{orbit(improved || result?.outcome === 'default_confirmed')}<h3 role="status">{text}</h3>
+        const good = improved || result?.outcome === 'default_confirmed';
+        body = result?.outcome === 'improved' ? <div className="stack"><TuneResultView result={result} saved={result.preset?.name ?? null}/>{notice(result.answers?.class)}</div> : <div className="tune-progress"><div className="tune-orbit" data-complete={good}><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50"/><circle cx="60" cy="60" r="50" pathLength="100" strokeDasharray={`${good ? 100 : 4} 100`}/></svg><Icon name={good ? 'check' : 'gauge'} size={42}/></div><h3 role="status">{text}</h3>
             {result?.outcome === 'default_confirmed' && result.preset ? <p className="small muted">{tr("Saved as '{0}', so it is not tuned again when you reopen the app.", [result.preset.name])}</p> : null}
-            {result?.outcome === 'improved' ? <><p className="small muted">{tr("Speed: {0} → {1} tok/s", [Math.round((result.base?.decode_tok_s ?? 0) * 10) / 10, Math.round((result.chosen?.decode_tok_s ?? 0) * 10) / 10])}</p>{notice(result.answers?.class)}</> : null}
+            
             {job?.state === 'error' ? <p className="small inline-error" role="alert">{job.error}</p> : null}</div>;
         actions = <>{status?.can_undo && result?.outcome === 'improved' ? <Btn disabled={busy} onClick={() => void act(async () => { await tuneUndo(model, resourceProfile, vision); setJobId(''); })}>{tr("Undo")}</Btn> : null}<Btn variant="primary" onClick={close}>{tr("Close")}</Btn></>;
     } else {
@@ -104,5 +100,5 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
             {active && status?.state === 'soft' ? <Btn disabled={busy || !!other} onClick={() => void start('recheck')}>{tr("Check again")}</Btn> : null}
             <Btn variant="primary" icon="gauge" disabled={busy || !!other || !status} onClick={() => void start('autotune')}>{tr(active ? "Tune again" : "Start tuning")}</Btn></>;
     }
-    return <Dialog open={open} title={tr("Tune this model")} onClose={close} actions={actions}>{body}</Dialog>;
+    return <Dialog open={open} wide={phase !== 'idle'} title={phase === 'result' && result?.outcome === 'improved' ? tr("Tuned and saved") : tr("Tune this model")} onClose={close} actions={actions}>{body}</Dialog>;
 }

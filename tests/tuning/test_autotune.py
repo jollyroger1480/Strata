@@ -240,6 +240,15 @@ class TunerTest(unittest.TestCase):
         self.assertLessEqual(etas[-1], etas[0])
         self.assertEqual(seen[-1]["stage"], "done")
 
+    def test_progress_carries_the_speed_of_every_measurement_so_far(self):
+        seen = []
+        t, s, r = run_tuner(speed_with({("--spec", "6"): 1.2}), progress=seen.append)
+        last = [p for p in seen if p.get("speeds")][-1]["speeds"]
+        self.assertEqual(last[0]["label"], "base")
+        self.assertAlmostEqual(last[0]["tok_s"], 60.0, places=1)
+        self.assertTrue(all(isinstance(x["tok_s"], float) and x["tok_s"] > 0 for x in last))
+        self.assertGreater(len(last), 1, "the candidates' speeds follow the base")
+
     def test_per_request_value_needs_every_round(self):
         wins = {"n": 0}
 

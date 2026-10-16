@@ -75,6 +75,17 @@ class GyroCatalog(unittest.TestCase):
         self.assertEqual(by["Gyro-M"]["on_this_pc"], "tight")
         self.assertFalse(by["Gyro-S"]["images"])
 
+    def test_mcp_table_gives_ram_plus_vram_without_the_ngram_table(self):
+        """The Models page shows what a version needs of RAM + VRAM together, the n-gram table (on the SSD) not counted."""
+        s = M.Strata(ROOT)
+        table = s.model_table(hardware(64.0, 12.0))
+        gyro = {x["model"]: x for x in next(f for f in table if f["family"] == "gyro")["sizes"]}
+        self.assertEqual(gyro["Gyro-S"]["memory_gb"], 27.6)           # stated in total (mem_total), not the 58.5 GB download
+        self.assertTrue(gyro["Gyro-S"]["mem_total"])
+        swift = {x["model"]: x for x in next(f for f in table if f["family"] == "swift")["sizes"]}
+        self.assertEqual(swift["IQ2_XS"]["memory_gb"], 36.5)          # 35.5 GB of experts + ~1 GB dense
+        self.assertFalse(swift["IQ2_XS"]["mem_total"])
+
 
 class GyroEngineVersionTest(unittest.TestCase):
     def test_gyro_needs_the_split_release_engine(self):

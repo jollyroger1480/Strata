@@ -30,7 +30,7 @@ const nodeExe = resolve(args.node ?? join(staged, 'node', process.platform === '
 const work = mkdtempSync(join(tmpdir(), 'strata-ui-flows-'));
 const shots = resolve(args.shots ?? join(work, 'shots'));
 mkdirSync(shots, { recursive: true });
-const only = new Set(String(args.only ?? 'download,models,profile,tune,fail,delete,theme,restart,perf,polish,stop,latest').split(','));
+const only = new Set(String(args.only ?? 'download,models,profile,ui2,ui2d,tune,fail,delete,theme,restart,perf,polish,stop,latest').split(','));
 const isWin = process.platform === 'win32';
 const { chromium } = await import(pathToFileURL(join(repoHost, 'node_modules/playwright-core/index.mjs')).href).catch(() => import('playwright-core'));
 const CHROME = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find(existsSync);
@@ -317,6 +317,88 @@ await scenario('profile', { installed: true }, async ({ base, api, browser, shot
     check(/Apply/.test(text), 'it says what happens: apply settings and load');
   } else console.log('info  the settings were the saved ones, so loading needed no pop-up at all');
   check(page.problems.length === 0, 'no page error', page.problems.join('; '));
+});
+
+// ------------------------------------------------------------------------------------------------ version list, This computer, Tune, a task
+for (const scheme of ['light', 'dark']) await scenario(scheme === 'light' ? 'ui2' : 'ui2d', { installed: true, env: { FAKE_TOKEN_DELAY: '0.02', FAKE_REPLY: 'I am thinking about it. </think> ' + 'Here is the answer, word by word. '.repeat(12), STRATA_TUNE_NO_QUIET_CHECK: '1' } }, async ({ base, api, browser, shot }) => {
+  const page = await newPage(browser, base, { colorScheme: scheme });
+  await clickText(page, /Go straight to the app/i);
+  await page.getByText(/Conversation context/i).first().waitFor({ timeout: 30000 });
+  await delay(1500);
+  // the version list: Recommended (the fixed four), then folded groups, one line per model
+  console.log('info  triggers', await page.locator('.version-trigger').count(), await page.getByRole('button', { name: 'Model version' }).count());
+  await page.locator('.version-trigger').first().click();
+  await delay(300);
+  console.log('info  expanded after click', await page.locator('.version-trigger').first().getAttribute('aria-expanded'));
+  await delay(800); await shot(page, `0-after-click-${scheme}`);
+  console.log('info  menu', await page.evaluate(() => { const m = document.querySelector('.version-menu'); const t = document.querySelector('.version-trigger'); return JSON.stringify({ menu: m ? m.getBoundingClientRect() : null, parent: m ? [m.parentElement.className, getComputedStyle(m.parentElement).display, getComputedStyle(m.parentElement).visibility, m.parentElement.style.cssText.slice(0, 120)] : null, expanded: t?.getAttribute('aria-expanded'), roles: [...document.querySelectorAll('[role=menu]')].length }); }));
+  await page.locator('.version-menu').waitFor({ timeout: 10000 });
+  const heads = await page.locator('.version-head span:first-child, .version-group__head').allTextContents();
+  const names = await page.locator('.version-menu > .version-row .version-row__name strong').allTextContents();
+  console.log('info  version list', JSON.stringify(heads.map(t => t.replace(/\s+/g, ' ').trim())), JSON.stringify(names));
+  check(heads[0]?.trim() === 'Recommended', `${scheme}: the list starts with Recommended`);
+  check(names.length >= 1 && names.length <= 4, `${scheme}: Recommended shows only the picks this catalog has (at most the fixed four)`, names.join(' | '));
+  check(heads.some(t => /Swift models|GSQ-RCO models|Gyro models|NVFP4 models|Unsloth models/.test(t)), `${scheme}: the other models are in folded groups`);
+  check(heads.at(-1)?.includes('Use your own GGUF'), `${scheme}: the last row is Use your own GGUF`);
+  const tall = await page.locator('.version-row').evaluateAll(els => els.filter(e => e.getBoundingClientRect().height > 44).length);
+  check(tall === 0, `${scheme}: every model is one line`, String(tall));
+  await shot(page, `1-versions-${scheme}`);
+  await page.keyboard.press('Escape');
+  // This computer
+  const pc = page.locator('.pc-card');
+  await pc.waitFor({ timeout: 10000 });
+  const pcText = ((await pc.textContent()) ?? '').replace(/\s+/g, ' ');
+  check(/This computer/.test(pcText) && /(Fits fully in memory|read from the SSD)/.test(pcText), `${scheme}: This computer says in one line whether it fits`, pcText.slice(0, 200));
+  check(await pc.locator('.pc-meter').count() >= 1, `${scheme}: it shows the memory bars`);
+  check(await pc.locator('.chip, .st-pill, [class*="badge"]').count() === 0, `${scheme}: no chips or badges in it`);
+  await shot(page, `2-computer-${scheme}`);
+  // Tune: five steps, a live speed, a result card
+  await page.getByRole('button', { name: /^Tune model$/ }).first().click({ timeout: 10000 });
+  await delay(1500); await shot(page, `2b-tune-dialog-${scheme}`);
+  // The fake engine has no other setting worth trying, so its tune passes through "trying" too fast to be seen. The page is shown the progress a
+  // real tune reports (Control's status file: stage, speeds) for the running view; the start, the result and every other call are real.
+  let fakePhase = 'run';
+  await page.route('**/api/native*', async route => {
+    const response = await route.fetch(); let json = null;
+    try { json = await response.json(); } catch { return route.fulfill({ response }); }
+    for (const job of json?.jobs ?? []) if (job.kind === 'autotune' && fakePhase === 'done') { job.state = 'done'; job.progress = null; job.result = { outcome: 'improved', gain_pct: 18, base: { decode_tok_s: 41.2 }, chosen: { decode_tok_s: 48.6 }, preset: { id: 'fast', name: 'Fast · 64K' }, answers: { class: 'exact', fields: [] } }; } else if (job.kind === 'autotune' && job.state === 'running') job.progress = { stage: 'rounds', text: null, minutesLeft: 9, runsDone: 3, runsPlanned: 6, elapsedS: 300, step: 'Trying: more experts kept in memory (round 1 of 2)', speeds: [{ label: 'base', tok_s: 41.2 }, { label: 'Fewer helper threads', tok_s: 40.1 }, { label: 'More experts kept in memory', tok_s: 46.8 }] };
+    return route.fulfill({ response, json });
+  });
+  await page.getByRole('button', { name: /Start tuning|Tune again/ }).first().click({ timeout: 15000 });
+  await page.locator('.tune-step').first().waitFor({ timeout: 60000 });
+  check(await page.locator('.tune-step').count() === 5, `${scheme}: the tuner shows its five steps`);
+  let sawRun = false, sawSpeed = false;
+  for (let i = 0; i < 400; i++) {
+    const done = await page.locator('.tune-result, .tune-progress').count();
+    if (i % 4 === 0) { const jobs = (await api('/api/native')).body?.jobs ?? []; const j = jobs.find(x => x.kind === 'autotune'); if (j) console.log('info  tune job', j.state, JSON.stringify(j.progress ?? null).slice(0, 300)); }
+    if (await page.locator('.tune-step[data-s=run]').count()) sawRun = true;
+    const big = await page.locator('.tune-live__big').first().textContent().catch(() => '');
+    if (/[0-9]/.test(big ?? '')) sawSpeed = true;
+    if (sawRun && sawSpeed) { await delay(700); await shot(page, `3-tune-running-${scheme}`); break; }
+    if (done) break;
+    await delay(600);
+  }
+  check(sawRun, `${scheme}: a step is shown as running`);
+  check(sawSpeed, `${scheme}: the live speed shows a number while it runs`);
+  if (sawSpeed) { fakePhase = 'done'; await page.locator('.tune-hero').waitFor({ timeout: 15000 }).catch(() => {}); check(/\+18%/.test((await page.locator('.tune-hero').textContent().catch(() => '')) ?? ''), `${scheme}: the result card shows the gain large`); check(/Fast/.test((await page.locator('.tune-compare').textContent().catch(() => '')) ?? ''), `${scheme}: and what it was saved as`); }
+  await shot(page, `4-tune-result-${scheme}`);
+  await page.getByRole('button', { name: /^Close$/ }).first().click({ timeout: 10000 }).catch(() => {});
+  // a task: the opened task is skimmable, with pause / delete / Edit / Run now
+  const made = await api('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Open Downloads folder', prompt: 'Open my Downloads folder and tell me what is new.', frequency: 'weekdays', at: '08:00', weekday: 1, timeZone: 'Europe/Ljubljana', mode: 'manual', enabled: true }) });
+  const id = made.body?.id ?? made.body?.task?.id;
+  check(!!id, `${scheme}: a task is created`, JSON.stringify(made.body).slice(0, 120));
+  await page.evaluate(i => { location.hash = '#/tasks/' + i; }, id);
+  await page.getByRole('button', { name: /^Edit$/ }).first().waitFor({ timeout: 15000 });
+  console.log('info  header buttons', await page.getByRole('button', { name: /^Pause / }).count(), await page.getByRole('button', { name: /^Delete / }).count(), await page.getByRole('button', { name: /Run now/ }).count(), JSON.stringify(await page.locator('.task-header-actions button').evaluateAll(b => b.map(x => (x.getAttribute('aria-label') ?? x.textContent ?? '').trim()))));
+  check(await page.getByRole('button', { name: /^Pause / }).count() === 1 && await page.getByRole('button', { name: /^Delete / }).count() >= 1 && await page.getByRole('button', { name: /Run now/ }).count() >= 1, `${scheme}: pause, delete, Edit and Run now are in the header`);
+  check(await page.locator('.main__back').count() === 1, `${scheme}: a back link sits before the title`);
+  const factsText = ((await page.locator('.task-facts').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(/Weekdays/.test(factsText) && /Schedule/i.test(factsText) && /Last result/i.test(factsText), `${scheme}: schedule, what it may do and the last result are at the top`, factsText.slice(0, 160));
+  await shot(page, `5-task-${scheme}`);
+  await page.getByRole('button', { name: /^Pause / }).first().click();
+  await page.getByRole('button', { name: /^Resume / }).first().waitFor({ timeout: 10000 });
+  check(true, `${scheme}: Pause becomes Resume`);
+  check(page.problems.length === 0, `${scheme}: no page error`, page.problems.join('; '));
 });
 
 // ------------------------------------------------------------------------------------------------ tune + reading size
