@@ -131,11 +131,13 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     const models = [...new Map(rows.filter(m => text(m.id, 256)).map(m => [m.id, { id: text(m.id, 256), name: text(m.display_name ?? m.name) || text(m.id, 256), contextMax: numeric(m.context_length ?? m.max_context_length ?? m.context_window), maxOutput: numeric(m.max_output_tokens ?? m.max_completion_tokens ?? m.top_provider?.max_completion_tokens) }])).values()];
     return { models: models.sort((a, b) => a.name.localeCompare(b.name)) };
   }
-  async function stream({ selection, message, history = [], systemPrompt = '', signal, onFrame }) {
+  async function stream({ selection, message, history = [], systemPrompt = '', images = [], signal, onFrame }) {
     const { connection, model } = resolve(selection);
     const started = Date.now();
     const messages = history.filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string').slice(-40).map(m => ({ role: m.role, content: m.content }));
-    messages.push({ role: 'user', content: message });
+    // Pictures only go to OpenAI-style servers (the one protocol every local server shares); other protocols keep the text.
+    const pics = connection.protocol === 'openai-chat' ? images : [];
+    messages.push({ role: 'user', content: pics.length ? [{ type: 'text', text: message }, ...pics.map(i => ({ type: 'image_url', image_url: { url: i.url } }))] : message });
     const protocol = connection.protocol;
     const payload = protocol === 'anthropic'
       ? { model: model.id, messages, system: systemPrompt, max_tokens: 8192, stream: true }

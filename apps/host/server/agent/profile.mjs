@@ -229,7 +229,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
-        input: ['text'],
+        input: ownServer ? ['text', 'image'] : ['text'],
         ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };

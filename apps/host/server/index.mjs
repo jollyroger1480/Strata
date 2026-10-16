@@ -46,7 +46,9 @@ import * as engineInstall from './engine-install.mjs';
 import { detectBackend, currentBackend, streamChat } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
-import { EventHub, error, json, readBody, uid } from './util.mjs';
+import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
+import { createUploads } from './chat-uploads.mjs';
+import { isPrivateHost } from './agent/llm-shape.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
@@ -426,6 +428,8 @@ function loadWorkspaces() {
 let workspaces = loadWorkspaces();
 /* The folder each chat works in ("Select a folder"): the agent's working folder and sandbox for that chat. */
 const chatAttachments = createAttachments();
+const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: chatId => chatFolders.get(chatId) ?? workspaces[0]?.path ?? WORKSPACE, attachments: chatAttachments });
+try { uploads.sweep(); } catch { /* best effort */ }
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
 
 function saveWorkspaces() {
@@ -487,7 +491,7 @@ function clientName(req) {
   return 'Local client';
 }
 
-async function runRemoteTurn({ selection, message, history, onFrame, signal, workspaceId }) {
+async function runRemoteTurn({ selection, message, history, images = [], onFrame, signal, workspaceId }) {
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let entry;
@@ -497,7 +501,7 @@ async function runRemoteTurn({ selection, message, history, onFrame, signal, wor
     const appliedSkills = selectSkills(skillState, message, workspaceId);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
-    const result = await modelProviders.stream({ selection, message, history, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
+    const result = await modelProviders.stream({ selection, message, history, images, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
       if (frame.type === 'start') noteSkillUse(appliedSkills);
       if (frame.type === 'done') serving.mark(entry.id, { tokensIn: frame.tokensIn, tokensOut: frame.tokensOut, usageSource: frame.usageSource });
       onFrame({ ...frame, requestId: entry.id, model: model.name, contextMax: model.contextMax, remoteModel: true, ...(frame.type === 'start' ? { skills: appliedSkills.map(s => s.name) } : {}) });
@@ -514,7 +518,7 @@ async function runRemoteTurn({ selection, message, history, onFrame, signal, wor
 }
 
 /** One agent turn for a chat, streamed to the caller as the NDJSON frames the chat already renders. */
-async function runAgentTurn({ res, controller, chatId, body, message, workspaceId }) {
+async function runAgentTurn({ res, controller, chatId, body, message, workspaceId, images = [] }) {
   const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
   const cwd = chatFolders.get(chatId) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
   let choice, instance = null;
@@ -536,7 +540,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
-    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
@@ -550,7 +554,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
 }
 
 async function runTurn({ message, history = [], onFrame, signal, client, workspaceId = null, sessionId = null, remoteModel = null, runtimeModelId = undefined, nativeModelId, images=[], useTools=false, thinking='medium', thinkingBudget=0 }) {
-  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, onFrame, signal, workspaceId });
+  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, images, onFrame, signal, workspaceId });
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){onFrame({type:'error',message:e.message});return {error:e.message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
@@ -1537,6 +1541,19 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, openFile(chatFolders.get(String(body.sessionId ?? '')), body.path, String(body.how ?? 'app'))); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
+  /* Files and pictures dropped or pasted into a chat: multipart, a JSON data address, or raw bytes. A picture comes back with an id the next message names (imageIds). */
+  if (path === '/api/chat/upload' && method === 'POST') {
+    const sid = url.searchParams.get('sessionId') ?? '';
+    if (!sid) return error(res, 400, 'sessionId is required');
+    try { const body = await readRaw(req); return json(res, 200, { files: uploads.accept(sid, { body, contentType: req.headers['content-type'], name: url.searchParams.get('name') }) }); }
+    catch (e) { return error(res, e.code === 'too-big' ? 413 : 400, e.message); }
+  }
+  const uploadGet = /^\/api\/chat\/upload\/([0-9a-f-]{36})$/.exec(path);
+  if (uploadGet && method === 'GET') {
+    const img = uploads.image(uploadGet[1]);
+    if (!img) return error(res, 404, 'That picture is no longer available.');
+    res.writeHead(200, { 'content-type': img.type, 'content-length': img.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(img.bytes); return undefined;
+  }
   if (path === '/api/files/preview' && method === 'GET') {
     const sid = url.searchParams.get('sessionId') ?? '';
     try { return json(res, 200, previewFile(chatFolders.get(sid), url.searchParams.get('path'), sid)); }
@@ -1732,8 +1749,9 @@ async function api(req, res, path, method, url) {
   if ((path === '/api/chat/stream' || path === '/api/plan/start-goal') && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
     if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
-    let images;try{images=validateChatImages(body.images);}catch(e){return error(res,400,e.message);}
-    if(images.length){if(body.remoteModel)return error(res,409,'Choose a local image-reading model before sending attached pictures.');let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
+    let images;try{const named=Array.isArray(body.imageIds)&&body.imageIds.length?uploads.dataUrls(typeof body.sessionId==='string'?body.sessionId:'',body.imageIds):[];images=validateChatImages([...(Array.isArray(body.images)?body.images:[]),...named]);}catch(e){return error(res,400,e.message);}
+    if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);if(!(own&&own.protocol==='openai-chat'&&isPrivateHost(own.baseUrl)))return error(res,409,'Choose a local image-reading model before sending attached pictures.');}
+    else if(images.length){let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
     // The goal bar's Resume has no words of its own: it is the same turn as "/goal resume".
     const message = body.goalAction === 'resume' ? '/goal resume' : String(body.message ?? '').trim();
     if (!message) return error(res, 400, 'message is required');
@@ -1755,13 +1773,12 @@ async function api(req, res, path, method, url) {
     const agentSkip = process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
       : body.agent === false || body.tools === false ? 'This chat runs without the agent.'
       : !chatId ? 'This request did not name a chat.'
-      : images.length ? 'The agent does not take attached pictures yet; this message was sent directly.'
       : !(body.remoteModel || native.hasLive()) ? 'The agent needs a loaded Strata model or an API model.'
       : null;
     if (chatId && !agentSkip) {
       const capability = agent.status();
       if (capability.state !== 'unavailable') {
-        await runAgentTurn({ res, controller, chatId, body, message, workspaceId });
+        await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images });
         res.end();
         return undefined;
       }
