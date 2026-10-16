@@ -336,8 +336,8 @@ test('packaged: the second try is the last one: a second failure is reported wit
     const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
     assert.equal(job.state, 'error');
     assert.equal(f.calls.filter(c => c[0] === 'start').length, 2);
-    assert.match(job.error, /after one automatic second try/);
-    assert.match(job.error, /the first stop was/);
+    assert.doesNotMatch(job.error, /first stop was/, 'the same stop twice is said once, not repeated');
+    assert.match(job.details.join(' '), /Second try/, 'the second try stays in the details');
   } finally { await f.native.close(); f.cleanup(); }
 });
 
