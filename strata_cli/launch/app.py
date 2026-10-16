@@ -236,7 +236,7 @@ class LaunchApp(App):
         screen = self.run_screen
         if screen is not None:
             try:
-                self.call_from_thread(screen.on_event, ev)
+                self.call_from_thread(screen.handle_event, ev)
             except Exception:                                # noqa: BLE001 - the app is closing
                 pass
 

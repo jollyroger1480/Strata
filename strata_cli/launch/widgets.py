@@ -54,7 +54,7 @@ Screen {{ background: {BG}; color: {FG}; }}
 #body {{ height: 1fr; }}
 #explain {{ height: auto; max-height: 4; color: {MUTE}; }}
 #hints {{ height: 1; color: {MUTE}; }}
-#message {{ height: 1; color: {MUTE}; }}
+#message {{ height: auto; max-height: 3; color: {MUTE}; }}
 Menu {{ height: auto; max-height: 100%; }}
 .field {{ height: 3; border: solid {ACCENT}; display: none; }}
 .field.open {{ display: block; }}

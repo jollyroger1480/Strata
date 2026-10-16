@@ -57,8 +57,10 @@ class Base(Screen):
         Binding("down", "move(1)", show=False), Binding("up", "move(-1)", show=False),
         Binding("pagedown", "page(1)", show=False), Binding("pageup", "page(-1)", show=False),
         Binding("enter", "next", "Next", show=False),
+        Binding("home", "edge(0)", show=False), Binding("end", "edge(1)", show=False),
     ]
 
+    AUTO_FOCUS = ""
     step_id = ""
     title_line = "Set up"
     hints = "↑↓ choose   Enter next   Esc back   ? help   q quit"
@@ -159,6 +161,14 @@ class Base(Screen):
             self.on_cursor()
             self.paint()
 
+    def action_edge(self, last: int) -> None:
+        m = self.menu()
+        if m is not None and not self.input_open() and m.items:
+            m.index = len(m.items) - 1 if last else 0
+            m._refresh()
+            self.on_cursor()
+            self.paint()
+
     def action_page(self, step: int) -> None:
         m = self.menu()
         if m is not None:
@@ -170,7 +180,7 @@ class Base(Screen):
         pass
 
     def input_open(self) -> bool:
-        return any(i.has_class("open") for i in self.query(".field"))
+        return any(i.has_class("open") and not i.has_class("always") for i in self.query(".field"))
 
     def action_help(self) -> None:
         self.say(self.help_text)
@@ -385,6 +395,7 @@ class ModelScreen(Base):
                 sel = i
         m = self.query_one(Menu)
         m.columns = self.widths()
+        m.show_header = True
         m.window = max(4, (self.size.height or 30) - 12)
         m.set_items(items, sel if (initial or not m.items) else None)
 
@@ -541,7 +552,7 @@ class FolderScreen(Base):
     def body(self) -> ComposeResult:
         yield Static(Text("Where should the model files be stored?", style=f"bold {ACCENT}"), markup=False)
         yield Static("", id="folderinfo", markup=False)
-        yield Input(id="folderpath", classes="field open")
+        yield Input(id="folderpath", classes="field open always")
 
     def on_mount(self) -> None:
         s = self.ctx.settings
@@ -882,7 +893,7 @@ class AdvancedScreen(Base):
             if self.filter and self.filter.lower() not in r.name.lower() and self.filter.lower() not in r.description.lower():
                 continue
             d, t, y = r.cells()[1:]
-            desc = r.description + ("  [experimental]" if r.experimental else "")
+            desc = ("[experimental] " if r.experimental else "") + r.description
             items.append(Item([r.name, d, t, Cell(y, ACCENT if y != "-" else ""), Cell(desc, WARN if r.experimental else (BAD if not r.known else ""))],
                               key=r.name))
         items.append(Item([Cell("+ Add a setting by name…", ""), "", "", "", Cell("for flags of newer engine versions", MUTE)], key="__add__"))
@@ -1155,12 +1166,13 @@ class AccessScreen(Base):
 
 class SaveScreen(Base):
     step_id = "save"
-    hints = "↑↓ choose   Enter do it   Esc back   ? help"
+    hints = "↑↓ choose   Enter do it   Tab rename   Esc back   ? help"
+    BINDINGS = Base.BINDINGS + [Binding("tab", "rename", show=False)]
     help_text = "Save remembers all your choices under a name so next time you start with one key. Launch downloads what is missing, tunes if you asked, and starts serving."
 
     def body(self) -> ComposeResult:
         yield Static("", id="summary", markup=False)
-        yield Input(id="name", classes="field open")
+        yield Input(id="name", classes="field open always")
         yield Menu(id="menu")
 
     def on_mount(self) -> None:
@@ -1197,8 +1209,14 @@ class SaveScreen(Base):
     def explain(self) -> Text:
         return Text("Press Enter on the first choice to save and start. The first start may download the model and tune; the monitor opens when it is serving.", style=MUTE)
 
-    def action_move(self, step: int) -> None:
-        super().action_move(step)
+    def action_rename(self) -> None:
+        self.query_one("#name", Input).focus()
+        self.say("Type the preset's name and press Enter.")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "name":
+            self.set_focus(None)
+            self.say("")
 
     def action_next(self) -> None:
         name = self.query_one("#name", Input).value.strip() or self.ctx.default_name()
@@ -1237,10 +1255,13 @@ class RunScreen(Base):
         yield Static("", id="stages", markup=False)
         yield Static("", id="tunepanel", markup=False)
 
-    def on_mount(self) -> None:
+    def __init__(self) -> None:
+        super().__init__()
         self.state: dict[str, dict] = {k: {"text": "", "pct": None, "status": "wait"} for k, _ in self.STAGE_WORDS}
         self.failed: str | None = None
         self.tune_info: dict = {}
+
+    def on_mount(self) -> None:
         self.paint()
 
     def head_text(self) -> Text:
@@ -1250,7 +1271,7 @@ class RunScreen(Base):
         out.append(f"   {s.name or ''}", style=MUTE)
         return out
 
-    def on_event(self, ev) -> None:
+    def handle_event(self, ev) -> None:
         if ev.stage == "done":
             return
         st = self.state.get(ev.stage)
