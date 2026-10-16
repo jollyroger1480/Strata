@@ -50,7 +50,7 @@ export const AGENT_PROMPT = [
  * @param {{platform?: string, search?: boolean}} [options]
  * @returns {object} the `config` of the `preset-standard` row
  */
-export function standardPreset({ platform = process.platform, search = false, off = new Set() } = {}) {
+export function standardPreset({ platform = process.platform, search = false, off = new Set(), skillsDir = null } = {}) {
   const windows = platform === 'win32';
   const plugins = [
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
@@ -62,7 +62,8 @@ export function standardPreset({ platform = process.platform, search = false, of
     { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
     { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
-    { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem' },
+    // The skills of the Skills page, written out as folders the Harness scans (and watches: a skill saved in the app is there at once).
+    { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem', ...(skillsDir ? { config: { customSkillDirs: [skillsDir] } } : {}) },
     { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
     { id: 'command-goal', name: '@deepseek-ai/dsh-command-goal' },
     { id: 'tool-goal', name: '@deepseek-ai/dsh-tool-goal' },

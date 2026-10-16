@@ -137,7 +137,7 @@ export function outputBudget(context, maxOutput = null) {
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -226,7 +226,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
-    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn }) },
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir }) },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },
