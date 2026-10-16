@@ -151,6 +151,9 @@ export function outputBudget(context, maxOutput = null) {
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
+/** What a local model, or an OpenAI-style server on this network, takes for the thinking level (see the comment where a local route is built). */
+const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } };
+
 export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null }) {
   const providers = {};
   const env = {};
@@ -189,7 +192,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       apiKeyEnv: keyEnv,
       // The Strata server reads the thinking level from `chat_template_kwargs` (enable_thinking, reasoning_effort) or from a top-level
       // reasoning_effort; a top-level `enable_thinking` (pi-ai's `qwen` format) is ignored, so the model went on thinking with the menu on Off.
-      compat: { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } },
+      compat: THINKING_COMPAT,
       models: [{
         id: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, maxTokens: localOutputBudget(context),
         input: inst.vision ? ['text', 'image'] : ['text'],
@@ -214,19 +217,24 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     else if (keyless) env[keyEnv] = 'not-needed';
     let baseURL = conn.baseUrl;
     if (protocol === 'anthropic-messages') baseURL = baseURL.replace(/\/v1\/?$/, '');
+    // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
+    // without it the Reasoning menu did nothing for a connection to another Strata machine.
+    const ownServer = protocol === 'openai-completions' && isPrivateHost(baseURL);
     providers[route] = {
       displayName: conn.name,
       api: protocol,
       baseURL,
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
+      ...(ownServer ? { compat: THINKING_COMPAT } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
         input: ['text'],
+        ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
-    const shaped = protocol === 'openai-completions' && isPrivateHost(baseURL) ? addShaped(route, providers[route], baseURL) : null;
+    const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;
     for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
     for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });

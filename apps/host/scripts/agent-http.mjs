@@ -196,7 +196,7 @@ ${filler(n)}`}, { quiet: true });
   // The same question at each reasoning level (and optional thinking budget): what really changes is the thinking the model did.
   const [question = 'What is 17 times 23, and is the result divisible by 3? Explain briefly.', budget = '0'] = rest;
   const rows = [];
-  for (const level of ['Off', 'Low', 'Medium', 'High', 'Max']) {
+  for (const level of (process.env.LEVELS ? process.env.LEVELS.split(',') : ['Off', 'Low', 'Medium', 'High', 'Max'])) {
     const t = Date.now();
     const frames = await stream({ sessionId: `ef-${level}-${Date.now()}`, message: question, mode: 'bypass', remoteModel: await model(), thinking: level, thinkingBudget: Number(budget), agent: process.env.PLAIN ? false : undefined }, { quiet: true });
     const reasoning = frames.filter(x => x.type === 'reasoning').map(x => x.text ?? '').join('').length;

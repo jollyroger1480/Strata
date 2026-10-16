@@ -49,6 +49,11 @@ test('the profile adds a response-settings copy of each shapeable route (local, 
   assert.deepEqual(Object.keys(profile.shapeTargets).sort(), [...Object.values(local.shaped), ...Object.values(profile.routes.find(r => r.connectionId === 'lan').shaped)].sort());
   assert.equal(profile.shapeTargets['strata-local~s0'], 'http://127.0.0.1:9001');
   assert.equal(profile.routes.find(r => r.connectionId === 'cloud').shaped, undefined);
+  const doc = JSON.parse(profile.patch.slice(profile.patch.indexOf('[')));
+  const providers = doc.find(e => e.id === 'llm-pi-ai').config.providers;
+  assert.equal(providers['api-lan'].compat.thinkingFormat, 'chat-template', 'a model server on this network gets the thinking vocabulary of a local model');
+  assert.equal(providers['api-lan'].models[0].reasoning, true);
+  assert.equal(providers['api-cloud'].compat, undefined, 'a cloud service does not');
   assert.match(profile.patch, /"baseURL": "http:\/\/127\.0\.0\.1:8791\/api\/internal\/agent-llm\/strata-local~s8192\/v1"/);
   assert.match(profile.patch, /"x-strata-budget": "8192"/);
   assert.match(profile.patch, /"provider": "strata-local~s8192"/, 'compaction keeps its timing on the copy too');
