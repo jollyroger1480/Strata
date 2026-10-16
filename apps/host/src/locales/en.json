@@ -3121,5 +3121,9 @@
   "s3125": "Download picture-reading files",
   "s3126": "Two versions to compare",
   "s3127": "A and B each went all the way through. Keep the one you like.",
-  "s3128": "Time-skip works on a loaded model. Choose one on the Models tab, then try again."
+  "s3128": "Time-skip works on a loaded model. Choose one on the Models tab, then try again.",
+  "s3129": "This was a sample run made while the app could not reach its host.",
+  "s3130": "Still starting up",
+  "s3131": "Time-skip needs the app to finish starting. Try again in a moment.",
+  "s3132": "Working on a copy of your files."
 }

@@ -1520,6 +1520,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const demoPrompt = resume || planStart ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
     if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else if (state.connection === 'live' && demoPrompt) pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
+    else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
     else startTimeSkipDemo(demoPrompt);
     return;
   }

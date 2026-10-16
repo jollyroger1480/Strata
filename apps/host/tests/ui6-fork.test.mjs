@@ -37,3 +37,16 @@ test('the folder answer: a path gives a name; nothing gives no folder', () => {
   assert.equal(F.readFolder(null), null);
   assert.equal(F.readFolder({ path: '' }), null);
 });
+
+test('the sample time-skip copy appears only when the host cannot be reached at all', async () => {
+  const { readFileSync } = await import('node:fs');
+  const store = readFileSync(src('lib/store.ts'), 'utf8');
+  const chat = readFileSync(src('screens/Chat.tsx'), 'utf8');
+  const panel = readFileSync(src('components/TimeSkipPanel.tsx'), 'utf8');
+  const route = store.slice(store.indexOf('const demoPrompt = '), store.indexOf('const imageTarget'));
+  assert.match(route, /connection === 'live'/);
+  assert.match(route, /connection === 'connecting'/);
+  assert.ok(route.indexOf('startTimeSkipDemo') > route.indexOf("'connecting'"), 'the sample run is the last resort, after live and connecting');
+  assert.match(chat, /hostLive \? tr\('This was a sample run/);
+  assert.match(panel, /run\.job \? 'Working on a copy of your files\.'/);
+});

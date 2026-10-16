@@ -3121,5 +3121,9 @@
   "s3125": "Baixar os arquivos de leitura de imagens",
   "s3126": "Duas versões para comparar",
   "s3127": "A e B foram até o fim. Mantenha a que preferir.",
-  "s3128": "O Time-skip funciona com um modelo carregado. Escolha um na aba Modelos e tente de novo."
+  "s3128": "O Time-skip funciona com um modelo carregado. Escolha um na aba Modelos e tente de novo.",
+  "s3129": "Esta foi uma execução de exemplo feita quando o app não conseguia alcançar o host.",
+  "s3130": "Ainda iniciando",
+  "s3131": "O Time-skip precisa que o app termine de iniciar. Tente de novo em instantes.",
+  "s3132": "Trabalhando em uma cópia dos seus arquivos."
 }
