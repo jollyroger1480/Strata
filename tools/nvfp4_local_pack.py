@@ -170,11 +170,13 @@ def _orig_name(ck: Checkpoint, name: str):
     return None
 
 
-def overlay(tensors: dict, ck: Checkpoint, stats: dict) -> dict:
+def overlay(tensors: dict, ck: Checkpoint, stats: dict, dense_only: bool = False) -> dict:
     """Replace the CSF stream pairs by plain `weight_scale` tensors, the MXFP8 weights by BF16, and drop what
     the PLE writer and the MTP packer own."""
     import torch
     out = dict(tensors)
+    if dense_only:                                  # the GGUF the engine reads the dense weights from: no experts in it
+        out = {k: v for k, v in out.items() if ".mlp.experts." not in k}
     for name in list(out):
         if name not in out:
             continue
@@ -211,7 +213,7 @@ def overlay(tensors: dict, ck: Checkpoint, stats: dict) -> dict:
     return out
 
 
-def install(ck: Checkpoint, stats: dict):
+def install(ck: Checkpoint, stats: dict, dense_only: bool = False):
     """Import the converter, give it nvfp4_convert's type policy, and hook the tensor index."""
     import nvfp4_convert as base
     base.install_policy()
@@ -220,7 +222,7 @@ def install(ck: Checkpoint, stats: dict):
     orig_index = ModelBase.index_tensors
 
     def index_tensors(self, remote_hf_model_id=None):
-        return overlay(orig_index(self, remote_hf_model_id), ck, stats)
+        return overlay(orig_index(self, remote_hf_model_id), ck, stats, dense_only)
     ModelBase.index_tensors = index_tensors
 
     # NVIDIA's repo keeps the shards in a `tensors/` folder that its index names; the converter only lists the top level
@@ -251,7 +253,7 @@ def cmd_convert(a) -> int:
     model = pathlib.Path(a.model)
     ck = Checkpoint(model)
     stats: dict = {}
-    base = install(ck, stats)
+    base = install(ck, stats, a.dense_only)
     import convert_hf_to_gguf as C
     out = pathlib.Path(a.outfile)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -410,6 +412,43 @@ def cmd_mtp(a) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------------------ the slim GGUF
+def cmd_slim(a) -> int:
+    """Copy a converted GGUF without its routed experts (and their .scale / .input_scale tensors): the file the engine
+    reads the dense weights from (--native / --native-dense-gguf), ~9 GB instead of ~74 GB, once experts.bin is cut."""
+    from _paths import add_gguf_py
+    add_gguf_py()
+    import gguf
+    from gguf import GGUFReader, GGUFWriter, GGUFValueType as VT
+    rd = GGUFReader(a.gguf)
+    arch = rd.fields["general.architecture"].contents()
+    w = GGUFWriter(a.out, arch)
+    for key, f in rd.fields.items():
+        if key.startswith("GGUF.") or key == "general.architecture":
+            continue
+        vt = f.types[0]
+        w.add_key_value(key, f.contents(), vt, sub_type=f.types[-1] if vt == VT.ARRAY else None)
+    kept = skipped = 0
+    for t in rd.tensors:
+        if "_exps." in t.name:
+            skipped += 1
+            continue
+        data = np.asarray(t.data)
+        qt = t.tensor_type
+        if qt in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
+            w.add_tensor(t.name, data)
+        else:                                   # raw bytes with the type: the quantized blocks (BF16 rides as uint16)
+            raw = np.ascontiguousarray(data).view(np.uint8)
+            w.add_tensor(t.name, raw, raw_dtype=qt, raw_shape=[int(x) for x in raw.shape])
+        kept += 1
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    print("slim: %d tensors kept, %d expert tensors left out -> %s" % (kept, skipped, a.out))
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------------ verifying
 def cmd_verify(a) -> int:
     """Experts: decode the checkpoint (CSF + ModelOpt definition) and compare with gguf-py's dequantization of the
@@ -451,18 +490,23 @@ def main() -> int:
     c.add_argument("--model", required=True)
     c.add_argument("--outfile", required=True)
     c.add_argument("--dry-run", action="store_true")
+    c.add_argument("--dense-only", action="store_true",
+                   help="leave the routed experts out: the GGUF that --native-dense-gguf reads (~9 GB) beside an experts.bin")
     p = sub.add_parser("ple")
     p.add_argument("--model", required=True)
     p.add_argument("--out", required=True)
     m = sub.add_parser("mtp")
     m.add_argument("--model", required=True)
     m.add_argument("--out", required=True)
+    sl = sub.add_parser("slim")
+    sl.add_argument("--gguf", required=True)
+    sl.add_argument("--out", required=True)
     v = sub.add_parser("verify")
     v.add_argument("--model", required=True)
     v.add_argument("--gguf", required=True)
     v.add_argument("--experts", type=int, default=4)
     a = ap.parse_args()
-    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "verify": cmd_verify}[a.cmd](a)
+    return {"convert": cmd_convert, "ple": cmd_ple, "mtp": cmd_mtp, "slim": cmd_slim, "verify": cmd_verify}[a.cmd](a)
 
 
 if __name__ == "__main__":
