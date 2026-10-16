@@ -108,7 +108,7 @@ export function parsePoints(objective) {
 /** The goal the Harness runs for step `index` (0-based): one step, with the aim and the steps around it named. */
 export function stepObjective(plan, index) {
   const n = plan.steps.length; const s = plan.steps[index];
-  const done = plan.steps.slice(0, index).map((x, i) => `${i + 1}. ${x.text}`).join('; ');
+  const done = plan.steps.slice(0, index).map((x, i) => `${i + 1}. ${x.text}${x.summary ? ' (' + String(x.summary).slice(0, 100) + ')' : ''}`).join('; ');
   return [
     `Overall aim: ${plan.title}.`,
     `You are on step ${index + 1} of ${n}: ${s.text}${s.detail ? ` (${s.detail})` : ''}.`,

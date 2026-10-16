@@ -576,6 +576,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       await deliverQueued(at + 1);
       if (turn.stopping || turn.finished) return true;
       if (next < 0) return false;
+      // One step per turn (Time-skip): the plan stays open for the next step, which starts in a session of its own so the conversation never grows across steps.
+      if (run.once) { plans.update(chatId, p => { p.state = 'approved'; }); emit(publishPlan('step', plans.get(chatId))); return false; }
       await startStep(plans.get(chatId), next);
       void announceGoal();
       return true;
@@ -673,7 +675,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (planRun) {
           const plan = plans.get(chatId);
           if (!plan || plan.id !== planRun.planId) throw new AgentUnavailable('That plan is no longer there. Ask for a new one with /plan.', 'plan-gone');
-          turn.plan = { id: plan.id };
+          turn.plan = { id: plan.id, once: !!planRun.once };
           const at = currentStep(plan);
           if (at < 0) throw new AgentUnavailable('Every step of this plan is already done.', 'plan-done');
           if (goal.action === 'resume' && plan.goalStarted) {
@@ -936,7 +938,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     if (tools()?.off?.has('goals')) return sayOnce(options, 'Goals are turned off. You can turn them back on in Settings, Tools.');
     plans.update(chatId, p => { p.state = 'approved'; });
     onPlan(chatId, 'approved', planView(plans.get(chatId)));
-    return runTurn({ ...options, goal: { action: 'create', objective: plan.title }, planRun: { planId: plan.id } });
+    return runTurn({ ...options, goal: { action: 'create', objective: plan.title }, planRun: { planId: plan.id, once: options.once === true } });
+  }
+
+  /** Forget the chat's agent session (not its plan): the next turn starts a fresh one in the same folder. */
+  function resetSession(chatId) {
+    if (chats.get(chatId)?.turn || chats.get(chatId)?.starting) throw new AgentUnavailable('This chat is still working.', 'turn-active');
+    delete sessionMap[chatId]; persist();
   }
 
   // -- messages typed while a goal runs ----------------------------------------------------------------------
@@ -1075,7 +1083,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
