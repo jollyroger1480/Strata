@@ -77,7 +77,7 @@ test('a stream without usage never presents chunks as tokens', async () => {
   } finally { await close(fixture); }
 });
 
-test('Serving cancellation stops active and queued demo requests; test keys enforce access', { timeout: 15000 }, async () => {
+test('Serving cancellation stops active and queued demo requests; test keys enforce access', { timeout: 90000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'strata-request-host-'));
   await mkdir(join(home, 'data'));
   const id = 'qwen38-q4_k_m';
@@ -90,7 +90,10 @@ test('Serving cancellation stops active and queued demo requests; test keys enfo
     return { status: res.status, data: await res.json() };
   };
   try {
-    for (let i = 0; i < 80; i++) { try { if ((await call('/api/health')).status === 200) break; } catch {} await wait(50); }
+    // A host started on a loaded computer can take many seconds to listen; wait for it, and say so if it never does (a 4 s wait made this test flaky).
+    let up = false;
+    for (let i = 0; i < 600 && !up; i++) { try { up = (await call('/api/health')).status === 200; } catch {} if (!up) await wait(50); }
+    assert.ok(up, 'the host did not start listening within 30 s');
     const stream = () => fetch(base + '/api/chat/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Explain this test in detail' }) }).then(r => r.text());
     const first = stream(); await wait(100); const second = stream(); await wait(100);
     let rows = (await call('/api/serving')).data.requests;
