@@ -291,7 +291,7 @@ def interleave_rows(codes: np.ndarray, scales: np.ndarray) -> np.ndarray:
 
 def cmd_ple(a) -> int:
     model, out = pathlib.Path(a.model), pathlib.Path(a.out)
-    ck = Checkpoint(model)
+    ck = Checkpoint(model, partial_ok=True)           # the table is in six of the shards; a folder with only those works
     shards = {}
     for name in ck.meta:
         if ".ngram_embedding.shard_" in name and name.endswith(".weight"):
