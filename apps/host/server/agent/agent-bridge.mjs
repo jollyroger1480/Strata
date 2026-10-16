@@ -941,6 +941,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     return runTurn({ ...options, goal: { action: 'create', objective: plan.title }, planRun: { planId: plan.id, once: options.once === true } });
   }
 
+  /** A paused plan becomes open again (a step that did not finish is tried again in a fresh session). */
+  function reopenPlan(chatId) { const p = plans.get(chatId); if (p && p.state === 'paused') { plans.update(chatId, x => { x.state = 'approved'; }); onPlan(chatId, 'approved', planView(plans.get(chatId))); } }
+
   /** Forget the chat's agent session (not its plan): the next turn starts a fresh one in the same folder. */
   function resetSession(chatId) {
     if (chats.get(chatId)?.turn || chats.get(chatId)?.starting) throw new AgentUnavailable('This chat is still working.', 'turn-active');
@@ -1083,7 +1086,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

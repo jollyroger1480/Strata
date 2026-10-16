@@ -147,12 +147,19 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
         r.b.plan = bp.steps.map(s => ({ id: s.id, text: s.text }));
         r.b.state = 'running'; r.b.total = bp.steps.length; announce(r);
         for (let at = 0; at < bp.steps.length && !stopped(); at++) {
+         let finished = false;
+         for (let attempt = 0; attempt < 2 && !finished && !stopped(); attempt++) {
+          if (attempt) { agent.reopenPlan(bChat); say(r, 'b-retry', `B, trying step ${at + 1} again…`, { step: at + 1 }); }
           agent.resetSession(bChat);
           await agent.planGoal({ chatId: bChat, planId: bp.id, once: true, workspacePath: r.b.root, mode: 'bypass', choice, thinking,
             onFrame: f => {
               if (f.type === 'error') r.b.note = String(f.message ?? '').slice(0, 240);
+              if (f.type === 'goal' && f.goal?.blocked) r.b.note = String(f.goal.blocked).slice(0, 240);
               if (f.type === 'plan-step') { r.b.step = f.index; r.b.total = f.total; r.b.text = f.text; r.b.line = f.line; say(r, 'b-step', `B, ${f.line}`, { step: f.index, steps: f.total }); }
             } });
+          if (stopped()) return;
+          finished = agent.planState(bChat)?.steps[at]?.state === 'done';
+         }
           if (agent.planState(bChat)?.steps[at]?.state !== 'done') break;
         }
         const end = agent.planState(bChat);
@@ -180,6 +187,10 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       // Each step is its own turn in its own agent session (the folder carries the work from step to step): a small model window never fills up
       // across a long plan. The fork happens between two steps, so B gets exactly the files of the finished steps.
       for (let at = 0; at < plan.steps.length && !stopped(); at++) {
+       let finished = false;
+       // A step that does not finish (the model stopped, a program never returned) is tried once more in a fresh session before the run gives up.
+       for (let attempt = 0; attempt < 2 && !finished && !stopped(); attempt++) {
+        if (attempt) { agent.reopenPlan(aChat); say(r, 'a-retry', `A, trying step ${at + 1} again…`, { step: at + 1 }); }
         agent.resetSession(aChat);
         await agent.planGoal({ chatId: aChat, planId: plan.id, once: true, workspacePath: r.a.root, mode: 'bypass', choice, thinking,
           onFrame: f => {
@@ -192,6 +203,8 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
             }
           } });
         if (stopped()) return;
+        finished = agent.planState(aChat)?.steps[at]?.state === 'done';
+       }
         const now = agent.planState(aChat);
         if (!now || now.steps[at]?.state !== 'done') break;
         if (r.lever && at + 1 === r.lever.step - 1) { try { forkNow(); } catch (e) { r.b = { ...r.b, state: 'failed', note: 'B could not be prepared, so only A is shown.' }; } }
