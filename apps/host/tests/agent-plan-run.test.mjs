@@ -92,8 +92,11 @@ test('a message typed while a goal without points runs is queued, can be taken b
   assert.throws(() => r.bridge.queueMessage({ chatId: 'q1', text: 'hello' }), /No goal is running/);
   const out = [];
   const run = r.bridge.runTurn({ ...r.base('q1', f => out.push(f)), goal: { action: 'create', objective: 'keep going', maxRounds: 50 } });
-  await wait(3000);
-  const a = r.bridge.queueMessage({ chatId: 'q1', text: 'first thing' });
+  // the goal turn may take a while to start on a busy machine: queue as soon as it runs
+  let a = null;
+  for (let i = 0; i < 150 && !a; i++) { try { a = r.bridge.queueMessage({ chatId: 'q1', text: 'first thing' }); } catch { await wait(100); } }
+  assert.ok(a, 'the goal was running');
+  await wait(500);
   const b = r.bridge.queueMessage({ chatId: 'q1', text: 'second thing' });
   assert.equal(a.message.deliverAt, 'end'); assert.deepEqual(b.queue.map(m => m.text), ['first thing', 'second thing']);
   const back = r.bridge.cancelQueued({ chatId: 'q1', id: b.message.id });
@@ -131,4 +134,24 @@ test('Stop in the middle of a plan pauses it with the finished steps kept; Resum
   await wait(1000);
   await r.bridge.stop('p4'); await second;
   assert.equal(r.bridge.planState('p4').state, 'paused');
+});
+
+test('/research: gathering is not shown, a run that opened no pages is sent back once, and the answer is written in a second step with its sources listed', { skip }, async (t) => {
+  const r = await rig(t);
+  const out = [];
+  await r.bridge.researchCommand({ ...r.base('rs1', f => out.push(f)), line: 'SCRIPT:echo Fact one [1]. https://a.example/x' });
+  const shown = words(out);
+  assert.equal(shown.split('Fact one').length - 1, 1, 'only the final answer is shown, not the notes of the first two replies: ' + JSON.stringify(shown));
+  const asked = r.worker.requests.filter(q => q.raw.includes('Research task:') || q.raw.includes('You have not opened enough pages') || q.raw.includes('Now write the final answer'));
+  assert.ok(asked.length >= 3, 'gather, nudge (no pages were opened), write');
+  const last = r.worker.requests.at(-1).raw;
+  assert.ok(last.includes('Now write the final answer to the research task') && last.includes('## Summary'), 'the last request carries the writing prompt');
+  const research = out.find(f => f.type === 'research');
+  assert.deepEqual(research.sources, [{ n: 1, title: 'a.example', url: 'https://a.example/x' }]);
+  assert.ok(out.findIndex(f => f.type === 'research') < out.findIndex(f => f.type === 'done'));
+  assert.equal(out.at(-1).type, 'done');
+  // without a topic, or with search turned off, nothing runs
+  const help = [];
+  await r.bridge.researchCommand({ ...r.base('rs2', f => help.push(f)), line: '' });
+  assert.match(words(help), /Type \/research followed by/);
 });

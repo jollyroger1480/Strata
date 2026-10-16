@@ -44,3 +44,38 @@ test('a picture is served only from inside the run, only as a picture', () => {
     assert.equal(imageTypeOf('a/b/C.JPG'), 'image/jpeg'); assert.equal(imageTypeOf('a.txt'), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the page that was made comes first; a browser profile and other housekeeping come last, without their contents', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-ts-rank-'));
+  try {
+    const base = join(dir, 'base'), cand = join(dir, 'cand');
+    for (const root of [base, cand]) { mkdirSync(join(root, '.chrome-profile', 'Default', 'Cache'), { recursive: true }); mkdirSync(join(root, 'notes'), { recursive: true }); }
+    for (let i = 0; i < 12; i++) { writeFileSync(join(base, '.chrome-profile', 'Default', 'Cache', 'f' + i), 'a' + i); writeFileSync(join(cand, '.chrome-profile', 'Default', 'Cache', 'f' + i), 'b' + i); }
+    writeFileSync(join(cand, 'voxel-pagoda.html'), '<canvas></canvas>');
+    writeFileSync(join(base, 'notes', 'a.md'), 'old'); writeFileSync(join(cand, 'notes', 'a.md'), 'new');
+    const found = diffRun({ checkpoints: [{ id: 'cp1-baseline', label: 'baseline', path: base }], selected_checkpoint: 'cp1-baseline', attempts: [{ index: 1, path: cand }] });
+    assert.deepEqual(found.files.slice(0, 2).map(f => f.path), ['voxel-pagoda.html', 'notes/a.md'], 'the page first, then other readable work');
+    assert.equal(found.files[0].updated, '<canvas></canvas>');
+    const noise = found.files.filter(f => f.noise);
+    assert.equal(noise.length, 5, 'only a few housekeeping files are listed'); assert.ok(noise.every(f => f.unreadable && f.original === undefined));
+    assert.equal(found.more, 7, 'the rest is counted, not listed');
+    assert.ok(found.files.findIndex(f => f.noise) > 1, 'housekeeping is last');
+    rmSync(join(cand, 'voxel-pagoda.html')); writeFileSync(join(cand, 'notes', 'a.md'), 'old');
+    const onlyNoise = diffRun({ checkpoints: [{ id: 'cp1-baseline', label: 'baseline', path: base }], selected_checkpoint: 'cp1-baseline', attempts: [{ index: 1, path: cand }] });
+    assert.deepEqual(onlyNoise.files, [], 'when only housekeeping changed nothing is shown as changed'); assert.equal(onlyNoise.housekeeping, 12);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a big file that did not change is not listed as changed; one that did is', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-ts-big-'));
+  try {
+    const base = join(dir, 'base'), cand = join(dir, 'cand'); mkdirSync(base); mkdirSync(cand);
+    const big = Buffer.alloc(400 * 1024, 7);
+    writeFileSync(join(base, 'archive.bin'), big); writeFileSync(join(cand, 'archive.bin'), big);
+    writeFileSync(join(base, 'data.json'), Buffer.alloc(300 * 1024, 65)); writeFileSync(join(cand, 'data.json'), Buffer.alloc(300 * 1024, 66));
+    writeFileSync(join(cand, 'page.html'), '<p>x</p>');
+    const found = diffRun({ checkpoints: [{ id: 'cp1-baseline', label: 'baseline', path: base }], selected_checkpoint: 'cp1-baseline', attempts: [{ index: 1, path: cand }] });
+    assert.deepEqual(found.files.map(f => f.path), ['page.html', 'data.json'], 'the untouched big file is gone from the list; the changed one is last (too big to show)');
+    assert.equal(found.files[1].unreadable, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

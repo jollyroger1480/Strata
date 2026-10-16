@@ -36,6 +36,7 @@ export function planPrompt(task) {
   return [
     'Make a plan for the request below. Do not change anything: you may only look (read files, list folders, search).',
     'When you have looked enough, end your reply with the plan as a numbered list: one short line per step, in the order they should be done.',
+    'Put a short heading line right before the list, like "## Pagoda page" (two to five words that name the plan).',
     'You may add the reason after a dash. Use 3 to 8 steps. Write nothing after the list.',
     '',
     `Request: ${task}`,
@@ -131,6 +132,24 @@ export function firstSentence(text, max = 140) {
   return clip(m ? m[1] : s, max);
 }
 
+/**
+ * The short summary of a finished step: what it changed (from the tool cards: "Wrote pagoda.html, Changed style.css"), else the first
+ * sentence of its closing words when that reads as a result. A sentence about what is NOT done, or about later steps, is never a summary.
+ */
+export function stepSummary(cards, closing) {
+  const done = [];
+  for (const c of cards ?? []) {
+    const verb = /^(Wrote|Changed|Created|Edited|Deleted|Removed|Moved|Renamed)\b/.exec(String(c?.verb ?? ''))?.[1];
+    const target = String(c?.target ?? '').split(/[\\/]/).filter(Boolean).at(-1);
+    if (!verb || !target) continue;
+    const line = verb + ' ' + clip(target, 40);
+    if (!done.includes(line)) done.push(line);
+  }
+  if (done.length) return clip(done.slice(0, 3).join(', ') + (done.length > 3 ? ' and more' : ''), 140);
+  const s = firstSentence(closing);
+  return s && !/not done|not yet|remaining|handled separately|next steps?|later steps?|still (?:need|to)|todo/i.test(s) ? s : null;
+}
+
 /** The words a person sees for the plan, as one message the model can carry out (the plain Approve path). */
 export function planAsPrompt(plan) {
   return ['Carry out this plan, step by step, and tell me briefly when each step is done.', '', plan.title ? `Plan: ${plan.title}` : '', ...plan.steps.map((s, i) => `${i + 1}. ${s.text}${s.detail ? ` (${s.detail})` : ''}`)].filter((l, i) => l !== '' || i === 1).join('\n');
@@ -187,3 +206,68 @@ export class PlanStore {
 
 /** What the page gets: a copy with no host-only fields. */
 export const planView = plan => (plan ? JSON.parse(JSON.stringify(plan)) : null);
+
+// ---- /research ------------------------------------------------------------------------------------------------------------------
+
+/** The first research prompt: find and read pages, take notes. What the assistant writes here is not shown; the answer is written in a second step. */
+export function researchPrompt(topic) {
+  return [
+    `Research task: ${topic}`,
+    '',
+    'Do these steps in order. Do not skip a step.',
+    '1. Call web_search to find pages about the task.',
+    '2. Call web_fetch to open at least two of the pages you found, and read them. Do not rely on the search results alone.',
+    '3. When you have read them, reply with short notes: the facts you found, each with the web address of the page it came from.',
+  ].join('\n');
+}
+
+/** Sent when the assistant answered without opening pages. */
+export const RESEARCH_NUDGE = 'You have not opened enough pages yet. Call web_fetch now on at least two of the pages from your search, read them, then reply with short notes and the web address of each page.';
+
+/** The second research prompt: write the answer in the fixed shape. */
+export function researchWritePrompt(topic) {
+  return [
+    `Now write the final answer to the research task: ${topic}`,
+    'Use only what you read on the pages. Do not call any tool. Start your reply with the line "## Summary" and use exactly these three headings:',
+    '## Summary',
+    'Three to five sentences, in plain words. If the sources disagree or something could not be found, say so.',
+    '## Key findings',
+    '- One finding per line, each ending with its source number in square brackets, like [1].',
+    '## Sources',
+    '1. Page title - web address',
+    '2. Page title - web address',
+    'List only pages you opened.',
+  ].join('\n');
+}
+
+/** The numbered sources at the end of a research answer: [{ n, title, url }]. Empty when there are none. */
+export function parseSources(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n');
+  const at = lines.map(l => /^\s{0,3}#{1,6}\s*sources\b/i.test(l) || /^\s*\*{0,2}sources\*{0,2}:?\s*$/i.test(l)).lastIndexOf(true);
+  if (at < 0) return linkSources(text);
+  const out = [];
+  for (const line of lines.slice(at + 1)) {
+    if (/^\s{0,3}#{1,6}\s/.test(line)) break;
+    const url = /(https?:\/\/[^\s)>\]"']+)/.exec(line)?.[1]?.replace(/[.,;]+$/, '');
+    if (!url) continue;
+    const md = /\[([^\]]+)\]\(https?:\/\//.exec(line);
+    const before = line.slice(0, line.indexOf(url)).replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/[\s\-–—:(<[]+$/, '').replace(/\*\*|`/g, '').trim();
+    const title = clean(md?.[1] ?? before) || (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    if (!out.some(s => s.url === url)) out.push({ n: out.length + 1, title: clip(title, 120), url });
+  }
+  return out.slice(0, 20);
+}
+
+/** No Sources section: the pages the answer links to, in the order they appear, so the page can still list where it came from. */
+function linkSources(text) {
+  const out = [];
+  const re = /\[([^\]]{1,160})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)>\]"']+)/g;
+  let m;
+  while ((m = re.exec(String(text ?? ''))) && out.length < 8) {
+    const url = (m[2] ?? m[3]).replace(/[.,;]+$/, '');
+    if (out.some(x => x.url === url)) continue;
+    let host = url; try { host = new URL(url).hostname; } catch { /* keep the address */ }
+    out.push({ n: out.length + 1, title: clip(clean(m[1] ?? '') || host, 120), url });
+  }
+  return out;
+}

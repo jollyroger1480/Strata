@@ -20,6 +20,7 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { standardPreset } from './preset.mjs';
+import { BUDGETS, isPrivateHost } from './llm-shape.mjs';
 import { DDG_PROVIDER_ID } from '../web-search-ddg.mjs';
 
 const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'openai-responses', anthropic: 'anthropic-messages' };
@@ -104,7 +105,20 @@ function fingerprint(provider, secret) {
  */
 export function localOutputBudget(context) {
   const c = Number.isFinite(context) && context > 0 ? context : 32768;
-  return Math.max(8192, c - 4096);
+  // Half the window, at most 32K: still far more than the old 8192 that cut big answers off, and it leaves the other half for the
+  // conversation. The Harness's automatic compaction reads this number as the room the reply reserves: with nearly the whole window
+  // reserved it had no room left to measure pressure in, and a long chat or a long helper task never compacted.
+  return Math.max(4096, Math.min(32768, Math.floor(c / 2)));
+}
+
+/**
+ * When the Harness's automatic compaction starts condensing old history, for one model: its own default keeps 64K tokens of headroom,
+ * which on a local window of 32K to 128K leaves no room at all (it then reports a configuration error once and never compacts). A quarter
+ * of what the window has left after the reply's room works from 16K up to the largest windows. Compaction then starts at about 70 percent.
+ */
+export function compactionHeadroom(context, outputBudget) {
+  const room = Math.max(0, (Number.isFinite(context) && context > 0 ? context : 32768) - outputBudget);
+  return Math.max(512, Math.min(65536, Math.floor(room * 0.25)));
 }
 
 /**
@@ -137,13 +151,32 @@ export function outputBudget(context, maxOutput = null) {
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null }) {
+/** What a local model, or an OpenAI-style server on this network, takes for the thinking level (see the comment where a local route is built). */
+const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } };
+
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null }) {
   const providers = {};
   const env = {};
   const routes = [];
   const mcpEnv = {};
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
+  /** Per-model compaction timing (see compactionHeadroom). */
+  const compaction = [];
+  /** Routes the person's Response settings can reach: a copy of the provider whose address is this host's forwarding endpoint (see llm-shape.mjs). */
+  const shapeTargets = {};
+  function addShaped(route, def, realBase) {
+    if (!proxyBase) return null;
+    const keys = {};
+    for (const budget of [0, ...BUDGETS]) {
+      const key = `${route}~s${budget}`;
+      providers[key] = { ...def, displayName: `${def.displayName} (with your response settings)`, baseURL: `${proxyBase}/${key}/v1`, ...(budget ? { headers: { ...(def.headers ?? {}), 'x-strata-budget': String(budget) } } : {}) };
+      shapeTargets[key] = realBase;
+      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out) }); }
+      keys[budget] = key;
+    }
+    return keys;
+  }
 
   local.forEach((inst, index) => {
     const route = index === 0 ? 'strata-local' : `strata-local-${slug(inst.id)}`;
@@ -159,15 +192,17 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       apiKeyEnv: keyEnv,
       // The Strata server reads the thinking level from `chat_template_kwargs` (enable_thinking, reasoning_effort) or from a top-level
       // reasoning_effort; a top-level `enable_thinking` (pi-ai's `qwen` format) is ignored, so the model went on thinking with the menu on Off.
-      compat: { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } },
+      compat: THINKING_COMPAT,
       models: [{
         id: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, maxTokens: localOutputBudget(context),
         input: inst.vision ? ['text', 'image'] : ['text'],
         reasoning: true, reasoningEfforts: LOCAL_EFFORTS,
       }],
     };
+    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
-    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context });
+    const shaped = addShaped(route, providers[route], inst.baseUrl);
+    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
   });
 
   connections.forEach(conn => {
@@ -182,19 +217,26 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     else if (keyless) env[keyEnv] = 'not-needed';
     let baseURL = conn.baseUrl;
     if (protocol === 'anthropic-messages') baseURL = baseURL.replace(/\/v1\/?$/, '');
+    // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
+    // without it the Reasoning menu did nothing for a connection to another Strata machine.
+    const ownServer = protocol === 'openai-completions' && isPrivateHost(baseURL);
     providers[route] = {
       displayName: conn.name,
       api: protocol,
       baseURL,
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
+      ...(ownServer ? { compat: THINKING_COMPAT } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
         input: ['text'],
+        ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
-    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT });
+    const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;
+    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
+    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 
   const defaultRoute = routes.find(r => r.kind === 'local') ?? null;
@@ -226,7 +268,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
-    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir }) },
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir, compaction }) },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },
@@ -243,7 +285,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   // What the agent is offered (tool groups, web search, tool servers, the person's own tools) decides whether a running agent must be
   // restarted for the next message; the routes are compared separately (a changed context size alone does not restart it).
   const toolsSignature = createHash('sha256').update(JSON.stringify([mcp, ownRows, webRows, entries.find(e => e.id === 'preset-standard'), env.STRATA_SEARCH_KEY ?? '', mcpEnv])).digest('hex').slice(0, 16);
-  return { patch, env, routes, defaultRoute, signature, toolsSignature };
+  return { patch, env, routes, defaultRoute, signature, toolsSignature, shapeTargets };
 }
 
 /** Find the route for a chat's model choice. */
