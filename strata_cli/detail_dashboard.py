@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from strata_cli.client import complete_slots
-from strata_cli.dashboard import (_age, _current_batch_value, _current_sample,
+from strata_cli.dashboard import (set_ascii_boxes, _rounded, _age, _current_batch_value, _current_sample,
                                   _device_role, _gib, _meter, _rate_spark, _spark,
                                   _state, _visual_pair, _visual_panel, MonitorHistory)
 from strata_cli.render import (_device_stage, _queue_wait, _recent_detail,
@@ -549,6 +549,7 @@ def render_detail_dashboard(snapshot: dict, view: str, *, width: int, height: in
                             color: bool = True, theme: str = "dark", selected: int = 0,
                             detail: bool = False, serving_pane: str = "devices") -> Group:
     """Render the five wide pages with the visual Overview's panel language."""
+    set_ascii_boxes(glyphs == "ascii")
     palette = _palette(color, theme)
     state, live = _state(snapshot, connection_state, frozen)
     active = palette["green"] if state == "LIVE" else palette["amber"] if "STALE" in state else palette["red"]
@@ -557,7 +558,7 @@ def render_detail_dashboard(snapshot: dict, view: str, *, width: int, height: in
     heading.append("   ")
     heading.append(state, style=f"bold {active}" if color else "bold")
     heading.append(f"   {safe(connection, max(0, width - 48))}")
-    header = Panel(heading, box=box.ROUNDED, border_style=active if color else "",
+    header = Panel(heading, box=_rounded(), border_style=active if color else "",
                    padding=(0, 1))
     age = _age(snapshot)
     footer = _txt("1 Overview   2 Serving   3 Requests   4 Engine   5 Hardware   6 Logs   "

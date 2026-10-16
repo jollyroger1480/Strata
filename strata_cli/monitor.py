@@ -26,7 +26,8 @@ def choose_glyphs(requested: str, encoding: str | None, term: str | None) -> str
     """Prefer readable Unicode when the output stream can encode its graph cells."""
     if requested != "auto":
         return requested
-    if term == "dumb" or not encoding:
+    from strata_cli.consoleinfo import legacy_console
+    if term == "dumb" or not encoding or legacy_console():
         return "ascii"
     try:
         "▁█░".encode(encoding)
@@ -124,6 +125,8 @@ class MonitorApp(App):
         self.theme_choice = "terminal" if theme == "auto" else theme
         self.color_choice = "never" if os.environ.get("NO_COLOR") is not None else color
         self.glyph_choice = choose_glyphs(glyphs, sys.stdout.encoding, os.environ.get("TERM"))
+        from strata_cli.consoleinfo import legacy_console
+        self.margin = 3 if legacy_console() else 2        # one more column of room in the classic Windows console (its scroll bar)
         self.history = MonitorHistory()
         self.activity_continuity = ActivityContinuity()
         self.displayed_activity_continuity = self.activity_continuity.status()
@@ -168,7 +171,7 @@ class MonitorApp(App):
                             "requests": ((self.displayed.get("work") or {}).get("requests") or [])[:self.requests]}
         if self.view == 0 and size.width >= 78 and size.height >= 23:
             display = render_dashboard(
-                snapshot, width=max(30, size.width - 2), height=max(8, size.height - 2),
+                snapshot, width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                 history=self.history, connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.glyph_choice,
@@ -176,7 +179,7 @@ class MonitorApp(App):
         elif self.view != 0 and size.width >= 128 and size.height >= 36 and self.connection_state not in (
                 "connecting", "disconnected", "auth_required", "incompatible"):
             display = render_detail_dashboard(
-                snapshot, VIEWS[self.view], width=max(30, size.width - 2),
+                snapshot, VIEWS[self.view], width=max(30, size.width - self.margin),
                 height=max(8, size.height - 2), history=self.history,
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
@@ -185,7 +188,7 @@ class MonitorApp(App):
                 selected=self.selected, detail=self.detail, serving_pane=self.serving_pane)
         else:
             content = render_view(snapshot, VIEWS[self.view],
-                                  width=max(30, size.width - 2), height=max(8, size.height - 2),
+                                  width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                                   selected=self.selected, frozen=self.frozen,
                                   filter_text=self.filter_text, glyphs=self.glyph_choice,
                                   connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),

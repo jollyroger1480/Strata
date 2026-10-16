@@ -107,6 +107,16 @@ TOOLS_SUBSET = (
     "gguf_reader.py",
 )
 
+#: What `strata launch` and the desktop app's installer need on top of the read-only terminal: the model catalog and GPU probe
+#: (tools/strata_mcp.py reads setup.py's tables) and the install job, which downloads the model the user chose, prepares it with
+#: the bundled tools and writes a run config naming "component:strata-engine". setup.py runs in its CONTROL mode there
+#: (STRATA_CONTROL_INSTALL=1: no pip, no engine fetch, no compiler). Entry points; their local imports under tools/ come with them.
+#: The same list the app's Control component stages (apps/desktop/scripts/stage-control.py uses these names).
+INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
+INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
+                   "strata_tokenizer", "gguf_reader")
+INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
+
 #: packages the bundle must import after the install (the API server's and the CLI's).
 PROBE = "import jinja2, yaml, regex, psutil, requests, numpy, PIL, tqdm; print('deps ok')"
 
@@ -216,6 +226,44 @@ def drop_build_path_launchers(root: Path, staging: Path, target: str) -> list[st
     return gone
 
 
+def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
+    """The tools/ modules `entry` imports, transitively (static: import and from-import statements)."""
+    import ast
+    seen: set[str] = set()
+    todo = list(entry)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        source = folder / "tools" / f"{name}.py"
+        if not source.exists():
+            raise SystemExit(f"installer tool missing: tools/{name}.py")
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8-sig"))):
+            names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else                 [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
+            todo += [m for m in names if (folder / "tools" / f"{m}.py").exists() and m not in seen]
+    return sorted(seen)
+
+
+def add_installer(folder: Path, source: Path = ROOT) -> dict:
+    """Copy the installer's files from the source tree into a staged terminal folder (after the terminal payload is in place)."""
+    tools = local_imports(source, INSTALLER_TOOLS)
+    copied = []
+    for name in INSTALLER_FILES:
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, folder / name)
+        copied.append(name)
+    (folder / "tools").mkdir(exist_ok=True)
+    for name in tools:
+        shutil.copy2(source / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
+        copied.append(f"tools/{name}.py")
+    if (folder / INSTALLER_DATA).exists():
+        shutil.rmtree(folder / INSTALLER_DATA)
+    shutil.copytree(source / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
+    return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
+            "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
+
+
 def write_archive(root: Path, name: str, out_dir: Path, kind: str) -> Path:
     if kind == "zip":
         path = out_dir / f"{name}.zip"
@@ -240,6 +288,9 @@ def main() -> int:
     ap.add_argument("--skip-deps", action="store_true",
                     help="skip the locked install (layout checks only; the result is NOT distributable)")
     ap.add_argument("--keep-staging", action="store_true")
+    ap.add_argument("--no-installer", action="store_true",
+                    help="leave out setup.py, tools/strata_mcp.py and data/ (the read-only terminal of earlier releases; "
+                         "`strata launch` then cannot list or install models)")
     ap.add_argument("--cache", default=None, help="where the pinned interpreter archive is cached")
     ap.add_argument("--wheelhouse", default=None,
                     help="install the locked wheels from this folder (lock_wheels.py --download) and fetch nothing")
@@ -342,6 +393,7 @@ def main() -> int:
             "launchers_removed": removed,
             "payload": list(PAYLOAD),
             "tools_subset": list(TOOLS_SUBSET),
+            "installer": installer,
             "excludes": ["engine binary", "model weights", "prepared data", "UI", "node_modules"],
             "deps_installed": not args.skip_deps,
         }, indent=2) + "\n", encoding="utf-8")

@@ -1785,8 +1785,14 @@ def _install(a: argparse.Namespace) -> int:
                       "set STRATA_INSTALL_DIR to that folder to run it from here. To update the engine and Control "
                       "from the signed update feed, run `strata update`", 5)
     extra = [x for x in a.setup_args if x != "--"]
+    env = dict(os.environ)
+    if (ROOT / "python").is_dir() and (ROOT / "VERSION").is_file():
+        # the Terminal bundle: its installer only downloads and prepares the model (no pip, no engine fetch, no compiler)
+        env["STRATA_CONTROL_INSTALL"] = "1"
+        from strata_cli.launch.catalog import install_root
+        env.setdefault("STRATA_INSTALL_DIR", str(install_root()))
     return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
-                           cwd=str(installer.parent))
+                           cwd=str(installer.parent), env=env)
 
 
 def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:

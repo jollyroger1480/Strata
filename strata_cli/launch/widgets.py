@@ -23,6 +23,9 @@ ACCENT, WARN, BAD, SEL, RULE = "#34d399", "#f5c56b", "#f28b82", "#1f2a27", "#3a4
 def unicode_ok() -> bool:
     if os.environ.get("TERM") == "dumb":
         return False
+    from strata_cli.consoleinfo import legacy_console
+    if legacy_console():                      # the classic Windows console's font has no arrows, check marks or block glyphs
+        return False
     enc = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
         "›─↑↓•█░".encode(enc)
@@ -35,7 +38,7 @@ class Glyphs:
     def __init__(self, unicode: bool | None = None):
         u = unicode_ok() if unicode is None else unicode
         self.unicode = u
-        self.cursor = "›" if u else ">"
+        self.cursor = "›" if u else ">"      # (U+203A is in Consolas too, but one rule for the whole screen is simpler)
         self.rule = "─" if u else "-"
         self.updown = "↑↓" if u else "Up/Down"
         self.dot = "·" if u else "-"
