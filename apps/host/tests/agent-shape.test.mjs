@@ -56,7 +56,7 @@ test('the profile adds a response-settings copy of each shapeable route (local, 
   assert.equal(providers['api-cloud'].compat, undefined, 'a cloud service does not');
   const small = buildProfile({ local: [], connections: [{ id: 'own', name: 'Own', baseUrl: 'http://127.0.0.1:18798/v1', protocol: 'openai-chat', apiKey: '', models: [{ id: 'm', contextMax: 32768 }] }] });
   const own = JSON.parse(small.patch.slice(small.patch.indexOf('['))).find(e => e.id === 'llm-pi-ai').config.providers['api-own'];
-  assert.equal(own.models[0].maxTokens, 16384, 'a server on this network keeps half its window for the reply so long tasks can be compacted (it was 28672 of 32768: no room, no compaction)');
+  assert.equal(own.models[0].maxTokens, 9830, 'a server on this network keeps 30 percent of its window for the reply so long tasks can be compacted (it was 28672 of 32768: no room, no compaction)');
   assert.match(profile.patch, /"baseURL": "http:\/\/127\.0\.0\.1:8791\/api\/internal\/agent-llm\/strata-local~s8192\/v1"/);
   assert.match(profile.patch, /"x-strata-budget": "8192"/);
   assert.match(profile.patch, /"provider": "strata-local~s8192"/, 'compaction keeps its timing on the copy too');

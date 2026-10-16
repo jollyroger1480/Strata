@@ -18,7 +18,7 @@ test('the generated profile names credentials, never carries them, and declares 
   const providers = entries.find(e => e.id === 'llm-pi-ai').config.providers;
   assert.deepEqual(Object.keys(providers).sort(), ['api-c0nn-1234-ab', 'strata-local']);
   assert.equal(providers['strata-local'].models[0].contextWindow, 32768);
-  assert.equal(providers['strata-local'].models[0].maxTokens, 16384, 'a local model gets half its window for a reply (it was 8192, which cut big answers off) and the rest stays for the conversation, so the Harness can compact it');
+  assert.equal(providers['strata-local'].models[0].maxTokens, 9830, 'a local model gets 30 percent of its window for a reply (it was 8192, which cut big answers off) and the rest stays for the conversation, so the Harness can compact it');
   assert.equal(providers['strata-local'].models[0].reasoning, true);
   assert.equal(providers['strata-local'].compat.thinkingFormat, 'chat-template');
   assert.equal(providers['api-c0nn-1234-ab'].models[1].contextWindow, ASSUMED_API_CONTEXT, 'an unknown API window is a stated assumption, not a catalog default');

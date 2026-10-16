@@ -12,8 +12,8 @@ import { buildProfile, compactionHeadroom, localOutputBudget } from '../server/a
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
 
-test('the reply keeps half the window (at most 32K) and compaction gets a headroom that fits, for every window size', () => {
-  assert.equal(localOutputBudget(32768), 16384); assert.equal(localOutputBudget(262144), 32768); assert.equal(localOutputBudget(8192), 4096); assert.equal(localOutputBudget(undefined), 16384);
+test('the reply keeps 30 percent of the window (at most 32K) and compaction gets a headroom that fits, for every window size', () => {
+  assert.equal(localOutputBudget(32768), 9830); assert.equal(localOutputBudget(262144), 32768); assert.equal(localOutputBudget(8192), 4096); assert.equal(localOutputBudget(undefined), 9830);
   for (const w of [8192, 16384, 32768, 65536, 131072, 262144, 1_000_000]) {
     const out = localOutputBudget(w), head = compactionHeadroom(w, out);
     const threshold = Math.floor(Math.min(w * 0.8, w - out - head));
@@ -22,7 +22,7 @@ test('the reply keeps half the window (at most 32K) and compaction gets a headro
     assert.ok(Math.floor((w - out) * 0.16) < threshold, `window ${w}: the verbatim tail is smaller than the start point`);
   }
   const profile = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 32768 }], connections: [] });
-  assert.match(profile.patch, /"modelPolicies": \[\s*\{\s*"provider": "strata-local",\s*"model": "m",\s*"headroomTokens": 4096/);
+  assert.match(profile.patch, /"modelPolicies": \[\s*\{\s*"provider": "strata-local",\s*"model": "m",\s*"headroomTokens": 2867/);
 });
 
 test('a long chat on a small window compacts before it overflows, and the conversation goes on', { skip }, async (t) => {
