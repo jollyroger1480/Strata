@@ -195,14 +195,42 @@ export function runImagePath(record, relPath, version) {
   try { const st = statSync(full); return st.isFile() && st.size <= MAX_IMAGE_BYTES ? full : null; } catch { return null; }
 }
 
+/**
+ * Files that are the program's own housekeeping, not the person's work: a browser profile, a cache folder, a tool's hidden folder. They are
+ * still listed when they changed (never hidden from the person), but last, and without their contents, so the comparison opens on the work
+ * that was asked for and not on a cache file.
+ */
+const NOISE_DIR = /^(?:\.[^.]|__pycache__$|node_modules$|cache$|gpucache$|code cache$|crashpad$|shadercache$)/i;
+export const isNoisePath = path => String(path).split('/').slice(0, -1).some(seg => NOISE_DIR.test(seg));
+const NOISE_LISTED = 5;
+
+/** Order in the Compare view: the page or document that was made first, other readable work next, pictures, then everything else, then housekeeping. */
+function rankOf(entry) {
+  if (entry.noise) return 4;
+  const ext = String(entry.path).split('.').pop().toLowerCase();
+  if (entry.unreadable) return 3;
+  if (ext === 'html' || ext === 'htm') return 0;
+  if (entry.image) return 2;
+  return 1;
+}
+
 export function diffRun(record) {
   // A kept checkpoint is the revision; when nothing was kept (the checks could not decide) the person looks at the last attempt.
   const { baseRoot, updatedRoot, useAttempt, last } = runRoots(record);
   if (!baseRoot || !updatedRoot) return { files: [], applyAttempt: null, more: 0 };
   const paths = [...new Set([...walkFiles(baseRoot), ...walkFiles(updatedRoot)])].sort();
-  const files = [];
-  let withText = 0, more = 0;
+  const found = [];
   for (const path of paths) {
+    const noise = isNoisePath(path);
+    // Housekeeping is compared as bytes only (never read as text): a browser profile can hold thousands of files.
+    if (noise) {
+      const A = join(baseRoot, path), B = join(updatedRoot, path);
+      const inA = existsSync(A), inB = existsSync(B);
+      let differs = !inA || !inB;
+      if (!differs) { try { differs = statSync(A).size !== statSync(B).size || !readFileSync(A).equals(readFileSync(B)); } catch { differs = true; } }
+      if (differs) found.push({ path, status: !inA ? 'added' : !inB ? 'removed' : 'changed', unreadable: true, noise: true });
+      continue;
+    }
     const a = readText(join(baseRoot, path)), b = readText(join(updatedRoot, path));
     const status = a.missing ? 'added' : b.missing ? 'removed' : null;
     const same = !status && a.text !== undefined && a.text === b.text;
@@ -212,20 +240,31 @@ export function diffRun(record) {
       let differs = true;
       try { differs = a.missing || b.missing || !readFileSync(join(baseRoot, path)).equals(readFileSync(join(updatedRoot, path))); } catch { /* treat as changed */ }
       if (!differs) continue;
-      if (files.length >= MAX_LISTED) { more += 1; continue; }
-      files.push({ path, status: status ?? 'changed', image: true });
+      found.push({ path, status: status ?? 'changed', image: true });
       continue;
     }
     if (!status && !a.text && !b.text && !a.big && !b.big) {
       // Both binary: compare sizes only.
       try { if (statSync(join(baseRoot, path)).size === statSync(join(updatedRoot, path)).size && readFileSync(join(baseRoot, path)).equals(readFileSync(join(updatedRoot, path)))) continue; } catch { /* treat as changed */ }
     }
-    if (files.length >= MAX_LISTED) { more += 1; continue; }
     const entry = { path, status: status ?? 'changed' };
     const textual = (a.text !== undefined || a.missing) && (b.text !== undefined || b.missing);
-    if (textual && withText < MAX_WITH_TEXT) { entry.original = a.text ?? ''; entry.updated = b.text ?? ''; withText += 1; }
+    if (textual) entry._text = { original: a.text ?? '', updated: b.text ?? '' };
     else entry.unreadable = true;
-    files.push(entry);
+    found.push(entry);
+  }
+  // Only housekeeping changed (a cache, a browser profile): the assistant changed nothing the person asked about.
+  if (found.length && found.every(e => e.noise)) return { files: [], applyAttempt: useAttempt ? (last?.index ?? null) : null, more: 0, housekeeping: found.length };
+  found.sort((x, y) => rankOf(x) - rankOf(y) || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+  const files = [];
+  let withText = 0, more = 0, noiseListed = 0;
+  for (const entry of found) {
+    if (entry.noise && noiseListed >= NOISE_LISTED) { more += 1; continue; }
+    if (files.length >= MAX_LISTED) { more += 1; continue; }
+    if (entry.noise) noiseListed += 1;
+    const { _text, ...rest } = entry;
+    if (_text) { if (withText < MAX_WITH_TEXT) { rest.original = _text.original; rest.updated = _text.updated; withText += 1; } else rest.unreadable = true; }
+    files.push(rest);
   }
   return { files, applyAttempt: useAttempt ? (last?.index ?? null) : null, more };
 }
