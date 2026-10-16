@@ -75,12 +75,12 @@ test('goal wording: plain, never a code', () => {
 
 // ------------------------------------------------------------------------------------------------- real Harness
 
-async function rig(t, { slots = 4, serial = false } = {}) {
+async function rig(t, { slots = 4, serial = false, onGoal } = {}) {
   const worker = await startScriptedWorker({ serial });
   const dir = mkdtempSync(join(tmpdir(), 'strata-kids-'));
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
   const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots }];
-  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000, ...(onGoal ? { onGoal } : {}) });
   t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
   const run = async (chatId, message, { mode = 'bypass', answer, onFrame, goal } = {}) => {
     const frames = [];
@@ -181,7 +181,14 @@ test('/goal: sets a goal, runs its rounds in the chat, says how it ended, refuse
   const say = line => { const out = []; return r.bridge.goalCommand({ chatId: 'g', line, workspacePath: r.ws, mode: 'bypass', onFrame: f => { out.push(f); frames.push(f); } }).then(() => out); };
   assert.match(text(await say('')), /No goal is set/);
   const ran = await r.run('g', null, { goal: { action: 'create', objective: 'say hello a few times', maxRounds: 3 } });
-  assert.match(text(ran.frames), /Working on the goal, step 1[\s\S]*step 2[\s\S]*step 3/);
+  // The round is a live status now (it used to be an italic line of text that stayed on screen after the model moved on).
+  assert.ok(!/Working on the goal/.test(text(ran.frames)), 'no goal-step text in the message');
+  assert.ok(ran.frames.some(f => f.type === 'status' && f.phase === 'goal' && f.code === 'goal-step' && /^Working on the goal, step \d$/.test(f.text) && f.args.round >= 1), 'a goal-step status was sent');
+  const goalFrames = ran.frames.filter(f => f.type === 'goal');
+  assert.ok(goalFrames.length >= 2 && goalFrames[0].goal.objective === 'say hello a few times' && goalFrames[0].goal.maxRounds === 3, 'the goal frame carries the objective and the round limit');
+  assert.equal(goalFrames.at(-1).goal.phase, 'blocked'); assert.match(goalFrames.at(-1).goal.blocked, /most steps/);
+  assert.equal(ran.frames.filter(f => f.type === 'status').at(-1).phase, 'idle', 'the status line is cleared before the end');
+  assert.ok(ran.frames.findIndex(f => f.type === 'status' && f.phase === 'idle') < ran.frames.findIndex(f => f.type === 'done'));
   assert.match(text(ran.frames), /The goal stopped: it worked for the most steps/);
   assert.equal(ran.frames.at(-1).type, 'done');
   assert.match(text(await say('')), /stopped/);
@@ -217,4 +224,22 @@ test('one request slot: the second helper shows as waiting for its turn, then wo
   assert.ok(overlap, 'one helper visibly waited for its turn while the other worked');
   for (const h of histories) assert.equal(h.at(-1).status, 'completed');
   assert.equal(frames.at(-1).type, 'done');
+});
+
+test('goal bar: the state, pause, edit and remove work from outside a turn, and every change is announced', { skip }, async (t) => {
+  const announced = [];
+  const r = await rig(t, { onGoal: (chatId, goal) => announced.push({ chatId, goal }) });
+  assert.equal(await r.bridge.goalState('bar'), null, 'no goal in a chat that never had one');
+  await assert.rejects(r.bridge.goalControl({ chatId: 'bar', action: 'pause' }), /no goal/i);
+  await r.run('bar', null, { goal: { action: 'create', objective: 'say hello a few times', maxRounds: 1 } });
+  const shown = await r.bridge.goalState('bar');
+  assert.equal(shown.objective, 'say hello a few times'); assert.equal(shown.maxRounds, 1); assert.ok(['blocked', 'complete', 'paused', 'active'].includes(shown.phase));
+  await assert.rejects(r.bridge.goalControl({ chatId: 'bar', action: 'edit', text: '  ' }), /few words/);
+  const edited = await r.bridge.goalControl({ chatId: 'bar', action: 'edit', text: 'say goodbye instead' });
+  assert.equal(edited.goal.objective, 'say goodbye instead');
+  assert.equal(announced.at(-1).goal.objective, 'say goodbye instead', 'the edit was announced for the bar');
+  const cleared = await r.bridge.goalControl({ chatId: 'bar', action: 'clear' });
+  assert.deepEqual(cleared, { goal: null }); assert.equal(announced.at(-1).goal, null);
+  assert.equal(await r.bridge.goalState('bar'), null);
+  await assert.rejects(r.bridge.goalControl({ chatId: 'bar', action: 'explode' }), /no goal|not known/i);
 });

@@ -57,6 +57,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from strata_control import atomic
+
 SCHEMA_VERSION = 1
 
 # --------------------------------------------------------------------------- backends
@@ -356,7 +358,7 @@ class Tuner:
     def save(self) -> None:
         tmp = self.state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_file)
+        atomic.replace(tmp, self.state_file)
 
     def _report_or_none(self) -> dict[str, Any] | None:
         if self.state not in ("completed", "cancelled", "failed"):

@@ -1181,7 +1181,7 @@ async function startTimeSkipReal(prompt: string) {
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
     title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
-    // The comparison sidebar opens only when there is an update to compare (see followTimeSkip), not while it works.
+    // The comparison sidebar opens only when there is an update to compare (when the job ends with changed files), never while it works.
     timeSkips: [...(s.timeSkips ?? []), run],
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: '/time-skip ' + prompt, timeSkipId: run.id },
@@ -1189,13 +1189,15 @@ async function startTimeSkipReal(prompt: string) {
     ],
   }));
   go('chat', sessionId);
+  markTurn(sessionId, { abort: new AbortController(), agent: false });
   try {
-    const started = await api.post<{ run: TimeSkipJob }>('/api/timeskip/start', { prompt, workspaceId: state.activeWorkspace, attempts: 1, ...(state.remoteModel ? { remoteModel: state.remoteModel } : {}) });
+    const started = await api.post<{ run: TimeSkipJob }>('/api/timeskip/start', { prompt, sessionId, workspaceId: state.activeWorkspace, attempts: 1, ...(state.remoteModel ? { remoteModel: state.remoteModel } : {}) });
     patchRun(sessionId, run.id, r => ({ ...r, job: started.run }));
     void followTimeSkip(sessionId, run.id);
   } catch (e) {
     const message = plainTimeSkipError(e instanceof Error ? e.message : String(e));
     patchRun(sessionId, run.id, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, phase: 'failed', error: message } }), tr('Time-skip could not start. {0}', [message]));
+    markTurn(sessionId, null);
   }
 }
 
@@ -1223,11 +1225,13 @@ export async function followTimeSkip(sessionId: string, runId: string) {
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, ...finished, ...extra } }), timeSkipEnding(finished, files));
         // A run that changed files opens the comparison; one that changed nothing, failed or was stopped has no sidebar tab.
         if (files.length > 0 && !['failed', 'cancelled', 'interrupted'].includes(finished.phase)) patchSession(sessionId, s => ({ ...s, previewOpen: timeSkipTabId(runId) }));
+        markTurn(sessionId, null);
         return;
       }
       if (job) { const live = job; patchRun(sessionId, runId, r => ({ ...r, job: { ...r.job!, ...live } })); }
       if (misses >= 6) {
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, phase: 'interrupted' } }), tr('Time-skip lost contact with the app and stopped. Your files were not changed.'));
+        markTurn(sessionId, null);
         return;
       }
       await new Promise(r => setTimeout(r, 2000));
@@ -1711,7 +1715,7 @@ export function go(route: Route, param?: string) {
 export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
-  for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) void followTimeSkip(session.id, run.id); }
+  for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) { markTurn(session.id, { abort: new AbortController(), agent: false }); void followTimeSkip(session.id, run.id); } }
   void bootstrap();
   void reconcileAgentTools();
 }
