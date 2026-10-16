@@ -4,6 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
+import { applyPlanFrame, applyQueueFrame } from './plan';
 import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
@@ -635,6 +636,12 @@ function applyEvent(e: StreamEvent) {
       break;
     case 'goal':
       if (typeof data.chatId === 'string') applyGoalFrame(data.chatId, data.goal);
+      break;
+    case 'plan':
+      if (typeof data.chatId === 'string') applyPlanFrame(data.chatId, data.plan);
+      break;
+    case 'queue':
+      if (typeof data.chatId === 'string') applyQueueFrame(data.chatId, data.items);
       break;
     case 'timeskip':
       applyTimeSkipEvent(data);
@@ -1578,6 +1585,10 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           applyStatusFrame(sessionId, frame as Record<string, unknown>);
         } else if (type === 'goal') {
           applyGoalFrame(sessionId, frame.goal);
+        } else if (type === 'plan') {
+          applyPlanFrame(sessionId, frame.plan);
+        } else if (type === 'queue') {
+          applyQueueFrame(sessionId, frame.items);
         } else if (type === 'reasoning') {
           patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
         } else if (type === 'notice') {

@@ -20,6 +20,8 @@ import { useNative } from '../lib/native';
 import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
+import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
+import { usePlan } from '../lib/plan';
 import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
@@ -106,12 +108,19 @@ export function ChatScreen() {
     const [previews, setPreviews] = useState<PreviewArtifact[]>([]);
     const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
     const timeSkipRuns = (session?.timeSkips ?? []).filter(run => session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant') && (!run.job || (run.job.files?.length ?? 0) > 0));
-    const extraTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? `Time-skip ${i + 1}` : 'Time-skip', icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
+    const runTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? `Time-skip ${i + 1}` : 'Time-skip', icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
+    const plan = usePlan(session?.id);
+    const planTabId = session ? `plan:${session.id}` : '';
+    const planTab = plan && plan.state !== 'rejected' && !session?.closedPreviews?.includes(planTabId) ? [{ id: planTabId, title: 'Plan', icon: 'check' as const, controls: 'plan-content' }] : [];
+    const planShown = planTab.length > 0 && selectedPreview === planTabId;
+    const planRunId = plan?.state === 'running' ? plan.id : '';
+    useEffect(() => { if (planRunId && planTabId && !session?.closedPreviews?.includes(planTabId)) setSelectedPreview(planTabId); }, [planRunId]);
+    const extraTabs = [...runTabs, ...planTab];
     const selectedRun = timeSkipRuns.find(run => timeSkipTabId(run.id) === selectedPreview);
-    const inlinePreview = splitWidth >= (selectedRun ? 760 : 1120);
+    const inlinePreview = splitWidth >= (selectedRun || planShown ? 760 : 1120);
     const paneWidth = previewWidth(splitWidth, previewFraction);
     const splitStyle = inlinePreview && selectedPreview && !expanded ? { gridTemplateColumns: `minmax(0,1fr) ${paneWidth}px` } : undefined;
-    const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : 'artifact-content'}/> : null;
+    const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
     useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
@@ -350,7 +359,7 @@ export function ChatScreen() {
           </div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
          </div>
-         <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
+        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
          {tr(resizeHandle)}
         </div>
       </>);
@@ -376,17 +385,19 @@ export function ChatScreen() {
             setAwayFromBottom(away);
         }}>
 
-            {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
-                <Icon name="chevron" size={18}/></button>) : null)}
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={timeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
+              <PlanCard chatId={session.id}/><QueuedMessages chatId={session.id}/>
             </div>
           </div>
+          <div className="jumplatest-row">{tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
+                <Icon name="chevron" size={18}/></button>) : null)}</div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
         </div>
         {tr(!setupVisible && selectedRun && session ? <TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/> : null)}
-        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
+        {tr(!setupVisible && planShown ? <PlanPanel chatId={session?.id}/> : null)}
+        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible || planShown ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
         {tr(resizeHandle)}
       </div>
     </>);
@@ -403,6 +414,7 @@ function useSlashCommands(clear: () => void, setDraft: (value: string) => void):
     return [
         { id: 'time-skip', label: '/time-skip', hint: 'Try a change on a copy, check it, and keep it only if it is better', icon: 'branch', run: () => setDraft('/time-skip ') },
         { id: 'goal', label: '/goal', hint: 'Set a goal and let the assistant keep working until it is done', icon: 'bolt', run: () => setDraft('/goal ') },
+        { id: 'plan', label: '/plan', hint: 'Have the assistant write a plan first; nothing runs until you approve it', icon: 'check', run: () => setDraft('/plan ') },
         { id: 'loop', label: '/loop', hint: 'Repeat a message every few minutes while this chat is open', icon: 'refresh', run: () => setDraft('/loop 10m ') },
         { id: 'website', label: '/website', hint: 'Open a website in the preview sidebar', icon: 'link', run: () => { clear(); window.dispatchEvent(new Event('strata:open-website')); } },
         { id: 'preview', label: '/preview', hint: 'Open a local file in the preview sidebar', icon: 'file', run: () => { clear(); window.dispatchEvent(new Event('strata:open-preview')); } },
