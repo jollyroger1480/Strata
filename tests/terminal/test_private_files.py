@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -94,3 +95,88 @@ class PrivateFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(pf.WINDOWS, "NTFS ACLs")
+class ElevatedRunLockoutTests(unittest.TestCase):
+    """A file or folder an elevated run made names only SYSTEM and Administrators: the user's normal session cannot open it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    @staticmethod
+    def lock_out(path):
+        """Replace the rule with SYSTEM only: this session may be elevated itself, so Administrators is left out to make the lock-out real."""
+        import ctypes
+        from ctypes import wintypes
+        descriptor = ctypes.c_void_p()
+        assert pf._advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            "D:P(A;OICI;FA;;;SY)", 1, ctypes.byref(descriptor), None)
+        present, defaulted, dacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
+        pf._advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
+        code = pf._advapi.SetNamedSecurityInfoW(str(path), 1, 0x4 | 0x80000000, None, None, dacl, None)
+        assert code == 0, code
+
+    def test_a_locked_file_is_read_again_after_the_repair(self):
+        path = self.root / "profile.json"
+        path.write_text('{"name": "x"}')
+        self.lock_out(path)
+        with self.assertRaises(PermissionError):
+            path.read_bytes()
+        self.assertEqual(pf.read_bytes_repairing(path), b'{"name": "x"}')
+        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(path))
+        self.assertEqual(path.read_bytes(), b'{"name": "x"}')
+
+    def test_a_locked_folder_and_what_is_inside_are_repaired_as_a_tree(self):
+        folder = self.root / "profiles"
+        folder.mkdir()
+        (folder / "a.json").write_text("{}")
+        (folder / "sub").mkdir()
+        (folder / "sub" / "b.json").write_text("{}")
+        for item in (folder / "sub" / "b.json", folder / "sub", folder / "a.json", folder):
+            self.lock_out(item)
+        with self.assertRaises(PermissionError):
+            (folder / "a.json").read_bytes()
+        os.environ["STRATA_HOME"] = str(self.root)
+        self.addCleanup(os.environ.pop, "STRATA_HOME", None)
+        report = pf.repair_known_roots()
+        self.assertGreaterEqual(report["repaired"], 1)
+        self.assertEqual(report["failed"], 0)
+        self.assertEqual((folder / "a.json").read_bytes(), b"{}")
+        self.assertEqual((folder / "sub" / "b.json").read_bytes(), b"{}")
+        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(folder / "sub" / "b.json"))
+
+    def test_a_folder_made_with_private_mkdir_names_the_user_explicitly(self):
+        made = pf.private_mkdir(self.root / "x" / "y", parents=True)
+        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made))
+        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made.parent))
+        (made / "file.json").write_text("{}")
+        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made / "file.json"))
+        self.assertEqual((made / "file.json").read_text(), "{}")
+
+    def test_the_process_defaults_can_be_set_for_the_user(self):
+        self.assertTrue(pf.adopt_user_defaults())
+        self.assertTrue(pf.adopt_user_defaults())       # again: nothing breaks
+        path = self.root / "new.json"
+        path.write_text("{}")
+        self.assertEqual(path.read_text(), "{}")
+
+    def test_only_the_users_own_folders_are_ever_repaired(self):
+        self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))
+
+    def test_a_profile_that_was_locked_loads(self):
+        from strata_control import profiles
+        os.environ["STRATA_PROFILE_DIR"] = str(self.root / "profiles")
+        self.addCleanup(os.environ.pop, "STRATA_PROFILE_DIR", None)
+        directory = self.root / "profiles"
+        directory.mkdir()
+        run_config = self.root / "strata-x.json"
+        run_config.write_text("{}")
+        (directory / "app-1.json").write_text(json.dumps({"schema": 1, "name": "app-1", "source_config": str(run_config)}))
+        self.lock_out(directory / "app-1.json")
+        try:
+            profiles.load("app-1")
+        except profiles.ProfileError as exc:
+            self.assertNotIn("PermissionError", str(exc))     # any other complaint is the sample's shape, not access

@@ -6,6 +6,12 @@ sampled from telemetry; missing signals stay unknown. It does not tune a model.
 
 from __future__ import annotations
 
+try:
+    from strata_control.private_files import private_mkdir as _private_mkdir
+except ImportError:                                     # a thin bundle (monitor only) ships without strata_control
+    def _private_mkdir(path, *, parents=False, exist_ok=True):
+        path.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
+        return path
 import hashlib
 import http.client
 import json
@@ -782,7 +788,7 @@ def run(endpoint: Endpoint, telemetry: Endpoint, out: Path, *, suite: str = "ser
                 raise ProfileError(f"cancellation concurrency must cover all {slots} effective slots", 2)
         elif slots < 2 or concurrency < 2:
             raise ProfileError("prefill cancellation suite requires at least two effective slots and concurrency >= 2", 5)
-    out.mkdir(mode=0o700, parents=False)
+    _private_mkdir(out, parents=False, exist_ok=False)
     phases = []
     started = _utc_now()
     planned_phases = _planned_phase_kinds(suite, repeat)

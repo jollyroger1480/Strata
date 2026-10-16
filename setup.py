@@ -6108,6 +6108,11 @@ def preview_family(a) -> int:
 
 
 def main() -> int:
+    try:                                               # files made by a run as administrator still belong to the user
+        from strata_control import private_files as _pf
+        _pf.adopt_user_defaults()
+    except Exception:
+        pass
     if sys.platform == "darwin":                       # a Mac: metal/setup_mac.py (the Metal engine)
         return mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

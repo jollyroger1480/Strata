@@ -215,7 +215,12 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
    const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300}));};
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
-   try{await started;}catch(error){const said=humanStartError(error);
+   try{await started;}catch(firstError){let error=firstError;
+    /* A settings, profile or run file an elevated run made can be closed to this user: repair the access in Strata's own folders and start again (this is not the memory try below). */
+    const isAccess=e=>/PermissionError|access is denied|EACCES/i.test(String(e?.message??'')+JSON.stringify(e?.output??''));
+    if(isAccess(error)&&typeof control.repairAccess==='function'&&job.state==='running'){await control.repairAccess();append(id,'Strata repaired access to its own files; starting again.');try{await startWith(cfg);started=Promise.resolve();error=null;}catch(again){error=again;}}
+    if(error){const said=humanStartError(error);
+    if(isAccess(error)){instance.status='error';instance.error=said;emit();throw new Error(said);}   // access errors are not memory stops: no safer retry
     /* ONE automatic second try in all, never saved, never repeated (args.retrySafer false turns it off): with a safer memory setting when the
        failure looks like a memory stop, and without several-requests-at-once when that was the app's own default (not a number the user chose).
        Both changes ride on the same single try, with the plain sentence of the memory change when there is one. */
@@ -228,7 +233,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
     try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
-    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2===said?said2:`${said2} (after one automatic second try with a safer setting: ${detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}
+    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2===said?said2:`${said2} (after one automatic second try with a safer setting: ${detail}; the first stop was: ${said})`;emit();throw new Error(instance.error);}}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;

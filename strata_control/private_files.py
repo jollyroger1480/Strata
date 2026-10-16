@@ -41,11 +41,21 @@ if WINDOWS:
     _advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
     _advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
         ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+    _advapi.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    _advapi.SetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _advapi.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p]
+    _advapi.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.c_void_p, wintypes.DWORD,
+                                              ctypes.c_void_p, ctypes.c_void_p]
 
 _SE_FILE_OBJECT = 1
 _DACL = 0x4
 _PROTECTED_DACL = 0x80000000
 _TOKEN_QUERY = 0x8
+_TOKEN_ADJUST_PRIVILEGES = 0x20
+_TOKEN_ADJUST_DEFAULT = 0x80
+_TOKEN_OWNER = 4
+_TOKEN_DEFAULT_DACL = 6
+_OWNER = 0x1
 _TOKEN_USER = 1
 _SDDL_REVISION_1 = 1
 _sid_cache: str | None = None
@@ -109,8 +119,16 @@ def restrict_to_current_user(path: str | os.PathLike, *, directory: bool | None 
         if not _advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl),
                                                  ctypes.byref(defaulted)) or not present.value:
             raise _winerr("GetSecurityDescriptorDacl")
-        code = _advapi.SetNamedSecurityInfoW(path, _SE_FILE_OBJECT, _DACL | _PROTECTED_DACL,
-                                             None, None, dacl, None)
+        # The explicit entry for the user's own SID is what makes the file reachable from a normal (non-elevated) session:
+        # a file made by an elevated process is owned by BUILTIN\Administrators, and a rule naming only SYSTEM,
+        # Administrators and OWNER RIGHTS shuts the same person out when UAC filters Administrators from their token.
+        # So the owner becomes the user too, where Windows allows it; when it does not, the explicit entry still stands.
+        owner = _user_psid()
+        code = _advapi.SetNamedSecurityInfoW(path, _SE_FILE_OBJECT, _OWNER | _DACL | _PROTECTED_DACL,
+                                             owner, None, dacl, None) if owner else 1
+        if code:
+            code = _advapi.SetNamedSecurityInfoW(path, _SE_FILE_OBJECT, _DACL | _PROTECTED_DACL,
+                                                 None, None, dacl, None)
         if code:
             raise _winerr(f"SetNamedSecurityInfoW {path}", code)
     finally:
@@ -176,3 +194,270 @@ def is_unshared(path: str | os.PathLike) -> bool:
         if len(fields) >= 6 and fields[0] in ("A", "OA") and fields[5] not in allowed:
             return False
     return True
+
+
+# ---------------------------------------------------------------------------------------------- access repair
+
+def _user_psid():
+    """The current user's SID as a native pointer (kept for the life of the process), or None."""
+    global _psid_cache
+    if not WINDOWS:
+        return None
+    if _psid_cache is not None:
+        return _psid_cache
+    pointer = ctypes.c_void_p()
+    if not _advapi.ConvertStringSidToSidW(current_user_sid(), ctypes.byref(pointer)):
+        return None
+    _psid_cache = pointer.value
+    return _psid_cache
+
+
+_psid_cache = None
+_keep: list = []
+
+
+def private_mkdir(path: str | os.PathLike, *, parents: bool = False, exist_ok: bool = True) -> Path:
+    """Create a folder only the user can reach, on every platform.
+
+    POSIX: ``mkdir(mode=0o700)``. Windows: Python 3.13 turns ``mode=0o700`` into an ACL of SYSTEM, Administrators and OWNER
+    RIGHTS (inherited by everything inside), which locks the user out when an elevated process created the folder. This
+    creates the missing folders plainly and gives each one the explicit entry for the user's own SID (and the user as owner).
+    """
+    target = Path(path)
+    if not WINDOWS:
+        target.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
+        return target
+    missing = []
+    probe = target
+    while not probe.exists() and probe != probe.parent:
+        missing.append(probe)
+        if not parents:
+            break
+        probe = probe.parent
+    if not missing and not exist_ok:
+        raise FileExistsError(str(target))
+    for folder in reversed(missing):
+        folder.mkdir(exist_ok=exist_ok)
+        try:
+            restrict_to_current_user(folder, directory=True)
+        except OSError:
+            pass            # the folder exists with its inherited rule; a later read repairs it if that is not enough
+    return target
+
+
+def adopt_user_defaults() -> bool:
+    """Make files this process creates belong to, and be open to, the user (Windows; no effect elsewhere).
+
+    An elevated process otherwise creates files owned by BUILTIN\\Administrators with a default rule of SYSTEM and
+    Administrators only. Setting the token's default owner and default rule to the user's own SID fixes that for every file
+    the process (and what it starts) creates afterwards. Returns True when both were set; never raises.
+    """
+    if not WINDOWS:
+        return False
+    try:
+        sid = current_user_sid()
+        psid = _user_psid()
+        token = wintypes.HANDLE()
+        if not psid or not _advapi.OpenProcessToken(_kernel.GetCurrentProcess(), _TOKEN_QUERY | _TOKEN_ADJUST_DEFAULT,
+                                                    ctypes.byref(token)):
+            return False
+        try:
+            class _Owner(ctypes.Structure):
+                _fields_ = [("owner", ctypes.c_void_p)]
+
+            class _DefaultDacl(ctypes.Structure):
+                _fields_ = [("dacl", ctypes.c_void_p)]
+
+            ok_owner = bool(_advapi.SetTokenInformation(token, _TOKEN_OWNER, ctypes.byref(_Owner(psid)),
+                                                        ctypes.sizeof(_Owner)))
+            descriptor = ctypes.c_void_p()
+            if not _advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    f"D:(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)", _SDDL_REVISION_1, ctypes.byref(descriptor), None):
+                return False
+            present, defaulted, dacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
+            if not _advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl),
+                                                     ctypes.byref(defaulted)) or not present.value:
+                return False
+            _keep.append(descriptor)           # the token keeps pointing into it
+            ok_dacl = bool(_advapi.SetTokenInformation(token, _TOKEN_DEFAULT_DACL, ctypes.byref(_DefaultDacl(dacl.value)),
+                                                       ctypes.sizeof(_DefaultDacl)))
+            return ok_owner and ok_dacl
+        finally:
+            _kernel.CloseHandle(token)
+    except OSError:
+        return False
+
+
+def _enable_privilege(name: str) -> bool:
+    token = wintypes.HANDLE()
+    if not _advapi.OpenProcessToken(_kernel.GetCurrentProcess(), _TOKEN_QUERY | _TOKEN_ADJUST_PRIVILEGES,
+                                    ctypes.byref(token)):
+        return False
+    try:
+        class _Luid(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", ctypes.c_long)]
+
+        class _Privileges(ctypes.Structure):
+            _fields_ = [("count", wintypes.DWORD), ("luid", _Luid), ("attributes", wintypes.DWORD)]
+
+        luid = _Luid()
+        if not _advapi.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
+            return False
+        privileges = _Privileges(1, luid, 2)  # SE_PRIVILEGE_ENABLED
+        ctypes.set_last_error(0)
+        _advapi.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), ctypes.sizeof(privileges), None, None)
+        return ctypes.get_last_error() == 0
+    finally:
+        _kernel.CloseHandle(token)
+
+
+def user_roots() -> list[Path]:
+    """The folders that are the user's own per-user data: a file inside one may be repaired by that user."""
+    roots: list[Path] = []
+    for key in ("APPDATA", "LOCALAPPDATA", "STRATA_HOME", "STRATA_PROFILE_DIR", "STRATA_INSTALL_DIR", "STRATA_RUNTIME_DIR",
+                "STRATA_STATE_DIR"):
+        value = os.environ.get(key)
+        if value:
+            roots.append(Path(value))
+    roots.append(Path.home())
+    result = []
+    for root in roots:
+        try:
+            result.append(root.resolve())
+        except OSError:
+            continue
+    return result
+
+
+def is_users_own(path: str | os.PathLike) -> bool:
+    """True when ``path`` is inside the user's own profile or data folders (never the system folders)."""
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        return False
+    return any(target == root or root in target.parents for root in user_roots())
+
+
+def repair_access(path: str | os.PathLike, *, tree: bool = True) -> bool:
+    """Give the current user back a file or folder in their own data folders that an elevated process locked them out of.
+
+    Takes ownership and writes the explicit protected entry for the user's SID (a folder's children are repaired too).
+    Needs the right to do that: an elevated session, or a user holding the take-ownership right; a normal session locked
+    out by someone else's elevated process cannot do it, and this returns False (the caller shows the plain message).
+    Windows only; elsewhere there is nothing to repair. Refuses anything outside the user's own folders.
+    """
+    if not WINDOWS or not is_users_own(path):
+        return False
+    _enable_privilege("SeTakeOwnershipPrivilege")
+    _enable_privilege("SeRestorePrivilege")
+    fixed = True
+    target = Path(path)
+    try:
+        restrict_to_current_user(target, directory=target.is_dir())
+    except OSError:
+        fixed = False
+    if tree and fixed and target.is_dir():
+        try:
+            for dirpath, dirnames, filenames in os.walk(target):
+                for name in dirnames + filenames:
+                    child = os.path.join(dirpath, name)
+                    if os.path.islink(child):
+                        continue
+                    try:
+                        restrict_to_current_user(child, directory=os.path.isdir(child))
+                    except OSError:
+                        fixed = False
+        except OSError:
+            fixed = False
+    return fixed
+
+
+def read_bytes_repairing(path: str | os.PathLike) -> bytes:
+    """``Path.read_bytes`` that, on an access error in the user's own folders, repairs the access once and tries again."""
+    target = Path(path)
+    try:
+        return target.read_bytes()
+    except PermissionError:
+        if not repair_access(target, tree=False):
+            raise
+        return target.read_bytes()
+
+
+ACCESS_MESSAGE = "Strata can't open its settings file. Run Strata once as yourself (not as administrator) or press Repair."
+
+
+_SKIP_DIRS = {"models", "node_modules", "harness", "python", "host", "node", "control", "__pycache__", ".git"}
+_SKIP_SUFFIXES = (".gguf", ".part", ".bin", ".safetensors", ".zip", ".exe", ".dll")
+
+
+def known_roots() -> list[Path]:
+    """Strata's per-user data folders: APPDATA/Strata, LOCALAPPDATA/Strata and ~/.strata (plus the STRATA_* overrides)."""
+    roots: list[Path] = []
+    for key, sub in (("APPDATA", "Strata"), ("LOCALAPPDATA", "Strata")):
+        value = os.environ.get(key)
+        if value:
+            roots.append(Path(value) / sub)
+    roots.append(Path.home() / ".strata")
+    for key in ("STRATA_HOME", "STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "STRATA_STATE_DIR", "STRATA_INSTALL_DIR"):
+        value = os.environ.get(key)
+        if value:
+            roots.append(Path(value))
+    seen, result = set(), []
+    for root in roots:
+        key = str(root).lower()
+        if key not in seen and root.exists():
+            seen.add(key)
+            result.append(root)
+    return result
+
+
+def repair_known_roots(*, limit: int = 20000) -> dict:
+    """Walk Strata's own per-user folders and repair every entry the user cannot open (Windows).
+
+    Meant to run when Strata starts: files and folders an elevated run created (owner Administrators, a rule that names
+    only SYSTEM, Administrators and OWNER RIGHTS) are given back to the user. A normal session can only repair what its
+    own token may change; an elevated start repairs everything. Never raises; returns what it did.
+    """
+    report = {"checked": 0, "repaired": 0, "failed": 0}
+    if not WINDOWS:
+        return report
+    for root in known_roots():
+        stack = [root]
+        while stack and report["checked"] < limit:
+            folder = stack.pop()
+            try:
+                entries = list(os.scandir(folder))
+            except PermissionError:
+                report["checked"] += 1
+                if repair_access(folder, tree=False):
+                    report["repaired"] += 1
+                    try:
+                        entries = list(os.scandir(folder))
+                    except OSError:
+                        continue
+                else:
+                    report["failed"] += 1
+                    continue
+            except OSError:
+                continue
+            for entry in entries:
+                report["checked"] += 1
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name.lower() not in _SKIP_DIRS:
+                            stack.append(Path(entry.path))
+                        continue
+                    if entry.name.lower().endswith(_SKIP_SUFFIXES):
+                        continue
+                    with open(entry.path, "rb"):
+                        pass
+                except PermissionError:
+                    if repair_access(entry.path, tree=False):
+                        report["repaired"] += 1
+                    else:
+                        report["failed"] += 1
+                except OSError:
+                    continue
+    return report

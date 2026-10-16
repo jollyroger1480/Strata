@@ -21,4 +21,6 @@ export function makePrivate(path, { platform = process.platform } = {}) {
   // Grant first, then drop every inherited entry, so the file is never left without an owner entry.
   execFileSync(system32('icacls.exe'), [path, '/grant:r', `*${currentUserSid()}:F`, '/inheritance:r'],
     { stdio: 'ignore', timeout: 15000, windowsHide: true });
+  // The owner too, so a file an elevated run made is not left owned by Administrators (needs the right to; best effort).
+  try { execFileSync(system32('icacls.exe'), [path, '/setowner', `*${currentUserSid()}`], { stdio: 'ignore', timeout: 15000, windowsHide: true }); } catch { /* the explicit entry above already opens it to the user */ }
 }

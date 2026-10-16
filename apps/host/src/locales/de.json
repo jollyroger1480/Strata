@@ -2671,5 +2671,7 @@
   "s2670": "Einstellungen anwenden und laden",
   "s2671": "Anwenden & laden",
   "s2672": "Die Modelldateien sind bereits auf diesem Computer. Es wird nichts heruntergeladen, nur Ihre gewählten Einstellungen werden angewendet.",
-  "s2673": "Aktuell geladene native Modelle werden zuerst entladen."
+  "s2673": "Aktuell geladene native Modelle werden zuerst entladen.",
+  "s2674": "Strata kann seine Einstellungsdatei nicht öffnen.",
+  "s2675": "Starte Strata einmal als du selbst (nicht als Administrator) oder drücke auf Reparieren."
 }

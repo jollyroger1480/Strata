@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import hashlib
 import errno
 import os
@@ -27,7 +28,7 @@ def _lease_file(profile: str, *, create: bool) -> Path | None:
         raise ProfileError("benchmark lease needs a saved profile")
     directory = profiles.profile_dir()
     if create:
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _private_mkdir(directory, parents=True, exist_ok=True)
     elif not directory.exists():
         return None
     details = directory.lstat()

@@ -217,6 +217,15 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.code !== 0 || !result.json?.ok) throw failure(result, 'The engine did not start.');
       return result.json;
     },
+    /** Give the user back Strata files in their own folders that a run as administrator locked (`strata repair-access`). Never throws. */
+    async repairAccess() {
+      try {
+        const result = await call(['repair-access', '--output', 'json'], { timeoutMs: 60_000 });
+        return result.json ?? { ok: false, error: result.stderr };
+      } catch (error) {
+        return { ok: false, error: String(error?.message ?? error) };
+      }
+    },
     /** End servers and engines Strata started whose owner is gone (each is re-checked by PID, start time and command line). */
     async cleanup() {
       const result = await call(['runtime', 'cleanup', '--output', 'json'], { timeoutMs: 120_000 });

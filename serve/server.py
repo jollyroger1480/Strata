@@ -7340,6 +7340,11 @@ def _component_exe(reference: str, cfg: dict) -> str:
 
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+    try:                                               # files made by a run as administrator still belong to the user
+        from strata_control import private_files as _pf
+        _pf.adopt_user_defaults()
+    except Exception:
+        pass
     event_sink = lifecycle_event
 
     def notify_lifecycle(kind: str, payload: dict) -> None:

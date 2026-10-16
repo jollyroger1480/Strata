@@ -15,6 +15,7 @@ child is still there.
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import argparse
 import errno
 import hashlib
@@ -107,7 +108,7 @@ def runtime_dir() -> Path:
     if not base.is_absolute():
         raise ProfileError("STRATA_RUNTIME_DIR must be absolute")
     existed = base.exists()
-    base.mkdir(parents=True, mode=0o700, exist_ok=True)
+    _private_mkdir(base, parents=True, exist_ok=True)
     if WINDOWS and not existed:
         private_files.restrict_to_current_user(base, directory=True)   # no mode bits on NTFS: a protected ACL
     details = base.lstat()

@@ -19,6 +19,7 @@ exactly the engine executable that is about to be started, running ``--serve`` w
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import json
 import os
 import signal
@@ -167,7 +168,7 @@ def procs_dir(create: bool = True) -> Path:
     """The owner-private folder of launch records (beside runtime/, under the per-user state)."""
     base = paths.state_base() / "procs"
     if create and not base.exists():
-        base.mkdir(parents=True, mode=0o700, exist_ok=True)
+        _private_mkdir(base, parents=True, exist_ok=True)
         if WINDOWS:
             from strata_control import private_files
             private_files.restrict_to_current_user(base, directory=True)

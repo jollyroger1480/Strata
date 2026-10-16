@@ -7,6 +7,7 @@ hardware; applying it is a separate operation with a backup and smoke generation
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import copy
 import hashlib
 import json
@@ -452,7 +453,7 @@ def _backup_directory(path: Path, *, create: bool = False) -> Path:
     directory = path.parent / ".strata-calibration-backups"
     try:
         if create:
-            directory.mkdir(mode=0o700, exist_ok=True)
+            _private_mkdir(directory, exist_ok=True)
         details = directory.lstat()
     except FileNotFoundError:
         raise ProfileError("calibration backup directory is missing", 5) from None
@@ -566,7 +567,7 @@ def _apply_locked(ref: str, path: Path, profile: dict | None, revision: str | No
     end_path, end_profile, end_revision, end_cfg = _target(ref)
     if end_path != path or _identity(end_path, end_cfg, end_profile, end_revision) != report["identity"]:
         raise ProfileError("engine, model or hardware changed during smoke generation; config unchanged", 6)
-    settings_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _private_mkdir(settings_path.parent, parents=True, exist_ok=True)
     current_settings = settings_path.read_bytes() if settings_path.exists() else None
     if current_settings != previous_settings:
         raise ProfileError("setup settings changed during calibration; config unchanged", 6)

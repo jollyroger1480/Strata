@@ -16,6 +16,7 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
   { kind: 'picture-reading', match: /vision files|picture reading/i, message: 'Picture reading isn’t available for this model.', next: 'Turn off picture reading and try again.' },
+  { kind: 'access', match: /PermissionError|access is denied|can.t open its settings file/i, message: 'Strata can’t open its settings file.', next: 'Run Strata once as yourself (not as administrator) or press Repair.' },
   { kind: 'memory', match: /server_exited|engine stopped|exited before|died before|out of memory|memory guard|\boom\b|killed/i, message: MEMORY, next: MEMORY_NEXT },
   { kind: 'slow-load', match: /loading took more than/i, message: 'Loading is taking too long.', next: 'The PC may be short on memory. Close other programs and try again.' },
   { kind: 'engine-missing', match: /no engine for this pc|engine component|never downloads an engine|engine .*not installed|no strata engine/i, message: 'Strata’s engine for this computer isn’t installed yet.', next: 'It is added when you download a model. Download your model again to add it.' },

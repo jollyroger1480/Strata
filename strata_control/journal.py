@@ -7,6 +7,7 @@ crash has unknown completion; it is not proof that a worker is still running.
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import json
 import math
 import os
@@ -45,7 +46,7 @@ DIRECT_KINDS = frozenset({"runtime.start", "runtime.stop", "runtime.restart", "r
 def _directory(profile: str, *, create: bool = False) -> Path:
     directory = recipes._directory(profile, create=create) / ".runs"
     if create:
-        directory.mkdir(mode=0o700, exist_ok=True)
+        _private_mkdir(directory, exist_ok=True)
     if directory.exists() or directory.is_symlink():
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode):

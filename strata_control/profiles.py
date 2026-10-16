@@ -7,6 +7,7 @@ them. It deliberately does not start processes or contact a network service.
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import hashlib
 import json
 import math
@@ -150,7 +151,8 @@ def load(name: str) -> tuple[dict, str]:
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             raise ProfileError("profile must be a regular file", 5)
-        data = path.read_bytes()
+        from strata_control import private_files
+        data = private_files.read_bytes_repairing(path)      # a profile an elevated run locked is repaired once, in place
         if len(data) > 1024 * 1024:
             raise ProfileError("profile is larger than 1 MiB", 5)
         value = json.loads(data.decode("utf-8-sig"))
@@ -182,7 +184,7 @@ def list_profiles() -> list[dict]:
 @contextmanager
 def _lock(name: str):
     directory = profile_dir()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _private_mkdir(directory, parents=True, exist_ok=True)
     lock = directory / f".{_name(name)}.lock"
     with open(lock, "a+b") as stream:
         if os.name == "nt":
@@ -281,7 +283,7 @@ def save(name: str, proposed: dict, *, expected_revision: str,
         if current == proposed:
             return current, revision
         history = profile_dir() / ".history" / name
-        history.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _private_mkdir(history, parents=True, exist_ok=True)
         old = _path(name).read_bytes()
         if _revision(old) != revision:
             raise ProfileError("profile changed during edit; reload it before saving", 6)

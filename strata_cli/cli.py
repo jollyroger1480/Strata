@@ -104,6 +104,8 @@ def parser() -> argparse.ArgumentParser:
     profile_rollback.add_argument("--to", required=True, metavar="REVISION")
     profile_rollback.add_argument("--output", choices=("human", "json"), default="human")
 
+    repair = sp.add_parser("repair-access", help="give you back Strata files that a run as administrator locked (Windows)")
+    repair.add_argument("--output", choices=("human", "json"), default="human")
     doctor = sp.add_parser("doctor", help="read-only check of installed engine components")
     doctor.add_argument("--profile", help="saved profile name or run config JSON path")
     doctor.add_argument("--components", action="store_true", help="include component inventory (default)")
@@ -1782,12 +1784,43 @@ def _install(a: argparse.Namespace) -> int:
                            cwd=str(installer.parent))
 
 
+def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
+    """A file in Strata's own per-user folders that this user cannot open (a run as administrator made it) is repaired once
+    and the command runs again; if that does not help the person gets one plain sentence, with the technical text after it."""
+    try:
+        from strata_control import private_files
+    except ImportError:
+        return None
+    if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
+        return None
+    as_json = bool(getattr(a, "json", False) or getattr(a, "output", None) in ("json", "jsonl"))
+    if getattr(a, "_access_retried", False):
+        return _error(f"{private_files.ACCESS_MESSAGE} (details: {error})", 5, as_json)
+    a._access_retried = True
+    private_files.repair_known_roots()
+    return _run(a)
+
+
+def _repair_access(a: argparse.Namespace) -> int:
+    from strata_control import private_files
+    report = private_files.repair_known_roots()
+    if getattr(a, "output", "human") == "json":
+        print(json.dumps({"ok": not report["failed"], **report}))
+    else:
+        print(f"checked {report['checked']} entries, repaired {report['repaired']}, could not repair {report['failed']}")
+        if report["failed"]:
+            print(private_files.ACCESS_MESSAGE)
+    return 0 if not report["failed"] else 5
+
+
 def _run(a: argparse.Namespace) -> int:
     try:
         if a.command == "serve":
             return _serve(a)
         if a.command == "install":
             return _install(a)
+        if a.command == "repair-access":
+            return _repair_access(a)
         if a.command == "profile":
             return _profile_command(a)
         if a.command == "components" and a.components_command == "plan":
@@ -1822,6 +1855,9 @@ def _run(a: argparse.Namespace) -> int:
                           getattr(a, "output", None) in ("json", "jsonl"))
         return monitor_commands.run(a)
     except ValueError as e:
+        retried = _access_retry(a, e)
+        if retried is not None:
+            return retried
         if a.command == "serve" and a.output == "jsonl":
             return _serve_error(a, str(e), getattr(e, "exit_code", 2))
         return _error(str(e), getattr(e, "exit_code", 2),
@@ -1829,6 +1865,9 @@ def _run(a: argparse.Namespace) -> int:
     except BrokenPipeError:
         return 0
     except OSError as e:
+        retried = _access_retry(a, e)
+        if retried is not None:
+            return retried
         if a.command == "serve" and a.output == "jsonl":
             return _serve_error(a, f"local file operation failed ({type(e).__name__})", 6)
         return _error(f"local file operation failed ({type(e).__name__})", 6,
@@ -1867,6 +1906,11 @@ class _QuietCapture:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from strata_control import private_files
+        private_files.adopt_user_defaults()      # what this process creates belongs to the user even when it runs as administrator
+    except ImportError:                          # a thin bundle ships without strata_control
+        pass
     ap = parser()
     a = ap.parse_args(argv)
     if getattr(a, "json", False) and a.command not in ("status", "monitor", "logs", "connection", "config"):

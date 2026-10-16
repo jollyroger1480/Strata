@@ -2671,5 +2671,7 @@
   "s2670": "Aplicar configurações e carregar",
   "s2671": "Aplicar e carregar",
   "s2672": "Os arquivos do modelo já estão neste computador. Nada será baixado; apenas as configurações escolhidas serão aplicadas.",
-  "s2673": "Os modelos nativos atualmente carregados serão descarregados primeiro."
+  "s2673": "Os modelos nativos atualmente carregados serão descarregados primeiro.",
+  "s2674": "O Strata não consegue abrir o arquivo de configurações.",
+  "s2675": "Abra o Strata uma vez como você mesmo (não como administrador) ou pressione Reparar."
 }

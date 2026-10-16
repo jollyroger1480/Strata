@@ -85,7 +85,7 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
@@ -112,6 +112,7 @@ function packagedFixture({ engineUsable = true, updater = null } = {}) {
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); saved.push(JSON.parse(readFileSync(path, 'utf8'))); return {}; },
     async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure && startFailureLeft-- > 0) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
+    ...(repair ? { async repairAccess() { calls.push(['repairAccess']); return { ok: true }; } } : {}),
     ...(updater ? { async updateCheck() { calls.push(['updateCheck']); return updater.report; }, async update(options) { calls.push(['update', options.engine, options.control]); return updater.update(options); } } : {}),
   };
   const requests = [];
@@ -471,4 +472,25 @@ test('packaged: a tune measures the engine a load starts: same start args, slots
       if (vram > 40) assert.ok(tuned.parallel > 1, 'a big card gets the app default of several slots in the tune too');
     } finally { await f.native.close(); f.cleanup(); }
   }
+});
+
+test('packaged: a profile an elevated run locked (PermissionError) is repaired once and the start is tried again; without repair it is a plain message, not a memory retry', async () => {
+  const f = packagedFixture({ repair: true });
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'cannot read profile (PermissionError)' }, 1);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.filter(c => c[0] === 'repairAccess').length, 1);
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 2);
+  } finally { await f.native.close(); f.cleanup(); }
+  const g = packagedFixture({ repair: true });
+  try {
+    await g.native.refresh(true);
+    g.failStart({ message: 'cannot read profile (PermissionError)' });
+    const job = await finish(g.native, g.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'error');
+    assert.equal(g.calls.filter(c => c[0] === 'start').length, 2, 'one repair try, no memory retry on top');
+    assert.match(job.error, /PermissionError/);
+  } finally { await g.native.close(); g.cleanup(); }
 });

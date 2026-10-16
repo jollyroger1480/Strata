@@ -7,6 +7,7 @@ schema and operation authority rather than add a separate implementation.
 
 from __future__ import annotations
 
+from strata_control.private_files import private_mkdir as _private_mkdir
 import hashlib
 import json
 import os
@@ -46,8 +47,8 @@ def _directory(profile: str, *, create: bool = False) -> Path:
         if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
             raise ProfileError("recipe directory must be owner-only (mode 0700)", 5)
     if create:
-        directory.parent.mkdir(mode=0o700, exist_ok=True)
-        directory.mkdir(mode=0o700, exist_ok=True)
+        _private_mkdir(directory.parent, exist_ok=True)
+        _private_mkdir(directory, exist_ok=True)
     if directory.exists() or directory.is_symlink():
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode):
@@ -73,8 +74,8 @@ def _history_dir(profile: str, name: str, *, create: bool = False) -> Path:
         if path.is_symlink():
             raise ProfileError("recipe history directory must not be a symlink", 5)
     if create:
-        root.mkdir(mode=0o700, exist_ok=True)
-        directory.mkdir(mode=0o700, exist_ok=True)
+        _private_mkdir(root, exist_ok=True)
+        _private_mkdir(directory, exist_ok=True)
     for path in (root, directory):
         if path.exists():
             details = path.lstat()
@@ -411,7 +412,7 @@ def run(profile: str, name: str, *, exclusive_ack: bool = False,
         elif kind == "engine.calibrate.measure":
             from strata_control import calibration
             directory = Path(recipe["params"]["report_dir"])
-            directory.mkdir(mode=0o700, exist_ok=True)
+            _private_mkdir(directory, exist_ok=True)
             if not stat.S_ISDIR(directory.lstat().st_mode):
                 raise ProfileError("report_dir must be a directory, not a symlink", 5)
             report_path = directory / f"calibration-{uuid.uuid4().hex}.json"
