@@ -220,6 +220,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
     // without it the Reasoning menu did nothing for a connection to another Strata machine.
     const ownServer = protocol === 'openai-completions' && isPrivateHost(baseURL);
+    // A model server on this computer or network has a window of its own size like a local model: the reply keeps half of it, so the Harness can compact the conversation
+    // before the window is full (with nearly all of it reserved for the reply a long task ended with "the prompt leaves no room to answer").
+    const reply = m => (ownServer && Number.isFinite(m.contextMax) && m.contextMax > 0 && !m.maxOutput ? localOutputBudget(m.contextMax) : outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput));
     providers[route] = {
       displayName: conn.name,
       api: protocol,
@@ -228,14 +231,14 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       ...(ownServer ? { compat: THINKING_COMPAT } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
-        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput),
+        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
         input: ownServer ? ['text', 'image'] : ['text'],
         ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
     const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;
-    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, outputBudget(ctx, m.maxOutput)) }); }
+    for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, reply(m)) }); }
     for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 

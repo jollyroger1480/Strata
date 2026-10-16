@@ -174,6 +174,8 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       r.a.state = 'running'; r.a.total = plan.steps.length; setPhase(r, 'generating'); announce(r);
       await agent.planGoal({ chatId: aChat, planId: plan.id, workspacePath: r.a.root, mode: 'bypass', choice, thinking,
         onFrame: f => {
+          if (f.type === 'error') r.a.note = String(f.message ?? '').slice(0, 240);
+          if (f.type === 'goal' && f.goal) r.a.goal = { phase: f.goal.phase, blocked: f.goal.blocked ?? null, round: f.goal.round };
           if (f.type === 'plan-step') {
             r.a.step = f.index; r.a.total = f.total; r.a.text = f.text; r.a.line = f.line;
             if (f.state === 'done') { r.a.summaries.push(`${f.index}. ${f.text}${f.summary ? ': ' + f.summary : ''}`); if (r.lever && f.index === r.lever.step - 1) { try { forkNow(); } catch (e) { r.b = { ...r.b, state: 'failed', note: 'B could not be prepared, so only A is shown.' }; } } }
@@ -184,7 +186,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       const aEnd = agent.planState(aChat);
       r.a.state = aEnd?.state === 'done' ? 'done' : 'failed';
       announce(r);
-      if (r.a.state !== 'done') throw new Error('A did not finish the plan, so there is nothing to compare. Your files were not changed.');
+      if (r.a.state !== 'done') throw new Error('A did not finish the plan' + (r.a.note ? ' (' + r.a.note + ')' : r.a.goal?.blocked ? ' (' + r.a.goal.blocked + ')' : '') + ', so there is nothing to compare. Your files were not changed.');
       if (r.lever && !forked) { forkNow(); }
       if (r.lever && slots < 2 && r.b.state === 'waiting') { say(r, 'b-waiting', 'A is done. B starts now (one model slot: B waited for A).'); bDone = startB(); }
       if (bDone) await bDone.catch(e => { r.b.state = 'failed'; r.b.note = 'B stopped: ' + String(e.message ?? e).slice(0, 160); });
