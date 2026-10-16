@@ -1828,7 +1828,7 @@ already times: the wall time of the CPU pool per missed expert. With `R` = exper
 `L / (L + 1.85 R)`, rounded to 0.05 and kept between 0.10 and 0.60; it is changed at most three times (after 48, 96 and 96 more windows, about 10 s of
 decoding), and only by a full step. Each change prints one `PCIe share:` line. A request that sets its own `pcie_frac` is left alone.
 **`--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the 0.1.41 rule.** Not used with a layer split, `--batch`, a peer GPU, when every
-expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it).
+expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out; on the other HIP parts `STRATA_PCIE_FRAC_DEFAULT=auto` turns it on: an RX 7900 XTX showed no regression, no gain was claimed, #2224). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it).
 
 Measured (interleaved pairs of whole engine runs, new default against `STRATA_PCIE_FRAC_DEFAULT=old`, medians, route tail skip on):
 
@@ -1854,12 +1854,17 @@ None of these changes the default answers; each was measured against the default
 engine runs (a fresh engine per side, warmed, 200-token greedy answers on three fixed prompts, medians; "pairs faster" counts
 the pairs in which the switched arm won). They are here so you can try them on your own card.
 
-- **`STRATA_GDN_CHUNKED=1`: the DeltaNet recurrence of the prompt in chunks of 32 tokens** (sergiywith, #1372; WY form, FP32,
+- **`STRATA_GDN_CHUNKED=1`: the DeltaNet recurrence of the prompt, opt-in**. On CUDA it runs in chunks of 32 tokens
+  (sergiywith, #1372; WY form, FP32,
   other bits than the default: first-token KL against the default was 0.002-0.009 nats on average, the same top token in
   every prompt tried). The kernel needs 128 SMs in one wave, so by itself it runs only on a card with 128 or more
   (RTX 5090: 1.8x on the recurrence). On smaller cards `STRATA_GDN_CHUNKED=2` forces it for a measurement, and it is
   slower there: 0.73x on an RTX 3060 (28 SMs) and 0.87x on an RTX 5070 (48 SMs) at 2K-32K tokens (`gdn_rec_parity --bench`),
   and the prompt time did not improve: RTX 5070 2K 1.01x, 8K 1.00x of the default's time; RTX 3060 2K, 8K, 16K 1.01x, no pair faster.
+  On HIP, gfx1100-gfx1102, gfx1150 and gfx1151 use 16-token WMMA chunks with FP16 operands and a fused output norm; other cards and short
+  chunks keep the existing path. It changes rounding too (first-token KL against the default 0.006-0.007 on average, the same top
+  token in 12 of 12 prompts); on a Radeon 8060S (gfx1151) the layer's recurrence is 1.6x faster and a 4K-128K prompt after a warm-up prompt 1.4-2.1%; see
+  [the HIP conditions and numerical checks](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11).
 - **`STRATA_FS_SLOTS=N`: the Foresight swap space** (q8atnight, #1348): N VRAM slots per layer, refilled on a copy stream
   with the experts that just missed and with the ones the next layer's router predicts (`STRATA_FS_AHEAD=0` for the
   misses only), so that an expert the cache lacks can be computed on the GPU instead of by the CPU. The model's own router

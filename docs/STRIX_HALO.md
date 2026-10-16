@@ -125,6 +125,16 @@ replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,
 under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
 pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
+`STRATA_PF_F16=1` (gfx11 only; add it to the list above) runs the covered prompt experts on the F16 matrix cores instead of
+the int8 ones: K-quant gate/up and Q5_1 down (with `STRATA_PF_FUSED_KQ=1`), IQ2 / IQ3 / IQ4_XS gate/up, Q2_0 / IQ4_NL / Q8_0
+down. One layer, 16,384 tokens: Q4_K / Q5_1 85.3 -> 53.5 ms, IQ3_S / IQ4_NL gate/up 11.65 -> 9.87 and down 6.11 -> 4.71 ms.
+It rounds differently from the int8 kernels. First-token KL against a run with no switches, 12 natural-text prompts of
+1.5K-24K tokens (Strata's own docs and sources), top-1 the same in 12 of 12: UD-Q4_K_XL mean 0.0068 (median 0.0021) against
+0.0031 (0.0024) for `STRATA_PF_FUSED=1 STRATA_PF_FUSED_KQ=1` without it; UD-IQ4_XS 0.0085 (0.0036) against 0.0068 (0.0032). One
+1.5K prompt carries most of the Q4_K_XL mean (0.049).
+
+`STRATA_REFILL_PARTS=1` (opt-in, exact; HIP and CUDA, a GGUF read in place) refills the expert-cache slots a prompt borrowed straight from the GGUF mapping (an expert's gate, up and down tensors) instead of through an assembled 4 MB copy per expert: the same bytes in the slot (checked against the assembled blob on 162 slots), 0.1 to 0.3 s less at the end of a prompt; gfx1151, UD-Q4_K_XL and UD-IQ4_XS: a 4K-8K prompt +2.3% to +3.5%, 32K +1.1%. It is not in the table above because only gfx1151 has measured it.
+
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
 

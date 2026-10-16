@@ -669,7 +669,7 @@ struct Options {
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
-    bool pcie_frac_auto = false;     ///< CUDA single-GPU serve, no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
+    bool pcie_frac_auto = false;     ///< single-GPU serve (CUDA + HIP/gfx1100), no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
     double pcie_probe_gbps = 0.0;    ///< the start-up probe's reading (for PcieAuto)
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
@@ -1918,6 +1918,20 @@ static bool pcie_auto_split_ok() {
 [[maybe_unused]] static bool mtp_first_default_on() {
 #if defined(STRATA_USE_HIP)
     return decode_defaults_arch_ok();
+#else
+    return false;
+#endif
+}
+
+// HIP outside gfx12: the same refinement, opt-in with STRATA_PCIE_FRAC_DEFAULT=auto (#2224).  Its author gate-measured it on an
+// RX 7900 XTX (gfx1100) as "no regression" only (4 alternating starts at 64K, prefill 2189 base vs 2180 with it, decode 65.4 vs
+// 65.4; under serve the share refines 0.55 -> 0.25 from the pool's 42-45 us/missed expert and the probed 28.4-28.5 GB/s link);
+// a second report (2x RX 7900 GRE) found it never engages there (95-98% of the experts cached).  The gain is measured only on
+// gfx1201 (where it is the default, decode_defaults_arch_ok), so the other parts keep the fixed share unless asked.
+[[maybe_unused]] static bool pcie_auto_fork_arch_ok() {
+#if defined(STRATA_USE_HIP)
+    const char* pfd = std::getenv("STRATA_PCIE_FRAC_DEFAULT");
+    return pfd != nullptr && std::strcmp(pfd, "auto") == 0;
 #else
     return false;
 #endif
@@ -3274,7 +3288,11 @@ int main(int argc, char** argv) {
             o.pcie_frac = pcie_frac_for_gbps(bw, base);
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s) -> pcie_frac %.2f "
                                  "(default %.2f)\n", bw, bursts.c_str(), o.pcie_frac, base);
-            o.pcie_frac_auto = (o.layer_split.empty() || pcie_auto_split_ok()) && decode_defaults_arch_ok() && !pf_old;
+            // 0.1.43: split opt-in + gfx12 default-on (decode_defaults_arch_ok).  Other HIP parts: STRATA_PCIE_FRAC_DEFAULT=auto
+            // turns the refinement on (pcie_auto_fork_arch_ok); the pool timings and miss counts it reads are engine-generic.
+            // STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule everywhere.
+            o.pcie_frac_auto = (o.layer_split.empty() || pcie_auto_split_ok()) && !pf_old &&
+                               (decode_defaults_arch_ok() || pcie_auto_fork_arch_ok());
             o.pcie_probe_gbps = bw;
         } else {
             o.pcie_frac = base;
@@ -12509,10 +12527,20 @@ int main(int argc, char** argv) {
             // through its own cache and its own device - a slot refilled into the wrong cache would leave that
             // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
             // (split in two halves so a layer split can queue every stage's copies before it waits for any: #340)
+            // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
+            // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
+            static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
             auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
                 tr("refill start", (long long) p.lent.size());
                 const strata::core::OnDevice on(p.dev);
                 for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                    strata::core::BlobPart parts[3];
+                    const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
+                    if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
+                        if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
+                        host_res[(size_t) i] = slot;
+                        continue;
+                    }
                     const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                     if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
