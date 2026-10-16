@@ -101,3 +101,51 @@ test('token count: one per chunk, or characters / 4 when the server batches', ()
   const a = new TokenCount(); for (const t of ['a', 'b', 'c']) a.add(t); assert.equal(a.tokens, 3);
   const b = new TokenCount(); b.add('x'.repeat(400)); assert.equal(b.tokens, 100);
 });
+
+test('plain chat says what it is doing too: reading the message, thinking with a token count, writing, then the line is cleared before done', async () => {
+  const { withPlainStatus } = await import('../server/agent/status.mjs');
+  let clock = 1000; const written = [];
+  const frame = withPlainStatus(f => written.push(f), { now: () => clock, timers: { set: () => ({ unref() {} }), clear() {} } });
+  const feed = f => { clock += 2100; frame(f); };
+  feed({ type: 'start', demo: false });
+  for (const t of ['a', 'b', 'c']) feed({ type: 'reasoning', text: t });
+  feed({ type: 'delta', text: 'Hello' });
+  feed({ type: 'done', tokensOut: 4 });
+  const phases = written.filter(f => f.type === 'status').map(f => f.phase);
+  assert.deepEqual(phases.filter((p, i, a) => a[i - 1] !== p), ['starting', 'waiting', 'thinking', 'answering', 'idle']);
+  const think = written.filter(f => f.type === 'status' && f.phase === 'thinking').at(-1);
+  assert.equal(think.tokens, 3); assert.equal(think.text, 'Thinking… 3 tokens');
+  assert.equal(written.at(-1).type, 'done');
+  assert.equal(written.at(-2).phase, 'idle');
+  frame.dispose();
+});
+
+// ------------------------------------------------------------------------------------------------- real Harness
+
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { startScriptedWorker } from './helpers/scripted-worker.mjs';
+import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
+import { resolveHarness } from '../server/agent/harness-runtime.mjs';
+
+const skip = !process.env.STRATA_HARNESS_DIR || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
+
+test('real Harness: a turn that writes a file says what it is doing, in order, and ends with the status cleared before done', { skip }, async (t) => {
+  const worker = await startScriptedWorker({});
+  const dir = mkdtempSync(join(tmpdir(), 'strata-status-'));
+  const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }];
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+  t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
+  const frames = [];
+  await bridge.runTurn({ chatId: 's1', message: `SCRIPT:call write ${JSON.stringify({ file_path: join(ws, 'pagoda.html'), content: '<html></html>' })}`, workspacePath: ws, mode: 'bypass', onFrame: f => frames.push(f) });
+  const statuses = frames.filter(f => f.type === 'status');
+  assert.ok(statuses.length >= 2, 'statuses were sent');
+  assert.equal(statuses[0].phase, 'starting');
+  assert.ok(statuses.some(s => /^Writing (a file|pagoda\.html)…/.test(s.text)), `a "Writing …" status was sent (${statuses.map(s => s.text).join(' | ')})`);
+  assert.deepEqual(statuses.map(s => s.seq), statuses.map((_, i) => i + 1), 'sequence numbers count up');
+  assert.equal(statuses.at(-1).phase, 'idle');
+  assert.ok(frames.indexOf(statuses.at(-1)) < frames.findIndex(f => f.type === 'done'), 'cleared before done');
+  assert.ok(existsSync(join(ws, 'pagoda.html')));
+});
