@@ -7133,3 +7133,8 @@ textarea {
   .tune-step[data-s="run"] .tune-step__badge::before, .tune-step[data-s="run"] .tune-step__badge svg, .tune-step[data-s="done"] .tune-step__badge, .tune-hero__big { animation: none !important; }
   .tune-live__bar i, .tune-compare__bar i { transition: none; }
 }
+
+/* ---- tool rows: compact, no dividers between them ---- */
+.tool-summary { border-top: 0; padding-block: 3px; color: var(--st-ink-muted); }
+.tool-summary summary { font-weight: 500; min-height: 22px; cursor: pointer; }
+.tool-summary > div { margin-top: 6px; padding-left: 20px; }
