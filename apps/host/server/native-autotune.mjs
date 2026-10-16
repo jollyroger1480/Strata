@@ -14,6 +14,7 @@ const USES = new Set(['chat', 'coding']);
 export function resultSentence(result) {
   if (!result) return 'The tune did not finish.';
   const name = result.preset?.name;
+  if (result.code === 'busy_pc') return 'Your PC was busy, so the measurements were not reliable. Nothing was changed. Try again when it is quiet.';
   if (result.outcome === 'improved') {
     const gain = Math.max(0, Math.round(result.gain_pct ?? 0));
     return `+${gain}% faster answers${name ? `, saved as '${name}'` : ''}`;
@@ -54,6 +55,10 @@ export function createAutoTune({ launcher, workDir, spawnProcess = spawn, pollMs
     run,
     /** Which saved tuning these choices start with, and whether it is still valid (reads only). */
     async status(configPath) { return need(await run(['presets', 'status', configPath, '--output', 'json'], { timeoutMs: 45_000 }), 'The saved tuning could not be read.'); },
+    /** What a start will really run: the saved tuning's values on top of the configuration (Expert mode shows these). */
+    async effective(configPath) { return need(await run(['presets', 'effective', configPath, '--output', 'json'], { timeoutMs: 45_000 }), 'The tuned values could not be read.'); },
+    /** Switch the saved tuning off for these choices (kept, can be switched on again with apply). */
+    async off(configPath) { return need(await run(['presets', 'off', configPath, '--output', 'json'], { timeoutMs: 45_000 }), 'The saved tuning could not be switched off.'); },
     async list() { return need(await run(['presets', 'list', '--output', 'json'], { timeoutMs: 30_000 }), 'The saved tunings could not be read.'); },
     async action(kind, id, extra = {}) {
       if (!/^[0-9a-f]{8,32}$/.test(String(id ?? '')) && kind !== 'undo') throw new Error('Choose a saved tuning.');

@@ -36,5 +36,10 @@
  "tune35": "Ajustar de novo",
  "tune36": "Iniciar ajuste",
  "tune37": "Ajustando o seu modelo",
- "tune38": "Neste PC as respostas podem variar de uma execução para outra mesmo com a configuração padrão; esta configuração não aumenta isso."
+ "tune38": "Neste PC as respostas podem variar de uma execução para outra mesmo com a configuração padrão; esta configuração não aumenta isso.",
+ "tune39": "Usando o seu ajuste “{0}”",
+ "tune40": "Desligar",
+ "tune41": "Ligar",
+ "tune42": "O seu ajuste está desligado. As configurações padrão são usadas.",
+ "tune43": "O seu PC estava ocupado, então as medições não foram confiáveis. Nada foi alterado. Tente de novo quando ele estiver tranquilo."
 }

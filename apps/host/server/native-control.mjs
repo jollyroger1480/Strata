@@ -184,6 +184,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  /* What the tuner measures is what a load would start: the saved model config with the user's choices and the resource profile. */
  function tuneConfig(args){const {config,entry}=record(args.model);if(!entry.ready)throw new Error('Prepare the model before tuning it.');const {cfg}=buildConfig({model:args.model,vision:args.vision,resourceProfile:args.resourceProfile,gpus:args.gpus},config);return {path:writeTuneConfig(directory,args.model,cfg),entry};}
  async function tuneStatus(args){await refresh();const {path}=tuneConfig(args);return autotuner.status(path);}
+ async function tuneEffective(args){await refresh();const {path}=tuneConfig(args);return autotuner.effective(path);}
+ async function tuneOff(args){await refresh();const {path}=tuneConfig(args);return autotuner.off(path);}
  async function autotune(job,args){
   await refresh(true);if(job.state!=='running')return;
   if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}
@@ -201,5 +203,5 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function close(){closing=true;clearInterval(timer);const operations=[];for(const job of jobs.values()){job.abort?.abort();if(job.process)operations.push(stopProcess(job.process));if(job.state==='running')job.state='cancelled';}await Promise.all(operations);await Promise.all([...instances.keys()].map(id=>unload(id,true).catch(()=>{})));disconnect();}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,...job})=>job);return value;};
- return {state:publicState,tuneStatus,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,configure,setDownloadDirectory,plan,settings,save,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),close};
+ return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,configure,setDownloadDirectory,plan,settings,save,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),close};
 }

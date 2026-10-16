@@ -43,6 +43,11 @@ KEYS = [
     "Start tuning",
     "Tuning your model",
     'Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.',
+    "Using your tuning '{0}'",
+    'Switch off',
+    'Switch on',
+    'Your tuning is off. The standard settings are used.',
+    'Your PC was busy, so the measurements were not reliable. Nothing was changed. Try again when it is quiet.',
 ]
 
 T = {
@@ -62,6 +67,11 @@ T = {
         "长提示的编程", "允许可能略微改变回答的设置", "已保存的调优", "使用中", "使用",
         "再次检查（约 2 分钟）", "再次调优", "开始调优", "正在调优你的模型",
         '在这台电脑上，即使使用标准设置，每次运行的回答也可能不同；此设置不会增加这种差异。',
+        '正在使用你的调优“{0}”',
+        '关闭',
+        '开启',
+        '你的调优已关闭，使用标准设置。',
+        '你的电脑当时很忙，测量结果不可靠。没有做任何改动。请在电脑空闲时再试。',
     ],
     "ja": [
         "このモデルをチューニング", "あなたの PC で最も速い設定を探しています…", "残り約 {0} 分",
@@ -79,6 +89,11 @@ T = {
         "長いプロンプトでのコーディング", "回答がわずかに変わる可能性のある設定も許可する", "保存済みチューニング", "使用中", "使用する",
         "もう一度チェック（約 2 分）", "もう一度チューニング", "チューニングを開始", "モデルをチューニング中",
         'このPCでは標準設定でも実行のたびに回答が変わることがあります。この設定がそれを増やすことはありません。',
+        'あなたのチューニング「{0}」を使用中',
+        'オフにする',
+        'オンにする',
+        'チューニングはオフです。標準設定を使用します。',
+        'PCが忙しく、測定結果が信頼できませんでした。何も変更していません。PCが空いているときにもう一度お試しください。',
     ],
     "de": [
         "Dieses Modell abstimmen", "Die schnellsten Einstellungen für deinen PC werden gesucht…", "noch etwa {0} Min.",
@@ -96,6 +111,11 @@ T = {
         "Programmieren mit langen Prompts", "Einstellungen erlauben, die Antworten leicht verändern können", "Gespeicherte Abstimmungen", "In Gebrauch", "Verwenden",
         "Erneut prüfen (etwa 2 Minuten)", "Erneut abstimmen", "Abstimmung starten", "Dein Modell wird abgestimmt",
         'Auf diesem PC können die Antworten von Lauf zu Lauf abweichen, auch mit der Standardeinstellung; diese Einstellung verstärkt das nicht.',
+        'Deine Abstimmung „{0}“ wird verwendet',
+        'Ausschalten',
+        'Einschalten',
+        'Deine Abstimmung ist aus. Es gelten die Standardeinstellungen.',
+        'Dein PC war ausgelastet, daher waren die Messungen nicht zuverlässig. Es wurde nichts geändert. Versuche es erneut, wenn er ruhig ist.',
     ],
     "es": [
         "Ajustar este modelo", "Buscando los ajustes más rápidos para tu PC…", "faltan unos {0} min",
@@ -113,6 +133,11 @@ T = {
         "Programar con prompts largos", "Permitir ajustes que pueden cambiar ligeramente las respuestas", "Ajustes guardados", "En uso", "Usar",
         "Comprobar de nuevo (unos 2 minutos)", "Ajustar de nuevo", "Empezar a ajustar", "Ajustando tu modelo",
         'En este PC las respuestas pueden variar de una ejecución a otra incluso con el ajuste estándar; este ajuste no lo aumenta.',
+        'Usando tu ajuste «{0}»',
+        'Desactivar',
+        'Activar',
+        'Tu ajuste está desactivado. Se usan los ajustes estándar.',
+        'Tu PC estaba ocupado, así que las mediciones no fueron fiables. No se cambió nada. Inténtalo de nuevo cuando esté tranquilo.',
     ],
     "ru": [
         "Настроить эту модель", "Ищем самые быстрые настройки для вашего ПК…", "осталось примерно {0} мин.",
@@ -130,6 +155,11 @@ T = {
         "Программирование с длинными промптами", "Разрешить настройки, которые могут немного изменить ответы", "Сохранённые настройки", "Используется", "Использовать",
         "Проверить снова (около 2 минут)", "Настроить снова", "Начать настройку", "Настройка вашей модели",
         'На этом ПК ответы могут отличаться от запуска к запуску даже при стандартных настройках; эта настройка этого не усиливает.',
+        'Используется ваша настройка «{0}»',
+        'Выключить',
+        'Включить',
+        'Ваша настройка выключена. Используются стандартные параметры.',
+        'Ваш ПК был занят, поэтому измерения были ненадёжными. Ничего не изменено. Повторите, когда он освободится.',
     ],
     "pt": [
         "Ajustar este modelo", "Procurando as configurações mais rápidas para o seu PC…", "faltam cerca de {0} min",
@@ -147,6 +177,11 @@ T = {
         "Programação com prompts longos", "Permitir configurações que podem mudar um pouco as respostas", "Ajustes salvos", "Em uso", "Usar",
         "Verificar de novo (cerca de 2 minutos)", "Ajustar de novo", "Iniciar ajuste", "Ajustando o seu modelo",
         'Neste PC as respostas podem variar de uma execução para outra mesmo com a configuração padrão; esta configuração não aumenta isso.',
+        'Usando o seu ajuste “{0}”',
+        'Desligar',
+        'Ligar',
+        'O seu ajuste está desligado. As configurações padrão são usadas.',
+        'O seu PC estava ocupado, então as medições não foram confiáveis. Nada foi alterado. Tente de novo quando ele estiver tranquilo.',
     ],
     "ko": [
         "이 모델 최적화", "내 PC에서 가장 빠른 설정을 찾는 중…", "약 {0}분 남음",
@@ -164,6 +199,11 @@ T = {
         "긴 프롬프트로 코딩", "답변을 조금 바꿀 수 있는 설정 허용", "저장된 최적화", "사용 중", "사용",
         "다시 점검 (약 2분)", "다시 최적화", "최적화 시작", "모델을 최적화하는 중",
         '이 PC에서는 표준 설정에서도 실행할 때마다 답변이 달라질 수 있으며, 이 설정이 그 차이를 키우지는 않습니다.',
+        '내 최적화 ‘{0}’ 사용 중',
+        '끄기',
+        '켜기',
+        '최적화가 꺼져 있습니다. 표준 설정을 사용합니다.',
+        'PC가 바빠서 측정 결과를 믿을 수 없었습니다. 아무것도 변경하지 않았습니다. PC가 한가할 때 다시 시도하세요.',
     ],
 }
 

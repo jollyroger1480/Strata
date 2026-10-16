@@ -25,6 +25,9 @@ export interface TuneStatus {
   reasons: string[];
   presets: TunePreset[];
   can_undo: boolean;
+  /** the tuning was switched off for these choices (it is kept: last_active can be switched on again) */
+  switched_off?: boolean;
+  last_active?: TunePreset | null;
 }
 
 export interface TuneProgress { stage: string; text: string | null; minutesLeft: number | null; runsDone: number; runsPlanned: number; elapsedS: number; step: string }
@@ -42,6 +45,11 @@ export interface TuneResult {
   answers?: { class: 'exact' | 'placement' | 'nonrepeatable' | 'quality'; fields: string[]; default_repeatable?: boolean };
   preset?: { id: string; name: string } | null;
   notes?: string[];
+  /** what the screen shows: faster | already_fastest | busy_pc | failed | stopped */
+  code?: 'faster' | 'already_fastest' | 'busy_pc' | 'failed' | 'stopped';
+  /** busy_pc: noisy | drift | not_tried; failed: start_failed | no_memory */
+  reason_code?: string;
+  values?: { gain_pct?: number; gain_decode_pct?: number; base_tok_s?: number | null; tuned_tok_s?: number | null; noise_pct?: number | null; drift_pct?: number | null; minutes?: number; pairs?: number; faster_pairs?: number; preset_name?: string | null };
   verdict?: 'keep' | 'retune' | 'inconclusive';
   reason?: string;
 }
@@ -52,6 +60,11 @@ export const tuneStatus = (model: string, resourceProfile: string, vision: strin
   api.get<TuneStatus>(`/api/native/tune/status?${q({ model, resourceProfile, vision })}`);
 export const tunePresetAction = (id: string, action: 'apply' | 'rename' | 'delete' | 'undo', body: Record<string, unknown> = {}) =>
   api.post(`/api/native/tune/presets/${id}/${action}`, body);
+export const tuneOff = (model: string, resourceProfile: string, vision: string) =>
+  api.post('/api/native/tune/off', { model, resourceProfile, vision });
+/** What a start will really run: the saved tuning's values on top of the configuration (Expert mode shows these). */
+export const tuneEffective = (model: string, resourceProfile: string, vision: string) =>
+  api.get<{ applied: boolean; preset: { id: string; name: string } | null; args: string[]; env: Record<string, string>; changed: { flag: string; was: string | null; now: string | null }[]; why_not?: string | null }>(`/api/native/tune/effective?${q({ model, resourceProfile, vision })}`);
 export const tuneUndo = (model: string, resourceProfile: string, vision: string) =>
   api.post('/api/native/tune/undo', { model, resourceProfile, vision });
 

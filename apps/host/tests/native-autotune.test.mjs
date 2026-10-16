@@ -15,6 +15,7 @@ function handler(log, { result, hold = false, delayMs = 60 } = {}) {
     const out = json => { child.stdout.emit('data', Buffer.from(JSON.stringify(json))); child.exitCode = 0; child.emit('exit', 0); child.emit('close', 0); };
     if (cmd[0] === 'presets' && cmd[1] === 'status') return out({ ok: true, active: null, suggested_name: 'IQ2_XS 32K – Full speed', presets: [], state: null, reasons: [] });
     if (cmd[0] === 'presets' && cmd[1] === 'list') return out({ ok: true, presets: [{ id: 'a'.repeat(32), name: 'x' }] });
+    if (cmd[0] === 'presets' && cmd[1] === 'effective') return out({ ok: true, applied: true, preset: { id: 'a'.repeat(32), name: 'IQ2_XS 32K – Work' }, args: ['--kv-resident', '65536'], changed: [{ flag: '--kv-resident', was: '32768', now: '65536' }] });
     if (cmd[0] === 'presets') return out({ ok: true, done: cmd[1] });
     if (cmd[0] === 'tune') {
       const status = arg(cmd, '--status-file');
@@ -134,4 +135,24 @@ test('a model that is not prepared cannot be tuned', async () => {
     assert.equal(job.state, 'error');
     assert.match(job.error, /Prepare the model/);
   } finally { await f.cleanup(); }
+});
+
+test('Expert mode can read the tuned values and the tuning can be switched off for these choices', async () => {
+  const log = [];
+  const f = nativeFixture({ tuneHandler: handler(log, {}) });
+  try {
+    await f.control.refresh(true);
+    const eff = await f.control.tuneEffective({ model: 'iq2_xs', resourceProfile: 'work' });
+    assert.equal(eff.applied, true);
+    assert.deepEqual(eff.changed, [{ flag: '--kv-resident', was: '32768', now: '65536' }]);
+    const cmd = log.find(c => c[1] === 'effective');
+    const cfg = JSON.parse(readFileSync(cmd[2], 'utf8'));
+    assert.equal(cfg.ui_resource_profile, 'work');                 // the choices a load would make, so the right tuning is found
+    await f.control.tuneOff({ model: 'iq2_xs', resourceProfile: 'work' });
+    assert.deepEqual(log.at(-1).slice(0, 2), ['presets', 'off']);
+  } finally { await f.cleanup(); }
+});
+
+test('a busy PC is a plain result, not an error', () => {
+  assert.match(resultSentence({ outcome: 'inconclusive', code: 'busy_pc', message: 'x' }), /PC was busy/);
 });

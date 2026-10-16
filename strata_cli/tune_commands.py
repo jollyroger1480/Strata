@@ -74,6 +74,10 @@ def add_presets(sp: argparse._SubParsersAction) -> None:
     ex.add_argument("--file", default=None)
     im = common(psp.add_parser("import", help="read a preset from a file"))
     im.add_argument("file")
+    ef = common(psp.add_parser("effective", help="what a start with these choices will actually run: the saved tuning's values on top of the configuration"))
+    ef.add_argument("target", help="a saved profile name or a run configuration (JSON)")
+    of = common(psp.add_parser("off", help="switch the saved tuning off for these choices (back to the standard settings; it is kept and can be switched on again)"))
+    of.add_argument("target", help="a saved profile name or a run configuration (JSON)")
     rc = common(psp.add_parser("recheck", help="a short check (about 2 minutes) that a preset is still as fast"))
     rc.add_argument("preset")
     rc.add_argument("target", help="the profile name or run configuration the preset belongs to")
@@ -244,6 +248,9 @@ def auto(a: argparse.Namespace) -> int:
         except presets.PresetError as e:
             result.notes.append(str(e))
     out["preset"] = ({"id": saved["id"], "name": saved["name"]} if saved else None)
+    autotune.Tuner.finalize(result)
+    out.update({"code": result.code, "reason_code": result.reason_code, "values": result.values})
+    out["values"]["preset_name"] = saved["name"] if saved else None
     state.update({"state": "done", "result": out, "stage": "done"})
     _write_status(a.status_file, state)
     if machine:
@@ -292,6 +299,10 @@ def presets_command(a: argparse.Namespace) -> int:
             return _print({"presets": [_summary(p) for p in items]}, machine, human)
         if cmd == "status":
             return _status(a, machine)
+        if cmd == "effective":
+            return _effective(a, machine)
+        if cmd == "off":
+            return _off(a, machine)
         if cmd == "show":
             p = presets.find(a.preset)
             return _print({"preset": p}, machine, json.dumps(p, indent=2, ensure_ascii=False))
@@ -346,6 +357,36 @@ def _summary(p: dict[str, Any]) -> dict[str, Any]:
             "recheck": p.get("recheck"), "slot": p.get("slot")}
 
 
+def _effective(a: argparse.Namespace, machine: bool) -> int:
+    """The values a start will really use (owner feedback, item 11): the configuration with the active saved tuning put on top,
+    plus the list of what the tuning changed, so Expert mode can show the tuned numbers and not the untuned ones."""
+    from strata_control import presets, tune_knobs
+    _path, cfg = _load_target(a.target)
+    merged, info = presets.overlay(cfg)
+    before = [str(x) for x in cfg.get("args") or []]
+    after = [str(x) for x in merged.get("args") or []]
+    changed = []
+    for flag in sorted({x for x in before + after if x.startswith("--")}):
+        was, now = tune_knobs._current(before, flag), tune_knobs._current(after, flag)
+        if was != now:
+            changed.append({"flag": flag, "was": was, "now": now})
+    payload = {"applied": bool(info.get("applied")), "preset": info.get("preset"), "state": info.get("state"), "reasons": info.get("reasons", []),
+               "why_not": info.get("why_not"), "notice": info.get("notice"), "args": merged.get("args"), "env": merged.get("env") or {},
+               "sampling": merged.get("sampling") or {}, "changed": changed, "per_request": info.get("per_request") or {}}
+    human = (f"Using your tuning '{info['preset']['name']}'" if info.get("applied") else "No saved tuning is applied; the standard settings run.")
+    return _print(payload, machine, human)
+
+
+def _off(a: argparse.Namespace, machine: bool) -> int:
+    """Switch the saved tuning off for these choices. It is kept (and listed), so switching it back on is one step."""
+    from strata_control import presets
+    _path, cfg = _load_target(a.target)
+    ident = presets.current_identity(cfg)
+    slot = presets.slot_key(presets.choices_from_config(cfg), (ident.get("model") or {}).get("sha256_shard1"))
+    presets.deactivate_slot(slot)
+    return _print({"active": None}, machine, "Back to the standard settings. Your tuning is kept and can be switched on again.")
+
+
 def _status(a: argparse.Namespace, machine: bool) -> int:
     from strata_control import presets
     _path, cfg = _load_target(a.target)
@@ -360,7 +401,9 @@ def _status(a: argparse.Namespace, machine: bool) -> int:
     return _print({"slot": slot, "suggested_name": default, "choices": choices,
                    "active": _summary(active) if active else None, "state": stale["state"] if stale else None,
                    "reasons": stale["reasons"] if stale else [], "presets": [_summary(p) for p in items],
-                   "can_undo": bool(idx.get("history")) or bool(active)},
+                   "can_undo": bool(idx.get("history")) or bool(active),
+                   "switched_off": bool(not active and idx.get("history")),
+                   "last_active": next((_summary(p) for p in items if p["id"] == (idx.get("history") or [None])[-1]), None) if not active else None},
                   machine, (f"Active: '{active['name']}' ({stale['state']})" if active else "No saved tuning for these choices yet."))
 
 

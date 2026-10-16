@@ -95,6 +95,13 @@ class ArmReport:
 @dataclass
 class TuneResult:
     outcome: str = "default_confirmed"   # improved | default_confirmed | inconclusive | base_failed | cancelled
+    #: what a screen shows, one of: faster | already_fastest | busy_pc | failed | stopped  (see `finalize`)
+    code: str = "already_fastest"
+    #: why, for busy_pc: noisy | drift | not_tried (no memory or time to compare anything); for failed: start_failed | no_engine
+    reason_code: str = ""
+    #: the numbers a screen puts in its sentence, all plain numbers: gain_pct, base_tok_s, tuned_tok_s, noise_pct, drift_pct,
+    #: minutes, pairs, faster_pairs, preset_name
+    values: dict[str, Any] = field(default_factory=dict)
     message: str = ""
     mode: str = "quick"
     seconds: float = 0.0
@@ -321,7 +328,24 @@ class Tuner:
             r.outcome, r.message = "cancelled", "Stopped. Your settings were not changed."
         r.seconds = round(self.clock() - self.started, 1)
         r.waited_s = round(self.waited_s, 1)
+        self.finalize(r)
         return r
+
+    @staticmethod
+    def finalize(r: "TuneResult") -> None:
+        """The structured outcome a screen shows inside the tune dialog (owner feedback, item 13): a code and plain numbers, so no
+        screen has to read a sentence. faster / already_fastest / busy_pc (noisy, drifting, or nothing could be compared) /
+        failed / stopped. `busy_pc` is a result, not an error: nothing was changed and trying again later is the answer."""
+        r.code = {"improved": "faster", "default_confirmed": "already_fastest", "inconclusive": "busy_pc",
+                  "base_failed": "failed", "cancelled": "stopped"}.get(r.outcome, "failed")
+        if r.outcome == "default_confirmed" and r.noise.get("noisy"):
+            r.reason_code = r.reason_code or "noisy_but_nothing_better"
+        base = (r.base or {}).get("decode_tok_s")
+        tuned = (r.chosen or {}).get("decode_tok_s")
+        r.values = {"gain_pct": r.gain_pct, "gain_decode_pct": r.gain_decode_pct, "base_tok_s": base, "tuned_tok_s": tuned,
+                    "noise_pct": round(100 * (r.noise or {}).get("spread", 0.0), 1) if r.noise else None,
+                    "drift_pct": round(100 * (r.noise or {}).get("drift", 0.0), 1) if r.noise else None,
+                    "minutes": round(r.seconds / 60.0 - r.waited_s / 60.0, 1), "pairs": r.pairs, "faster_pairs": r.faster_pairs}
 
     def _spec(self) -> RequestSet:
         long_tokens = 0
@@ -343,6 +367,7 @@ class Tuner:
         why = self._ram_guard(0, "your current settings")
         if why:
             r.outcome, r.message = "base_failed", "Not tuned: " + why
+            r.reason_code = "no_memory"
             return
         pr_rows: list[dict[str, Any]] = []
 
@@ -355,6 +380,7 @@ class Tuner:
         self.base_runs.append(base1)
         if base1.status != "PASS" or not metric(base1, o.use):
             r.outcome = "base_failed"
+            r.reason_code = "start_failed"
             r.message = "Your current settings could not be measured: " + (base1.reason or base1.status)
             return
         r.base = base1.to_dict()
@@ -574,6 +600,7 @@ class Tuner:
                 chosen_args, chosen_env, winners, final_pairs = {}, {}, [], []
                 per_request_chosen = {}
                 r.outcome = "inconclusive"
+                r.reason_code = "drift"
                 r.message = ("The PC changed speed while measuring (about %.0f%%), more than the gain found, so nothing "
                              "was changed. Try again when nothing else is running." % (drift * 100))
         if r.outcome != "inconclusive":
@@ -581,10 +608,12 @@ class Tuner:
                 r.outcome = "improved"
             elif r.noise["noisy"] and (spread > 2 * STAGE_GAP_NOISY):
                 r.outcome = "inconclusive"
+                r.reason_code = "noisy"
                 r.message = "The PC was too noisy to tell settings apart, so nothing was changed. Try again when it is idle."
             elif arms and not any(a.status in ("tested", "dropped", "failed") for a in arms) and not r.per_request:
                 # candidates were planned but none could be measured (no free memory, no time): that is not "already the fastest"
                 r.outcome = "inconclusive"
+                r.reason_code = "not_tried"
                 r.message = ("Other settings could not be tried (not enough free memory or time), so nothing was compared and nothing was "
                              "changed. Try again when the PC is quiet.")
             else:
