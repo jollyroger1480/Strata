@@ -49,8 +49,8 @@ test('the preset: our list is the Harness standard list minus exactly what the a
   assert.deepEqual(ids, STANDARD_PLUGIN_IDS.filter(id => !REMOVED_PLUGIN_IDS.includes(id) && id !== 'tool-bash'));
   assert.ok(standardPreset({ platform: 'linux' }).plugins.some(p => p.id === 'tool-bash') && !standardPreset({ platform: 'linux' }).plugins.some(p => p.id === 'tool-pwsh'));
   const web = standardPreset().plugins.find(p => p.id === 'tool-web').config;
-  assert.equal(web.fetch, true); assert.equal(web.search, false);
-  assert.equal(standardPreset({ search: true }).plugins.find(p => p.id === 'tool-web').config.search, true, 'a search key can switch it back on');
+  assert.equal(web.fetch, true); assert.equal(web.search, false, 'the preset alone leaves search to the profile, which switches it on (DuckDuckGo needs no key)');
+  assert.equal(standardPreset({ search: true }).plugins.find(p => p.id === 'tool-web').config.search, true);
   assert.ok(!ids.includes('tool-schedule'), 'Tasks is the only scheduler');
 });
 
@@ -101,12 +101,12 @@ async function rig(t) {
 const cards = frames => frames.filter(f => f.type === 'agent-tool').map(f => f.tool);
 const last = frames => cards(frames).at(-1);
 
-test('the agent is offered exactly these tools: everything useful, no scheduler, no search without a key, no unanswerable question', { skip }, async (t) => {
+test('the agent is offered exactly these tools: everything useful including web search (no key needed), no scheduler, no unanswerable question', { skip }, async (t) => {
   const r = await rig(t);
   await r.run('inv', 'SCRIPT:echo hi');
   const offered = [...r.worker.requests].reverse().find(q => q.toolNames.length)?.toolNames.sort();
-  assert.deepEqual(offered, ['create_goal', 'edit', 'get_goal', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'skill', 'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'workflow', 'working_directory', 'write'].sort());
-  assert.ok(!offered.some(n => n.startsWith('schedule_')) && !offered.includes('web_search') && !offered.includes('ask_user_question') && !offered.includes('exit_plan_mode'));
+  assert.deepEqual(offered, ['create_goal', 'edit', 'get_goal', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'skill', 'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'web_search', 'workflow', 'working_directory', 'write'].sort());
+  assert.ok(!offered.some(n => n.startsWith('schedule_')) && offered.includes('web_search') && !offered.includes('ask_user_question') && !offered.includes('exit_plan_mode'));
 });
 
 test('a tool from each family runs and shows a card the page can render', { skip }, async (t) => {

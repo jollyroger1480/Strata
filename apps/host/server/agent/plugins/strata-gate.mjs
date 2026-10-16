@@ -26,6 +26,10 @@ export const inject = ['approval', 'permissionPresets', 'sessions', 'tools'];
 
 /** Preset key the host writes for Manual (apps/host/server/agent/profile.mjs MODE_PRESETS). */
 export const MANUAL_PRESET = 'strata-manual';
+/** Preset key the host writes for Plan (read-only, nothing may change). */
+export const PLAN_PRESET = 'strata-plan';
+/** The app's own look-only tool server (the person's instruction tools): it only hands back text. */
+const LOOK_ONLY_SERVER = 'mcp__strata-instructions__';
 
 /** Tools that cannot change anything on this computer. Everything else asks. */
 export const READ_ONLY_TOOLS = new Set([
@@ -111,8 +115,20 @@ export function manualDecision(exec) {
   if (tool === 'write') return { kind: 'ask', reason: `Create or replace the file ${clip(args.file_path ?? args.path, 200)}` };
   if (tool === 'edit') return { kind: 'ask', reason: `Change the file ${clip(args.file_path ?? args.path, 200)}` };
   if (tool === 'job_kill') return { kind: 'ask', reason: 'Stop a background task' };
+  if (tool.startsWith(LOOK_ONLY_SERVER)) return null;
   if (tool.startsWith('mcp__')) return { kind: 'ask', reason: `Use the connected tool ${tool.split('__').slice(1).join(' / ')}` };
   return { kind: 'ask', reason: `Use the tool ${tool}` };
+}
+
+/**
+ * Plan mode changes nothing. A connected tool (a person's tool server, a command they wrote, the browser) is not under the sandbox, so
+ * Plan refuses it instead of letting it run. The look-only instruction tools are fine.
+ * @returns {{kind:'deny', reason:string}|null}
+ */
+export function planDecision(exec) {
+  const tool = String(exec.name ?? '');
+  if (!tool.startsWith('mcp__') || tool.startsWith(LOOK_ONLY_SERVER)) return null;
+  return { kind: 'deny', reason: 'Plan mode only looks and changes nothing, so it cannot use this tool. Switch to Manual or Bypass to use it.' };
 }
 
 export function apply(ctx) {
@@ -131,6 +147,7 @@ export function apply(ctx) {
     if (!agent || exec.name === 'run_code') return next();
     let preset;
     try { preset = effectivePreset(agent.session); } catch { return next(); }
+    if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
     if (preset !== MANUAL_PRESET) return next();
     const gate = manualDecision(exec);
     if (!gate) return next();

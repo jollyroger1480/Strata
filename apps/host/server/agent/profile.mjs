@@ -20,6 +20,7 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { standardPreset } from './preset.mjs';
+import { DDG_PROVIDER_ID } from '../web-search-ddg.mjs';
 
 const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'openai-responses', anthropic: 'anthropic-messages' };
 
@@ -52,6 +53,13 @@ export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEF
 
 /** The approval gate plugin (plain ESM, loaded by absolute path). */
 export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', import.meta.url));
+/** The app's web search (DuckDuckGo, or the person's own Exa / Perplexity key), registered with the Harness's web seam. */
+export const SEARCH_PLUGIN = fileURLToPath(new URL('./plugins/strata-search.mjs', import.meta.url));
+/** The app's own tool server for the tools a person writes (instructions, commands). */
+export const CUSTOM_TOOLS_SCRIPT = fileURLToPath(new URL('./custom-tools-mcp.mjs', import.meta.url));
+
+/** What Settings -> Tools says when nothing was chosen. */
+const NO_TOOLS_SETTINGS = Object.freeze({ off: new Set(), search: { provider: 'builtin', key: '' }, browserEnabled: false, servers: {}, hasInstructionTools: false, hasCommandTools: false, toolFile: null });
 
 /**
  * The tool servers (MCP) set up for the model in Settings, as Harness client rows. Their tools appear to the agent as
@@ -120,7 +128,7 @@ export function outputBudget(context) {
  * @param {Array<{id:string,name:string,baseUrl:string,protocol:string,apiKey?:string,models:Array<{id:string,name?:string,contextMax?:number|null}>}>} input.connections
  * @returns {{patch:string, env:Record<string,string>, routes:Array, defaultRoute:object|null, signature:string}}
  */
-export function buildProfile({ local = [], connections = [], gate = true }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -158,14 +166,18 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
     if (!protocol) return;
     const route = `api-${slug(conn.id).slice(0, 12)}`;
     const keyEnv = `STRATA_API_KEY_${slug(conn.id).replace(/-/g, '_').toUpperCase().slice(0, 12)}`;
+    // A model server on this network that wants no key (llama.cpp, LM Studio, another Strata) still needs some value: the OpenAI-style client
+    // refuses to send anything without one, and the person saw "the model rejected the credentials".
+    const keyless = !conn.apiKey && protocol === 'openai-completions';
     if (conn.apiKey) env[keyEnv] = conn.apiKey;
+    else if (keyless) env[keyEnv] = 'not-needed';
     let baseURL = conn.baseUrl;
     if (protocol === 'anthropic-messages') baseURL = baseURL.replace(/\/v1\/?$/, '');
     providers[route] = {
       displayName: conn.name,
       api: protocol,
       baseURL,
-      ...(conn.apiKey ? { apiKeyEnv: keyEnv } : {}),
+      ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT),
@@ -178,8 +190,19 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
 
   const defaultRoute = routes.find(r => r.kind === 'local') ?? null;
   // One Harness, one set of tool servers: the default local model's.
-  const mcp = mcpRows(local[0]?.mcpServers, mcpEnv);
+  const mcp = mcpRows({ ...(local[0]?.mcpServers ?? {}), ...(tools.servers ?? {}) }, mcpEnv);
   Object.assign(env, mcpEnv);
+  // The person's own instruction and command tools come from the app's tool server; a command tool asks in Manual like any connected tool.
+  const own = (kind, on) => on && tools.toolFile ? [{ id: `mcp-strata-${kind}`, name: '@deepseek-ai/dsh-mcp-client', config: { serverName: `strata-${kind}`, transport: 'stdio', command: process.execPath, args: [CUSTOM_TOOLS_SCRIPT, kind, tools.toolFile] } }] : [];
+  const ownRows = [...own('instructions', tools.hasInstructionTools), ...own('commands', tools.hasCommandTools)];
+  // Web search: DuckDuckGo with no key unless the person chose a keyed service AND saved its key (then that one; never a half-set-up one).
+  const searchOn = !tools.off.has('search');
+  const keyed = ['exa', 'perplexity', 'deepseek'].includes(tools.search.provider) && tools.search.key ? tools.search.provider : null;
+  if (searchOn && keyed) env.STRATA_SEARCH_KEY = tools.search.key;
+  const webRows = !searchOn ? [] : keyed === 'deepseek'
+    ? [{ id: 'web', config: { searchProvider: 'deepseek-official', fetchProvider: 'http' } }, { id: 'web-search-deepseek', config: { apiKeyEnv: 'STRATA_SEARCH_KEY' } }]
+    : [{ id: 'web', config: { searchProvider: keyed ?? DDG_PROVIDER_ID, fetchProvider: 'http' } }, { id: 'web-search-deepseek', disabled: true },
+      { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY' } }] }];
   const entries = [
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
@@ -188,9 +211,10 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
     { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? Math.max(slots, MIN_LOCAL_HELPERS) : DEFAULT_API_HELPERS } },
     // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN }] }] : []),
-    ...(mcp.length ? [{ insert: mcp }] : []),
-    // The reminder tools would be a second scheduler beside the app's Tasks; web search needs a search-service key the app has none of.
-    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset() },
+    ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
+    ...webRows,
+    // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn }) },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },
@@ -204,7 +228,10 @@ export function buildProfile({ local = [], connections = [], gate = true }) {
   // The signature decides whether the running agent must be restarted. It covers the secret values
   // through a hash so a changed key is noticed, and the hash is never reversible into the key.
   const signature = createHash('sha256').update(patch).update(JSON.stringify(Object.entries(env).sort())).digest('hex').slice(0, 16);
-  return { patch, env, routes, defaultRoute, signature };
+  // What the agent is offered (tool groups, web search, tool servers, the person's own tools) decides whether a running agent must be
+  // restarted for the next message; the routes are compared separately (a changed context size alone does not restart it).
+  const toolsSignature = createHash('sha256').update(JSON.stringify([mcp, ownRows, webRows, entries.find(e => e.id === 'preset-standard'), env.STRATA_SEARCH_KEY ?? '', mcpEnv])).digest('hex').slice(0, 16);
+  return { patch, env, routes, defaultRoute, signature, toolsSignature };
 }
 
 /** Find the route for a chat's model choice. */

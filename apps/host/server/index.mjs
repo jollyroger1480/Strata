@@ -13,6 +13,8 @@ import { skillEdit } from './skill-edits.mjs';
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge } from './agent/agent-bridge.mjs';
+import { createAgentTools } from './agent/tools-settings.mjs';
+import { findBrowser } from './agent/browser-probe.mjs';
 /**
  * Strata engine host.
  *
@@ -90,7 +92,11 @@ const native=createNativeControl({control,appUpdater,hardwareProbe:()=>(hardware
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
+// What the person chose in Settings -> Tools (tool groups, web search service and key, the browser, their own tools).
+const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => findBrowser() });
+agentTools.ensureFile();
 const agent = createAgentBridge({
+  tools: () => agentTools.profileView(),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
@@ -1448,6 +1454,20 @@ async function api(req, res, path, method, url) {
 
   // --- agent --------------------------------------------------------------
   if (path === '/api/agent/status' && method === 'GET') return json(res, 200, agent.status());
+  if (path === '/api/agent/tools' && method === 'GET') return json(res, 200, agentTools.view());
+  if (path === '/api/agent/tools' && method === 'PUT') {
+    try { return json(res, 200, agentTools.update(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
+  }
+  if (path === '/api/agent/tools/custom' && method === 'POST') {
+    try { return json(res, 200, agentTools.addCustom(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
+  }
+  const customToolRoute = /^\/api\/agent\/tools\/custom\/([A-Za-z0-9_-]+)$/.exec(path);
+  if (customToolRoute && method === 'PATCH') {
+    try { return json(res, 200, agentTools.editCustom(customToolRoute[1], await readBody(req))); } catch (e) { return error(res, 400, e.message); }
+  }
+  if (customToolRoute && method === 'DELETE') {
+    try { return json(res, 200, agentTools.removeCustom(customToolRoute[1])); } catch (e) { return error(res, 400, e.message); }
+  }
   if (path === '/api/agent/pending' && method === 'GET') {
     const chat = new URL(req.url, 'http://x').searchParams.get('chatId') ?? '';
     return json(res, 200, { pending: agent.pendingFor(chat) });
