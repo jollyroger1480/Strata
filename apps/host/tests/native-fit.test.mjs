@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 
 const { code } = await transform(await readFile(new URL('../src/lib/native-fit.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
-const { fitOn, memoryNeeded, RECOMMENDED, VERSION_GROUPS } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { fitOn, memoryNeeded, RECOMMENDED, VERSION_GROUPS, groupOpen } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const swift = { ram_needed_gb: 48, experts_gb: 35.5 };
 const gyroS = { ram_needed_gb: 27.6, experts_gb: 25.8, mem_total: true };
@@ -40,4 +40,14 @@ test('Recommended is the fixed four, in the owner\'s order; the groups are Swift
   assert.deepEqual(RECOMMENDED.map(r => `${r.family}:${r.model}`), ['gyro:Gyro-S', 'swift:IQ2_XS', 'qwen:IQ3_S', 'unsloth:UD-Q4_K_XL']);
   assert.deepEqual(VERSION_GROUPS.map(g => g.title), ['Swift models', 'GSQ-RCO models', 'NVFP4 models', 'Gyro models', 'Unsloth models']);
   assert.ok(RECOMMENDED.every(r => r.note.length > 0 && r.note.length < 40), 'one short note each');
+});
+
+test('the group of the running version can be collapsed (Gyro-M running, the Gyro group stayed open)', () => {
+  let opened = {};
+  assert.equal(groupOpen(opened, 'gyro', true), true, 'it starts open: it holds the selected version');
+  assert.equal(groupOpen(opened, 'swift', false), false, 'the others start closed');
+  opened = { ...opened, gyro: !groupOpen(opened, 'gyro', true) };   // the person clicks the Gyro header
+  assert.equal(groupOpen(opened, 'gyro', true), false, 'one click closes it');
+  opened = { ...opened, gyro: !groupOpen(opened, 'gyro', true) };
+  assert.equal(groupOpen(opened, 'gyro', true), true, 'and one more opens it again');
 });

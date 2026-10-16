@@ -58,7 +58,7 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
         finally { setPending(false); }
     }
     const found = checked ? problem(checked.preview.issues) : null;
-    return <Screen plainHeader title={tr("Model")} actions={<Btn onClick={onBack}>{tr("Strata optimized models")}</Btn>}>
+    return <Screen plainHeader title={tr("Model")} actions={<Btn onClick={onBack}>{tr("Back")}</Btn>}>
   <div className="native-model-layout">
    <div className="stack stack--lg">
     <section className="st-card native-choice"><h2 className="h3">{tr("Use a local GGUF…")}</h2>

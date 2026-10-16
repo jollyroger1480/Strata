@@ -4,7 +4,7 @@ import { Icon } from './ui';
 import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
 import type { CatalogVersion } from '../lib/native-catalog';
-import { RECOMMENDED, VERSION_GROUPS, fitOn, type FitHardware } from '../lib/native-fit';
+import { RECOMMENDED, VERSION_GROUPS, fitOn, groupOpen, type FitHardware } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker where the quantization alone is ambiguous. */
 export function versionName(v: CatalogVersion, withMaker = false): string {
@@ -33,7 +33,8 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const [folded, setFolded] = useState<Record<string, boolean>>({});
+  // A group is open when the person opened it; until they touch it, only the group that holds the selected version is open.
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
   const selected = versions.find(v => v.id === selectedId);
   const recommended = RECOMMENDED.map(r => ({ r, v: versions.find(v => v.sourceFamily === r.family && v.model === r.model) })).filter((x): x is { r: typeof RECOMMENDED[number]; v: CatalogVersion } => !!x.v);
   const groups = [
@@ -61,9 +62,9 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
         <div className="version-head"><span>{tr("Recommended")}</span><span>{tr("RAM + VRAM")}</span><span>{tr("Download")}</span></div>
         {tr(recommended.map(({ r, v }) => row(v, versionName(v, true), r.note)))}
         {tr(groups.map(g => {
-          const closed = folded[g.id] !== false && !g.items.some(v => v.id === selectedId);
+          const closed = !groupOpen(opened, g.id, g.items.some(v => v.id === selectedId));
           return <div className="version-group" key={g.id} data-open={!closed || undefined}>
-            <button role="menuitem" className="version-group__head" aria-expanded={!closed} onClick={() => setFolded(f => ({ ...f, [g.id]: closed ? false : true }))}><span>{tr(g.title)} <span className="muted">{tr(g.items.length)}</span></span><Icon name="chevron" size={14} className={cx(!closed && 'is-open')}/></button>
+            <button role="menuitem" className="version-group__head" aria-expanded={!closed} onClick={() => setOpened(o => ({ ...o, [g.id]: closed }))}><span>{tr(g.title)} <span className="muted">{tr(g.items.length)}</span></span><Icon name="chevron" size={14} className={cx(!closed && 'is-open')}/></button>
             {tr(!closed ? g.items.map(v => row(v, versionName(v))) : null)}
           </div>;
         }))}
