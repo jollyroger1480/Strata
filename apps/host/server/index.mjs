@@ -654,6 +654,44 @@ const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
 const INTERNAL_SECRET = randomBytes(24).toString('hex');
 /** The model a trial runs on, by run id: the chat's saved API model when it uses one, else the loaded local model. */
 const timeskipChoices = new Map();
+/** Trials this host is driving: run id -> { chatId (the chat that asked), turnChat (the assistant's own chat id), controller, step (the assistant's current status), lastSent }. */
+const trials = new Map();
+const trialByChat = new Map();
+/** What the job is doing, in the person's words, from its phase and the assistant's own current step (notes-split-agent3.md). */
+function trialActivity(run) {
+  const trial = trials.get(run.id);
+  switch (run.phase) {
+    case 'queued': case 'checkpointing': return { code: 'reading-files', text: 'Reading your files…' };
+    case 'generating': return { code: 'trying-version', text: 'Trying an improved version…', ...(trial?.step ? { args: { step: trial.step.text, stepCode: trial.step.code, ...(trial.step.args ? { stepArgs: trial.step.args } : {}) } } : {}) };
+    case 'checking': return { code: 'checking-result', text: 'Checking the result…' };
+    case 'decision': return { code: 'comparing', text: 'Comparing the two versions…' };
+    default: return null;
+  }
+}
+/** Tell the page when the job's phase or the assistant's step changed (SSE `timeskip`), at most every 2 s. */
+function watchTrial(id) {
+  const trial = trials.get(id);
+  if (!trial) return;
+  const timer = setInterval(() => {
+    const run = timeskip.status(id);
+    if (!run) { clearInterval(timer); return; }
+    const activity = trialActivity(run);
+    const key = JSON.stringify([run.phase, activity]);
+    if (key !== trial.lastSent) { trial.lastSent = key; hub.send('timeskip', { id, phase: run.phase, activity }); }
+    if (['completed', 'cancelled', 'failed', 'interrupted'].includes(run.phase)) { clearInterval(timer); trials.delete(id); if (trial.chatId) trialByChat.delete(trial.chatId); }
+  }, 2000);
+  timer.unref?.();
+  trial.timer = timer;
+}
+/** Stop a trial the person stopped: the assistant's turn, the job and its processes, and the copies. */
+async function stopTrial(id) {
+  const trial = trials.get(id);
+  if (trial) { trial.controller?.abort(); if (trial.turnChat) void agent.stop(trial.turnChat).catch(() => {}); }
+  const stopped = await timeskip.stop(id);
+  if (trial) { clearInterval(trial.timer); trials.delete(id); if (trial.chatId) trialByChat.delete(trial.chatId); }
+  if (stopped) hub.send('timeskip', { id, phase: 'cancelled', activity: null });
+  return stopped;
+}
 /**
  * Tuning, from the App Host.
  *
@@ -940,7 +978,7 @@ async function api(req, res, path, method, url) {
     const id = url.searchParams.get('id');
     const run = id ? timeskip.status(id) : null;
     if (!run) return error(res, 404, 'No such Time-skip run.');
-    return json(res, 200, { run });
+    return json(res, 200, { run: { ...run, activity: trialActivity(run) } });
   }
   if (path === '/api/timeskip/start' && method === 'POST') {
     const body = await readBody(req);
@@ -962,8 +1000,12 @@ async function api(req, res, path, method, url) {
       extraEnv: { STRATA_HOST_URL: `http://127.0.0.1:${PORT}`, STRATA_INTERNAL_SECRET: INTERNAL_SECRET },
     });
     if (!result.ok) return error(res, result.code === 2 ? 400 : 502, result.error);
+    const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
+    trials.set(result.run.id, { chatId, turnChat: null, controller: null, step: null, lastSent: '' });
+    if (chatId) trialByChat.set(chatId, result.run.id);
+    watchTrial(result.run.id);
     if (body.remoteModel?.connectionId && body.remoteModel?.modelId) timeskipChoices.set(result.run.id, { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) });
-    return json(res, 200, { run: result.run, simulated: false });
+    return json(res, 200, { run: { ...result.run, activity: trialActivity(result.run) }, simulated: false });
   }
   if (path === '/api/timeskip/files' && method === 'GET') {
     const found = timeskip.files(url.searchParams.get('id'));
@@ -972,7 +1014,7 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/stop' && method === 'POST') {
     const body = await readBody(req);
-    return json(res, 200, { stopped: timeskip.cancel(String(body.id ?? '')) });
+    return json(res, 200, { stopped: await stopTrial(String(body.id ?? '')) });
   }
   // One revision attempt for a job this host started: the app's assistant works inside the candidate folder.
   if (path === '/api/internal/timeskip-revise' && method === 'POST') {
@@ -988,15 +1030,31 @@ async function api(req, res, path, method, url) {
     const chosen = timeskipChoices.get(runId) ?? (() => { try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { return null; } })();
     if (!chosen) return error(res, 503, 'Load a model first, then try Time-skip again.');
     const chatId = `timeskip:${randomBytes(6).toString('hex')}`;
+    // The answer is a stream that starts at once and carries a beat every 15 s: a turn on a slow computer can run for many minutes with
+    // nothing to say, and a caller that hears no byte for five minutes gives up (that was "The assistant could not be reached").
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache, no-transform' });
+    const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
+    write({ type: 'beat' });
+    const beat = setInterval(() => write({ type: 'beat' }), 15_000);
+    const controller = new AbortController();
+    const trial = trials.get(runId);
+    if (trial) { trial.turnChat = chatId; trial.controller = controller; }
+    res.on('close', () => { clearInterval(beat); if (!res.writableEnded) { controller.abort(); void agent.stop(chatId).catch(() => {}); } });
     let text = '', failure = null;
     try {
-      await agent.runTurn({ chatId, message: timeskipRevisionMessage(String(body.prompt ?? '')), workspacePath: cwd, choice: chosen, mode: 'bypass', thinking: 'low', history: [], onFrame: frame => {
+      await agent.runTurn({ chatId, message: timeskipRevisionMessage(String(body.prompt ?? '')), workspacePath: cwd, choice: chosen, mode: 'bypass', thinking: 'low', history: [], signal: controller.signal, onFrame: frame => {
         if (frame.type === 'delta') text += frame.text ?? '';
         else if (frame.type === 'error') failure = frame.message;
+        else if (frame.type === 'status' && trial) {
+          // the assistant's own current step (what it is writing or running) rides along with the job's phase
+          trial.step = frame.phase === 'idle' ? null : { code: frame.code, text: frame.text, args: frame.args };
+        }
       } });
-    } finally { agent.forget(chatId); }
-    if (failure) return error(res, 502, failure);
-    return json(res, 200, { text: text.slice(-600) });
+    } catch (e) { failure = failure ?? e.message; } finally { agent.forget(chatId); clearInterval(beat); if (trial) trial.step = null; }
+    if (controller.signal.aborted) failure = failure ?? 'The trial was stopped.';
+    write(failure ? { type: 'error', message: failure } : { type: 'result', text: text.slice(-600) });
+    res.end();
+    return undefined;
   }
   if (path === '/api/timeskip/apply' && method === 'POST') {
     const body = await readBody(req);
@@ -1529,6 +1587,9 @@ async function api(req, res, path, method, url) {
   if (path === '/api/chat/stop' && method === 'POST') {
     const b = await readBody(req);
     if (typeof b.sessionId !== 'string') return error(res, 400, 'sessionId is required');
+    // A Time-skip trial of this chat is stopped by the same Stop button (and cleans up its copies).
+    const trialId = trialByChat.get(b.sessionId);
+    if (trialId) return json(res, 200, { stopped: await stopTrial(trialId), ended: 'time-skip' });
     try { return json(res, 200, await agent.stop(b.sessionId)); } catch (e) { return error(res, 502, e.message); }
   }
 

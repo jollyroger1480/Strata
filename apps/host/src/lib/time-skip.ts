@@ -38,6 +38,8 @@ export interface TimeSkipJob {
   files?: TimeSkipFile[];
   /** More changed files than are listed. */
   moreFiles?: number;
+  /** What the job is doing right now in the person's words (reading-files, trying-version, checking-result, comparing), from the host. */
+  activity?: { code: string; text: string; args?: Record<string, unknown> } | null;
   /** The revision attempt "Keep the update" applies when the checks did not keep one themselves. */
   applyAttempt?: number | null;
 }

@@ -17,8 +17,8 @@
  * A run is a job, not a request: it outlives the HTTP call that started it. The endpoint returns the
  * run id immediately and the client follows it with `/api/timeskip/status`.
  */
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { timeSkipDir } from './platform-paths.mjs';
 
@@ -134,6 +134,14 @@ export function timeskipRevisionMessage(request) {
   ].join('\n');
 }
 
+/** End a process and everything it started (the job, the Python it runs, the revision command and its Node). */
+function killTree(child) {
+  try {
+    if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    else child.kill('SIGTERM');
+  } catch { /* already gone */ }
+}
+
 /** How big a folder is, stopping early once it is clearly too big to copy for a trial. */
 export function measureFolder(root, { maxFiles = 3000, maxBytes = 300 * 1024 * 1024 } = {}) {
   let files = 0, bytes = 0, tooBig = false;
@@ -204,6 +212,10 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
 
   /** Runs this host started and is still driving. A run that is not terminal and not in here died with its host. */
   const live = new Map();
+  /** id -> promise that settles when the job's process has ended. */
+  const endedOf = new Map();
+  /** Runs the person stopped: their folders are deleted, so the answer to "what became of it" is kept here (until the host restarts). */
+  const stopped = new Set();
   const withLive = summary => (summary && !TERMINAL.has(summary.phase) && !live.has(summary.id) ? { ...summary, phase: 'interrupted' } : summary);
 
   function runCli(args, { signal } = {}) {
@@ -279,6 +291,7 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
     /** One run's durable record, or null. */
     status: (id) => {
       if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return null;
+      if (stopped.has(id)) return { id, phase: 'cancelled', workspace: null, prompt: null, startedAt: null, finishedAt: null, attempts: [], checkpoints: [], selectedCheckpoint: null, decision: null, needsUserReview: false, error: null };
       const run = readRun(stateDir(env), id);
       return run ? withLive(summarise(run)) : null;
     },
@@ -290,13 +303,28 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
       return run ? diffRun(run) : null;
     },
 
-    /** Stop a run this host is driving. The saved version stays; the run reads as interrupted. */
-    cancel: id => {
+    /** Settles when the job's process has ended (immediately for a run this host is not driving). */
+    whenEnded: id => endedOf.get(id) ?? Promise.resolve(),
+
+    /**
+     * Stop a run and clean up after it: the job and everything it started are ended (the whole process tree), and the run's folder, which
+     * holds the copies of the person's files, is deleted. The person's own files were never touched by the run. Afterwards the run reads as
+     * cancelled. Returns false for an id that is not a run.
+     */
+    async stop(id) {
+      if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return false;
+      const folder = join(stateDir(env), id);
+      if (!live.has(id) && !existsSync(folder) && !stopped.has(id)) return false;
+      stopped.add(id);
       const child = live.get(id);
-      if (!child) return false;
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      if (child) killTree(child);
+      await Promise.race([endedOf.get(id) ?? Promise.resolve(), new Promise(r => setTimeout(r, 8000))]);
+      for (let i = 0; i < 6 && existsSync(folder); i++) {
+        try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { await new Promise(r => setTimeout(r, 400)); }
+      }
       return true;
     },
+
 
     /**
      * Start a run. Returns as soon as the job has been *accepted*; the caller follows the run id.
@@ -364,6 +392,7 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
         return { ok: false, code: closed.code ?? 6, error: String(message || err.trim() || out.trim() || 'the Time-skip command ended without a run').slice(0, 600) };
       }
       live.set(id, child);
+      endedOf.set(id, ended);
       void ended.then(() => live.delete(id));
       return { ok: true, run: withLive(summarise(readRun(root, id))) };
     },

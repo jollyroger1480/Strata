@@ -100,7 +100,7 @@ export function ChatScreen() {
     }, [expanded]);
     const [previews, setPreviews] = useState<PreviewArtifact[]>([]);
     const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
-    const timeSkipRuns = (session?.timeSkips ?? []).filter(run => session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant'));
+    const timeSkipRuns = (session?.timeSkips ?? []).filter(run => session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant') && (!run.job || (run.job.files?.length ?? 0) > 0));
     const extraTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? `Time-skip ${i + 1}` : 'Time-skip', icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
     const selectedRun = timeSkipRuns.find(run => timeSkipTabId(run.id) === selectedPreview);
     const inlinePreview = splitWidth >= (selectedRun ? 760 : 1120);
@@ -375,7 +375,7 @@ export function ChatScreen() {
                 <Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }}/>{tr("Latest")}</button>) : null)}
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!(session.timeSkips ?? []).find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!(session.timeSkips ?? []).find(r => r.id === m.timeSkipId)?.job} timeSkipTab={timeSkipRuns.some(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
             </div>
           </div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
@@ -526,7 +526,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, }: {
+function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipTab = true, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
@@ -535,6 +535,8 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     onOpenTimeSkip: (id: string) => void;
     timeSkipDone: boolean;
     timeSkipReal?: boolean;
+    /** The comparison sidebar tab exists (a finished run with changes): only then is there something for the card to open. */
+    timeSkipTab?: boolean;
 }) {
     const streaming = useStore(s => s.streaming);
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
@@ -578,7 +580,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
       </div>
 
-      {tr(m.timeSkipId ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
+      {tr(m.timeSkipId && timeSkipTab ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 
