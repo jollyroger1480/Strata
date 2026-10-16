@@ -225,9 +225,12 @@ export class TurnProjector {
           out.push({ type: 'reasoning', text: c.text });
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
-          this.tokensIn += Number(c.usage.inputTokens) || 0;
+          // The Harness counts input, cache reads and cache writes apart (a prompt the server's conversation cache already held is `cacheReadTokens`,
+          // not `inputTokens`): the prompt of a request is all three. Counting only `inputTokens` made a long agent chat look nearly empty (0%).
+          const prompt = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.cacheReadTokens) || 0) + (Number(c.usage.cacheWriteTokens) || 0);
+          this.tokensIn += prompt;
           this.tokensOut += Number(c.usage.outputTokens) || 0;
-          this.contextTokens = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.outputTokens) || 0);
+          this.contextTokens = prompt + (Number(c.usage.outputTokens) || 0);
         }
       }
       return out;

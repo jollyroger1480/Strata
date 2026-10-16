@@ -63,6 +63,17 @@ test('item 2: the context is the LAST request (prompt + reply), not the sum of e
   assert.equal(done.tokensIn, 15800, 'the billed sum is still reported separately');
 });
 
+test('item 3: a prompt the server already held counts towards the context (the Harness reports it apart from the input)', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  // The shape of a real Swift 64K run: the last request had a prompt of 8,042 tokens of which 7,317 came from the conversation cache.
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 5800, outputTokens: 40, cacheReadTokens: 0 } }, 'a:1'));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 725, outputTokens: 110, cacheReadTokens: 7317 } }, 'a:2'));
+  p.consume(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }));
+  const done = p.finish({ model: 'M', contextMax: 65536 }).find(f => f.type === 'done');
+  assert.equal(done.contextTokens, 8152, 'prompt (input + cache) + reply of the last request, which is what the engine held');
+  assert.equal(done.tokensIn, 5800 + 725 + 7317);
+});
+
 test('item 7: tool rows say what happened in plain words, with what it was about', () => {
   const p = new TurnProjector({ startedAt: 0 });
   const call = p.consume(ev('tool/call', { callId: 'w1', name: 'write', arguments: JSON.stringify({ file_path: 'C:/work/notes.md', content: 'x' }) }))[0].tool;

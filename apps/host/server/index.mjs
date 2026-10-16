@@ -28,7 +28,7 @@ import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirS
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, extname, isAbsolute, join, normalize, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hardware from './hardware.mjs';
@@ -75,7 +75,22 @@ const DIST = process.env.STRATA_DIST
     : join(ROOT, 'dist');
 const PORT = Number(process.env.STRATA_PORT ?? 8791);
 const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
-const WORKSPACE = process.env.STRATA_WORKSPACE ?? process.cwd();
+/* The folder chats work in when nothing else is chosen. It is never the app's own folder (the host is started inside its install
+   directory, so `process.cwd()` was "host" in the sidebar and the agent could read and write the app): the person's own
+   Documents\Strata\Workspace (the models folder is next to it, not in it), created on first use, unless STRATA_WORKSPACE names one. */
+function defaultWorkspace() {
+  if (process.env.STRATA_WORKSPACE) return resolve(process.env.STRATA_WORKSPACE);
+  const user = process.env.USERPROFILE ?? process.env.HOME ?? homedir();
+  for (const base of [join(user, 'Documents'), user]) {
+    const dir = join(base, 'Strata', 'Workspace');
+    try { mkdirSync(dir, { recursive: true }); return dir; } catch { /* try the next place */ }
+  }
+  return user;
+}
+const WORKSPACE = defaultWorkspace();
+const WORKSPACE_NAME = process.env.STRATA_WORKSPACE ? basename(WORKSPACE) : 'Strata';
+/** True for the app's own install/source folder or anything inside it. */
+const insideApp = path => { const rel = relative(ROOT, resolve(path)); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
 
 const hub = new EventHub();
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, changed: value => hub.send('providers', value) });
@@ -371,11 +386,15 @@ const WORKSPACES_FILE = join(store.DATA_DIR, 'workspaces.json');
 function loadWorkspaces() {
   try {
     const parsed = JSON.parse(readFileSync(WORKSPACES_FILE, 'utf8'));
-    if (Array.isArray(parsed) && parsed.length) return parsed;
+    if (Array.isArray(parsed) && parsed.length) {
+      // An earlier version saved the app's own folder as the first workspace. The first entry keeps its id (chats point at it) and moves to the default folder.
+      if (parsed[0]?.id === 'root' && typeof parsed[0].path === 'string' && insideApp(parsed[0].path)) parsed[0] = { ...parsed[0], aliases: [...new Set([...(parsed[0].aliases ?? []), parsed[0].path])], path: WORKSPACE, name: WORKSPACE_NAME };
+      return parsed;
+    }
   } catch {
     /* first run */
   }
-  return [{ id: 'root', name: basename(WORKSPACE), path: WORKSPACE }];
+  return [{ id: 'root', name: WORKSPACE_NAME, path: WORKSPACE }];
 }
 
 let workspaces = loadWorkspaces();
@@ -1343,6 +1362,19 @@ async function api(req, res, path, method, url) {
     workspaces = [...workspaces, ws];
     saveWorkspaces();
     return json(res, 200, ws);
+  }
+
+  /* A workspace's name is only what the sidebar shows; its folder stays. */
+  if (path.startsWith('/api/workspaces/') && method === 'PATCH') {
+    const id = path.split('/')[3];
+    const body = await readBody(req);
+    const name = String(body.name ?? '').trim().slice(0, 80);
+    if (!name) return error(res, 400, 'Type a name for this workspace.');
+    const at = workspaces.findIndex(w => w.id === id);
+    if (at < 0) return error(res, 404, 'That workspace is not in your list.');
+    workspaces = workspaces.map((w, i) => (i === at ? { ...w, name } : w));
+    saveWorkspaces();
+    return json(res, 200, workspaces[at]);
   }
 
   if (path.startsWith('/api/workspaces/') && method === 'DELETE') {

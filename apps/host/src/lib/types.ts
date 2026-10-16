@@ -372,6 +372,8 @@ export interface Workspace {
   id: string;
   name: string;
   path: string;
+  /** Earlier folders whose chats belong here (the first workspace moved off the app's own folder). */
+  aliases?: string[];
 }
 
 export interface SessionAgent {
