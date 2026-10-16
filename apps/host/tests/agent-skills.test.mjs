@@ -78,6 +78,7 @@ test('real Harness: a skill saved in the app is in the catalog, loads by name, a
   const pid = bridge.status().runtime.pid;
   const cards = await run('s1', `SCRIPT:call skill ${JSON.stringify({ name: 'directory-opener' })}`);
   assert.equal(cards.at(-1).state, 'done');
+  assert.equal(cards.at(-1).verb, 'Loaded your skill', 'the card says it in the person own words');
   assert.match(cards.at(-1).result, /Open the Downloads folder, then open the Documents folder/, 'loading it returns the instructions the person wrote');
   // saved later, while the agent runs
   list.push({ id: 'my-release-notes', name: 'Release notes', description: 'Writes release notes', body: 'Start with one line.', enabled: true });

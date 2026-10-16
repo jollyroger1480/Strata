@@ -55,7 +55,7 @@ async function stream(body, { quiet = false } = {}) {
         else if (f.type === 'agent-tool') {
           out = `tool ${f.tool.state} ${f.tool.verb} ${f.tool.target ?? ''}${f.tool.state === 'proposed' ? `  [asks: ${f.tool.effect}]` : ''}`;
           // ANSWER=approve|deny answers every card that asks (the card is the real Approve/Deny card of Manual mode)
-          if (f.tool.state === 'proposed' && process.env.ANSWER) void j('/api/chat/approval', { sessionId: body.sessionId, toolId: f.tool.id, decision: process.env.ANSWER }).then(() => console.log(`${stamp()}  -> ${process.env.ANSWER} ${f.tool.id}`), e => console.log(`${stamp()}  answer failed: ${e.message}`));
+          if (f.tool.state === 'proposed' && process.env.ANSWER) void j('/api/chat/approval', { sessionId: body.sessionId, toolId: f.tool.id, decision: process.env.APPROVE_MATCH && new RegExp(process.env.APPROVE_MATCH, 'i').test(`${f.tool.target} ${f.tool.effect}`) ? 'approve' : process.env.ANSWER }).then(() => console.log(`${stamp()}  -> ${process.env.ANSWER} ${f.tool.id}`), e => console.log(`${stamp()}  answer failed: ${e.message}`));
         }
         else if (f.type === 'done') out = `done ${f.finishReason} tokensOut=${f.tokensOut}`;
         else if (f.type === 'error') out = `ERROR ${f.message}`;

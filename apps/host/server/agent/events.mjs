@@ -80,6 +80,7 @@ const VERBS = {
   create_goal: ['Setting the goal', 'Set the goal', "Couldn't set the goal"],
   update_goal: ['Updating the goal', 'Updated the goal', "Couldn't update the goal"],
   get_goal: ['Checking the goal', 'Checked the goal', "Couldn't check the goal"],
+  skill: ['Loading your skill', 'Loaded your skill', "Couldn't load the skill"],
   todo_write: ['Updating its to-do list', 'Updated its to-do list', "Couldn't update its to-do list"],
   present: ['Showing you a result', 'Showed you a result', "Couldn't show the result"],
   working_directory: ['Checking the folder', 'Checked the folder', "Couldn't check the folder"],
