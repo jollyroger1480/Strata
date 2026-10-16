@@ -118,6 +118,16 @@ function readText(path) {
   } catch { return { missing: true }; }
 }
 
+/** Whether two files hold the same bytes (a big file that did not change must not be listed as changed). Files over 64 MB are treated as changed. */
+function sameBytes(a, b) {
+  try {
+    const sa = statSync(a), sb = statSync(b);
+    if (sa.size !== sb.size) return false;
+    if (sa.size > 64 * 1024 * 1024) return false;
+    return readFileSync(a).equals(readFileSync(b));
+  } catch { return false; }
+}
+
 /** What the assistant is told for one revision attempt. It works on a copy, so it is told to stay in it and to say what it did. */
 export function timeskipRevisionMessage(request) {
   return [
@@ -235,6 +245,8 @@ export function diffRun(record) {
     const status = a.missing ? 'added' : b.missing ? 'removed' : null;
     const same = !status && a.text !== undefined && a.text === b.text;
     if (same) continue;
+    // A file too big to read as text is the same file when its bytes are the same: it must not show up as a change.
+    if (!status && (a.big || b.big) && sameBytes(join(baseRoot, path), join(updatedRoot, path))) continue;
     if (imageTypeOf(path)) {
       // A picture is compared as bytes and shown from the file itself, never read as text.
       let differs = true;

@@ -65,3 +65,17 @@ test('the page that was made comes first; a browser profile and other housekeepi
     assert.deepEqual(onlyNoise.files, [], 'when only housekeeping changed nothing is shown as changed'); assert.equal(onlyNoise.housekeeping, 12);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a big file that did not change is not listed as changed; one that did is', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-ts-big-'));
+  try {
+    const base = join(dir, 'base'), cand = join(dir, 'cand'); mkdirSync(base); mkdirSync(cand);
+    const big = Buffer.alloc(400 * 1024, 7);
+    writeFileSync(join(base, 'archive.bin'), big); writeFileSync(join(cand, 'archive.bin'), big);
+    writeFileSync(join(base, 'data.json'), Buffer.alloc(300 * 1024, 65)); writeFileSync(join(cand, 'data.json'), Buffer.alloc(300 * 1024, 66));
+    writeFileSync(join(cand, 'page.html'), '<p>x</p>');
+    const found = diffRun({ checkpoints: [{ id: 'cp1-baseline', label: 'baseline', path: base }], selected_checkpoint: 'cp1-baseline', attempts: [{ index: 1, path: cand }] });
+    assert.deepEqual(found.files.map(f => f.path), ['page.html', 'data.json'], 'the untouched big file is gone from the list; the changed one is last (too big to show)');
+    assert.equal(found.files[1].unreadable, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
