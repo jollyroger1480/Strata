@@ -625,6 +625,8 @@ const TIMESKIP_REVISE = process.env.STRATA_TIMESKIP_REVISE
   ?? `"${process.execPath}" "${REVISE_NODE_SCRIPT}"`;
 /** Proves a revision request comes from a job this host started, not from some other program on this PC. */
 const INTERNAL_SECRET = randomBytes(24).toString('hex');
+/** The model a trial runs on, by run id: the chat's saved API model when it uses one, else the loaded local model. */
+const timeskipChoices = new Map();
 /**
  * Tuning, from the App Host.
  *
@@ -931,6 +933,7 @@ async function api(req, res, path, method, url) {
       extraEnv: { STRATA_HOST_URL: `http://127.0.0.1:${PORT}`, STRATA_INTERNAL_SECRET: INTERNAL_SECRET },
     });
     if (!result.ok) return error(res, result.code === 2 ? 400 : 502, result.error);
+    if (body.remoteModel?.connectionId && body.remoteModel?.modelId) timeskipChoices.set(result.run.id, { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) });
     return json(res, 200, { run: result.run, simulated: false });
   }
   if (path === '/api/timeskip/files' && method === 'GET') {
@@ -952,7 +955,8 @@ async function api(req, res, path, method, url) {
     // Only the job's own candidate folders may be worked in.
     const root = resolve(timeskip.stateDir());
     if (!cwd || !resolve(cwd).startsWith(root + sep)) return error(res, 400, 'That folder is not part of a Time-skip run.');
-    const chosen = (() => { try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { return null; } })();
+    const runId = resolve(cwd).slice(root.length + 1).split(sep)[0];
+    const chosen = timeskipChoices.get(runId) ?? (() => { try { return { instanceId: native.resolveInstance(native.state().defaultId).id }; } catch { return null; } })();
     if (!chosen) return error(res, 503, 'Load a model first, then try Time-skip again.');
     const chatId = `timeskip:${randomBytes(6).toString('hex')}`;
     let text = '', failure = null;

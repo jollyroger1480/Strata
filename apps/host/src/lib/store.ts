@@ -74,7 +74,7 @@ export interface AppState {
   shareTelemetry: boolean;
   paletteOpen: boolean;
   shortcutsOpen: boolean;
-  settingsSection: 'Appearance' | 'Models' | 'Storage' | 'Engine' | 'About';
+  settingsSection: 'Appearance' | 'Models' | 'Tools' | 'Storage' | 'Engine' | 'About';
   hardware: Hardware | null;
   library: ModelLibrary | null;
   imageModels: ImageModelLibrary | null;
@@ -1159,7 +1159,7 @@ async function startTimeSkipReal(prompt: string) {
   }));
   go('chat', sessionId);
   try {
-    const started = await api.post<{ run: TimeSkipJob }>('/api/timeskip/start', { prompt, workspaceId: state.activeWorkspace, attempts: 1 });
+    const started = await api.post<{ run: TimeSkipJob }>('/api/timeskip/start', { prompt, workspaceId: state.activeWorkspace, attempts: 1, ...(state.remoteModel ? { remoteModel: state.remoteModel } : {}) });
     patchRun(sessionId, run.id, r => ({ ...r, job: started.run }));
     void followTimeSkip(sessionId, run.id);
   } catch (e) {
@@ -1435,7 +1435,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean } 
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
   const demoPrompt = timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
-    if (demoPrompt && nativeState()?.instances.some(i => i.status === 'ready') && !state.remoteModel) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
+    if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
     return;
   }
   const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const canSendPictures=!state.remoteModel&&imageTarget?.status==='ready'&&imageTarget.vision;
