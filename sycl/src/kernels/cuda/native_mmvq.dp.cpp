@@ -2947,6 +2947,17 @@ void q6_planar_launch(const Q6Planar& w, const Q81Block* x, float* y, dpct::queu
     const uint8_t *ql = w.ql, *qh = w.qh, *sc = w.sc;
     const sycl::half* d = w.d;
     const int n_in = w.n_in, n_out = w.n_out;
+    if constexpr (NCOLS > 1) {   // same rule as the GGUF-layout wide kernel (#2207): the multi-column kernel spills at 128 GRF on Alchemist
+        if (mmvq_large_grf(s)) {
+            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar_grf256, dpct_kernel_scalar<NCOLS>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                    native_mmvq_q6k_planar_kernel<NCOLS>(ql, qh, sc, d, x, y, n_in, n_out);
+                });
+            return;
+        }
+    }
     s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
