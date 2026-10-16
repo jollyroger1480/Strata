@@ -89,7 +89,7 @@ export class StatusReporter {
     this.wanted = next;
     const sinceEmit = this.now() - this.lastEmitAt;
     const due = changed ? this.gapMs : this.beatMs;
-    if (!this.current || sinceEmit >= due) this.#flush();
+    if (!this.current || sinceEmit >= due || update.phase === 'goal') this.#flush();   // a goal step is rare and the page should always hear it
     else if (this.#differs()) this.#arm(due - sinceEmit);
   }
 

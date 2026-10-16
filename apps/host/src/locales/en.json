@@ -3035,5 +3035,10 @@
   "s3037": "Reading your files…",
   "s3038": "Trying an improved version…",
   "s3039": "Checking the result…",
-  "s3040": "Comparing the two versions…"
+  "s3040": "Comparing the two versions…",
+  "s3041": "New skill",
+  "s3042": "Save skill",
+  "s3043": "Loading your skill",
+  "s3044": "Loaded your skill",
+  "s3045": "Couldn't load the skill"
 }
