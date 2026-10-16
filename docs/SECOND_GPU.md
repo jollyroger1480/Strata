@@ -140,6 +140,13 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
 - `--peer-device N` (default off): enable the tier on CUDA device N (N >= 1).
 - `--peer-reserve-mib M` (default 600): leave M MiB free on the peer card; the
   cache takes what remains. The prompt-path buffers need this headroom.
+  Keep a few hundred MiB free on both cards beyond this: the prompt path loads its kernels and cuBLAS on first use
+  (a start with 5 MiB left on the peer and 485 MiB on the primary stopped at the first prompt with "cuBLAS status 14").
+- Whether the two cards can really exchange data is tested once at start (#2666): two RTX A4000 behind a host
+  bridge reported peer access, enabled it, and `cudaMemcpyPeerAsync` then copied nothing, so the peer computed on
+  zeros and the first prompt came back NaN. A test copy each way now decides; if it arrives wrong the log says so
+  and the prompt path uses the host route (the one without P2P: activations and rows through mapped host memory).
+  `STRATA_PEER_NO_P2P=1` asks for that route by hand.
 - `--peer-slots N` (default 0): cap the tier at N experts; 0 = as many as fit.
 - `--peer-adapt-swaps N` (default -1): swaps per adaptive round on the peer;
   -1 uses the primary's `--adapt-swaps`.
