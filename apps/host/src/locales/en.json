@@ -3068,9 +3068,9 @@
   "s3071": "The engine could not start with these settings. Nothing was changed.",
   "s3072": "The engine stopped while we were measuring. Nothing was changed.",
   "s3074": "Saved as",
-  "s3075": "Took",
-  "s3076": "{0} min",
-  "s3077": "Showing the values of your tuning '{0}'.",
-  "s3078": "Your tuning '{0}' sets",
-  "s3079": "was {0}"
+  "s3075": "Scroll to the latest message",
+  "s3076": "Thinking time",
+  "s3077": "Writing time",
+  "s3078": "{0}{1} tok/s",
+  "s3079": "{0}{1} tok/s · last reply"
 }

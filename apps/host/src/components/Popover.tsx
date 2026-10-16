@@ -3,9 +3,11 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { IconBtn } from './ui';
 /** Anchored, non-modal surface. Focus and dismissal stay with its own trigger. */
-export function Popover({ anchor, title, onClose, children, above = false, width = 360 }: {
+export function Popover({ anchor, title, detail, onClose, children, above = false, width = 360 }: {
     anchor: HTMLElement | null;
     title: string;
+    /** A short line to the right of the title, on the same row (the Subagents list puts its counts here). */
+    detail?: ReactNode;
     onClose: () => void;
     children: ReactNode;
     above?: boolean;
@@ -35,5 +37,5 @@ export function Popover({ anchor, title, onClose, children, above = false, width
                 e.stopPropagation();
                 close();
             }
-        }}><div className="telepop__head"><strong>{tr(title)}</strong><IconBtn name="x" title={tr("Close {0}", [title.toLowerCase()])} onClick={close}/></div>{tr(children)}</div>, document.body);
+        }}><div className="telepop__head"><strong>{tr(title)}</strong>{detail ? <span className="telepop__detail">{detail}</span> : null}<IconBtn name="x" title={tr("Close {0}", [title.toLowerCase()])} onClick={close}/></div>{tr(children)}</div>, document.body);
 }

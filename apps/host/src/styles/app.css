@@ -7142,9 +7142,13 @@ textarea {
 .tool-summary > div { margin-top: 6px; padding-left: 20px; }
 
 /* ---- the live status line ---- */
-.live-status { display: flex; align-items: center; gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.live-status { display: grid; grid-template-columns: 14px minmax(0, 24ch) 6ch minmax(0, auto); align-items: center; column-gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+/* the word has its own area: the timer and the token count stay where they are while the word changes length */
+.live-status__verb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-status__time, .live-status__tokens { font-variant-numeric: tabular-nums; color: var(--st-ink-muted); white-space: nowrap; }
+.live-status__time { text-align: right; }
+@media (max-width: 520px) { .live-status { grid-template-columns: 14px minmax(0, 1fr) 6ch auto; } }
 .live-status__verb { font-weight: 700; color: var(--st-ink); animation: live-verb .35s ease; }
-.live-status__meta { color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
 .live-status__pulse { width: 14px; height: 14px; position: relative; flex: none; }
 .live-status__pulse i { position: absolute; inset: 0; border-radius: 50%; background: var(--st-accent); opacity: .9; animation: live-pulse 1.4s ease-in-out infinite; }
 .live-status__pulse i:nth-child(2) { animation-delay: .45s; opacity: .5; }
@@ -7257,13 +7261,9 @@ textarea {
 .storage-model__name strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .storage-model__size { font-variant-numeric: tabular-nums; font-size: var(--st-fs-sm); }
 
-/* ---- About > Privacy ---- */
-.privacy-notes { list-style: none; margin: 0; padding: 4px 4px 2px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; }
-.privacy-notes li { display: flex; gap: 10px; align-items: flex-start; font-size: var(--st-fs-sm); line-height: 1.45; color: var(--st-ink-soft); }
-.privacy-notes li svg { flex: none; margin-top: 2px; color: var(--st-icon); }
-.privacy-notes li[data-strong] { grid-column: 1 / -1; color: var(--st-ink); font-weight: 700; }
-.privacy-notes li[data-strong] svg { color: var(--st-accent-text); }
-@media (max-width: 720px) { .privacy-notes { grid-template-columns: 1fr; } }
+/* ---- About > Privacy: plain text ---- */
+.privacy-notes { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
+.privacy-notes p { margin: 0; font-size: var(--st-fs-sm); line-height: 1.5; color: var(--st-ink-soft); }
 
 /* ---- an opened task: the name, and a last answer that is easy to read ---- */
 .task-name { margin: 0 0 2px; font-size: var(--st-fs-xl); letter-spacing: -.02em; }
@@ -7323,3 +7323,18 @@ textarea {
 .native-tuned li { display: flex; gap: 8px; align-items: baseline; }
 .native-tuned li span { color: var(--st-ink-muted); }
 @media (max-width: 980px) { .native-model-layout--fit { grid-template-columns: 1fr; } }
+
+/* the Subagents counts sit on the title's row, to its right */
+.telepop__head { display: flex; align-items: baseline; gap: 10px; }
+.telepop__detail { margin-right: auto; font-size: var(--st-fs-sm); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.telepop__head > .st-btn { align-self: center; margin-left: auto; }
+.telepop__detail + .st-btn { margin-left: 0; }
+
+/* the way back to the newest message: a small round arrow, shown only while scrolled up */
+.jumplatest { width: 38px; height: 38px; padding: 0; justify-content: center; gap: 0; margin: 10px auto 12px; border-radius: 50%; }
+.jumplatest svg { flex: none; }
+
+/* ---- chat statistics: figures that move keep their width ---- */
+.telemetry__chip, .telepop__value { font-variant-numeric: tabular-nums; }
+
+.ts-empty { margin: 12px 0; color: var(--st-ink-soft); }

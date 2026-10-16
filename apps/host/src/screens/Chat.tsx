@@ -342,8 +342,8 @@ export function ChatScreen() {
         <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
          <div className="chatcol">
           <div className="main__body chat" ref={scroller}>
-            {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} onClick={() => scrollToLatest()}>
-                <Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }}/>{tr("Latest")}</button>) : null)}
+            {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
+                <Icon name="chevron" size={18}/></button>) : null)}
             <div className="chat__inner">
               <UsageDashboard loaded={!!loaded}/>
             </div>
@@ -376,8 +376,8 @@ export function ChatScreen() {
             setAwayFromBottom(away);
         }}>
 
-            {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} onClick={() => scrollToLatest()}>
-                <Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }}/>{tr("Latest")}</button>) : null)}
+            {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
+                <Icon name="chevron" size={18}/></button>) : null)}
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!timeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={timeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
