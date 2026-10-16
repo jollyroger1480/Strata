@@ -2826,5 +2826,7 @@
   "s2828": "Couldn't read your instructions",
   "s2829": "Running your tool",
   "s2830": "Ran your tool",
-  "s2831": "Your tool failed"
+  "s2831": "Your tool failed",
+  "s2832": "This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.",
+  "s2833": "Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again."
 }

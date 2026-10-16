@@ -2826,5 +2826,7 @@
   "s2828": "Não foi possível ler as suas instruções",
   "s2829": "Executando a sua ferramenta",
   "s2830": "Executou a sua ferramenta",
-  "s2831": "A sua ferramenta falhou"
+  "s2831": "A sua ferramenta falhou",
+  "s2832": "Esta pasta é grande demais para testar uma mudança numa cópia. Abra uma pasta menor para este chat e tente novamente.",
+  "s2833": "O Time-skip funciona numa pasta sua. Escolha uma pasta de trabalho para este chat e tente novamente."
 }

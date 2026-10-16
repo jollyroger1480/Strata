@@ -927,6 +927,8 @@ async function api(req, res, path, method, url) {
     const workspace = String(body.workspace ?? '').trim() || ((workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE);
     const prompt = String(body.prompt ?? '').trim().slice(0, 4000);
     const reviseCommand = body.useAgent === false ? null : TIMESKIP_REVISE;
+    // The folder of the app itself is never a person's work: "Keep the update" would write into the installation.
+    if (resolve(workspace) === resolve(ROOT) || resolve(workspace).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
     // A trial copies the folder (twice), so a huge folder is refused in plain words instead of filling the disk.
     if (existsSync(workspace)) {
       const size = measureFolder(workspace);

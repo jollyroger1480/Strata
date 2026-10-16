@@ -1130,7 +1130,8 @@ export function plainTimeSkipError(raw: string | null | undefined): string {
   const afterExit = /\(exit \d+\):\s*([\s\S]*)$/.exec(text);
   const body = (afterExit?.[1] ?? text).replace(/^\w*Error:\s*/, '').trim();
   if (/destination changed|refusing to overwrite/i.test(body)) return tr('Your files changed after this trial started, so nothing was overwritten. Run Time-skip again.');
-  if (/too big/i.test(body)) return body;
+  if (/too big/i.test(body)) return tr('This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
+  if (/folder of your own/i.test(body)) return tr('Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
   if (/Load a model|model first/i.test(body)) return tr('Load a model first, then try Time-skip again.');
   if (/needs the Strata app|could not be reached/i.test(body)) return tr('The assistant could not be reached. Try again.');
   return body.length > 300 ? body.slice(0, 299) + '…' : body;

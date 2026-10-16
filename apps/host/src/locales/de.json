@@ -2826,5 +2826,7 @@
   "s2828": "Deine Anweisungen ließen sich nicht lesen",
   "s2829": "Dein Werkzeug läuft",
   "s2830": "Dein Werkzeug ausgeführt",
-  "s2831": "Dein Werkzeug ist fehlgeschlagen"
+  "s2831": "Dein Werkzeug ist fehlgeschlagen",
+  "s2832": "Dieser Ordner ist zu groß, um eine Änderung an einer Kopie auszuprobieren. Öffne für diesen Chat einen kleineren Ordner und versuche es erneut.",
+  "s2833": "Time-skip arbeitet an einem eigenen Ordner von dir. Wähle für diesen Chat einen Arbeitsordner und versuche es erneut."
 }
