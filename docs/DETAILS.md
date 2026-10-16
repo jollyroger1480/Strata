@@ -83,6 +83,8 @@ costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run
 it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
 note; never under WSL, which cannot stream).
 
+Under WSL2 the driver caps what `cudaHostAlloc` may pin at about 1 GiB, so the KV host copy is pinned with `cudaHostRegister` of ordinary memory there (detected through `/dev/dxg`); `STRATA_KV_HOST_REGISTER=1` forces that order on any system and `=0` forces `cudaHostAlloc` first (the other method is the fallback in both cases). On Linux without WSL nothing changes by default; with the switch the engine prints `KV streaming: the host copy is pinned with cudaHostRegister` (#1498 by yjamil8; WSL not tested here, the forced path was run on a Tesla P100: `--kv int8 --kv-resident 32768`, answers and decode speed unchanged).
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.
@@ -167,6 +169,26 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   as far as the RAM allows, their experts are kept in RAM too (so a prompt reads nothing from the SSD either).
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
   RAM place of the one that replaces it, so the RAM copy keeps holding exactly what the GPU does not.
+- `STRATA_RAM_ADAPT=<n>` (opt-in, `--serve`, one GPU): the RAM copy follows the conversation too. Without it the
+  copy is chosen once, at start, so when the RAM cannot hold every expert the GPU does not, an expert outside the copy
+  is read from the SSD every time the conversation routes to it. With it, before a decode window and while no adaptive
+  round is in flight, up to `n` experts the windows keep routing to (the adaptive tier's decayed count, 2 or more) take
+  the RAM places of experts of their own layer that are not routed to (count below 0.5): one pair per layer, the
+  largest difference first, one blob read each. The RAM stays the same size; the routing, the weights and the VRAM
+  tier's rule are untouched, and an expert that left the copy is read from the file again when it is needed. It needs
+  the adaptive tier (`--adapt-every`), and does nothing with `STRATA_EXCHANGE_ROTATE=1`, a layer split, a peer or
+  helper GPU, or `--batch`. Prompt routing is not used to choose replacements, and no selection runs during prefill.
+  Later prompts can read from a RAM copy changed by earlier decode requests. The log reports how many experts moved.
+  Measured on an RTX 3060 12 GB with 32 GB of RAM (Linux, IQ2_XS, 20.5 GiB of experts in RAM and about 6,000 experts on
+  the file tier, `--adapt-async 1`, `--spec 3`, power-saver), against v0.1.43: 47 frozen Korean requests from
+  my own use (tools, follow-ups and background tasks, 281-33,241 prompt tokens), replayed in order in fresh engines:
+  release, this option, release. Each starts from the same held learned profile; the private prompts are not attached.
+  With default tail skip (7), decode is 43.26 -> 50.40 tok/s (+16.5%) against the closing release, computed as total
+  generated tokens / total decode time; the two release arms are within 0.2%. Short/long new-input requests gain
+  16.3%/16.9%; total prompt speed differs by 2.5%, within run variation. Decode file-tier demand reads per generated
+  token fall from 14.15 -> 2.67; 8,056 successful RAM promotions read another blob each, giving 3.16 with those added.
+  These are file-tier counts, not physical SSD I/O. RAM residency does not exempt an expert from tail skip. One machine,
+  one quantization; tail skip off, blocking adaptation, `--spec 2` and the soak were not repeated on v0.1.43.
 - `--adapt-async 1` (opt-in, `--serve`): the swaps of a round advance between decode windows on a helper thread
   (copy back, copy in, move into RAM) instead of one window waiting for the whole round. With `--batch` slots it
   advances between their windows too (docs/BATCHING.md); not with `--batch-groups` or `--peer-device` (the blocking
@@ -193,8 +215,10 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   tokens; decode level alone, +2-3 % with `--adapt-async 1` and `--pcie-frac 0.6`
   ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md)).
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
-  blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
-  `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).
+  blob into the RAM copy (fully page-locked copy; layers of different blob sizes keep spare buffers per size). Same
+  tokens, fewer host copies; it works with `--adapt-async 1` too. Swift 1.5 IQ3_S on an RTX 5090 with 64 GB RAM
+  (Windows, about 30 swaps per verify window): 164 -> 188 tok/s on one forced 1,500-token text, 155 -> 178 over 23
+  coding-agent turns. Details and the measurements: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md). Measured by us on an RTX 3060 12 GB (IQ3_XXS, resident RAM, default flags, 5 interleaved pairs): decode 58.96 -> 62.03 tok/s (+5.2%, 5/5 pairs), prompt speed unchanged; tokens identical with real adaptive swaps (Tesla P100, resident, blocking adaptation). It adds about 1.4 GiB of page-locked RAM, so leave it off when the RAM is already tight.
 - The answers are the plain mapped mode's for the same expert placement: the bytes are the file's. With a page-locked
   copy the GPU also takes its usual share of the misses over PCIe (`--pcie-frac`), as with enough RAM; `--pcie-frac 0`
   (or `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
@@ -265,7 +289,13 @@ start (locked; page-locked when the driver allows the whole budget), and the res
 It implies `--mmap-experts` and leaves 4 GiB of headroom. On Windows, available commit capacity also
 limits the budget; a larger N is clamped to the smaller limit less 4 GiB and a 256 MiB margin, with a message.
 A clamped budget no longer fails the safety check that follows (#403). A budget that cannot be kept at all is a
-warning, with every expert read from the files. Setup sets N with `--resident-budget-gib N`. With
+warning, with every expert read from the files. Setup sets N with `--resident-budget-gib N`. When the budget has room
+left after the ranked experts, the slots the prompt path borrows keep their experts in RAM too, as they do without a
+budget (the engine prints `the prompt path's lend region: N of its M slots keep their experts in RAM too`); before, a
+budget always left them out, and every prompt read the lent slots' experts from the model files again (RX 6900 XT,
+UD-Q4_K_XL, budget 71 GiB with 7.5 GiB unused: 0.5-2.6 GB of file reads per agent turn and 1.9-2.8 GB from the SSD
+per fresh 8K-16K prompt went to zero; fresh prompts read 3-8% faster, the prompt path's host staging fell from
+0.8-2.1 s to 0.06-0.5 s per request). With
 the GGUF read in place it also warms the next layer's likely experts: while the CPU works on a layer, a thread applies
 the next layer's router to this layer's input and asks the OS for the pages of the predicted experts that neither the
 GPU nor the RAM budget holds (only pages - the experts computed are the same; `STRATA_LOOKAHEAD=0` turns it off). This
@@ -1813,6 +1843,11 @@ from the old default, as any change of the share does (CPU and GPU round differe
 (run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
 The sweeps behind the constant: `phaseA-tests/notes-142-pciefrac.md`.
 
+`STRATA_PCIE_BALANCE=1` (opt-in, CUDA, one GPU, no `--batch`, no `--pcie-frac`; #1548 by sergiywith / stuchapin909): instead of one share for every layer, each verify layer
+reads over PCIe the number of its missed experts that balances the two sides. The spin kernels stamp the GPU's clock (the plan's arrival, the PCIe part's start, the wait for the CPU rows),
+the host times its pool, and least squares with forgetting fit the pool's `a + c*n_cpu + d*n_pcie` and the GPU's `g0 + g*n_pcie`; the engine prints the fit (`pcie model`) at the end of `generate`.
+Every 64th layer with a miss moves one expert to the other side so both fits stay measured. Unset, nothing changes (the logits equal the build before). Measured by us (5 interleaved pairs, box default flags, IQ3_XXS): RTX A4000 arena decode 48.45 -> 51.15 tok/s (+5.6%, 5/5 pairs), RTX 3060 resident 59.12 -> 58.15 (-1.6%), Tesla P100 37.95 -> 37.48 (-1.3%): opt-in, worth trying on A4000-class cards.
+
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
 None of these changes the default answers; each was measured against the default with interleaved off/on pairs of whole
@@ -1844,6 +1879,7 @@ the pairs in which the switched arm won). They are here so you can try them on y
   -0.1% (5/6). Boxes that hold all experts in RAM never use the stage buffers.
 - **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
   (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
+  Where the tier does not wait for its copies (`STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG` above 1) the device's residency table now follows each eviction before the next window (a small patch kernel before every verifier launch; #1517 by sergiywith): before, the pool could compute an evicted expert on the CPU from a stale activation (`STRATA_ADAPT_CHECKRES=1` counts such layers; `STRATA_ADAPT_EVICT_SYNC=0` turns the fix off). The default (the tier waits) is untouched.
 - **`STRATA_ADAPT_OVERLAP` (`=1` turns it on, on every backend; the startup log names the state and, when it cannot run, why): the adaptive tier's copies land while the next
   window runs, with the same tokens.** The window takes the swaps at the same moment as with #463's wait (so the same experts run
   on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
