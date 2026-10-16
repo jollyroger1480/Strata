@@ -7196,6 +7196,10 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
             if not number or value != int(value) or value <= 0:
                 raise SystemExit(f"[strata] config sampling.seed={value!r}: expected a positive integer")
             out[key] = int(value)
+        elif key == "strata_tune":           # a saved tuning's per-request settings (strata_control/presets.py)
+            if not isinstance(value, dict):
+                raise SystemExit(f"[strata] config sampling.strata_tune={value!r}: expected an object")
+            out[key] = {k: v for k, v in value.items() if k in ("pcie_frac", "spec_min_p", "aux_cpus")}
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true or "
@@ -7442,6 +7446,23 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = json.loads(config_bytes.decode("utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if a.config and a.engine == "strata" and not os.environ.get("STRATA_NO_PRESET"):
+        # the saved tuning for this model and these choices (strata_control/presets.py): applied with no measurement. A tune's
+        # own worker sets STRATA_NO_PRESET so that it measures the configuration it was given. Never fails the start.
+        try:
+            from strata_control import presets as _presets
+            cfg, _applied = _presets.overlay(cfg)
+            if _applied.get("applied"):
+                print(f"[strata] saved tuning '{_applied['preset']['name']}' applied: "
+                      f"{' '.join(f'{k} {v}' for k, v in {**(_applied.get('args') or {}), **(_applied.get('env') or {})}.items())}"
+                      f"{'; ' + _applied['notice'] if _applied.get('notice') and 'identical' not in _applied['notice'] else ''}", flush=True)
+                if _applied.get("state") == "soft":
+                    print("[strata] this PC or engine changed since it was saved (" + "; ".join(_applied["reasons"]) +
+                          "): a short re-check is available (strata presets recheck)", flush=True)
+            elif _applied.get("why_not"):
+                print(f"[strata] saved tuning '{_applied['preset']['name']}' {_applied['why_not']}; re-tune with strata tune auto", flush=True)
+        except Exception as _e:  # noqa: BLE001
+            print(f"[strata] saved tuning could not be read ({type(_e).__name__}); starting with the configuration as it is", flush=True)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)
     launch_attestation = None
     if a.owner_fd is not None:

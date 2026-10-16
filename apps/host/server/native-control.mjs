@@ -10,8 +10,9 @@ import { resourceSettings, saferStart } from './native-resources.mjs';
 import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
 import { runtimeVision } from './native-vision.mjs';
-import { componentsDirectory, installerEnvironment } from './control-runtime.mjs';
+import { componentsDirectory, installerEnvironment, controlEnvironment } from './control-runtime.mjs';
 import { createEngineStep } from './engine-step.mjs';
+import { createAutoTune, writeTuneConfig } from './native-autotune.mjs';
 import { plainError, PHASE_TEXT } from './update-messages.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -31,6 +32,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
     comes from the component folder, and a start is `strata runtime start` under the owner runtime. Nothing is installed,
     updated or fetched from here. Without `control` (a source checkout) every path below is the original one. */
  const packaged=!!control;
+ /* The auto-tuner and the saved tunings are Strata Control's (`strata tune auto`, `strata presets`): the app runs them and follows their status file. */
+ const autotuner=createAutoTune({spawnProcess,workDir:join(directory,'native-tune'),launcher:()=>{if(packaged)return {command:control.control.python,prefix:[control.control.cli],cwd:control.control.dir,env:controlEnvironment(control.control)};const py=python();return {command:py.command,prefix:[...py.args,join(repo(),'strata.py')],cwd:repo(),env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8'}};}});
  /* In the packaged app the model catalog, the GPU probe and the install job are Control's bundled tools/strata_mcp.py and
     setup.py, run on Control's own Python in the installer's mode (STRATA_CONTROL_INSTALL: no pip, no engine, no compiler).
     The install only runs when the user clicks Download; starting and serving (control.start) keep STRATA_NO_ACQUIRE. */
@@ -165,10 +168,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   const result=await tool('strata_remove',{model:args.model,confirm:true});
   if(result.failed?.length)throw new Error(`Some files could not be removed: ${result.failed.slice(0,3).join('; ')}`);
   await refresh(true);return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
- async function loadEngine(job,args){
-  await refresh(true);if(job.state!=='running')return;const {config,entry}=record(args.model);if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}if(!entry.ready)throw new Error('Some model files are missing. Use Download / repair to restore them.');
-  if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
-  if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
+ /* The configuration a load starts the engine with (before its port and key): the saved model config, the user's choices and the resource profile. The tuner measures exactly this, so a saved tuning belongs to the same choices a load makes. */
+ function buildConfig(args,config){
   const vision=runtimeVision(config,args.vision);
   const visionPreferences=args.vision!==undefined?{ui_vision_enabled:args.vision!=='no',ui_vision_device:args.vision==='no'?config.ui_vision_device??'yes':args.vision}:{};
   const resources=args.resourceProfile?resourceSettings({...config,vision},snapshot.hardware,args.resourceProfile,modelArena(args.model)):null;
@@ -176,6 +177,13 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   if(args.gpus!==undefined){const detected=new Set((snapshot.hardware?.gpus??[]).map(g=>g.index));if(!Array.isArray(args.gpus)||!args.gpus.length||new Set(args.gpus).size!==args.gpus.length||args.gpus.some(g=>!Number.isInteger(g)||!detected.has(g)))throw new Error('Choose distinct detected GPUs. CPU-only text inference is not supported by this native adapter.');cfg.gpu=args.gpus.length===1?args.gpus[0]:args.gpus;cfg.layer_split=args.gpus.length>1?validateNativeSettings({layer_split:args.layerSplit??'auto'}).layer_split:'auto';if(cfg.layer_split!=='auto'&&cfg.layer_split.split(',').length!==args.gpus.length-1)throw new Error('Choose one layer split point between each pair of GPUs.');}
   if(cfg.vram_reserve_mib!==undefined&&cfg.vram_reserve_mib!==null){cfg.args=[...(cfg.args??[])];const at=cfg.args.indexOf('--vram-reserve-mib');if(at>=0)cfg.args.splice(at,2);cfg.args.push('--vram-reserve-mib',String(cfg.vram_reserve_mib));}if(cfg.vision){if(cfg.vision_tokens!=null)cfg.vision={...cfg.vision,max_tokens:cfg.vision_tokens};if(cfg.vision_min_tokens!=null)cfg.vision={...cfg.vision,min_tokens:cfg.vision_min_tokens};}cfg.mcp={...(cfg.mcp??{}),...(cfg.mcp_timeout_s!=null?{timeout_s:cfg.mcp_timeout_s}:{}),...(cfg.mcp_max_rounds!=null?{max_rounds:cfg.mcp_max_rounds}:{}),...(cfg.mcp_max_result_chars!=null?{max_result_chars:cfg.mcp_max_result_chars}:{})};
   for(const arg of cfg.args??[])if(arg.endsWith('.gguf')&&!existsSync(resolve(repo(),arg)))throw new Error('An engine argument names a missing GGUF. Restore the saved arguments or repair the files.');
+  return {cfg,resources,visionPreferences};
+ }
+ async function loadEngine(job,args){
+  await refresh(true);if(job.state!=='running')return;const {config,entry}=record(args.model);if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}if(!entry.ready)throw new Error('Some model files are missing. Use Download / repair to restore them.');
+  if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
+  if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
+  const {cfg,resources,visionPreferences}=buildConfig(args,config);
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
   if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
@@ -288,11 +296,26 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   const measured=await benchmark(job,{instanceId:loaded.instanceId});
   return {...loaded,...measured,summary:'Your model is tuned and ready.',profile:args.profile};
  }
- function operation(kind,args={}){if(!['install','load','benchmark','tune','calibrate','update-engine','update-strata','rollback','remove'].includes(kind))throw new Error('Choose a supported native operation.');if(!snapshot.available)throw new Error(snapshot.error??'Connect the native Strata installation first.');return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='remove'?removeModel(job,args):program(job,args),{guided:args.guided===true,model:args.model});}
- async function cancel(id){const job=jobs.get(id);if(!job||job.state!=='running')throw new Error('This operation is no longer running.');if(job.kind==='install'){job.engineAbort?.abort();await tool('strata_install',{cancel:true});}else if(job.abort)job.abort.abort();else if(job.process){if(!['tune','calibrate'].includes(job.kind))throw new Error('File updates cannot be cancelled safely while files are being replaced.');job.state='cancelled';await stopProcess(job.process);}job.state='cancelled';job.summary=job.kind==='install'?'Stopped. Completed downloads are kept.':'Stopped.';emit();return state();}
+ /* What the tuner measures is what a load would start: the saved model config with the user's choices and the resource profile. */
+ function tuneConfig(args){const {config,entry}=record(args.model);if(!entry.ready)throw new Error('Prepare the model before tuning it.');const {cfg}=buildConfig({model:args.model,vision:args.vision,resourceProfile:args.resourceProfile,gpus:args.gpus},config);return {path:writeTuneConfig(directory,args.model,cfg),entry};}
+ async function tuneStatus(args){await refresh();const {path}=tuneConfig(args);return autotuner.status(path);}
+ async function autotune(job,args){
+  await refresh(true);if(job.state!=='running')return;
+  if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}
+  const {path}=tuneConfig(args);
+  if(externalRunning().length)throw new Error('Stop the native server running outside this UI before tuning.');
+  if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish requests before tuning.');
+  for(const id of [...instances.keys()])await unload(id);
+  if(job.state!=='running')return;
+  job.summary='Finding the fastest settings for your PC…';emit();
+  const room=args.resourceProfile==='work';
+  return autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}});
+ }
+ function operation(kind,args={}){if(!['install','load','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','remove'].includes(kind))throw new Error('Choose a supported native operation.');if(!snapshot.available)throw new Error(snapshot.error??'Connect the native Strata installation first.');return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):program(job,args),{guided:args.guided===true,model:args.model});}
+ async function cancel(id){const job=jobs.get(id);if(!job||job.state!=='running')throw new Error('This operation is no longer running.');if(job.kind==='install'){job.engineAbort?.abort();await tool('strata_install',{cancel:true});}else if(job.abort)job.abort.abort();else if(job.process){if(!['tune','calibrate','autotune','recheck'].includes(job.kind))throw new Error('File updates cannot be cancelled safely while files are being replaced.');job.state='cancelled';await stopProcess(job.process);}job.state='cancelled';job.summary=job.kind==='install'?'Stopped. Completed downloads are kept.':'Stopped.';emit();return state();}
  async function close(){closing=true;clearInterval(timer);const installing=packaged&&child&&[...jobs.values()].some(j=>j.kind==='install'&&j.state==='running');if(installing)await send('tools/call',{name:'strata_install',arguments:{cancel:true}},15000).catch(()=>{});const operations=[];for(const job of jobs.values()){job.abort?.abort();if(job.process)operations.push(stopProcess(job.process));if(job.state==='running')job.state='cancelled';}await Promise.all(operations);await Promise.all([...instances.keys()].map(id=>unload(id,true).catch(()=>{})));disconnect();}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,refresh,localPreview,configure,setDownloadDirectory,plan,settings,save,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),close};
+ return {state:publicState,tuneStatus,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,plan,settings,save,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),close};
 }

@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {NATIVE_FIELDS} from '../../server/native-settings.mjs';
 import {createNativeControl} from '../../server/native-control.mjs';
-export function nativeFixture({modelsDirectory}={}){
+export function nativeFixture({modelsDirectory,tuneHandler}={}){
  const root=mkdtempSync(join(tmpdir(),'strata-native-test-')),repo=join(root,'repo'),directory=join(root,'data');
  const venvBin=process.platform==='win32'?'.venv/Scripts':'.venv/bin',venvPython=process.platform==='win32'?'.venv/Scripts/python.exe':'.venv/bin/python';
  for(const path of ['tools','serve',venvBin,'engine/.previous'])mkdirSync(join(repo,path),{recursive:true});
@@ -15,7 +15,8 @@ export function nativeFixture({modelsDirectory}={}){
  for(const model of installed.models)writeFileSync(join(repo,model.config),JSON.stringify({model:model.model,gpu:0,args:['--max-context','32768'],env:{PATH:'/native/bin',STRATA_TOKEN:'private'},vision:{gpu:0},aliases:['chat'],unknown_native_key:{preserve:true}}));
  const calls=[],children=[],requests=[],rpcCalls=[];let programWait=false,hardware={ram_gb:128,gpus:[{index:0,name:'NVIDIA RTX 4090',vram_gb:24},{index:1,name:'NVIDIA RTX 3090',vram_gb:24}]},external=[];
  const spawnProcess=(command,args,options)=>{
-  calls.push({command,args,options});const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.exitCode=null;child.kill=()=>{child.exitCode=0;queueMicrotask(()=>child.emit('exit',0));return true;};children.push(child);
+  calls.push({command,args,options});const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.exitCode=null;child.kill=()=>{child.exitCode=0;queueMicrotask(()=>child.emit('exit',0));return true;};
+  if(tuneHandler&&args.some(a=>String(a).endsWith('strata.py'))){child.kill=()=>{child.exitCode=0;queueMicrotask(()=>{child.emit('exit',0);child.emit('close',null);});return true;};queueMicrotask(()=>tuneHandler(child,args,options));return child;}children.push(child);
   if(args[0]?.endsWith('strata_mcp.py'))child.stdin={write(line){const message=JSON.parse(line);if(!message.id)return;if(message.method==='tools/call')rpcCalls.push(message.params);let result;
    if(message.method==='initialize')result={protocolVersion:'2024-11-05'};
    else if(message.method==='tools/list')result={tools:['strata_models','strata_status','strata_install'].map(name=>({name}))};
