@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { PreviewArtifact } from '../lib/artifacts';
 import { plainTimeSkipError, replayTimeSkip, setTimeSkipResult, stopTimeSkip } from '../lib/store';
 import { realTimeSkipDocuments, timeSkipCheckOutcomes, timeSkipDocumentMarkdown, timeSkipDocuments, timeSkipExample, timeSkipResultState, type TimeSkipDocument, type TimeSkipRun, type TimeSkipVersion } from '../lib/time-skip';
+import { TimeSkipWorking } from './TimeSkipWorking';
 import { FloatingMenu } from './FloatingMenu';
 import { TimeSkipCompare } from './TimeSkipCompare';
 import { Btn, Dialog, Icon } from './ui';
@@ -142,7 +143,7 @@ export function TimeSkipPanel({ run, sessionId, inline, expanded, onCompare, onC
       <div className="ts-content">
         <div className="ts-heading"><h2 aria-live="polite"><span className="ts-status-icon">{tr(!frame.done ? <span className="ts-activity"/> : <Icon name={kept === 'original' ? 'file' : 'shield'} size={21}/>)}</span><span>{tr(status)}</span></h2></div>
         <p className="ts-caption">{tr(frame.done ? kept === 'original' ? 'The updated result is still available.' : 'The original is always available.' : frame.pass === 2 ? 'Trying one more revision. Your progress is saved.' : 'Improving the saved draft.')}</p>
-        {tr(compareReal ? <TimeSkipCompare jobId={run.job!.id} files={run.job!.files!} more={run.job!.moreFiles ?? 0}/> : <>
+        {tr(real && !frame.done ? <TimeSkipWorking run={run} sessionId={sessionId}/> : compareReal ? <TimeSkipCompare jobId={run.job!.id} files={run.job!.files!} more={run.job!.moreFiles ?? 0}/> : <>
         {tr(expanded ? <div className="ts-compare-heading"><h3>{tr("Compare results")}</h3><Btn size="sm" variant="ghost" icon="contract" onClick={() => onCompare(false)}>{tr(inline ? 'Back to chat' : 'Done comparing')}</Btn></div> : null)}
         <div className="ts-switch-row" data-comparing={expanded || undefined}>
           <VersionTabs version={version} onChange={which => { setVersion(which); setImageCompare(false); }} done={frame.done}/>

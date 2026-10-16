@@ -71,6 +71,12 @@ test('the working view says what is happening, from the host\'s words or the pha
   assert.equal(act.activityWords({ phase: 'checking' }), 'Checking the result…');
   assert.ok(act.phaseFraction('generating') > act.phaseFraction('checkpointing') && act.phaseFraction('checking') > act.phaseFraction('generating'));
   const panel = await readFile(new URL('../src/components/TimeSkipCompare.tsx', import.meta.url), 'utf8');
-  assert.match(panel, /sandbox=""/, 'the preview frames carry no permissions');
-  assert.ok(!/allow-scripts|allow-same-origin/.test(panel));
+  // A page that draws itself with a script (a 3D scene) must run, or it shows as an empty dark page; the frame stays isolated and offline.
+  assert.equal(cmp.HTML_PREVIEW_SANDBOX, 'allow-scripts');
+  assert.match(panel, /sandbox={HTML_PREVIEW_SANDBOX}/);
+  assert.ok(!/allow-same-origin|allow-forms|allow-popups|allow-top-navigation/.test(panel + cmp.HTML_PREVIEW_SANDBOX));
+  const policy = cmp.htmlPreviewDocument('<p>x</p>');
+  assert.match(policy, /script-src 'unsafe-inline'/); assert.ok(!/connect-src|https?:\/\//.test(policy.split('<body>')[0]), 'nothing may be fetched');
+  assert.equal(cmp.needsOutsideFiles('<script src="https://cdn.example/three.js"></script>'), true);
+  assert.equal(cmp.needsOutsideFiles('<script>draw()</script><a href="https://x.example">link</a>'), false);
 });

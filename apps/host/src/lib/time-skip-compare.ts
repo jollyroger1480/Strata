@@ -117,16 +117,21 @@ export function lineDiff(original: string, updated: string, context = 2): DiffRo
 export const diffStats = (rows: DiffRow[]) => ({ added: rows.filter(r => r.t === 'add').length, removed: rows.filter(r => r.t === 'del').length });
 
 /**
- * A page for the preview frame. The frame itself is sandboxed with no permissions (no scripts, no forms, no navigation); this adds a content
- * policy so the page also cannot fetch anything from the internet: it shows what was written, nothing more.
+ * A page for the preview frame. The frame is sandboxed without a same-origin right, forms, navigation or pop-ups; it may run the page's own
+ * scripts, because most pages people ask for (a 3D scene, a game, a chart) draw themselves with a script and would show as an empty dark
+ * page without one. The content policy still blocks every request to the internet: only what was written is shown.
  */
+export const HTML_PREVIEW_SANDBOX = 'allow-scripts';
 export function htmlPreviewDocument(html: string): string {
-  const policy = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; font-src data:; media-src data:">';
+  const policy = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\' \'unsafe-eval\'; img-src data: blob:; style-src \'unsafe-inline\'; font-src data:; media-src data: blob:">';
   const base = '<base target="_blank">';
   const head = /<head[^>]*>/i.exec(html);
   if (head) return html.slice(0, head.index + head[0].length) + policy + base + html.slice(head.index + head[0].length);
   return `<!doctype html><html><head><meta charset="utf-8">${policy}${base}</head><body>${html}</body></html>`;
 }
+
+/** True when the page asks for something from the internet (a script, style or picture by web address): the preview cannot load it. */
+export const needsOutsideFiles = (html: string) => /<(?:script|link|img|iframe|source)\b[^>]*(?:src|href)\s*=\s*["']?(?:https?:)?\/\//i.test(html);
 
 /** The address of one side of a changed picture on the host. */
 export const timeSkipImageUrl = (jobId: string, path: string, version: 'original' | 'updated') =>
