@@ -55,7 +55,7 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
     <button ref={trigger} type="button" className="version-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={tr("Model version")} onClick={() => setOpen(v => !v)}>
       <strong>{selected ? versionName(selected, true) : tr("Choose a version")}</strong>
       <span className="version-trigger__need muted">{tr(fit ? `${gb(fit.memoryGb)} RAM + VRAM` : '')}</span>
-      <Icon name="chevron" size={14}/>
+      <Icon name="chevron" size={14} className="version-trigger__chev"/>
     </button>
     {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={620} onClose={() => setOpen(false)}>
       <div className="version-menu">

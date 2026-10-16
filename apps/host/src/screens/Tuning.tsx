@@ -10,7 +10,7 @@ import type { Workload } from '../lib/experience';
 import { ActionError, Btn, Dialog, ErrorNotice, Icon, Select } from '../components/ui';
 import { Screen, SectionHead } from '../components/layout';
 import { configDocument, configPatch, draftParams, readConfig, type ConfigDocument } from '../lib/config';
-import { useStore, setConfigDraft, saveEngine, restartEngine, validateEngine, pushToast, lifecycleAvailable, lifecycleStatus } from '../lib/store';
+import { useStore, setConfigDraft, saveEngine, restartEngine, validateEngine, pushToast, lifecycleAvailable, useLifecycle } from '../lib/store';
 import type { BeginnerConfig, EngineConfig, ExpertParam } from '../lib/types';
 type Issue = {
     level: 'warn' | 'error';
@@ -35,7 +35,7 @@ export function TuningScreen() {
     const [changedOnly, setChangedOnly] = useState(false);
     const [descriptions, setDescriptions] = useState(false);
     const [moreOpen, setMoreOpen] = useState(false);
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [issues, setIssues] = useState<Issue[]>([]);
     const [preview, setPreview] = useState<EngineConfig['predicted'] | null>(null);
     const [pending, setPending] = useState(false);

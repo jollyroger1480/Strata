@@ -10,7 +10,7 @@ import { familyVersion, modelFamilies, modelVersions, versionFit } from '../lib/
 import { contextTokens, estimate, execution } from '../lib/experience';
 import { planMemory } from '../lib/run-memory';
 import type { ModelVariant } from '../lib/types';
-import { cancelInstall, installVariant, lifecycleStatus, loadVariant, removeVariant, runtimeModelAction, useStore } from '../lib/store';
+import { cancelInstall, installVariant, useLifecycle, loadVariant, removeVariant, runtimeModelAction, useStore } from '../lib/store';
 export function ManagedModelLibrary({ contextOverride, familyOverride, selectedVariant, onChoose }: {
     contextOverride?: number;
     familyOverride?: string;
@@ -19,7 +19,7 @@ export function ManagedModelLibrary({ contextOverride, familyOverride, selectedV
 }) {
     const library = useStore(s => s.library), hardware = useStore(s => s.hardware), engine = useStore(s => s.engine);
     const runtime = useStore(s => s.runtime), serving = useStore(s => s.serving);
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [selected, setSelected] = useState(selectedVariant ?? '');
     const [familyChoice, setFamilyChoice] = useState(familyOverride ?? '');
     const [pending, setPending] = useState(false), [error, setError] = useState('');

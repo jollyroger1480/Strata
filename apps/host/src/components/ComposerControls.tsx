@@ -48,6 +48,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const trigger = useRef<HTMLButtonElement>(null), modeTrigger = useRef<HTMLButtonElement>(null), thinkingTrigger = useRef<HTMLButtonElement>(null);
     const attachLatest = useRef(onAttach);
     attachLatest.current = onAttach;
+    const addFilesLatest = useRef<(files: File[]) => Promise<void>>(async () => { });
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
@@ -117,6 +118,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
             setReading(false);
         }
     }
+    addFilesLatest.current = files => addFiles(files);
     useEffect(() => {
         folder.current?.setAttribute('webkitdirectory', '');
         const key = (e: KeyboardEvent) => {
@@ -127,10 +129,12 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
         };
         const website = () => { setUrlOpen(true); setError(''); };
         const preview = () => previewFile.current?.click();
+        const dropped = (e: Event) => { if (!streaming && !reading) void addFilesLatest.current((e as CustomEvent<File[]>).detail ?? []); };
+        window.addEventListener('strata:drop-files', dropped);
         window.addEventListener('keydown', key);
         window.addEventListener('strata:open-website', website);
         window.addEventListener('strata:open-preview', preview);
-        return () => { window.removeEventListener('keydown', key); window.removeEventListener('strata:open-website', website); window.removeEventListener('strata:open-preview', preview); };
+        return () => { window.removeEventListener('strata:drop-files', dropped); window.removeEventListener('keydown', key); window.removeEventListener('strata:open-website', website); window.removeEventListener('strata:open-preview', preview); };
     }, [streaming, reading]);
     useEffect(() => {
         if (preferences !== 'mode')

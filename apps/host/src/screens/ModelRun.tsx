@@ -10,6 +10,7 @@ import { RunningModels } from '../components/RunningModels';
 import { LocalModelImport } from '../components/LocalModelImport';
 import { gpuId } from '../lib/monitor-hardware';
 import { RunImageModel } from '../components/RunImageModel';
+import { IMAGE_GENERATION_VISIBLE } from '../lib/features';
 import { FloatingMenu } from '../components/FloatingMenu';
 import { ModelsScreen } from './Models';
 import { configDocument, configPatch, readConfig, type ConfigDocument } from '../lib/config';
@@ -19,7 +20,7 @@ import { computerIdentity, configIdentity, defaultProfileKey, emptyProfiles, rea
 import { modelFamilyIcon } from '../lib/model-icons';
 import { familyVersion, modelFamilies } from '../lib/model-versions';
 import { sizeGb } from '../lib/format';
-import { applyImageModel, getState, lifecycleStatus, loadRuntimeModel, loadVariant, pushToast, restartEngine, saveEngine, selectImageModel, setConfigDraft, useStore, validateEngine } from '../lib/store';
+import { applyImageModel, getState, useLifecycle, loadRuntimeModel, loadVariant, pushToast, restartEngine, saveEngine, selectImageModel, setConfigDraft, useStore, validateEngine } from '../lib/store';
 import type { ImageModelChoice, RuntimeModels, RuntimeModel } from '../lib/types';
 import { useNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
@@ -55,7 +56,7 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
     const imageNeedsDownload = imageChoice !== 'off' && imageVersion?.state !== 'installed';
     const imageUnavailable = imageChoice !== 'off' && !imageModels?.generationAvailable;
     const rawDraft = useStore(s => s.configDraft), connected = useStore(s => s.connection === 'live');
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [selected, setSelected] = useState(() => {
         if (initialVariant)
             return initialVariant;
@@ -424,7 +425,7 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
           <section className="run-card run-model-choice">
             <div className="run-version-choice"><span>{tr("Version")}</span><Select ariaLabel={tr("Model version")} value={model.id} disabled={pending} menuClassName="run-version-menu" options={[...versions.map(v => ({ value: v.id, label: `${v.name} · ${v.quant} · ${sizeGb(v.diskGb)}${v.local ? ' · Local' : ''}` })), { value: 'use-local-model', label: 'Use a local model…' }]} onChange={id => id === 'use-local-model' ? setLocalModelOpen(true) : chooseModel(id)}/></div>
             {tr(model.local ? <div className="run-local-model-note"><Icon name="model-file" size={15}/><span>{tr("Local model \u00B7 ")}{tr(model.local.architecture)}{tr(" \u00B7 Compatibility checked on load.")}</span><button className="text-btn" onClick={() => setLocalModelOpen(true)}>{tr("Change file")}</button></div> : null)}
-            <RunImageModel library={imageModels} disabled={pending || imagePending || !connected} onChange={() => setStage('idle')}/>
+            {IMAGE_GENERATION_VISIBLE ? <RunImageModel library={imageModels} disabled={pending || imagePending || !connected} onChange={() => setStage('idle')}/> : null}
           </section>
           <section className="run-card run-context"><div className="run-card__head"><span><Icon name="chat" size={19}/><h2>{tr("Conversation context")}</h2></span><strong>{tr(ctx / 1024)}{tr("K ")}<small>{tr("tokens")}</small></strong></div><p>{tr("How much your model can keep in mind.")}</p>
             <div className="run-context-presets" role="group" aria-label={tr("Context presets")}>{tr([32, 64, 128, 256].map(k => <button key={k} disabled={k > contextMax} aria-pressed={ctx === k * 1024} onClick={() => setContext(k)}><span>{tr(k)}{tr("K")}</span></button>))}</div>

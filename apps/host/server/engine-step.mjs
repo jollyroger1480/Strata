@@ -32,7 +32,7 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
       try {
         report = await control.updateCheck();
       } catch (error) {
-        if (usable) { set({ state: 'skipped', message: 'The engine for this PC is installed.', details: 'The update server could not be reached, so a newer engine was not looked for.' }); return { ...part }; }
+        if (usable) { set({ state: 'skipped', message: 'The engine for this PC is installed.' }); return { ...part }; }
         throw error;
       }
       const engine = report.engine ?? {};
