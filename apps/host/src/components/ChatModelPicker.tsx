@@ -3,7 +3,7 @@ import { modelFamilyIcon } from '../lib/model-icons';
 import { useId, useRef, useState } from 'react';
 import { FloatingMenu } from './FloatingMenu';
 import { Bar, Btn, Dialog, ErrorNotice, Icon } from './ui';
-import { go, lifecycleStatus, loadVariant, selectRemoteModel, setSettingsSection, useStore } from '../lib/store';
+import { go, useLifecycle, loadVariant, selectRemoteModel, setSettingsSection, useStore } from '../lib/store';
 import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { versionFit } from '../lib/model-versions';
 import type { ModelVariant } from '../lib/types';
@@ -28,7 +28,7 @@ function LegacyChatModelPicker() {
     const providers = useStore(s => s.providers), remote = useStore(s => s.remoteModel), streaming = useStore(s => s.streaming);
     const connection = providers?.connections.find(c => c.id === remote?.connectionId);
     const apiModel = connection?.models.find(m => m.id === remote?.modelId);
-    const lifecycle = lifecycleStatus(useStore(s => s));
+    const lifecycle = useLifecycle();
     const [open, setOpen] = useState(false), [selected, setSelected] = useState<string | null>(null);
     const [pending, setPending] = useState(false), [error, setError] = useState('');
     const [expanded, setExpanded] = useState<string[]>([]);

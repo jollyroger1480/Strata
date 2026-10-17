@@ -73,7 +73,7 @@ test('a feed that cannot be reached is a failure only when there is no engine ye
   const have = await createEngineStep({ control: control({ usable: true, checkError: 'could not be read' }) }).run();
   assert.equal(have.state, 'skipped');
   assert.match(have.message, /engine for this PC is installed/);
-  assert.match(have.details, /could not be reached/);
+  assert.equal(have.details, undefined, 'nothing to say when an engine is installed');
 });
 
 test('an engine that is already current downloads nothing; one with no package for this PC is a failure', async () => {

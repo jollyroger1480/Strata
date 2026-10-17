@@ -474,6 +474,12 @@ def _smi_query(field_name: str) -> list[str]:
 def nvidia_driver_version() -> str | None:
     """The NVIDIA driver version nvidia-smi reports (the oldest one when several cards disagree); None when unreadable."""
     versions = _smi_query("driver_version")
+    if not versions:                      # Linux without nvidia-smi (Fedora: it is in xorg-x11-drv-nvidia-cuda): the kernel module says
+        try:
+            found = re.search(r"Kernel Module\s+(\d+(?:\.\d+)+)", Path("/proc/driver/nvidia/version").read_text())
+            versions = [found.group(1)] if found else []
+        except OSError:
+            versions = []
     return min(versions, key=_version_key) if versions else None
 
 
@@ -512,6 +518,15 @@ def scan(root: Path | None = None) -> tuple[list[EngineComponent], list[dict]]:
     return found, problems
 
 
+def driver_notice(have: str | None, need: str) -> str:
+    """The plain sentence for an NVIDIA driver that is too old for every engine on this PC."""
+    major = str(need).split(".")[0]
+    how = ("download it from nvidia.com/drivers" if os.name == "nt" else
+           "on Ubuntu open Software & Updates > Additional Drivers, or run: sudo ubuntu-drivers install")
+    return (f"Your NVIDIA graphics driver ({have}) is too old for Strata. Install driver {major} or newer ({how}), "
+            "restart the computer and open Strata again.")
+
+
 def resolve(root: Path | None = None, *, backend: str | None = None, target: str | None = None,
             full: bool = False, runtime: str | None = None) -> EngineComponent:
     """The engine to start on this machine, or `EngineMissing` / `EngineIntegrityError`. Never downloads, never creates
@@ -529,6 +544,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         # no GPU tool answered: only a CPU engine can be started
         wanted = "cpu"
     usable, reasons, broken = [], [], []
+    compatible, driver_blocked = 0, []
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
     hip_here = hip_archs_present() if wanted == "hip" else []
@@ -545,6 +561,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         if item.backend != wanted:
             reasons.append(f"{label} is a {item.backend} engine, this PC needs {wanted} ({how})")
             continue
+        compatible += 1
         if item.min_runtime and have_runtime and _version_key(have_runtime) < _version_key(item.min_runtime):
             reasons.append(f"{label} needs control {item.min_runtime} or newer, this is {have_runtime}")
             continue
@@ -559,6 +576,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         need = item.min_driver.get("nvidia")
         if need and driver_here and _version_key(driver_here) < _version_key(need):
             reasons.append(f"{label} needs NVIDIA driver {need} or newer, this PC has {driver_here}")
+            driver_blocked.append(need)
             continue
         try:
             verify_signature(item)
@@ -572,7 +590,11 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         everything = reasons + [p["folder"] + ": " + p["problem"] for p in problems]
         if broken and len(broken) == len(reasons):       # every package that fits this PC failed its integrity check
             raise EngineIntegrityError("; ".join(broken), base, problems=problems)
-        raise EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems)
+        missing = EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems)
+        if driver_blocked and len(driver_blocked) == compatible and not broken:
+            # the only thing in the way is the NVIDIA driver: one plain line that names the version to install
+            missing.driver_notice = driver_notice(driver_here, min(driver_blocked, key=_version_key))
+        raise missing
     pin = pinned_folder(base)
     if pin:                                   # a manual rollback: the pinned package wins while it is usable
         for item in usable:
@@ -622,5 +644,5 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
         report["engine"] = chosen.to_dict()
         report["usable"] = True
     except EngineMissing as exc:
-        report["notice"] = str(exc)
+        report["notice"] = getattr(exc, "driver_notice", None) or str(exc)
     return report

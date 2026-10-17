@@ -22,7 +22,7 @@ export interface TimeSkipRun {
 /** What the App Host reports about a real run. Field names mirror the job's durable record. */
 export interface TimeSkipJob {
   id: string;
-  phase: 'queued' | 'checkpointing' | 'generating' | 'checking' | 'decision' | 'completed'
+  phase: 'planning' | 'choosing' | 'running' | 'comparing' | 'queued' | 'checkpointing' | 'generating' | 'checking' | 'decision' | 'completed'
        | 'cancelled' | 'failed' | 'interrupted' | 'needs_user_review';
   attempts: { index: number; decision: string | null; reason: string;
               checks: { id: string; outcome: string; kind: string }[] }[];
@@ -36,6 +36,11 @@ export interface TimeSkipJob {
   activity?: { code: string; text: string; args?: Record<string, unknown> } | null;
   error: string | null;
   finishedAt?: number | null;
+  /** The fork design (notes-split-agent8.md, item 11): the plan, the one step where checking matters most, and the two agents' progress. */
+  plan?: { steps: { id: string; text: string }[] } | null;
+  lever?: ForkLever | null;
+  a?: ForkLane | null;
+  b?: ForkLane | null;
   /** The files the run changed (saved original against the revision), read from the job's own folders. */
   files?: TimeSkipFile[];
   /** More changed files than are listed. */
@@ -43,6 +48,36 @@ export interface TimeSkipJob {
   /** The revision attempt "Keep the update" applies when the checks did not keep one themselves. */
   applyAttempt?: number | null;
 }
+
+export interface ForkLever { step: number; total: number; text: string; why: string; defaulted: boolean }
+export interface ForkLane { state: string; step: number; total: number; text: string; line: string; waiting: boolean }
+
+const lane = (raw: unknown): ForkLane | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const l = raw as Record<string, unknown>;
+  return { state: typeof l.state === 'string' ? l.state : 'waiting', step: Number(l.step) || 0, total: Number(l.total) || 0, text: typeof l.text === 'string' ? l.text : '', line: typeof l.line === 'string' ? l.line : '', waiting: l.waiting === true };
+};
+
+/**
+ * What an event or a status answer adds to a job under the fork design: the plan, the lever with its why, both lanes, and the activity as one
+ * friendly line (a string there; the older host sends an object, which is left as it is).
+ */
+export function forkFields(data: Record<string, unknown>): Partial<TimeSkipJob> {
+  const out: Partial<TimeSkipJob> = {};
+  const plan = data.plan as { steps?: unknown } | null | undefined;
+  if (plan && Array.isArray(plan.steps)) out.plan = { steps: plan.steps.flatMap((s, i) => (s && typeof s === 'object' && typeof (s as { text?: unknown }).text === 'string' ? [{ id: String((s as { id?: unknown }).id ?? i + 1), text: (s as { text: string }).text }] : [])) };
+  const lv = data.lever as Record<string, unknown> | null | undefined;
+  if (lv && typeof lv === 'object' && Number(lv.step) > 0) out.lever = { step: Number(lv.step), total: Number(lv.total) || 0, text: typeof lv.text === 'string' ? lv.text : '', why: typeof lv.why === 'string' ? lv.why : '', defaulted: lv.defaulted === true };
+  else if (lv === null) out.lever = null;
+  if ('a' in data) out.a = lane(data.a);
+  if ('b' in data) out.b = lane(data.b);
+  if (typeof data.activity === 'string' && data.activity) out.activity = { code: 'line', text: data.activity };
+  else if (data.activity && typeof data.activity === 'object') out.activity = data.activity as TimeSkipJob['activity'];
+  return out;
+}
+
+/** A job that runs as two agents (A, and B forked at the lever step) rather than one revision. */
+export const isForkJob = (job: Pick<TimeSkipJob, 'plan' | 'lever' | 'a' | 'b'> | undefined | null): boolean => !!job && !!(job.plan || job.lever || job.a || job.b);
 
 export interface TimeSkipFile {
   path: string;

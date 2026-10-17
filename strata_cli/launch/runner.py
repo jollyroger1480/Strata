@@ -348,7 +348,7 @@ class Runner:
         if s.gpus:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
-            # a Mac's setup is metal/setup_mac.py, which takes fewer options (no --kv, --gpu, speed projection)
+            # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
             keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir"}
             out, i = [], 0
             while i < len(args):
@@ -401,8 +401,9 @@ class Runner:
             self.emit("model", f"{s.family} {s.model} is already installed with these choices.", 100)
             return path
         title = f"{s.family} {s.model}"
-        if sys.platform == "darwin" and not (cat.src / "metal" / "setup_mac.py").is_file():
-            # this Terminal does not carry the Mac installer (it builds the engine from source): use model files prepared on this Mac
+        if sys.platform == "darwin" and not (cat.src / "strata_control" / "mac_fit.py").is_file():
+            # a Terminal from before the Mac rules moved into strata_control/mac_fit.py: setup.py cannot install a Mac model in its Control
+            # mode (no source build, no setup_mac.py), so use model files prepared on this Mac. Every other Terminal installs through setup.py.
             adopted = self.adopt_prepared_files("no Mac model installer in this Terminal")
             if adopted is not None:
                 return adopted

@@ -84,6 +84,41 @@ def add_installer(folder: Path) -> dict:
     return pt.add_installer(folder, ROOT)
 
 
+#: What the other names of the interpreter become: Tauri copies a symlink as a full copy of its target, so `python`, `python3` and
+#: `python3.12` in a bundle would be three real files (68 MB each on Linux). Only `python3.12` stays the real one.
+LAUNCHER = """#!/bin/sh
+# Strata: this name only starts the real interpreter beside it (the bundle keeps one copy, not one per name).
+here=$(cd "$(dirname "$0")" && pwd)
+exec "$here/%s" "$@"
+"""
+
+
+def dedupe_python(folder: Path) -> list[str]:
+    """Make every other name of the interpreter in `python/bin` a small launcher of the real binary (Linux and macOS; Windows has one
+    python.exe). A symlink would not survive the bundling, and a plain copy is what costs the space. Returns the names changed."""
+    bindir = folder / "python" / "bin"
+    if not bindir.is_dir():
+        return []
+    real = bindir / f"python{pt.PYTHON_VERSION.rsplit('.', 1)[0]}"
+    if not real.exists():
+        return []
+    if real.is_symlink():                                  # the real file is a link itself: make the target the real one
+        target = real.resolve()
+        real.unlink()
+        shutil.move(str(target), str(real))
+    changed = []
+    for name in ("python", "python3"):
+        path = bindir / name
+        if not (path.is_symlink() or (path.is_file() and path.stat().st_size == real.stat().st_size)):
+            continue
+        path.unlink()
+        path.write_bytes((LAUNCHER % real.name).encode("utf-8"))
+        path.chmod(0o755)
+        changed.append(name)
+    return changed
+
+
+
 def write_bundle_record(folder: Path, archive: Path) -> dict:
     manifest_path = archive.with_name(archive.name.rsplit(".", 2 if archive.name.endswith(".tar.gz") else 1)[0] + ".manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
@@ -152,6 +187,9 @@ def main() -> int:
         for child in inner.iterdir():
             shutil.move(str(child), str(a.out / child.name))
         shutil.rmtree(inner.parent, ignore_errors=True)
+        launched = dedupe_python(a.out)
+        if launched:
+            print(f"python: {', '.join(launched)} are launchers of the one real interpreter")
         print(f"staged {record['component']} {record['version']} ({record['target']}) into {a.out}")
     return check(a.out)
 

@@ -609,6 +609,108 @@ class Helpers(unittest.TestCase):
         self.assertEqual(r["context"], 32768)
 
 
+class MacCatalog(unittest.TestCase):
+    """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
+
+    def hw(self, ram, macos="27.2", chip="Apple M4"):
+        from strata_control import mac_fit
+        s = M.Strata(HERE.parent)
+        info = {"chip": chip, "ram_gb": float(ram), "macos": macos, "arm64": True, "clt": "", "perf_cores": 4}
+        with mock.patch.object(M.sys, "platform", "darwin"), mock.patch.object(mac_fit, "mac_info", return_value=info):
+            hw = s._hardware()
+        return s, hw
+
+    def test_the_hardware_is_one_apple_gpu_with_unified_memory(self):
+        s, hw = self.hw(32)
+        self.assertEqual(hw["ram_gb"], 32.0)
+        self.assertEqual(len(hw["gpus"]), 1)
+        g = hw["gpus"][0]
+        self.assertEqual((g["vendor"], g["name"], g["usable"], g["vram_gb"], g["unified_gb"]), ("apple", "Apple M4", True, 0.0, 32.0))
+        self.assertEqual(hw["mac"]["unified_gb"], 32.0)
+        self.assertFalse(hw["nvidia_smi"])
+
+    def test_recommendation_by_unified_memory(self):
+        cases = {32: ("Q2_0", 32768), 48: ("Q2_0", 32768), 80: ("IQ3_XXS", 32768), 128: ("IQ3_S", 65536)}
+        for ram, (model, ctx) in cases.items():
+            s, hw = self.hw(ram)
+            r = s.recommend(hw)
+            self.assertEqual((r["family"], r["model"], r["context"], r["backend"]), ("qwen", model, ctx, "metal"), ram)
+            self.assertNotIn("NVIDIA", r["why"])
+            self.assertFalse([n for n in r["notes"] if "UD-" in n], "the Unsloth sizes are not offered in the app yet")
+        s, hw = self.hw(32)
+        self.assertIn("read from the SSD", s.recommend(hw)["why"])
+        s, hw = self.hw(128)
+        self.assertIn("stays in memory", s.recommend(hw)["why"])
+
+    def test_a_mac_too_small_or_too_old_has_no_recommendation_and_says_why(self):
+        s, hw = self.hw(8)
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("8 GB of unified memory", r["why"])
+        s, hw = self.hw(32, macos="14.6")
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("macOS 15 or newer", r["why"])
+
+    def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
+        s, hw = self.hw(32)
+        fams = s.model_table(hw)
+        self.assertEqual([f["family"] for f in fams], ["qwen"], "no Unsloth, Swift or NVFP4 on a Mac in the app")
+        by = {x["model"]: x for x in fams[0]["sizes"]}
+        self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
+        self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
+        self.assertIn("slower", by["Q2_0"]["on_this_pc"])
+        self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
+        self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
+        self.assertFalse(any(x["images"] for x in by.values()))
+        s, hw = self.hw(128)
+        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
+        s, hw = self.hw(8)
+        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"does not fit"})
+
+    def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
+        s, hw = self.hw(32)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as own:
+            plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, "no", "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(plan["context"], 32768)
+        self.assertEqual(args[:9], ["--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "32768", "--vision"])
+        for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
+            self.assertNotIn(flag, args)
+        self.assertIn("--gguf-dir", args)
+        with self.assertRaises(M.ToolError):
+            s2, hw2 = self.hw(8)
+            s2.hardware = lambda fresh=False: hw2
+            M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
+    def test_a_pc_is_unchanged(self):
+        s = M.Strata(HERE.parent)
+        r = s.recommend({"ram_gb": 96, "gpus": [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}],
+                         "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertIn("unsloth", [f["family"] for f in s.model_table({"ram_gb": 96, "gpus": []})])
+
+
+class MixedGraphics(unittest.TestCase):
+    def test_an_integrated_amd_gpu_beside_an_nvidia_card_is_not_offered(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        nv = [{"index": 0, "name": "NVIDIA GeForce RTX 5090", "vram_gb": 31.8, "arch": "120", "driver": "580.95"}]
+        igpu = [{"index": 0, "name": "AMD Radeon Graphics", "vram_gb": 0.5, "arch": "gfx1036", "uma": True}]
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: [dict(g) for g in nv]), mock.patch.object(S, "gpu_problem", lambda g: None),                 mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]), mock.patch.object(S, "amd_problem", lambda g: None):
+            hw = s._hardware()
+        by = {g["vendor"]: g for g in hw["gpus"]}
+        self.assertTrue(by["nvidia"]["usable"])
+        self.assertFalse(by["amd"]["usable"])
+        self.assertIn("NVIDIA card", by["amd"]["problem"])
+        rec = s.recommend({**hw, "ram_gb": 92.0})
+        self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
+        # with no NVIDIA card the integrated GPU stays what it was
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
+            self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

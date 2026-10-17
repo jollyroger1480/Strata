@@ -4,10 +4,12 @@ import type { PreviewArtifact } from '../lib/artifacts';
 import { plainTimeSkipError, replayTimeSkip, setTimeSkipResult, stopTimeSkip } from '../lib/store';
 import { realTimeSkipDocuments, timeSkipCheckOutcomes, timeSkipDocumentMarkdown, timeSkipDocuments, timeSkipExample, timeSkipResultState, type TimeSkipDocument, type TimeSkipRun, type TimeSkipVersion } from '../lib/time-skip';
 import { TimeSkipWorking } from './TimeSkipWorking';
+import { isForkJob } from '../lib/time-skip';
 import { FloatingMenu } from './FloatingMenu';
 import { TimeSkipCompare } from './TimeSkipCompare';
 import { Btn, Dialog, Icon } from './ui';
-function VersionTabs({ version, onChange, done }: {
+function VersionTabs({ version, onChange, done, fork }: {
+    fork?: boolean;
     version: TimeSkipVersion;
     onChange: (version: TimeSkipVersion) => void;
     done: boolean;
@@ -22,7 +24,7 @@ function VersionTabs({ version, onChange, done }: {
                 const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (i + 1) % 2;
                 onChange(options[next]);
                 event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
-            }}><Icon name={which === 'original' ? 'file' : 'pencil'} size={14}/><span>{tr(which === 'original' ? 'Original' : done ? 'Updated' : 'Update')}</span></button>))}
+            }}><Icon name={which === 'original' ? 'file' : 'pencil'} size={14}/><span>{tr(fork ? (which === 'original' ? 'A' : 'B') : which === 'original' ? 'Original' : done ? 'Updated' : 'Update')}</span></button>))}
   </div>;
 }
 function ImageResult({ document, original, compare }: {
@@ -133,6 +135,7 @@ export function TimeSkipPanel({ run, sessionId, inline, expanded, onCompare, onC
         // Snapshot IDs include the run clock, so replaying never reuses an old artifact.
         onPreview({ id: `${run.id}-${run.startedAt}-${which}`, kind: 'markdown', title: `${which}-${document.code ? 'counter' : 'launch-plan'}.md`, content: timeSkipDocumentMarkdown(document), demo: true });
     }
+    const forkRun = isForkJob(run.job);
     function restore(which: TimeSkipVersion) {
         setTimeSkipResult(sessionId, run.id, which);
         setVersion(which);
@@ -143,12 +146,12 @@ export function TimeSkipPanel({ run, sessionId, inline, expanded, onCompare, onC
     const content = <aside ref={panel} className="ts-panel" id="time-skip-content" aria-label={tr("Time-skip")} data-expanded={expanded || undefined}>
     <div className="ts-scroll">
       <div className="ts-content">
-        <div className="ts-heading"><h2 aria-live="polite"><span className="ts-status-icon">{tr(!frame.done ? <span className="ts-activity"/> : <Icon name={kept === 'original' ? 'file' : 'shield'} size={21}/>)}</span><span>{tr(status)}</span></h2></div>
-        <p className="ts-caption">{tr(frame.done ? kept === 'original' ? 'The updated result is still available.' : 'The original is always available.' : frame.pass === 2 ? 'Trying one more revision. Your progress is saved.' : 'Improving the saved draft.')}</p>
+        <div className="ts-heading"><h2 aria-live="polite"><span className="ts-status-icon">{tr(!frame.done ? <span className="ts-activity"/> : <Icon name={kept === 'original' ? 'file' : 'shield'} size={21}/>)}</span><span>{tr(forkRun && frame.done && (run.job?.files?.length ?? 0) > 0 ? (run.retainedVersion === 'original' ? 'Version A kept' : run.retainedVersion === 'updated' ? 'Version B kept' : 'Two versions to compare') : status)}</span></h2></div>
+        <p className="ts-caption">{tr(forkRun && frame.done ? 'A and B each went all the way through. Keep the one you like.' : frame.done ? kept === 'original' ? 'The updated result is still available.' : 'The original is always available.' : frame.pass === 2 ? 'Trying one more revision. Your progress is saved.' : run.job ? 'Working on a copy of your files.' : 'Improving the saved draft.')}</p>
         {tr(workingReal ? <TimeSkipWorking run={run} sessionId={sessionId}/> : compareReal ? <><TimeSkipCompare jobId={run.job!.id} files={run.job!.files!} more={run.job!.moreFiles ?? 0}/></> : realEmpty ? <p className="ts-empty">{tr(frame.done && run.job?.phase && ['failed', 'cancelled', 'interrupted'].includes(run.job.phase) ? 'Nothing was kept from this run. Your files were not changed.' : 'The assistant did not change anything, so there is nothing to compare. Your files were not changed.')}</p> : <>
         {tr(expanded ? <div className="ts-compare-heading"><h3>{tr("Compare results")}</h3><Btn size="sm" variant="ghost" icon="contract" onClick={() => onCompare(false)}>{tr(inline ? 'Back to chat' : 'Done comparing')}</Btn></div> : null)}
         <div className="ts-switch-row" data-comparing={expanded || undefined}>
-          <VersionTabs version={version} onChange={which => { setVersion(which); setImageCompare(false); }} done={frame.done}/>
+          <VersionTabs version={version} onChange={which => { setVersion(which); setImageCompare(false); }} done={frame.done} fork={forkRun}/>
           {tr(!expanded ? <button type="button" className="st-btn st-btn--ghost st-btn--sm ts-compare-button" aria-pressed={documents.updated.image ? imageCompare : undefined} disabled={!ready} onClick={() => { if (documents.updated.image) {
         setVersion('updated');
         setImageCompare(value => !value);
@@ -158,14 +161,18 @@ export function TimeSkipPanel({ run, sessionId, inline, expanded, onCompare, onC
         </div>
         {tr(expanded ? <div id="ts-result" className="ts-comparison" role={sideBySide ? 'group' : 'tabpanel'} aria-label={tr(sideBySide ? 'Result comparison' : undefined)} aria-labelledby={sideBySide ? undefined : `ts-result-tab-${version}`}>
           {tr((['original', 'updated'] as const).map(which => <section key={which} className="ts-comparison-column" data-version={which} data-selected={version === which || undefined}>
-            <div className="ts-column-heading"><h4>{tr(which === 'original' ? 'Original' : 'Updated')}</h4><span>{tr(which === kept && frame.done ? <><Icon name="check" size={12}/>{tr("Kept result")}</> : which === 'original' ? 'Saved draft' : ready ? 'Changes highlighted' : 'In progress')}</span></div>
+            <div className="ts-column-heading"><h4>{tr(forkRun ? (which === 'original' ? 'A' : 'B') : which === 'original' ? 'Original' : 'Updated')}</h4><span>{tr(which === kept && frame.done ? <><Icon name="check" size={12}/>{tr("Kept result")}</> : which === 'original' ? 'Saved draft' : ready ? 'Changes highlighted' : 'In progress')}</span></div>
             {tr(result(which))}
           </section>))}
         </div> : <div id="ts-result" role="tabpanel" aria-labelledby={`ts-result-tab-${version}`} className="ts-selected" key={version}>{tr(result(version))}</div>)}
         </>)}
         {tr(!compareReal && ready && (!real || documents.changes.length > 0) ? <section className="ts-changes"><h3><Icon name="sliders" size={14}/>{tr("What changed")}<span>{tr(documents.changes.length)}{tr(" updates")}</span></h3><ul>{tr(documents.changes.map((change, i) => <li key={change}><Icon name={i === documents.changes.length - 1 ? 'shield' : 'pencil'} size={14}/><span>{tr(change)}</span><Icon name="check" size={11}/></li>))}</ul></section> : null)}
         {tr(!real && kept === 'original' && frame.done ? <div className="ts-restored" role="status"><span>{tr("Original restored in this example.")}</span><button onClick={() => restore('updated')}>{tr("Undo")}</button></div> : null)}
-        {real && frame.done && (run.job?.files?.length ?? 0) > 0 ? <section className="ts-keep" aria-label={tr('Keep the update')}>
+        {real && forkRun && frame.done && (run.job?.files?.length ?? 0) > 0 ? <section className="ts-keep" aria-label={tr('Keep a version')}>
+          <p>{tr(run.retainedVersion === 'original' ? 'Version A is in your files.' : run.retainedVersion === 'updated' ? 'Version B is in your files.' : 'Your files are unchanged. Choose the version to put in your folder; you can switch later.')}</p>
+          <span className="ts-keep__buttons"><Btn variant="secondary" icon={run.retainedVersion === 'original' ? 'check' : undefined} disabled={run.retainedVersion === 'original'} onClick={() => restore('original')}>{tr('Keep A')}</Btn><Btn variant="secondary" icon={run.retainedVersion === 'updated' ? 'check' : undefined} disabled={run.retainedVersion === 'updated'} onClick={() => restore('updated')}>{tr('Keep B')}</Btn></span>
+        </section> : null}
+        {real && !forkRun && frame.done && (run.job?.files?.length ?? 0) > 0 ? <section className="ts-keep" aria-label={tr('Keep the update')}>
           <p>{tr(run.retainedVersion === 'updated' ? 'The update is in your files. You can put the original back.' : 'Your files are unchanged. Keep the update to put it in your folder; you can put the original back later.')}</p>
           {run.retainedVersion === 'updated' ? <Btn variant="secondary" icon="refresh" onClick={() => restore('original')}>{tr('Put the original back')}</Btn> : <Btn variant="primary" icon="check" onClick={() => restore('updated')}>{tr('Keep the update')}</Btn>}
         </section> : null}
@@ -185,7 +192,7 @@ export function TimeSkipPanel({ run, sessionId, inline, expanded, onCompare, onC
         </section>
       </div>
     </div>
-    <footer className="ts-footer"><div>{tr(sideBySide ? <Btn onClick={() => openResult('original')} icon="file">{tr("Open original")}</Btn> : null)}<Btn variant="primary" block disabled={(sideBySide || version === 'updated') && !ready} onClick={() => openResult(sideBySide ? 'updated' : version)}><Icon name="file" size={15}/>{tr(!sideBySide && version === 'original' ? 'Open original' : 'Open result')}<Icon name="chevron" size={12} className="timeskip-card-arrow"/></Btn><button ref={menuAnchor} className="st-btn st-btn--icon" aria-label={tr("More Time-skip actions")} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(v => !v)}><Icon name="ellipsis" size={17}/></button></div></footer>
+    <footer className="ts-footer"><div>{tr(sideBySide ? <Btn onClick={() => openResult('original')} icon="file">{tr("Open original")}</Btn> : null)}<Btn variant="secondary" className="btn-neutral" block disabled={(sideBySide || version === 'updated') && !ready} onClick={() => openResult(sideBySide ? 'updated' : version)}><Icon name="file" size={15}/>{tr(!sideBySide && version === 'original' ? 'Open original' : 'Open result')}<Icon name="chevron" size={12} className="timeskip-card-arrow"/></Btn><button ref={menuAnchor} className="st-btn st-btn--icon" aria-label={tr("More Time-skip actions")} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(v => !v)}><Icon name="ellipsis" size={17}/></button></div></footer>
     {tr(menu ? <FloatingMenu anchor={menuAnchor.current} title={tr("Time-skip actions")} onClose={() => setMenu(false)}><button role="menuitem" className="menu__item" disabled={!frame.done} onClick={() => restore(kept === 'original' ? 'updated' : 'original')}><Icon name="branch"/>{tr(kept === 'original' ? 'Keep updated result' : 'Restore original result')}</button>{real ? (!frame.done ? <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); void stopTimeSkip(sessionId, run.id); }}><Icon name="stop"/>{tr("Stop Time-skip")}</button> : null) : <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); onCompare(false); replayTimeSkip(sessionId, run.id); }}><Icon name="refresh"/>{tr("Replay example")}</button>}</FloatingMenu> : null)}
   </aside>;
     return inline ? content : <Dialog open title={tr("Time-skip")} onClose={onClose} sheet wide={expanded} className="ts-dialog">{tr(content)}</Dialog>;

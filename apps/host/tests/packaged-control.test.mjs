@@ -290,14 +290,16 @@ test('createControl asks the CLI for the engine, models and runtime and reads th
   assert.equal(createControl({ control: null }), null);
 });
 
-test('packaged: the catalog offers no picture reading (app installs have none), and an install asks for none', async () => {
+test('packaged: the catalog offers no picture reading, an install asks for none by default and for it only when Read pictures was ticked', async () => {
   const f = packagedFixture();
   try {
     const state = await f.native.refresh(true);
     assert.ok(state.catalog.families[0].sizes.every(s => s.images === false));
     assert.ok(state.catalog.families.every(fam => fam.images === false));
-    await f.native.plan({ family: 'qwen', model: 'Q2_0', vision: 'yes' });
+    await f.native.plan({ family: 'qwen', model: 'Q2_0' });
     assert.equal(f.rpc.at(-1).arguments.vision, 'no');
+    await f.native.plan({ family: 'qwen', model: 'Q2_0', vision: 'yes' });
+    assert.equal(f.rpc.at(-1).arguments.vision, 'yes');
   } finally { await f.native.close(); f.cleanup(); }
 });
 

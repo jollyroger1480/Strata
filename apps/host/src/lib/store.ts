@@ -4,12 +4,13 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
+import { appendText, mergeDeliverable, readDeliverable, readGroup, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
-import { TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
+import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
-import { photoData, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
+import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
@@ -323,6 +324,14 @@ function libraryResponse(data: ModelLibrary): ModelLibrary {
 
 export function lifecycleStatus(s = state) {
   return lifecyclePolicy({ connected: s.connection === 'live', streaming: !!s.streaming || s.liveChats > 0, stats: s.serving?.stats, busy: s.busy });
+}
+/** The lifecycle status without subscribing to the whole store: a screen that only needs this must not redraw on every monitor tick (round 8, item 13). */
+export function useLifecycle() {
+  const connected = useStore(s => s.connection === 'live');
+  const streaming = useStore(s => !!s.streaming || s.liveChats > 0);
+  const stats = useStore(s => s.serving?.stats);
+  const busy = useStore(s => s.busy);
+  return lifecyclePolicy({ connected, streaming, stats, busy });
 }
 export function lifecycleAvailable(): boolean {
   const result = lifecycleStatus();
@@ -1171,7 +1180,7 @@ function applyTimeSkipEvent(data: Record<string, unknown>) {
   for (const session of state.sessions) {
     const run = session.timeSkips?.find(r => r.job?.id === id);
     if (!run || run.completedAt) continue;
-    patchRun(session.id, run.id, r => ({ ...r, job: { ...r.job!, ...(typeof data.phase === 'string' ? { phase: data.phase as TimeSkipJob['phase'] } : {}), activity: data.activity as TimeSkipJob['activity'] } }));
+    patchRun(session.id, run.id, r => ({ ...r, job: { ...r.job!, ...(typeof data.phase === 'string' ? { phase: data.phase as TimeSkipJob['phase'] } : {}), activity: data.activity as TimeSkipJob['activity'], ...forkFields(data) } }));
   }
 }
 
@@ -1179,7 +1188,7 @@ function timeSkipEnding(job: TimeSkipJob, files: TimeSkipFile[]): string {
   if (job.phase === 'failed') return tr('Time-skip stopped. {0} Your files were not changed.', [plainTimeSkipError(job.error)]);
   if (job.phase === 'cancelled' || job.phase === 'interrupted') return tr('Time-skip was stopped before it finished. Your files were not changed.');
   if (!files.length) return tr('The assistant did not change anything, so there is nothing to compare. Your files were not changed.');
-  return TS_READY();
+  return isForkJob(job) ? tr('Both versions are ready. Compare A and B, then keep one.') : TS_READY();
 }
 
 async function startTimeSkipReal(prompt: string) {
@@ -1234,14 +1243,14 @@ export async function followTimeSkip(sessionId: string, runId: string) {
             break;
           } catch { await new Promise(r => setTimeout(r, 700 * (tryNo + 1))); }
         }
-        const finished = job;
+        const finished = { ...job, ...forkFields(job as unknown as Record<string, unknown>) };
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, ...finished, ...extra } }), timeSkipEnding(finished, files));
         // A run that changed files opens the comparison; one that changed nothing, failed or was stopped has no sidebar tab.
         if (files.length > 0 && !['failed', 'cancelled', 'interrupted'].includes(finished.phase)) patchSession(sessionId, s => ({ ...s, previewOpen: timeSkipTabId(runId) }));
         markTurn(sessionId, null);
         return;
       }
-      if (job) { const live = job; patchRun(sessionId, runId, r => ({ ...r, job: { ...r.job!, ...live } })); }
+      if (job) { const live = { ...job, ...forkFields(job as unknown as Record<string, unknown>) }; patchRun(sessionId, runId, r => ({ ...r, job: { ...r.job!, ...live } })); }
       if (misses >= 6) {
         patchRun(sessionId, runId, r => ({ ...r, completedAt: Date.now(), job: { ...r.job!, phase: 'interrupted' } }), tr('Time-skip lost contact with the app and stopped. Your files were not changed.'));
         markTurn(sessionId, null);
@@ -1263,9 +1272,10 @@ export async function keepTimeSkip(sessionId: string, runId: string, version: Ti
   const run = state.sessions.find(s => s.id === sessionId)?.timeSkips?.find(r => r.id === runId);
   const job = run?.job;
   if (!run || !job?.id || !job.phase || !TS_TERMINAL.includes(job.phase)) return;
-  if ((run.retainedVersion ?? 'original') === version) { patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version })); return; }
+  if ((run.retainedVersion ?? 'original') === version && !(isForkJob(job) && run.retainedVersion === undefined)) { patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version })); return; }
   try {
-    if (version === 'updated') await api.post('/api/timeskip/apply', { id: job.id, attempt: job.applyAttempt ?? null });
+    if (isForkJob(job)) await api.post('/api/timeskip/apply', { id: job.id, which: version === 'original' ? 'a' : 'b' });
+    else if (version === 'updated') await api.post('/api/timeskip/apply', { id: job.id, attempt: job.applyAttempt ?? null });
     else await api.post('/api/timeskip/apply', { id: job.id, restore: true });
     patchRun(sessionId, runId, r => ({ ...r, retainedVersion: version }));
     pushToast('success', version === 'updated' ? tr('The update is now in your files') : tr('Your original files are back'));
@@ -1509,7 +1519,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
   const demoPrompt = resume || planStart ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
-    if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else startTimeSkipDemo(demoPrompt);
+    if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else if (state.connection === 'live' && demoPrompt) pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
+    else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
+    else startTimeSkipDemo(demoPrompt);
     return;
   }
   const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const canSendPictures=!state.remoteModel&&imageTarget?.status==='ready'&&imageTarget.vision;
@@ -1584,7 +1596,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
-        images:await Promise.all(pictures.map(photoData)),
+        ...(pictures.length ? { imageIds: await uploadChatPhotos(pictures, sessionId) } : {}),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
         // A chat set to plain talk (preferences.agent === false) never runs a tool: the host answers it directly.
         ...(state.sessions.find(s=>s.id===sessionId)?.preferences?.agent===false?{agent:false}:{}),
@@ -1642,7 +1654,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+        } else if (type === 'deliverable') {
+          const file = readDeliverable(frame);
+          if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
+        } else if (type === 'activity-group') {
+          const group = readGroup(frame);
+          if (group) patchAssistant(m => ({ ...m, blocks: upsertGroup(m.blocks ?? (m.content ? appendText(undefined, m.content) : undefined), group) }));
         } else if (type === 'artifacts' && Array.isArray(frame.artifacts)) {
           patchAssistant(m => ({ ...m, artifacts: frame.artifacts as PreviewArtifact[] }));
         } else if(type==='native-tool'){

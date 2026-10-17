@@ -731,6 +731,8 @@ class Strata:
             hw["cpu"] = {"name": name, "cores": os.cpu_count(), "avx2": avx2, "avx512": avx512}
         except Exception:                               # noqa: BLE001
             hw["cpu"] = {"name": platform.processor(), "cores": os.cpu_count()}
+        if sys.platform == "darwin":                    # a Mac: one pool of unified memory, the Metal engine (strata_control/mac_fit.py)
+            return self._mac_hardware(hw)
         nv = []
         try:
             nv = S.gpus() if S else own_nvidia_gpus()
@@ -757,17 +759,110 @@ class Strata:
                 amd = []
             if not amd and shutil.which("rocm-smi"):
                 amd = rocm_smi_gpus()
+        if any(g.get("usable") for g in nv):
+            for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
+                if g.get("uma") and g.get("usable"):
+                    g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         hw["gpus"] = nv + amd
         if WIN:
             hw["display_adapters"] = windows_video_controllers()
         hw["nvidia_smi"] = bool(shutil.which("nvidia-smi"))
         return hw
 
+    # ---- a Mac (Apple Silicon): unified memory, the Metal engine.  The rules are strata_control/mac_fit.py's (the same module
+    # metal/setup_mac.py uses), so the app, the Terminal and a Mac that builds the engine itself judge a model the same way.
+    def mac(self):
+        """strata_control/mac_fit.py, or None when this Strata folder does not carry it."""
+        try:
+            if str(self.src) not in sys.path:
+                sys.path.insert(0, str(self.src))
+            from strata_control import mac_fit
+            return mac_fit
+        except Exception as e:                          # noqa: BLE001
+            log(f"strata_control/mac_fit.py could not be imported ({e})")
+            return None
+
+    def _mac_hardware(self, hw: dict) -> dict:
+        mf = self.mac()
+        info = mf.mac_info() if mf else {"chip": platform.processor() or "Apple silicon", "ram_gb": hw.get("ram_gb") or 0.0,
+                                         "macos": platform.mac_ver()[0], "arm64": platform.machine() == "arm64", "clt": "x"}
+        problems = mf.mac_problems(info, need_compiler=False) if mf else []
+        ram = round(float(info.get("ram_gb") or hw.get("ram_gb") or 0.0), 1)
+        hw["ram_gb"] = ram
+        hw["cpu"] = {"name": info["chip"], "cores": os.cpu_count(), "avx2": None, "avx512": None}
+        # The graphics memory IS the RAM here: vram_gb stays 0 so nothing is counted twice (the pages that fit RAM + VRAM add them up).
+        hw["gpus"] = [{"index": 0, "name": info["chip"], "vendor": "apple", "vram_gb": 0.0, "unified_gb": ram, "arch": "apple-gpu",
+                       "problem": problems[0] if problems else None, "usable": not problems}]
+        hw["mac"] = {"chip": info["chip"], "macos": info.get("macos"), "unified_gb": ram}
+        hw["nvidia_smi"] = False
+        return hw
+
+    def _mac_sizes(self, models: dict) -> list:
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack). Unsloth's many-shard files need
+        metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not offer them yet."""
+        mf = self.mac()
+        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == "qwen" and m in models] if mf else []
+
+    def _mac_verdict(self, model: str, ram: float) -> str:
+        mf = self.mac()
+        if ram < mf.MIN_STREAM_RAM_GB:
+            return "does not fit"
+        if not mf.streams(model, ram):
+            return "fits"
+        speed = mf.STREAM_MEASURED.get(model)
+        if speed:
+            return (f"part of its experts in memory, the rest read from the SSD (slower: {speed} measured on a 32 GB Mac mini)")
+        return "slow here: part of its experts read from the SSD (slower, not measured on a Mac of this size)"
+
+    def _mac_recommend(self, hw: dict, models: dict, families: dict) -> dict:
+        mf = self.mac()
+        ram = float(hw.get("ram_gb") or 0)
+        usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+        if not mf or not usable:
+            why = (hw.get("gpus") or [{}])[0].get("problem") or "this Mac cannot run the Metal engine"
+            return {"family": None, "model": None, "why": why}
+        if ram < mf.MIN_STREAM_RAM_GB:
+            return {"family": None, "model": None,
+                    "why": f"{ram:.0f} GB of unified memory: Strata needs {mf.MIN_STREAM_RAM_GB:.0f} GB or more on a Mac (32 GB or more is what it was tested on)"}
+        model, notes = mf.recommend_model(ram)
+        notes = [n for n in notes if "UD-Q4_K_XL" not in n]          # the app does not offer the Unsloth files yet
+        if model not in self._mac_sizes(models):
+            model = "Q2_0"
+        if mf.streams(model, ram):
+            speed = mf.STREAM_MEASURED.get(model)
+            why = (f"{ram:.0f} GB of unified memory: no size fits whole, so {model}'s experts are read from the SSD as it answers"
+                   + (f" ({speed} measured on a 32 GB Mac mini)" if speed else ""))
+        else:
+            why = f"{ram:.0f} GB of unified memory: {model} stays in memory (the best size that does)"
+        ctx = mf.recommend_context(ram)
+        return {"family": "qwen", "model": model, "title": families["qwen"]["title"] + " " + model, "context": ctx,
+                "backend": "metal", "gpu": {k: usable[0].get(k) for k in ("index", "name", "vram_gb")},
+                "download_gb": models[model]["download_gb"], "why": why, "notes": notes,
+                "setup_command": f"./setup.sh --setup --yes --family qwen --model {model} --context {ctx}"}
+
+    def _mac_model_table(self, hw: dict) -> list:
+        models, families, _ctx, _src = self.tables()
+        ram = float(hw.get("ram_gb") or 0)
+        have = {c.stem[len("strata-"):] for c in self.configs()}
+        fd = families["qwen"]
+        sizes = []
+        for m in self._mac_sizes(models):
+            d = models[m]
+            tag = (fd.get("tag", "") + m).lower()
+            sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
+                          "images": False,           # the app's first release reads no pictures (setup.py's Control mode says so)
+                          "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                          "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                          "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
+        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False, "images": False, "sizes": sizes}]
+
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
         Coder below the full model's RAM (setup's RAM table), the low-RAM mode when the GPU makes up for the RAM, and
         the context it preselects for the card's VRAM (32K under 14 GB, 64K under 20 GB, else 128K)."""
         models, families, _ctx, _src = self.tables()
+        if hw.get("mac"):
+            return self._mac_recommend(hw, models, families)
         S = self.setup_module()
         usable = [g for g in hw.get("gpus", []) if g.get("usable")]
         ram = hw.get("ram_gb") or 0
@@ -824,6 +919,8 @@ class Strata:
                 "download_gb": models[model]["download_gb"], "why": why, "notes": notes, "setup_command": cmd}
 
     def model_table(self, hw: dict | None) -> list:
+        if (hw or {}).get("mac"):
+            return self._mac_model_table(hw)
         models, families, _ctx, _src = self.tables()
         S = self.setup_module()
         ram = (hw or {}).get("ram_gb")
@@ -1444,6 +1541,12 @@ class Tools:
         sizes = s.sizes_of(models, family)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
+        mac = bool(hw.get("mac"))
+        if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
+            if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
+                raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
+            gpu = gpus = kv = low_ram = None
+            context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
             usable = [g for g in hw.get("gpus", []) if g.get("usable")]
             vram = max((g["vram_gb"] for g in usable), default=12)
