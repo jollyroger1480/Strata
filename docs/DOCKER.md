@@ -24,6 +24,9 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 | AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.0-rocm-gfx110x` | the `amdgpu` kernel driver |
 | Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.0-sycl` | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
+Size of the images (0.1.45 packages as measured; the 0.2.0 ones will differ a little): `cuda13` 640 MB download / 2.0 GB on disk, `cuda12`
+845 MB / 2.6 GB, `rocm-gfx120x` 505 MB / 2.2 GB, `rocm-gfx110x` 330 MB / 1.6 GB, `sycl` 450 MB / 1.9 GB. The model comes on top, on the first start.
+
 Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or newer and the card is an RTX; otherwise `cuda12`.
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
 
@@ -114,7 +117,7 @@ screens; leave out what you do not care about.
 | `PARALLEL` | requests answered at the same time, 1 to 8 | fitted to the card |
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
 | `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
-| `GPU` / `GPUS` | card numbers, `0` or `0,1`; empty or `all` = the engine's choice | all that fit |
+| `GPU` / `GPUS` | card numbers as the monitor lists them, `0` or `0,1`; empty or `all` = the engine's choice. Changing it later makes the model's run settings again (the files stay) | all that fit |
 | `TUNE` | `quick` (up to about 20 minutes, once), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
 | `API_KEY` / `API_KEY_FILE` | the key clients must send ([below](#the-api-key)); the file form is for Docker secrets | made for you |
 | `PORT` | the port inside the container | `8080` |
@@ -277,6 +280,14 @@ library inside the finished image. A package that fails any of these stops the b
 and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For AMD and Intel
 builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result with
 `packaging/package_engine.py` and use `docker/build.sh`.
+
+## Tested
+
+2026-10-17, images built from the 0.1.45 engine packages (the 0.2.0 packages are not cut yet), on real cards: NVIDIA RTX 3060 (`cuda13`
+and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
+refuses a request without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works,
+`docker stop` ends it with exit code 0 and the graphics memory is free again, and a second start reuses the saved preset.
+Not run on a card: `cuda12` on Pascal / Volta (it ran on the RTX 3060), `rocm-gfx110x` (RX 7000). They are built and checked the same way.
 
 ## Known limits
 
