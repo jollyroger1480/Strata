@@ -119,6 +119,9 @@ def files_present(cfg: dict) -> list[str]:
         args = [str(a) for a in cfg.get("args") or []]
         if flag in args and args.index(flag) + 1 < len(args) and not Path(args[args.index(flag) + 1]).exists():
             missing.append(args[args.index(flag) + 1])
+    vision = cfg.get("vision")
+    if isinstance(vision, dict) and vision.get("mmproj") and not Path(str(vision["mmproj"])).exists():
+        missing.append(str(vision["mmproj"]))                 # the picture reader's file: setup fetches it again
     return missing
 
 
@@ -374,7 +377,10 @@ class Runner:
             return 0.0
         try:
             path, desc = self.installed_state()
-            if path is not None and desc is not None and not files_present(read_config(path)):
+            lost = files_present(read_config(path)) if path is not None else []
+            if lost and all("mmproj" in Path(x).name.lower() for x in lost):
+                return 0.9                                   # only the picture reader's file is gone
+            if path is not None and desc is not None and not lost:
                 if desc_matches(desc, s):
                     return 0.0
                 # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)

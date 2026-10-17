@@ -424,6 +424,22 @@ class AdoptRules(unittest.TestCase):
                 with mock.patch.object(r, "installed_state", return_value=(cfgfile, desc)):
                     self.assertAlmostEqual(r.download_gb(), want, msg=(vision, images, ctx))
 
+    def test_a_missing_picture_reader_file_is_fetched_again(self):
+        from strata_cli.launch.runner import files_present
+        with Home() as h:
+            mm = h.base / "mmproj-x.gguf"
+            cfg = {"args": [], "vision": {"mmproj": str(mm)}}
+            self.assertEqual(files_present(cfg), [str(mm)])
+            mm.write_text("x")
+            self.assertEqual(files_present(cfg), [])
+            mm.unlink()
+            cat = catalog(HW_12)
+            cfgfile = h.base / "strata-x.json"
+            cfgfile.write_text(json.dumps(cfg))
+            r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on", context=32768), catalog=cat)
+            with mock.patch.object(r, "installed_state", return_value=(cfgfile, {"context": 32768, "kv": "int8", "images": "cpu"})):
+                self.assertAlmostEqual(r.download_gb(), 0.9)
+
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:
             cat = catalog(HW_12)
