@@ -358,6 +358,24 @@ class AdoptRules(unittest.TestCase):
                     self.assertNotIn(other, a)
                     self.assertEqual(a[a.index("--vram-reserve-mib") + 1], reserve)
 
+    def test_intel_arc_is_read_from_the_kernel_and_gets_a_small_context(self):
+        from strata_cli.launch import catalog as C
+        with Home() as h:
+            card = h.base / "drm" / "card0" / "device"
+            card.mkdir(parents=True)
+            (card / "vendor").write_text("0x8086")
+            (card / "device").write_text("0x56a1")
+            cards = C.intel_arc_cards(str(h.base / "drm"))
+            self.assertEqual([(c["name"], c["vram_gb"]) for c in cards], [("Intel Arc A750", 8.0)])
+            self.assertEqual(C.intel_arc_cards(str(h.base / "nothing")), [])
+            hw = dict(HW_12)
+            hw["gpus"] = cards
+            cat = catalog(hw)
+            self.assertEqual(cat.computer().line().split(" 8 GB")[0], "Arc A750".replace("Arc", "Intel Arc"))
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 8192)
+            hw["gpus"] = [{"vendor": "intel", "name": "Intel Arc Pro B70", "vram_gb": 32.0, "usable": True}]
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 32768)
+
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
         with Home() as h:

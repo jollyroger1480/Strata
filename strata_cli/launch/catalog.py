@@ -152,6 +152,30 @@ def install_root(explicit: str | os.PathLike | None = None) -> Path:
     return engine_component.components_dir().parent / "install"
 
 
+# Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the common
+# cards are listed; an id that is not here is shown as "Intel Arc" with no size and is treated as a small card.  (A770: the 8 GB model shares
+# the id of the 16 GB one, so the smaller figure is used.)
+INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0": ("Arc A770", 8.0), "0x56a5": ("Arc A380", 6.0),
+             "0x56a6": ("Arc A310", 4.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0), "0xe223": ("Arc Pro B70", 32.0)}
+
+
+def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
+    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere)."""
+    cards: list[dict] = []
+    try:
+        for dev in sorted(Path(root).glob("card[0-9]/device")):
+            if (dev / "vendor").read_text().strip() != "0x8086":
+                continue
+            did = (dev / "device").read_text().strip().lower()
+            if did not in INTEL_ARC:
+                continue
+            name, gb = INTEL_ARC[did]
+            cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
+    except OSError:
+        pass
+    return cards
+
+
 class Catalog:
     """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
@@ -189,7 +213,12 @@ class Catalog:
             hw = dict(self._hardware_override)
             hw.setdefault("disk_free_gb", self.strata.disk_free(self.strata.data_dir()))
             return hw
-        return self.strata.hardware(fresh=fresh)
+        hw = dict(self.strata.hardware(fresh=fresh))
+        if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
+            arc = intel_arc_cards()
+            if arc:
+                hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+        return hw
 
     def computer(self, fresh: bool = False) -> Computer:
         hw = self.hardware(fresh)
@@ -266,6 +295,8 @@ class Catalog:
         usable = [g for g in hw.get("gpus") or [] if g.get("usable", True)]
         vram = max((float(g.get("vram_gb") or 0) for g in usable), default=12.0)
         rec = 32768 if vram < 14 else 65536 if vram < 20 else 131072
+        if usable and all(g.get("vendor") == "intel" for g in usable):
+            rec = 8192 if vram < 10 else 16384 if vram < 20 else 32768       # an Arc keeps the session and the experts in the same memory
         mod = self.strata.setup_module()
         models = self.tables()[0]
         if mod is not None and models[model].get("budget"):
