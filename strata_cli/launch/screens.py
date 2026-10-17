@@ -600,7 +600,25 @@ class FolderScreen(Base):
                 out.append(f"   Not enough for {need:.0f} GB. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
         else:
             out.append("The free space of that folder could not be read.", style=MUTE)
+        moving = self.models_that_would_move(value)
+        if moving:
+            out.append(f"\nModel files Strata already keeps in {moving} are moved into this folder when you start "
+                       "(quick on the same drive; on another drive they stay where they are and are used from there).", style=WARN)
         self.query_one("#folderinfo", Static).update(out)
+
+    def models_that_would_move(self, value: str) -> str | None:
+        """The folder holding model files today when a different one is typed (setup gathers the model files into the data folder), else None."""
+        try:
+            old = Path(self.ctx.catalog.data_dir())
+            new = Path(value).expanduser() if value else old
+            if os.path.normcase(str(new.resolve())) == os.path.normcase(str(old.resolve())):
+                return None
+            models = old / "models"
+            if models.is_dir() and any(models.iterdir()):
+                return str(old)
+        except OSError:
+            pass
+        return None
 
     def explain(self) -> Text:
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
