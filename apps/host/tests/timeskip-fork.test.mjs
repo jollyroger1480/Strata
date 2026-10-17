@@ -38,13 +38,13 @@ test('copyProject leaves out dependency and VCS folders', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-async function rig(t, slots) {
+async function rig(t, slots, opts = {}) {
   const worker = await startScriptedWorker({});
   const dir = mkdtempSync(join(tmpdir(), 'strata-tsf-'));
   const project = join(dir, 'project'); mkdirSync(project); writeFileSync(join(project, 'keep.txt'), 'original');
   const bridge = createAgentBridge({ dataDir: join(dir, 'data'), localInstances: () => [{ id: 'i', label: 'S', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots }], connections: () => [], env: process.env, startTimeoutMs: 90_000 });
   const events = [];
-  const ts = createForkTimeskip({ agent: bridge, dir: join(dir, 'ts'), notify: (type, data) => events.push(data) });
+  const ts = createForkTimeskip({ agent: bridge, dir: join(dir, 'ts'), notify: (type, data) => events.push(data), ...opts });
   t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
   return { ts, events, project, dir, worker };
 }
@@ -109,4 +109,13 @@ test('a step about looking at the page in a browser is recognised, carries the n
   const plan = { title: 'T', steps: [{ text: 'Write it' }, { text: 'Open it in a browser to check', detail: '' }] };
   assert.match(stepObjective(plan, 1), /Never wait for a program to close/); assert.match(stepObjective(plan, 1), /Start-Process/); assert.ok(!/Start-Process/.test(stepObjective(plan, 0)));
   assert.match(UNATTENDED, /Never open a visible window/);
+});
+
+test('a step that never finishes is stopped after the time limit and left as it is with a plain note; the version still completes', { skip }, async (t) => {
+  const r = await rig(t, 2, { stepTimeoutMs: 4000 });
+  const run = r.ts.start({ prompt: 'SCRIPT:planslow', workspace: r.project, choice: { instanceId: 'i' }, slots: 2 });
+  const done = await until(() => { const s = r.ts.status(run.id); return ['completed', 'failed'].includes(s.phase) ? s : null; }, 150_000);
+  assert.equal(done.phase, 'completed', done.error);
+  assert.ok(r.events.some(e => /step 2 took too long and was left as it is/.test(e.activity?.text ?? '')), 'the person was told which step was left');
+  assert.equal(done.a.state, 'done');
 });

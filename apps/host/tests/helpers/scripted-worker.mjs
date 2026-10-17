@@ -124,6 +124,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       }
       return say(['Step finished. The result is checked.']);
     }
+    if (directive?.[1] === 'planslow') return say(['## Slow plan\n\n', '1. First thing SCRIPT:goalstep\n', '2. A step that never finishes SCRIPT:slow 4000\n', '3. Third thing SCRIPT:goalstep\n']);
     if (directive?.[1] === 'planreply') return say(['I looked around the folder first.\n\n## The pagoda plan\n\n', '1. First thing SCRIPT:goalstep\n', '2. Second thing SCRIPT:goalstep\n', '3. Third thing SCRIPT:goalstep\n']);
     if (last.role === 'tool') {
       const result = text(last).replace(/\s+/g, ' ').slice(0, 120);
