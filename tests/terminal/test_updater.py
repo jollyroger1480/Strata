@@ -686,5 +686,22 @@ class Cli(UpdaterCase):
         self.assertEqual(self.archive_requests(), [])
 
 
+class AnotherCardFamilyNote(unittest.TestCase):
+    """A feed whose only HIP engine is built for another AMD card family says so in one plain line."""
+
+    def test_the_note_names_both_families_and_the_build_to_ask_for(self):
+        import tempfile
+        from types import SimpleNamespace
+        pkg = SimpleNamespace(label="0.1.45.1 linux-x86_64-hip-rx7900", platform="linux-x86_64", backend="hip", min_runtime=None,
+                              archs=("gfx1100", "gfx1101", "gfx1102"), min_driver={})
+        hardware = {"platform": "linux-x86_64", "backend": "hip", "runtime": None, "gfx": ["gfx1201"], "cuda_archs": [], "nvidia_driver": None}
+        with tempfile.TemporaryDirectory() as d:
+            ctx = SimpleNamespace(components=Path(d), hardware=hardware)
+            report, offered = updater._choose_engine(SimpleNamespace(engine=[pkg]), ctx, SimpleNamespace(section=lambda name: {}))
+        self.assertIsNone(offered)
+        self.assertEqual(report["status"], "none-for-this-pc")
+        self.assertEqual(report["note"], "This build of Strata is for AMD RX 7000 cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
+
+
 if __name__ == "__main__":
     unittest.main()

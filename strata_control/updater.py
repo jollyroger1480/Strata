@@ -435,6 +435,12 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
     if offered is None:
         if not feed.engine:
             report["status"] = "not-in-feed"
+        else:
+            hip = [p for p in feed.engine if p.backend == "hip" and p.platform == ctx.hardware.get("platform")]
+            if hip and ctx.hardware.get("backend") == "hip" and ctx.hardware.get("gfx") and not any(
+                    feedmod.engine_fit_reasons(p, ctx.hardware) == [] for p in hip):
+                # a build for another AMD card family: one plain line instead of the list of reasons
+                report["note"] = ec.arch_notice(tuple(sorted({a for p in hip for a in p.archs if a.startswith("gfx")})), ctx.hardware["gfx"])
         return report, None
     report["download_bytes"] = offered.size
     if installed is None:
