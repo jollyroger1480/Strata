@@ -197,7 +197,8 @@ def engine_env(engine: Path | str) -> dict[str, str] | None:
         return None
     var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
     env = dict(os.environ)
-    env[var] = os.pathsep.join([str(folder)] + ([env[var]] if env.get(var) else []))
+    from strata_control import engine_component
+    env[var] = os.pathsep.join(engine_component.package_lib_dirs(folder) + ([env[var]] if env.get(var) else []))
     return env
 
 

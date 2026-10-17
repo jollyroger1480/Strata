@@ -572,7 +572,7 @@ def binary_smoke(component: ec.EngineComponent, timeout: float = 60) -> dict:
     report its version. Weaker than a one-token answer, and reported as such."""
     var = "PATH" if os.name == "nt" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
     env = dict(os.environ)
-    env[var] = str(component.root) + os.pathsep + env.get(var, "")
+    env[var] = os.pathsep.join(ec.package_lib_dirs(component.root)) + os.pathsep + env.get(var, "")
     try:
         done = subprocess.run([str(component.exe), "--version"], capture_output=True, text=True, timeout=timeout, env=env,
                               cwd=str(component.root), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

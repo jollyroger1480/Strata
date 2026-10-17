@@ -150,6 +150,25 @@ class EngineComponent:
                 "build_id": self.build_id, "variant": self.variant, "signed": bool(self.signature), "file_count": len(self.files), "bytes": sum(item[2] for item in self.files)}
 
 
+def package_lib_dirs(folder) -> list[str]:
+    """The folders an engine package needs on the library path (``PATH`` on Windows, ``LD_LIBRARY_PATH`` elsewhere): its own folder, then
+    the ones its BUILD.json names in ``lib_dirs`` (relative; the Windows HIP package keeps the ROCm DLLs in ``rocm/bin``, which
+    rocblas.dll's kernel data and ``../.kpack`` are laid out around). Only folders that exist inside the package."""
+    folder = Path(folder)
+    dirs = [str(folder)]
+    try:
+        names = json.loads((folder / "BUILD.json").read_text(encoding="utf-8-sig")).get("lib_dirs") or []
+    except (OSError, ValueError, AttributeError):
+        names = []
+    for name in names:
+        if not isinstance(name, str) or not name or Path(name).is_absolute() or ".." in Path(name).parts:
+            continue
+        path = folder / name
+        if path.is_dir() and str(path) not in dirs:
+            dirs.append(str(path))
+    return dirs
+
+
 # ----------------------------------------------------------------------------------------------- where
 
 def components_dir(environ=None, *, windows: bool | None = None, home: Path | None = None) -> Path:
