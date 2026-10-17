@@ -381,6 +381,9 @@ class Runner:
                 for i, line in enumerate(lines):
                     if err in line and i + 1 < len(lines) and lines[i + 1].startswith("       "):
                         hint = lines[i + 1].strip()
+            adopted = self.adopt_prepared_files(err)
+            if adopted is not None:
+                return adopted
             raise LaunchError("The model could not be installed." + (f" {err}." if err else ""),
                               hint or "Run it again: finished steps are skipped and a download continues where it stopped.", 6)
         path, _desc = self.installed_state()
@@ -388,6 +391,39 @@ class Runner:
             raise LaunchError("Setup finished but no run config was written for this model.",
                               "Run `strata launch` again; if it repeats, the setup output above says why.", 6)
         self.emit("model", f"{title} is ready.", 100)
+        return path
+
+    def adopt_prepared_files(self, setup_error: str) -> Path | None:
+        """The installer cannot set this graphics card up (Intel Arc, for one): if the model's files and prepared pack are already on disk,
+        write the run config here (strata_cli/launch/adopt.py); else say what is missing."""
+        from strata_cli.launch import adopt
+        from strata_control import engine_component
+        s, cat = self.s, self.catalog
+        if not adopt.setup_cannot_handle_this_card(setup_error):
+            return None
+        _models, families, _ctx, _src = cat.tables()
+        fam = families.get(s.family or "", {})
+        tag = cat.tag_of(s.family, s.model)
+        data_dir = Path(s.data_dir) if s.data_dir else cat.data_dir()
+        model_dir = Path(s.model_path) if s.model_path else data_dir / "models" / (fam.get("tag", "") + s.model)
+        if model_dir.is_file():
+            model_dir = model_dir.parent
+        try:
+            backend = engine_component.detect_backend()[0]
+        except Exception:                                    # noqa: BLE001
+            backend = None
+        cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
+                                   context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
+                                   log=cat.root / f"strata-{tag}.log", backend=backend)
+        if cfg is None:
+            raise LaunchError("The installer cannot set up this graphics card yet, and the files Strata would need to write the settings itself are not all there: "
+                              + "; ".join(problems) + ".",
+                              "Use model files that were prepared on this computer already (folder + pack), or install on a computer with an NVIDIA or AMD card.", 5)
+        path = cat.root / f"strata-{tag}.json"
+        adopt.write(path, cfg)
+        self.notices.append("The installer does not support this graphics card yet, so Strata wrote the run settings itself from your prepared files "
+                            f"({path.name}). Nothing was downloaded.")
+        self.emit("model", f"Wrote the run settings from your prepared files ({path.name}); the installer does not support this card.", 100, level="warn")
         return path
 
     def resolve_own_files(self) -> None:

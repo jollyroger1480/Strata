@@ -269,6 +269,83 @@ class RunConfig(unittest.TestCase):
         self.assertEqual(tune_words({"outcome": "cancelled"})[0], "stopped")
 
 
+class AdoptRules(unittest.TestCase):
+    def files(self, root: Path, shards=2, pack=True, tokenizer=True, mtp=True):
+        d = root / "Strata-data"
+        m = d / "models" / "IQ3_XXS"
+        m.mkdir(parents=True)
+        for i in range(1, shards + 1):
+            (m / f"Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-0000{i}-of-0000{shards}.gguf").write_bytes(b"GGUF")
+        p = d / "packs" / "iq3_xxs"
+        p.mkdir(parents=True)
+        if pack:
+            (p / "experts.bin").write_bytes(b"x")
+        if tokenizer:
+            (p / "tokenizer").mkdir()
+        if mtp:
+            (d / "mtp" / "rt").mkdir(parents=True)
+        return d, m
+
+    def test_setup_detection(self):
+        from strata_cli.launch import adopt
+        self.assertTrue(adopt.setup_cannot_handle_this_card("no NVIDIA GPU found (nvidia-smi did not answer)"))
+        self.assertTrue(adopt.setup_cannot_handle_this_card("no AMD GPU Strata can use"))
+        self.assertFalse(adopt.setup_cannot_handle_this_card("not enough free disk space in /x"))
+
+    def test_find_shards_needs_the_whole_set(self):
+        from strata_cli.launch import adopt
+        with Home() as h:
+            d, m = self.files(h.base)
+            self.assertEqual(len(adopt.find_shards(m)), 2)
+            (m / "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf").unlink()
+            self.assertEqual(adopt.find_shards(m), [])
+
+    def test_plan_writes_the_settings_setup_would(self):
+        from strata_cli.launch import adopt
+        with Home() as h:
+            d, m = self.files(h.base)
+            src = Path(__file__).resolve().parents[2]
+            cfg, problems = adopt.plan(family="qwen", model="IQ3_XXS", model_dir=m, data_dir=d, src=src, context=32768, kv=None,
+                                       model_name="qwen3.8-flash-next-iq3_xxs", family_def={}, log=h.base / "x.log", backend="sycl")
+            self.assertEqual(problems, [])
+            a = cfg["args"]
+            self.assertEqual(a[a.index("--max-context") + 1], "32768")
+            self.assertEqual(a[a.index("--kv") + 1], "int8")
+            self.assertIn("--ple-gguf", a)
+            self.assertIn("--mtp", a)
+            self.assertEqual((cfg["exe"], cfg["backend"]), ("component:strata-engine", "sycl"))
+            self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
+
+    def test_plan_names_what_is_missing(self):
+        from strata_cli.launch import adopt
+        with Home() as h:
+            d, m = self.files(h.base, pack=False, tokenizer=False)
+            cfg, problems = adopt.plan(family="qwen", model="IQ3_XXS", model_dir=m, data_dir=d, src=Path(__file__).resolve().parents[2], context=8192,
+                                       kv=None, model_name="x", family_def={}, log=h.base / "x.log", backend=None)
+            self.assertIsNone(cfg)
+            self.assertTrue(any("prepared pack" in p for p in problems))
+            self.assertTrue(any("tokenizer" in p for p in problems))
+            cfg, problems = adopt.plan(family="gyro", model="Gyro-S", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+                                       family_def={}, log=h.base / "x.log", backend=None)
+            self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
+
+    def test_runner_adopts_when_setup_cannot_handle_the_card(self):
+        with Home() as h:
+            d, m = self.files(h.base)
+            cat = catalog(HW_12)
+            s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, data_dir=str(d))
+            r = Runner(s, catalog=cat)
+            path = r.adopt_prepared_files("no NVIDIA GPU found (nvidia-smi did not answer)")
+            self.assertTrue(path.is_file())
+            self.assertTrue(r.notices and "wrote the run settings itself" in r.notices[0])
+            self.assertIsNone(r.adopt_prepared_files("not enough free disk space"))
+            from strata_cli.launch.runner import LaunchError
+            r2 = Runner(S.LaunchSettings(family="qwen", model="IQ3_S", context=32768, data_dir=str(d)), catalog=cat)
+            with self.assertRaises(LaunchError) as e:
+                r2.adopt_prepared_files("no NVIDIA GPU found")
+            self.assertIn("cannot set up this graphics card yet", e.exception.text)
+
+
 class AccessRules(unittest.TestCase):
     def test_hosts_and_keys(self):
         self.assertEqual(access.host_for("local"), "127.0.0.1")
