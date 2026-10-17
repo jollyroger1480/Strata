@@ -293,6 +293,30 @@ class WindowsAmd(unittest.TestCase):
                 self.assertIn(device, ec.WIN_AMD_IGPU_IDS)
 
 
+class WrongCardFamily(unittest.TestCase):
+    """A tester build is for one AMD card family; on another family the person gets one plain line, not a technical list."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.addCleanup(self.dir.cleanup)
+        self.folder = make_package(self.root, backend="hip", archs=("gfx1200", "gfx1201"))
+
+    def test_an_rx7000_card_with_the_rx9000_build_is_told_to_ask_for_the_other_build(self):
+        with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1100"]):
+            with self.assertRaises(ec.EngineMissing) as caught:
+                ec.resolve(self.root, backend="hip", runtime="1")
+            note = ec.status(self.root, backend="hip")["notice"]
+        self.assertTrue(str(caught.exception).startswith("This build of Strata is for AMD RX 9000 cards."), str(caught.exception))
+        self.assertIn("Ask for the RX 7000 build.", note)
+        self.assertIn("(gfx1100)", note)
+        self.assertNotIn("component", note)
+
+    def test_the_matching_family_is_not_blocked(self):
+        with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1201"]):
+            self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").backend, "hip")
+
+
 class NeverAcquires(unittest.TestCase):
     """The lookup, the status report and the CLI work with the network and process creation unavailable."""
 

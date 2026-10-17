@@ -72,14 +72,15 @@ class EngineMissing(acquisition.AcquisitionRefused):
     code = "engine_component_missing"
     exit_code = 5
 
-    def __init__(self, reason: str, root: Path | None = None, *, problems: list[dict] | None = None):
+    def __init__(self, reason: str, root: Path | None = None, *, problems: list[dict] | None = None, notice: str | None = None):
         self.reason = reason
         self.root = root
         self.problems = problems or []
+        self.plain_notice = notice
         where = f" in {root}" if root else ""
         RuntimeError.__init__(
             self,
-            f"No engine for this PC was found{where}: {reason}. The app never downloads an engine while it "
+            (f"{notice} (" if notice else "") + f"No engine for this PC was found{where}: {reason}" + (")" if notice else "") + ". The app never downloads an engine while it "
             f"starts or serves. Download the engine for your GPU with Update engine in the app's Settings, or with "
             f"`strata update` (or `strata install`) in the Terminal, or copy an engine package into the component folder.")
         self.what = "the engine component"
@@ -626,6 +627,24 @@ def driver_notice(have: str | None, need: str) -> str:
             "restart the computer and open Strata again.")
 
 
+#: The AMD card families a person knows by the box they bought, for the one plain line when a build is for another family.
+HIP_FAMILIES = (("RX 9000", ("gfx1200", "gfx1201")), ("RX 7000", ("gfx1100", "gfx1101", "gfx1102")), ("RX 6000", ("gfx1030", "gfx1031")),
+                ("Ryzen AI Max", ("gfx1151",)))
+
+
+def hip_family(arch: str) -> str:
+    return next((name for name, archs in HIP_FAMILIES if arch in archs), arch)
+
+
+def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
+    """The plain sentence for an AMD engine that has code for other cards than this computer's (a tester build for another card)."""
+    built_for = sorted({hip_family(a) for a in built})
+    have = sorted({hip_family(a) for a in here})
+    make = lambda names: " and ".join(names)  # noqa: E731
+    return (f"This build of Strata is for AMD {make(built_for)} cards. This computer has an AMD {make(have)} card ({', '.join(sorted(set(here)))}). "
+            f"Ask for the {make(have)} build.")
+
+
 def resolve(root: Path | None = None, *, backend: str | None = None, target: str | None = None,
             full: bool = False, runtime: str | None = None) -> EngineComponent:
     """The engine to start on this machine, or `EngineMissing` / `EngineIntegrityError`. Never downloads, never creates
@@ -643,7 +662,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         # no GPU tool answered: only a CPU engine can be started
         wanted = "cpu"
     usable, reasons, broken = [], [], []
-    compatible, driver_blocked = 0, []
+    compatible, driver_blocked, arch_blocked = 0, [], []
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
     hip_here = hip_archs_present() if wanted == "hip" else []
@@ -671,6 +690,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         if item.hip_archs and hip_here and not set(item.hip_archs) & set(hip_here):
             reasons.append(f"{label} has code for {', '.join(item.hip_archs)}, this PC's GPU is "
                            f"{', '.join(hip_here)}")
+            arch_blocked.append(item)
             continue
         need = item.min_driver.get("nvidia")
         if need and driver_here and _version_key(driver_here) < _version_key(need):
@@ -689,7 +709,10 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         everything = reasons + [p["folder"] + ": " + p["problem"] for p in problems]
         if broken and len(broken) == len(reasons):       # every package that fits this PC failed its integrity check
             raise EngineIntegrityError("; ".join(broken), base, problems=problems)
-        missing = EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems)
+        plain = None
+        if arch_blocked and len(arch_blocked) == compatible and not broken:      # every engine that fits this PC is built for other cards
+            plain = arch_notice(tuple(sorted({a for item in arch_blocked for a in item.hip_archs})), hip_here)
+        missing = EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems, notice=plain)
         if driver_blocked and len(driver_blocked) == compatible and not broken:
             # the only thing in the way is the NVIDIA driver: one plain line that names the version to install
             missing.driver_notice = driver_notice(driver_here, min(driver_blocked, key=_version_key))
@@ -743,5 +766,5 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
         report["engine"] = chosen.to_dict()
         report["usable"] = True
     except EngineMissing as exc:
-        report["notice"] = getattr(exc, "driver_notice", None) or str(exc)
+        report["notice"] = getattr(exc, "driver_notice", None) or getattr(exc, "plain_notice", None) or str(exc)
     return report
