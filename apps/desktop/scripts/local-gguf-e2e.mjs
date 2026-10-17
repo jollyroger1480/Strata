@@ -4,7 +4,8 @@
  *   preview a folder of a supported model, preview an unsupported GGUF (must be refused in plain terms), prepare the supported one
  *   (pack, from the folder, nothing copied), load it, get a chat answer, unload, shut down, and check nothing is left running.
  *
- *   node local-gguf-e2e.mjs --root /data/ui4-e2e --good /data/141-gyro/models/IQ2_XS --bad /data/ui4-e2e/bad [--context 8192]
+ *   node local-gguf-e2e.mjs --root /data/ui4-e2e --good /data/141-gyro/models/IQ2_XS --bad /data/ui4-e2e/bad [--context 8192] [--backend cuda|metal]
+ *   (the app folder is <root>/app: node/, host/, control/ ...; <root>/components gets the engine, from <root>/app/engine-bundle when the app carries one)
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -24,7 +25,7 @@ let failed = false;
 const record = (name, ok, detail = '') => { steps.push({ name, ok: !!ok, detail: String(detail).slice(0, 400) }); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? '  ' + String(detail).slice(0, 300) : ''}`); if (!ok) failed = true; };
 const freePort = async () => { const s = createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 
-const env = { ...process.env, STRATA_COMPONENTS_DIR: dirs.components, STRATA_PROFILE_DIR: dirs.profiles, STRATA_RUNTIME_DIR: dirs.runtime, STRATA_INSTALL_DIR: dirs.install, STRATA_HOME: dirs.home, STRATA_MODELS_DIR: join(root, 'Strata-data'), STRATA_ENGINE_BACKEND: 'cuda', XDG_CONFIG_HOME: dirs.xdg, APPDATA: dirs.appdata, PYTHONDONTWRITEBYTECODE: '1' };
+const env = { ...process.env, STRATA_COMPONENTS_DIR: dirs.components, STRATA_PROFILE_DIR: dirs.profiles, STRATA_RUNTIME_DIR: dirs.runtime, STRATA_INSTALL_DIR: dirs.install, STRATA_HOME: dirs.home, STRATA_MODELS_DIR: join(root, 'Strata-data'), STRATA_ENGINE_BACKEND: args.backend ?? 'cuda', XDG_CONFIG_HOME: dirs.xdg, APPDATA: dirs.appdata, PYTHONDONTWRITEBYTECODE: '1' };
 delete env.STRATA_API_KEY;
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
@@ -46,14 +47,15 @@ async function waitJob(id, seconds) {
   }
   throw new Error('operation did not finish in time');
 }
-const engineProcs = () => spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes('/engine/') && l.includes('/strata --serve'));
+const engineProcs = () => spawnSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' }).stdout.split('\n').filter(l => l.includes(join(dirs.components, 'engine')) && /\/strata( |$)/.test(l));
 
 async function main() {
   let up = false;
   for (let i = 0; i < 200 && !up; i++) { try { up = (await fetch(base + '/api/health')).ok; } catch { await delay(150); } }
   record('host healthy', up, up ? base : hostLog.slice(-500));
   if (!up) return;
-  const status = (await call('/api/control/status')).body;
+  let status = (await call('/api/control/status')).body;
+  for (let i = 0; i < 180 && status?.engineSetup; i++) { await delay(1000); status = (await call('/api/control/status')).body; }   // the engine that came with the app is copied on the first start
   record('Control status: bundled, engine usable', status?.engine?.usable === true, `engine=${status?.engine?.engine?.version} ${status?.engine?.notice ?? ''}`);
   await call('/api/native?refresh=1');
 

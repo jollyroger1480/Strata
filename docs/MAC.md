@@ -62,6 +62,12 @@ Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD f
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
 
+### The desktop app and `strata launch` on a Mac
+
+The Strata app (and the Terminal's `strata launch`) do not build anything on your Mac. The Metal engine comes ready-made, as an engine component: from the update feed, or inside the app's installer. The model install is `setup.py` in its Control mode (`STRATA_CONTROL_INSTALL=1`): it downloads (or uses with `--gguf-dir`) and prepares the model files and writes a run config whose engine is `component:strata-engine`. It does not run `metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags (`--mmap-experts`, `--spec 2`, no draft layer when the experts stream from the SSD).
+
+The model list and the recommendation judge a Mac by its unified memory with the rules of `strata_control/mac_fit.py`, the module `setup_mac.py` uses too: Q2_0, IQ3_XXS and IQ3_S are offered (the Unsloth many-shard files need the repack of `./setup.sh` for now); a pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified memory is told the model does not fit.
+
 ## Measured (M5 Max, 128 GB, macOS 27.2)
 
 **Decode**, in tokens per second over 200 generated tokens, with greedy answers. The table gives two prompts: a short question

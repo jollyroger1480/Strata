@@ -775,6 +775,14 @@ fn main() {
     // its host hung with no output at all.
     let args: Vec<String> = std::env::args().collect();
     contain_app();
+    #[cfg(target_os = "linux")]
+    {
+        // WebKitGTK's DMA-BUF renderer shows a blank window on several NVIDIA + Wayland desktops (and some virtual GPUs); the plain
+        // renderer is slower to start by a hair and always works. Anyone who set the variable themselves keeps their choice.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     if let Some(path) = self_test_path(&args) {
         let code = run_self_test(&path);
         std::process::exit(code);

@@ -38,6 +38,11 @@
       "resources/control": "control",
       "resources/harness": "harness"
     },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist"

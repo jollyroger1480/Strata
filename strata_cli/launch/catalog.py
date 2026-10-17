@@ -127,6 +127,9 @@ class Computer:
 
     def line(self, data_dir: str | None = None) -> str:
         g = self.usable_gpus
+        if g and g[0].get("unified_gb"):                       # a Mac: one pool of memory, the chip is the graphics
+            disk = f"{self.disk_free_gb:,.0f} GB free" if self.disk_free_gb is not None else ""
+            return " · ".join(x for x in (g[0].get("name", "Apple silicon"), f"{self.ram_gb:.0f} GB unified memory" if self.ram_gb else "memory unknown", disk) if x)
         card = (f"{g[0].get('name', 'GPU').replace('NVIDIA GeForce ', '').replace('AMD Radeon ', '')} {g[0].get('vram_gb', 0):.0f} GB"
                 + (f" x{len(g)}" if len(g) > 1 else "")) if g else "no usable graphics card found"
         ram = f"{self.ram_gb:.0f} GB RAM" if self.ram_gb else "RAM unknown"
@@ -312,6 +315,10 @@ class Catalog:
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
         """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
         hw = hw or self.hardware()
+        if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
+            mac = self.strata.mac()
+            if mac is not None:
+                return int(mac.recommend_context(float(hw["ram_gb"])))
         usable = [g for g in hw.get("gpus") or [] if g.get("usable", True)]
         vram = max((float(g.get("vram_gb") or 0) for g in usable), default=12.0)
         rec = 32768 if vram < 14 else 65536 if vram < 20 else 131072
