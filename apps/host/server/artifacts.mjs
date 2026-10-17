@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
-const run=promisify(execFile);
+import { externalEnvironment } from './external-env.mjs';
+const run=(command,args)=>promisify(execFile)(command,args,{env:externalEnvironment()});   // xdg-open and the apps it starts: the environment the AppImage was started from
 const extensions=new Set(['.md','.txt','.pdf','.html','.htm','.png','.jpg','.jpeg','.webp','.gif','.svg','.csv','.ts','.tsx','.js','.jsx','.py','.json','.css','.rs','.go','.sh','.mp4','.webm']);
 export async function openArtifact(body,{examplesDir,previewsDir,platform=process.platform,launch=run}) {
   if(!['open','reveal'].includes(body.action))throw new Error('Choose Open or Show in file explorer.');

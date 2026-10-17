@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { externalEnvironment } from './external-env.mjs';
 
 /** A folder no chat may use as its project: the top of a drive, or the system's own folders. */
 export function refusedFolder(dir) {
@@ -74,7 +75,8 @@ export function resolveChatFile(root, rawPath) {
  */
 export function launch(command, args, { recorder = null } = {}) {
   if (process.env.STRATA_OPENER === 'record' || recorder) { (recorder ?? launch.recorded).push([command, ...args]); return; }
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: false });
+  // xdg-open and the browser it starts are the system's programs: they get the environment the AppImage was started from, not Strata's libraries.
+  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: false, env: externalEnvironment() });
   child.on('error', () => {});
   child.unref();
 }

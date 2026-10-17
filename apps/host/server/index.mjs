@@ -4,7 +4,7 @@ import { createConnectorInstaller } from './cloudflared-install.mjs';
 import { openArtifact } from './artifacts.mjs';
 import { saveSnapshot } from './snapshot.mjs';
 import { resolvePython, shellPrefix } from './python-resolver.mjs';
-import { chooseFolder, typedFolder, TYPE_A_PATH } from './folder-dialog.mjs';
+import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
@@ -935,7 +935,7 @@ async function api(req, res, path, method, url) {
    /* "Use a local GGUF": pick (or type) the folder, and Control says what is in it. Nothing is copied or changed. */
    const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
    const picked=typed?{path:typed}:await chooseFolder('Choose the folder that holds your GGUF files');
-   if(picked.unavailable)return error(res,501,`${TYPE_A_PATH} ${picked.reason}`);
+   if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
    if(picked.cancelled)return json(res,200,{cancelled:true});
    return json(res,200,{path:picked.path,preview:await native.localPreview(picked.path)});}
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
@@ -1680,7 +1680,7 @@ async function api(req, res, path, method, url) {
       // The dialog is the normal path; a typed `path` in the body stands in where none exists.
       const typed = await typedFolder((await readBody(req)).path, { isAbsolute });
       const picked = typed ? { path: typed } : await chooseFolder('Choose a skill folder (it should contain SKILL.md)');
-      if (picked.unavailable) return error(res, 501, `${TYPE_A_PATH} ${picked.reason}`);
+      if (picked.unavailable) {const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
       if (picked.cancelled) return json(res, 200, { cancelled: true });
       const chosen = picked.path;
       const base = basename(chosen);
@@ -1705,7 +1705,7 @@ async function api(req, res, path, method, url) {
     try {
       const typed = await typedFolder((await readBody(req)).path, { isAbsolute });
       const picked = typed ? { path: typed } : await chooseFolder('Choose a folder for Strata');
-      if (picked.unavailable) return error(res, 501, `${TYPE_A_PATH} ${picked.reason}`);
+      if (picked.unavailable) {const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
       if (picked.cancelled) return json(res, 200, { cancelled: true });
       return json(res, 200, { path: picked.path });
     } catch (e) {
