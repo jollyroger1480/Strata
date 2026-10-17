@@ -807,7 +807,7 @@ template<int TY> struct Split;
 // per-entry ones, which call Fmt<TY>::dot per column exactly as before #242 (the launchers test kSplit at compile
 // time, so the multi kernels are never instantiated for a type without a Split).
 template<int TY> inline constexpr bool kSplit = false;
-template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 22 || TY == 29);
+template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 21 || TY == 22 || TY == 29);
 
 template<> inline constexpr bool kSplit<16> = true;
 template<> struct Split<16> {   // IQ2_XXS
@@ -941,18 +941,25 @@ template<> struct Split<18> {   // IQ3_XXS
         const int2 q3_packed = make_int2(get_int_b2(bq3->qs, iqs), get_int_b2(bq3->qs, iqs + 1));
         const uint8_t* q3 = (const uint8_t*) &q3_packed;
         const uint32_t aux32 = get_int_b2(bq3->qs, QK_K / 16 + iqs / 2);
-        const uint32_t* grid_lut;   // the same 256 words either way (expdec stages them)
-        if constexpr (STAGE_GRID) grid_lut = s_grid;
-        else grid_lut = iq3xxs_grid;
+        const uint32_t* grid = STAGE_GRID ? s_grid : iq3xxs_grid;
         W r;
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
-            const int2 grid_pos = make_int2(grid_lut[q3[l0 + 0]], grid_lut[q3[l0 + 1]]);
-            const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
-            const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
-            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            const int2 grid_pos = make_int2(grid[q3[l0 + 0]], grid[q3[l0 + 1]]);
+            if constexpr (STAGE_GRID) {
+                // The staged tables hold one mask per 7-bit sign field; bit 7 of the field is the next group's
+                // first sign, which unpack_ksigns cancels, so masking it off is the same value.
+                const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7f;
+                const uint32_t ml = s_grid[256 + v], mh = s_grid[384 + v];
+                r.g[l0 + 0] = (int) ((grid_pos.x ^ ml) + (ml & 0x01010101u));
+                r.g[l0 + 1] = (int) ((grid_pos.y ^ mh) + (mh & 0x01010101u));
+            } else {
+                const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
+                const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+                r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
+                const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+                r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            }
         }
         r.ls = aux32 >> 28;
         r.dw = __half2float(bq3->d);
@@ -986,18 +993,24 @@ template<> struct Split<21> {   // IQ3_S
         const int qh = bq3->qh[iqs / 2];
         const int signs_packed_32 = get_int_b2(bq3->signs, iqs / 2);
         const uint8_t* signs_packed_8 = (const uint8_t*) &signs_packed_32;
-        const uint32_t* grid_lut;   // the same 512 words either way (expdec stages them)
-        if constexpr (STAGE_GRID) grid_lut = s_grid;
-        else grid_lut = iq3s_grid;
+        const uint32_t* grid = STAGE_GRID ? s_grid : iq3s_grid;
         W r;
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
-            const int2 grid_pos = make_int2(grid_lut[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
-                                            grid_lut[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
-            const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
-            const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
-            r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
-            r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            const int2 grid_pos = make_int2(grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
+                                            grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+            if constexpr (STAGE_GRID) {
+                // The staged tables hold the byte masks of a sign byte's bits 0-3 and 4-7; every iq3s_grid byte is
+                // odd, so (g ^ mask) + (mask & 0x01010101) negates the masked bytes with no carry into the next.
+                const uint32_t ml = s_grid[512 + signs_packed_8[l0 / 2]], mh = s_grid[768 + signs_packed_8[l0 / 2]];
+                r.g[l0 + 0] = (int) (((uint32_t) grid_pos.x ^ ml) + (ml & 0x01010101u));
+                r.g[l0 + 1] = (int) (((uint32_t) grid_pos.y ^ mh) + (mh & 0x01010101u));
+            } else {
+                const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
+                const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
+                r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
+                r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            }
         }
         r.ls = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
         r.dw = __half2float(bq3->d);
@@ -1419,6 +1432,36 @@ __device__ __forceinline__ void row_dot_80_sub16(const uint8_t* row, const block
     }
 }
 
+// The sign-mask tables that follow the codebook words in a staged IQ3_XXS / IQ3_S table (see stage_iq_grid): the byte
+// masks of every 7-bit sign field (IQ3_XXS, 2 x 128 words at +256) and of a sign byte's bits 0-3 and 4-7 (IQ3_S, 2 x 256
+// words at +512).  Split<18>::load<true> and Split<21>::load<true> read them, so every kernel that stages these two
+// codebooks (the default kernels through stage_iq_grid, the STRATA_EXPDEC window kernels through EdGrid) fills them too.
+__device__ __forceinline__ void stage_iq3xxs_masks(uint32_t* s_buf, int tid, int nthreads) {
+    for (int u = tid; u < 128; u += nthreads) {
+        const uint32_t s = (uint32_t) u | ((__popc((uint32_t) u) & 1u) << 7);   // 8th sign = parity of the 7
+        uint32_t ml = 0, mh = 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            ml |= ((s >> i) & 1u) * (0xffu << (8 * i));
+            mh |= ((s >> (4 + i)) & 1u) * (0xffu << (8 * i));
+        }
+        s_buf[256 + u] = ml;
+        s_buf[384 + u] = mh;
+    }
+}
+__device__ __forceinline__ void stage_iq3s_masks(uint32_t* s_buf, int tid, int nthreads) {
+    for (int u = tid; u < 256; u += nthreads) {
+        uint32_t ml = 0, mh = 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            ml |= (((uint32_t) u >> i) & 1u) * (0xffu << (8 * i));
+            mh |= (((uint32_t) u >> (4 + i)) & 1u) * (0xffu << (8 * i));
+        }
+        s_buf[512 + u] = ml;
+        s_buf[768 + u] = mh;
+    }
+}
+
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int tid, int nthreads) {
     if constexpr (!STAGE_GRID) {
@@ -1447,6 +1490,25 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         for (int i = tid; i < 1024; i += nthreads) dst[i] = src[i];
         __syncthreads();
         return s_buf;
+    } else if constexpr (TY == 18) {
+        // 256 codebook words, then two 128-word tables of the per-byte sign masks (signs 0-3, signs 4-7).  A
+        // mask depends only on the 7 bits it is unpacked from, and iq3xxs_grid's bytes are all >= 4, so the
+        // consumer applies it as (g ^ mask) + (mask & 0x01010101): a negate per set byte, with no carry into
+        // the next.  One pass per block replaces the per-lookup unpack_ksigns / __vcmpne4 / __vsub4 chain.
+        // Ported from shinbunbun/llama-cpp-p100-patches (MIT), patches 29 `mmvq-iq3xxs-grid-smem` and 30
+        // `mmvq-ksigns-smem`, measured there on a Tesla P100 (sm_60).
+        for (int i = tid; i < 256; i += nthreads) s_buf[i] = iq3xxs_grid[i];
+        stage_iq3xxs_masks(s_buf, tid, nthreads);
+        __syncthreads();
+        return s_buf;
+    } else if constexpr (TY == 21) {
+        // 512 codebook words, then two 256-word tables: the byte masks of a sign byte's bits 0-3 and of its bits
+        // 4-7 (IQ3_S stores one sign byte per 8 values).  As for IQ3_XXS, one pass per block replaces the
+        // per-lookup __vcmpne4 / __vsub4 chain, and the codebook reads leave global memory.
+        for (int i = tid; i < 512; i += nthreads) s_buf[i] = iq3s_grid[i];
+        stage_iq3s_masks(s_buf, tid, nthreads);
+        __syncthreads();
+        return s_buf;
     } else {
         return nullptr;
     }
@@ -1454,7 +1516,7 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 struct IqGridWords {
-    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17) ? 1024 : (TY == 16) ? 512 : 4;
+    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17 || TY == 21) ? 1024 : (TY == 16 || TY == 18) ? 512 : 4;
 };
 
 // mmvq_kernel with the columns taken NC at a time.  After warp_sum every lane holds the same sum, so lane c stores
@@ -1900,10 +1962,17 @@ template<> struct EdGrid<17> { static constexpr int words = 1024;
     __device__ static void copy(uint32_t* s, int tid) { const uint2* src = (const uint2*) iq2xs_grid; uint2* dst = (uint2*) s; for (int i = tid; i < 512; i += 256) dst[i] = src[i]; } };
 template<> struct EdGrid<22> { static constexpr int words = 2048;
     __device__ static void copy(uint32_t* s, int tid) { const uint2* src = (const uint2*) iq2s_grid; uint2* dst = (uint2*) s; for (int i = tid; i < 1024; i += 256) dst[i] = src[i]; } };
-template<> struct EdGrid<18> { static constexpr int words = 256;
-    __device__ static void copy(uint32_t* s, int tid) { for (int i = tid; i < 256; i += 256) s[i] = iq3xxs_grid[i]; } };
-template<> struct EdGrid<21> { static constexpr int words = 512;
-    __device__ static void copy(uint32_t* s, int tid) { for (int i = tid; i < 512; i += 256) s[i] = iq3s_grid[i]; } };
+// (IQ3_XXS / IQ3_S: the codebook and, behind it, the sign-mask tables Split<TG>::load<true> reads - stage_iq_grid's layout)
+template<> struct EdGrid<18> { static constexpr int words = 512;
+    __device__ static void copy(uint32_t* s, int tid) {
+        for (int i = tid; i < 256; i += 256) s[i] = iq3xxs_grid[i];
+        stage_iq3xxs_masks(s, tid, 256);
+    } };
+template<> struct EdGrid<21> { static constexpr int words = 1024;
+    __device__ static void copy(uint32_t* s, int tid) {
+        for (int i = tid; i < 512; i += 256) s[i] = iq3s_grid[i];
+        stage_iq3s_masks(s, tid, 256);
+    } };
 
 // One entry's q8_1 row (XB blocks of 36 bytes, 4-byte aligned) into shared memory as entry c: the 8 words of block k
 // in planes (HALVES: s_u[(2 c + h) XB + k] = words 4h..4h+3, two 16-byte loads per call, conflict-free over 16
@@ -2740,6 +2809,19 @@ bool g_stage_grid_mmvq = g_stage_grid && [] {
     const char* v = std::getenv("STRATA_IQ_STAGE_GRID_MMVQ");
     return v != nullptr && v[0] == '1';
 }();
+// IQ3_XXS's and IQ3_S's codebooks and sign-mask tables staged in shared memory by the grouped expert kernels (the
+// single-matrix mmvq does not): bitwise the same either way.  OPT-IN: STRATA_IQ_STAGE_TABLES=1.  The PR (#1424) made it
+// the default on compute capability 6.0 (GP100: no __dp4a, these kernels decode-bound at 70-140 GB/s); on a Tesla P100
+// (IQ3_XXS and IQ3_S packs, 5-6 interleaved pairs each) the decode was 0.97-1.03x of the unstaged kernels, noise, so
+// it is not on by default.  On an RTX 3090 Ti, forced on, the IQ3_S layers took 3-13% longer.
+bool stage_tables_on() {
+    if (!g_stage_grid) return false;
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_IQ_STAGE_TABLES");
+        return v && v[0] && v[0] != '0';
+    }();
+    return on;
+}
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 void launch_mmvq_multi_nc(dim3 grid, dim3 block, cudaStream_t s, const uint8_t* W, size_t rb, const block_q8_1* X,
@@ -3584,7 +3666,7 @@ void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, con
     if constexpr (!kSplit<TG>) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if (g_old_kernels) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if constexpr (kStageIqGrid<TG>) {
-        if (!g_stage_grid) {
+        if (!g_stage_grid || ((TG == 18 || TG == 21) && !stage_tables_on())) {
             if (g_no_sub16_gu) native_gu_multi_kernel<TG, false, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             else native_gu_multi_kernel<TG, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             return;
@@ -4689,3 +4771,415 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 }
 
 }  // namespace strata::kernels
+
+// ---- Volta prompt experts (STRATA_PF_WMMA): a group's experts as one launch of FP16 tensor-core tiles, the weights
+// dequantized into shared memory by dq_dispatch (the FP16 path's own formulas), the activations FP16, FP32 sums.
+// Replaces MMQ's dp4a products on sm_70, and the FP16 path's dequantize-to-global + one cuBLAS call per expert.
+#if !defined(__HIPCC__)
+#include <mma.h>
+namespace strata::kernels {
+namespace {
+constexpr int WG_BM = 64, WG_BN = 128, WG_THREADS = 256, WG_XK = 128, WG_MT = 4;
+// A block: BN = 128 weight rows of one expert x up to WG_MT * BM = 256 of its token rows (blockIdx.y walks an expert's
+// rows in such chunks), so every weight superblock is dequantized ONCE per chunk into shared memory (WK 256: an IQ
+// superblock through dq_dispatch; WK 128: two Q2_0 blocks, or four IQ4_NL blocks); the activations stream through a
+// BM x 128 tile.  8 warps of 32 x 32 per m-tile (2 x 2 fragments), FP32 accumulators for the chunk's m-tiles in registers.
+template<int WK, bool Q20, bool IQNL = false>
+__global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty, const uint8_t* __restrict__ W,
+                                                                         size_t expert_bytes, size_t row_bytes, int K,
+                                                                         const __half* __restrict__ X, int ldx,
+                                                                         const int32_t* __restrict__ bounds, int ch_per_e,
+                                                                         float* __restrict__ Y, int ldy) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
+    using namespace nvcuda;
+    constexpr int LDW = WK + 8, LDX = WG_XK + 8;
+    extern __shared__ __align__(16) unsigned char wg_smem[];
+    __half* sw = reinterpret_cast<__half*>(wg_smem);            // [BN][LDW]
+    __half* sx = sw + WG_BN * LDW;                               // [BM][LDX]
+    const int e = blockIdx.y / ch_per_e, ch = blockIdx.y % ch_per_e;
+    const int c0 = bounds[e] + ch * WG_MT * WG_BM, r1 = bounds[e + 1];
+    if (c0 >= r1) return;
+    const int crow = min(WG_MT * WG_BM, r1 - c0);
+    const int nmt = (crow + WG_BM - 1) / WG_BM;
+    const int n0 = blockIdx.x * WG_BN;
+    const uint8_t* we = W + (size_t) e * expert_bytes;
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int wm = warp >> 2, wn = warp & 3;                     // rows wm*32, cols wn*32 of an m-tile
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[WG_MT][2][2];
+#pragma unroll
+    for (int t = 0; t < WG_MT; ++t)
+#pragma unroll
+        for (int a = 0; a < 2; ++a)
+#pragma unroll
+            for (int b = 0; b < 2; ++b) wmma::fill_fragment(acc[t][a][b], 0.0f);
+    // the activation tiles in order (k0, m-tile, half): the next one's 4 uint4 per thread are loaded into registers
+    // while the current one is multiplied (the first before the weights' dequantization)
+    constexpr int XQ = WG_BM * (WG_XK / 8) / WG_THREADS;        // 4
+    const int nx = WK / WG_XK, per_k = nmt * nx, total = (K / WK) * per_k;
+    uint4 xr[XQ];
+    auto load_x = [&](int it) {
+        const int kb = it / per_k, rem = it % per_k, t = rem / nx, xh = rem % nx;
+        const int rows = min(WG_BM, crow - t * WG_BM);
+#pragma unroll
+        for (int q = 0; q < XQ; ++q) {
+            const int i = tid + q * WG_THREADS, r = i / (WG_XK / 8), c = (i % (WG_XK / 8)) * 8;
+            xr[q] = r < rows ? *reinterpret_cast<const uint4*>(X + (size_t) (c0 + t * WG_BM + r) * ldx + kb * WK + xh * WG_XK + c)
+                             : make_uint4(0, 0, 0, 0);
+        }
+    };
+    load_x(0);
+    int it = 0;
+    for (int k0 = 0; k0 < K; k0 += WK) {
+        if constexpr (IQNL) {
+            // IQ4_NL down (WK 128 = 4 x block_iq4_nl): one thread per (row, 64-value half) - the four blocks of the
+            // 128-value window sit in two halves of two blocks, and each thread's values are exactly dq_iq4_nl's
+            const int r = tid >> 1, half = tid & 1;
+            const block_iq4_nl* bp = reinterpret_cast<const block_iq4_nl*>(we + (size_t) (n0 + r) * row_bytes) + k0 / 32 + half * 2;
+            __half* o = sw + r * LDW + half * 64;
+#pragma unroll
+            for (int bl = 0; bl < 2; ++bl) {
+                const block_iq4_nl* b = bp + bl;
+                const float d = (float) b->d;
+#pragma unroll
+                for (int p = 0; p < 16; ++p) {
+                    o[bl * 32 + p] = cvt<__half>(d * kvalues_iq4nl[b->qs[p] & 0xf]);
+                    o[bl * 32 + p + 16] = cvt<__half>(d * kvalues_iq4nl[b->qs[p] >> 4]);
+                }
+            }
+        } else if constexpr (!Q20) {
+            for (int r = warp; r < WG_BN; r += WG_THREADS / 32)
+                dq_dispatch<__half>(ty, we + (size_t) (n0 + r) * row_bytes, k0 / 256, sw + r * LDW, lane);
+        } else {
+            const int r = tid >> 1, blk = tid & 1;   // one thread per (row, 64-value block)
+            const block_q2_0* b = reinterpret_cast<const block_q2_0*>(we + (size_t) (n0 + r) * row_bytes) + k0 / 64 + blk;
+            const float d = (float) b->d;
+            uint4 q4;
+            memcpy(&q4, b->qs, 16);
+            const uint8_t* qb = reinterpret_cast<const uint8_t*>(&q4);
+            __half* o = sw + r * LDW + blk * 64;
+#pragma unroll
+            for (int c = 0; c < 16; ++c) {
+                const int v = qb[c];
+                *reinterpret_cast<__half2*>(o + 4 * c) = __floats2half2_rn(d * (float) ((v & 3) - 1), d * (float) (((v >> 2) & 3) - 1));
+                *reinterpret_cast<__half2*>(o + 4 * c + 2) = __floats2half2_rn(d * (float) (((v >> 4) & 3) - 1), d * (float) (((v >> 6) & 3) - 1));
+            }
+        }
+#pragma unroll
+        for (int t = 0; t < WG_MT; ++t) {
+            if (t >= nmt) break;
+#pragma unroll 1
+            for (int xh = 0; xh < WK / WG_XK; ++xh, ++it) {
+                __syncthreads();                                 // the previous X tile is consumed (and W is written)
+#pragma unroll
+                for (int q = 0; q < XQ; ++q) {
+                    const int i = tid + q * WG_THREADS, r = i / (WG_XK / 8), c = (i % (WG_XK / 8)) * 8;
+                    *reinterpret_cast<uint4*>(sx + r * LDX + c) = xr[q];
+                }
+                __syncthreads();
+                if (it + 1 < total) load_x(it + 1);
+#pragma unroll
+                for (int kk = 0; kk < WG_XK; kk += 16) {
+                    wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a[2];
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b[2];
+#pragma unroll
+                    for (int f = 0; f < 2; ++f) {
+                        wmma::load_matrix_sync(a[f], sx + (wm * 32 + f * 16) * LDX + kk, LDX);
+                        wmma::load_matrix_sync(b[f], sw + (wn * 32 + f * 16) * LDW + xh * WG_XK + kk, LDW);
+                    }
+#pragma unroll
+                    for (int fa = 0; fa < 2; ++fa)
+#pragma unroll
+                        for (int fb = 0; fb < 2; ++fb) wmma::mma_sync(acc[t][fa][fb], a[fa], b[fb], acc[t][fa][fb]);
+                }
+            }
+        }
+        __syncthreads();                                         // W is consumed before the next superblock
+    }
+    float* so = reinterpret_cast<float*>(wg_smem);               // [BM][BN + 4] per m-tile
+    constexpr int LDO = WG_BN + 4;
+#pragma unroll
+    for (int t = 0; t < WG_MT; ++t) {
+        if (t >= nmt) break;
+        const int rows = min(WG_BM, crow - t * WG_BM);
+#pragma unroll
+        for (int fa = 0; fa < 2; ++fa)
+#pragma unroll
+            for (int fb = 0; fb < 2; ++fb)
+                wmma::store_matrix_sync(so + (wm * 32 + fa * 16) * LDO + wn * 32 + fb * 16, acc[t][fa][fb], LDO, wmma::mem_row_major);
+        __syncthreads();
+        for (int i = tid; i < rows * (WG_BN / 4); i += WG_THREADS) {
+            const int r = i / (WG_BN / 4), c = (i % (WG_BN / 4)) * 4;
+            *reinterpret_cast<float4*>(Y + (size_t) (c0 + t * WG_BM + r) * ldy + n0 + c) = *reinterpret_cast<const float4*>(so + r * LDO + c);
+        }
+        __syncthreads();
+    }
+#endif
+}
+
+// ---- STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down, tiled like a Volta MoE kernel in the
+// PR author's own unpublished llama.cpp patches.
+// A block: W2_RB = 128 weight rows of one expert x W2_CB = 64 of its sorted rows, K stages of W2_KT = 64. Thread t dequantizes
+// row t % 128, 32-value sub-block t / 128 of each K stage from the raw stage in shared memory (one IQ2_S super-block or four IQ4_NL
+// blocks per row, read by the whole block as 4-byte words, the next one already in registers). 8 warps = 4 (32 weight rows) x 2
+// (32 sorted rows), 2 x 2 wmma 16x16x16 fragments each, FP32 sums.
+constexpr int W2_RB = 128, W2_CB = 64, W2_KT = 64, W2_NT = 256, W2_LD = W2_KT + 8;
+template <int TY> struct w2_traits;
+template <> struct w2_traits<22> { static constexpr int raw_k = 256, raw_b = 82, segw = 21, segw_s = 21, ntab = 1024 + 16; };
+template <> struct w2_traits<20> { static constexpr int raw_k = 128, raw_b = 72, segw = 18, segw_s = 19, ntab = 128; };
+template <int TY> __host__ __device__ constexpr int w2_nl() { return (W2_RB * w2_traits<TY>::segw + W2_NT - 1) / W2_NT; }
+
+__device__ __forceinline__ uint32_t w2_ld_b2(const uint8_t* p) {   // 4 bytes at a 2-byte aligned address
+    const uint16_t* q = reinterpret_cast<const uint16_t*>(p);
+    return (uint32_t) q[0] | ((uint32_t) q[1] << 16);
+}
+__device__ __forceinline__ half2 w2_h2(uint32_t v) { half2 h; memcpy(&h, &v, 4); return h; }
+__device__ __forceinline__ uint32_t w2_u32(half2 h) { uint32_t v; memcpy(&v, &h, 4); return v; }
+
+// the raw stage rs of the block's 128 rows: segw words per row from the 4-byte aligned start at or below rs * raw_b
+template <int TY>
+__device__ __forceinline__ void w2_raw_ld(uint32_t (&R)[w2_nl<TY>()], const uint8_t* __restrict__ xb, size_t row_bytes, int rs, int tid) {
+    using tr = w2_traits<TY>;
+    const int off = (rs * tr::raw_b) & ~3;
+#pragma unroll
+    for (int i = 0; i < w2_nl<TY>(); ++i) {
+        const int w = tid + i * W2_NT;
+        if ((W2_RB * tr::segw) % W2_NT == 0 || w < W2_RB * tr::segw)
+            R[i] = *reinterpret_cast<const uint32_t*>(xb + (size_t) (w / tr::segw) * row_bytes + off + 4 * (w % tr::segw));
+    }
+}
+template <int TY>
+__device__ __forceinline__ void w2_raw_st(const uint32_t (&R)[w2_nl<TY>()], uint32_t* __restrict__ raw, int tid) {
+    using tr = w2_traits<TY>;
+#pragma unroll
+    for (int i = 0; i < w2_nl<TY>(); ++i) {
+        const int w = tid + i * W2_NT;
+        if ((W2_RB * tr::segw) % W2_NT == 0 || w < W2_RB * tr::segw) raw[(w / tr::segw) * tr::segw_s + w % tr::segw] = R[i];
+    }
+}
+
+// sub-block `sb` (0..7) of the IQ2_S super-block at rr -> 32 halves at o, natural order, bit for bit dq_iq2_s's values:
+// cvt<__half>(dl * grid[j] * +-1) with dl = d * (0.5 + scale) * 0.25 in FP32 (the sign flips the rounded half, which is the same)
+__device__ __forceinline__ float w2_b2f(uint32_t w, int j) { return __int_as_float(0x4B000000 | ((w >> 8 * j) & 0xff)) - 8388608.0f; }
+__device__ __forceinline__ void w2_dq_iq2_s(const uint8_t* rr, int sb, __half* o, const uint2* __restrict__ tab) {
+    const uint2* sgn = tab + 1024;
+    const uint32_t sc = rr[2 + 64 + 8 + sb], qh = rr[2 + 64 + sb];
+    const uint32_t qs = w2_ld_b2(rr + 2 + 4 * sb), sg = w2_ld_b2(rr + 2 + 32 + 4 * sb);
+    const float d = __half2float(__ushort_as_half(*reinterpret_cast<const uint16_t*>(rr)));
+    const float dl0 = d * (0.5f + (float) (sc & 0xf)) * 0.25f;
+    const float dl1 = d * (0.5f + (float) (sc >> 4)) * 0.25f;
+#pragma unroll
+    for (int il = 0; il < 4; ++il) {
+        const float dl = il < 2 ? dl0 : dl1;
+        const int idx = (int) (((qs >> 8 * il) & 0xff) | ((qh << (8 - 2 * il)) & 0x300));
+        const uint2 gw = tab[idx];
+        const uint32_t sbits = (sg >> 8 * il) & 0xff;
+        const uint2 s0 = sgn[sbits & 15], s1 = sgn[sbits >> 4];
+        uint4 out;
+        out.x = w2_u32(__floats2half2_rn(dl * w2_b2f(gw.x, 0), dl * w2_b2f(gw.x, 1))) ^ s0.x;
+        out.y = w2_u32(__floats2half2_rn(dl * w2_b2f(gw.x, 2), dl * w2_b2f(gw.x, 3))) ^ s0.y;
+        out.z = w2_u32(__floats2half2_rn(dl * w2_b2f(gw.y, 0), dl * w2_b2f(gw.y, 1))) ^ s1.x;
+        out.w = w2_u32(__floats2half2_rn(dl * w2_b2f(gw.y, 2), dl * w2_b2f(gw.y, 3))) ^ s1.y;
+        *reinterpret_cast<uint4*>(o + 8 * il) = out;
+    }
+}
+// IQ4_NL block at b -> 32 halves at o, natural order (value j: the low nibble of byte j, value j + 16: its high nibble); the product
+// of two exact halves rounded once, as cvt<__half>(d * kvalues_iq4nl[q])
+__device__ __forceinline__ void w2_dq_iq4_nl(const uint8_t* b, __half* o, const half2* __restrict__ kv) {
+    const half2 d2 = __half2half2(__ushort_as_half(*reinterpret_cast<const uint16_t*>(b)));
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t q = w2_ld_b2(b + 2 + 4 * i);
+        const half2 t0 = kv[q & 0xff], t1 = kv[(q >> 8) & 0xff], t2 = kv[(q >> 16) & 0xff], t3 = kv[q >> 24];
+        uint2 lo, hi;
+        lo.x = w2_u32(__hmul2(__lows2half2(t0, t1), d2));
+        lo.y = w2_u32(__hmul2(__lows2half2(t2, t3), d2));
+        hi.x = w2_u32(__hmul2(__highs2half2(t0, t1), d2));
+        hi.y = w2_u32(__hmul2(__highs2half2(t2, t3), d2));
+        *reinterpret_cast<uint2*>(o + 4 * i) = lo;
+        *reinterpret_cast<uint2*>(o + 16 + 4 * i) = hi;
+    }
+}
+
+template <int TY>
+__global__ void __launch_bounds__(W2_NT, 2) gemm_iq_f16_w2_kernel(const uint8_t* __restrict__ W, size_t expert_bytes, size_t row_bytes,
+                                                                  int K, const __half* __restrict__ X, int ldx,
+                                                                  const int32_t* __restrict__ bounds, int ch_per_e,
+                                                                  float* __restrict__ Y, int ldy) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
+    using namespace nvcuda;
+    using tr = w2_traits<TY>;
+    constexpr int NL = w2_nl<TY>(), NSUB = tr::raw_k / W2_KT;
+    __shared__ __align__(128) __half xs[W2_RB * W2_LD];
+    __shared__ __align__(128) __half ys[W2_CB * W2_LD];
+    __shared__ uint2 tab[tr::ntab];
+    __shared__ uint32_t raw[W2_RB * tr::segw_s];
+
+    const int e = blockIdx.y / ch_per_e, ch = blockIdx.y % ch_per_e;
+    const int c0 = bounds[e] + ch * W2_CB, r1 = bounds[e + 1];
+    if (c0 >= r1) return;
+    const int ncol = min(W2_CB, r1 - c0);
+    const int n0 = blockIdx.x * W2_RB;
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int wr = warp & 3, wc = warp >> 2;                     // weight rows wr*32, sorted rows wc*32
+    const uint8_t* xb = W + (size_t) e * expert_bytes + (size_t) n0 * row_bytes;
+    const int nrs = K / tr::raw_k;
+
+    uint32_t R[NL];
+    w2_raw_ld<TY>(R, xb, row_bytes, 0, tid);
+    const int yq = tid & 7, yc = tid >> 3;                       // 16-byte part yq of sorted rows yc and yc + 32
+    uint4 Yr[2];
+    auto load_y = [&](int k0) {
+#pragma unroll
+        for (int u = 0; u < 2; ++u) {
+            const int c = yc + 32 * u;
+            Yr[u] = c < ncol ? *reinterpret_cast<const uint4*>(X + (size_t) (c0 + c) * ldx + k0 + 8 * yq) : make_uint4(0, 0, 0, 0);
+        }
+    };
+    load_y(0);
+    if constexpr (TY == 20) {
+        reinterpret_cast<half2*>(tab)[tid] = __halves2half2(__int2half_rn(kvalues_iq4nl[tid & 15]), __int2half_rn(kvalues_iq4nl[tid >> 4]));
+    } else {
+        for (int i = tid; i < 1024; i += W2_NT) tab[i] = reinterpret_cast<const uint2*>(iq2s_grid)[i];
+        if (tid < 16)   // a sign nibble -> masks of its bits 0-1 and 2-3 (bit 2p -> bit 15, bit 2p + 1 -> bit 31)
+            tab[1024 + tid] = make_uint2(((tid >> 0) & 1u) << 15 | ((tid >> 1) & 1u) << 31, ((tid >> 2) & 1u) << 15 | ((tid >> 3) & 1u) << 31);
+    }
+    w2_raw_st<TY>(R, raw, tid);
+    if (nrs > 1) w2_raw_ld<TY>(R, xb, row_bytes, 1, tid);
+    __syncthreads();
+
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][2];
+#pragma unroll
+    for (int a = 0; a < 2; ++a)
+#pragma unroll
+        for (int b = 0; b < 2; ++b) wmma::fill_fragment(acc[a][b], 0.0f);
+    const int xr = tid % W2_RB, sub = tid / W2_RB;
+    __half* xrow = xs + xr * W2_LD + 32 * sub;
+    const uint8_t* rawrow = reinterpret_cast<const uint8_t*>(raw + xr * tr::segw_s);
+
+    for (int rs = 0; rs < nrs; ++rs) {
+        const uint8_t* rr = rawrow + ((rs * tr::raw_b) & 3);
+#pragma unroll
+        for (int h = 0; h < NSUB; ++h) {
+            const int k0 = (rs * NSUB + h) * W2_KT;
+            if constexpr (TY == 20) w2_dq_iq4_nl(rr + 18 * (2 * h + sub), xrow, reinterpret_cast<const half2*>(tab));
+            else w2_dq_iq2_s(rr, 2 * h + sub, xrow, tab);
+#pragma unroll
+            for (int u = 0; u < 2; ++u) *reinterpret_cast<uint4*>(ys + (yc + 32 * u) * W2_LD + 8 * yq) = Yr[u];
+            __syncthreads();
+            if (k0 + W2_KT < K) load_y(k0 + W2_KT);
+            if (wc * 32 < ncol) {                                // warp-uniform: sorted rows past the expert's skip their mma
+#pragma unroll
+                for (int kk = 0; kk < W2_KT; kk += 16) {
+                    wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a[2];
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b[2];
+#pragma unroll
+                    for (int f = 0; f < 2; ++f) {
+                        wmma::load_matrix_sync(a[f], ys + (wc * 32 + f * 16) * W2_LD + kk, W2_LD);
+                        wmma::load_matrix_sync(b[f], xs + (wr * 32 + f * 16) * W2_LD + kk, W2_LD);
+                    }
+#pragma unroll
+                    for (int fa = 0; fa < 2; ++fa) {
+                        if (wc * 32 + fa * 16 >= ncol) break;
+#pragma unroll
+                        for (int fb = 0; fb < 2; ++fb) wmma::mma_sync(acc[fa][fb], a[fa], b[fb], acc[fa][fb]);
+                    }
+                }
+            }
+            if (h == NSUB - 1 && rs + 1 < nrs) {                 // nobody reads raw between the barrier above and the one below
+                w2_raw_st<TY>(R, raw, tid);
+                if (rs + 2 < nrs) w2_raw_ld<TY>(R, xb, row_bytes, rs + 2, tid);
+            }
+            __syncthreads();
+        }
+    }
+    // full 16-row tiles straight to Y; the expert's last partial one through the warp's 16 x 16 scratch (ys is free now)
+    float* scr = reinterpret_cast<float*>(ys) + warp * 256;
+#pragma unroll
+    for (int fa = 0; fa < 2; ++fa) {
+        const int t0 = wc * 32 + fa * 16;
+        if (t0 >= ncol) break;
+#pragma unroll
+        for (int fb = 0; fb < 2; ++fb) {
+            const int nb = n0 + wr * 32 + fb * 16;
+            if (t0 + 16 <= ncol) {
+                wmma::store_matrix_sync(Y + (size_t) (c0 + t0) * ldy + nb, acc[fa][fb], ldy, wmma::mem_row_major);
+            } else {
+                wmma::store_matrix_sync(scr, acc[fa][fb], 16, wmma::mem_row_major);
+                __syncwarp();
+                for (int i = lane; i < 256; i += 32)
+                    if (t0 + i / 16 < ncol) Y[(size_t) (c0 + t0 + i / 16) * ldy + nb + i % 16] = scr[i];
+                __syncwarp();
+            }
+        }
+    }
+#endif
+}
+
+bool w2_on() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_PF_WMMA2"); return e && e[0] == '1'; }();
+    return v;
+}
+}  // namespace
+
+bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, int K, const void* X, int ldx,
+                         const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream) {
+    if (n_out % WG_BN != 0 || n_experts <= 0 || max_rows <= 0 || ldy % 4 != 0) return false;
+    {   // the tiles are tensor-core kernels: a pre-Volta card has no body for them (the sm_60 pass compiles them empty)
+        int cur = 0, major = 0;
+        if (cudaGetDevice(&cur) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, cur) != cudaSuccess ||
+            major < 7)
+            return false;
+    }
+    // STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down through gemm_iq_f16_w2_kernel (above)
+    if (w2_on() && n_out % W2_RB == 0 && ldx % 8 == 0 && ldy % 8 == 0 && (uintptr_t) X % 16 == 0 && (uintptr_t) Y % 32 == 0 &&
+        (uintptr_t) W % 4 == 0 && expert_bytes % 4 == 0 && ((ty == 22 && K % 512 == 0) || (ty == 20 && K % 128 == 0))) {
+        const size_t rb = iq_row_bytes(ty, K);
+        const int ch = (max_rows + W2_CB - 1) / W2_CB;
+        if (rb % 4 == 0 && (long long) n_experts * ch <= 65535) {
+            const dim3 grid2((unsigned) (n_out / W2_RB), (unsigned) (n_experts * ch));
+            cudaStream_t s2 = (cudaStream_t) stream;
+            if (ty == 22)
+                gemm_iq_f16_w2_kernel<22><<<grid2, W2_NT, 0, s2>>>((const uint8_t*) W, expert_bytes, rb, K, (const __half*) X, ldx, bounds, ch, Y, ldy);
+            else
+                gemm_iq_f16_w2_kernel<20><<<grid2, W2_NT, 0, s2>>>((const uint8_t*) W, expert_bytes, rb, K, (const __half*) X, ldx, bounds, ch, Y, ldy);
+            return cudaGetLastError() == cudaSuccess;
+        }
+    }
+    const bool q20 = ty == 42;
+    const bool nl = ty == 20 && K % 256 != 0;   // IQ4_NL down (K=640): there is no WK=256 path for this K
+    if (q20 || nl ? K % 128 != 0 : (K % 256 != 0 || !is_iq(ty))) return false;
+    const size_t row_bytes = iq_row_bytes(ty, K);
+    const int mt = (max_rows + WG_MT * WG_BM - 1) / (WG_MT * WG_BM);   // row chunks per expert
+    const dim3 grid((unsigned) (n_out / WG_BN), (unsigned) (n_experts * mt));
+    cudaStream_t s = (cudaStream_t) stream;
+    auto smem = [](int wk) { return (size_t) WG_BN * (wk + 8) * 2 + (size_t) WG_BM * (WG_XK + 8) * 2; };
+    // the shared-memory attribute belongs to the current device, so it is set on each card: with one flag for the
+    // process a layer split's second card launched without it and the prompt stopped ("the WMMA expert tiles could not launch")
+    static bool attr[64];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!attr[dev]) {
+        cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<256, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(256));
+        cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<128, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(128));
+        cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<128, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(128));
+        attr[dev] = true;
+    }
+    if (q20)
+        gemm_iq_f16_grouped_kernel<128, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                 (const __half*) X, ldx, bounds, mt, Y, ldy);
+    else if (nl)
+        gemm_iq_f16_grouped_kernel<128, false, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                         (const __half*) X, ldx, bounds, mt, Y, ldy);
+    else
+        gemm_iq_f16_grouped_kernel<256, false><<<grid, WG_THREADS, smem(256), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
+    return cudaGetLastError() == cudaSuccess;
+}
+}  // namespace strata::kernels
+#else
+namespace strata::kernels {
+bool gemm_iq_f16_grouped(int, const void*, size_t, int, int, const void*, int, const int32_t*, int, int, float*, int, void*) {
+    return false;
+}
+}  // namespace strata::kernels
+#endif
