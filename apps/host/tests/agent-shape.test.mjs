@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BUDGETS, createLlmProxy, isPrivateHost, nearestBudget, samplingFromExpert, shapeBody } from '../server/agent/llm-shape.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
+import { createVisionProbe } from '../server/vision-probe.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
@@ -54,6 +55,9 @@ test('the profile adds a response-settings copy of each shapeable route (local, 
   assert.equal(providers['api-lan'].compat.thinkingFormat, 'chat-template', 'a model server on this network gets the thinking vocabulary of a local model');
   assert.equal(providers['api-lan'].models[0].reasoning, true);
   assert.equal(providers['api-cloud'].compat, undefined, 'a cloud service does not');
+  const small = buildProfile({ local: [], connections: [{ id: 'own', name: 'Own', baseUrl: 'http://127.0.0.1:18798/v1', protocol: 'openai-chat', apiKey: '', models: [{ id: 'm', contextMax: 32768 }] }] });
+  const own = JSON.parse(small.patch.slice(small.patch.indexOf('['))).find(e => e.id === 'llm-pi-ai').config.providers['api-own'];
+  assert.equal(own.models[0].maxTokens, 9830, 'a server on this network keeps 30 percent of its window for the reply so long tasks can be compacted (it was 28672 of 32768: no room, no compaction)');
   assert.match(profile.patch, /"baseURL": "http:\/\/127\.0\.0\.1:8791\/api\/internal\/agent-llm\/strata-local~s8192\/v1"/);
   assert.match(profile.patch, /"x-strata-budget": "8192"/);
   assert.match(profile.patch, /"provider": "strata-local~s8192"/, 'compaction keeps its timing on the copy too');
@@ -122,4 +126,17 @@ test('a turn uses the response-settings route only when a setting is changed: th
   expert = null;
   await run('s8', { thinking: 'Medium' });
   assert.equal(last().temperature, undefined, 'back to defaults: straight to the model again');
+});
+
+test('a model server on this network gets picture input only when its own model list says it reads pictures', async () => {
+  const lists = { yes: { data: [{ id: 'm', architecture: { input_modalities: ['text', 'image'] } }] }, no: { data: [{ id: 'm', architecture: { input_modalities: ['text'] } }] } };
+  let which = 'yes';
+  const probe = createVisionProbe({ fetcher: async () => ({ ok: true, json: async () => lists[which] }) });
+  const conn = { id: 'c', baseUrl: 'http://127.0.0.1:1/v1', apiKey: '' };
+  assert.equal(probe.known(conn, 'm'), undefined);
+  assert.equal(await probe.check(conn, 'm'), true); assert.equal(probe.known(conn, 'm'), true);
+  which = 'no'; assert.equal(await probe.check(conn, 'm'), true, 'cached for a few minutes');
+  assert.equal(await createVisionProbe({ fetcher: async () => { throw new Error('down'); } }).check(conn, 'm'), false, 'unreachable counts as no');
+  const build = vision => JSON.parse(buildProfile({ local: [], connections: [{ id: 'own', name: 'Own', baseUrl: 'http://127.0.0.1:18798/v1', protocol: 'openai-chat', apiKey: '', models: [{ id: 'm', contextMax: 32768, vision }] }] }).patch.slice(buildProfile({ local: [], connections: [] }).patch.indexOf('['))).find(e => e.id === 'llm-pi-ai').config.providers['api-own'].models[0].input;
+  assert.deepEqual(build(true), ['text', 'image']); assert.deepEqual(build(false), ['text']); assert.deepEqual(build(undefined), ['text']);
 });

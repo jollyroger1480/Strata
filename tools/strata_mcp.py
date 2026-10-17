@@ -208,6 +208,14 @@ def proc_terminate(pid, ident) -> bool:
         return False
 
 
+def _rmtree_ignore_missing(func, path, exc_info):
+    """shutil.rmtree error hook: a file that vanished while its folder was being removed is already gone."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if isinstance(exc, FileNotFoundError):
+        return
+    raise exc
+
+
 def proc_kill_tree(pid, ident) -> bool:
     """End a process WE started together with the processes it started (setup's pip / cmake, the engine)."""
     if not proc_alive(pid, ident):
@@ -1311,15 +1319,20 @@ class Tools:
             if tracked and not tracked.get("ended") and tracked.get("model") == plan["model"]:
                 raise ToolError("this model is running: stop it first")
             failed = []
+            # The plan can list a folder and files inside it, or a file that is already gone (an earlier delete, a file moved by hand):
+            # a path that is not there is already removed, not an error. Only what is still there afterwards counts as a failure.
             for item in sorted(plan["remove"], key=lambda x: (x["path"] == str(config), x["path"])):
                 p = Path(item["path"])
                 try:
-                    if p.is_dir():
-                        shutil.rmtree(p)
+                    if p.is_dir() and not p.is_symlink():
+                        shutil.rmtree(p, onerror=_rmtree_ignore_missing)
                     else:
-                        p.unlink()
+                        p.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
                 except OSError as e:
-                    failed.append(f"{p.name}: {e}")
+                    if p.exists() or p.is_symlink():
+                        failed.append(f"{p.name}: {e}")
             files, dirs = s.model_paths(s.read_config(config)) if config.exists() else ([], [])
             for p in {x.parent for x in [Path(i["path"]) for i in plan["remove"]] if x.suffix == ".gguf"}:
                 try:

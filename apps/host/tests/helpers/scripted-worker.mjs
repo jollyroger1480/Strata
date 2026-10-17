@@ -108,6 +108,13 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
 `, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' }
         : { command: shellCommand(file, value), description: `Append one line to ${file}`, sandbox_permissions: 'workspace-write', justification: 'The user asked for this file to be written.' });
     }
+    // Time-skip's two own questions (they quote the plan, whose steps carry directives, so they are recognised by their words first).
+    {
+      const t = messages.filter(m => m.role === 'user').map(text).join(' ');
+      const answered = messages.some(m => m.role === 'assistant');
+      if (/biggest lever/.test(t) && !answered && last.role !== 'tool') return say(['{"step": 2, "why": "The layout decided in step 1 shapes everything after it."}']);
+      if (/IMPROVEMENT PLAN/.test(t) && !answered && last.role !== 'tool') return say(['## Better path\n\n', '1. Improve the first attempt SCRIPT:goalstep\n', '2. Polish and check SCRIPT:goalstep\n']);
+    }
     if (directive?.[1] === 'goalstep') {
       // A goal round: read the goal, mark it complete, then say so.
       if (!toolMessages.length) return toolCall('get_goal', {});
@@ -117,6 +124,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       }
       return say(['Step finished. The result is checked.']);
     }
+    if (directive?.[1] === 'planslow') return say(['## Slow plan\n\n', '1. First thing SCRIPT:goalstep\n', '2. A step that never finishes SCRIPT:slow 4000\n', '3. Third thing SCRIPT:goalstep\n']);
     if (directive?.[1] === 'planreply') return say(['I looked around the folder first.\n\n## The pagoda plan\n\n', '1. First thing SCRIPT:goalstep\n', '2. Second thing SCRIPT:goalstep\n', '3. Third thing SCRIPT:goalstep\n']);
     if (last.role === 'tool') {
       const result = text(last).replace(/\s+/g, ' ').slice(0, 120);
@@ -131,6 +139,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       const n = parseInt(args, 10) || 400;
       return say(Array.from({ length: n }, (_, i) => `w${i} `));
     }
+    if (name === 'hang') { send({ role: 'assistant', content: '' }); return; }   // headers sent, then silence: a model server that went quiet
     if (name === 'echo') return say([args]);
     if (name === 'retrywrite' || name === 'retryshell') {
       const [file, ...rest] = args.split(/\s+/);

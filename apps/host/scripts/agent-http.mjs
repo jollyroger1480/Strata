@@ -127,7 +127,7 @@ if (command === 'connect') {
   let last = '', stopped = false;
   for (;;) {
     const { run } = await j(`/api/timeskip/status?id=${id}`);
-    const line = `${run.phase}${run.activity ? ` | ${run.activity.text}${run.activity.args?.step ? ` | assistant: ${run.activity.args.step}` : ''}` : ''}`;
+    const line = `${run.phase}${run.activity ? ` | ${run.activity.text}${run.activity.args?.step && typeof run.activity.args.step === 'string' ? ` | assistant: ${run.activity.args.step}` : ''}` : ''}${run.lever ? ` | lever: step ${run.lever.step}/${run.lever.total} ${run.lever.defaulted ? '(default) ' : ''}- ${run.lever.why}` : ''}${run.a?.line ? ` | A: ${run.a.state} ${run.a.line.slice(0, 50)}` : ''}${run.b?.state ? ` | B: ${run.b.state} ${(run.b.line ?? '').slice(0, 50)}` : ''}`;
     if (line !== last) { console.log(`${stamp()}  ${line}`); last = line; }
     if (stopAfter && !stopped && (Date.now() - t0) / 1000 >= Number(stopAfter)) {
       console.log(`${stamp()}  -- pressing Stop (the chat Stop route)`);

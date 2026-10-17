@@ -93,3 +93,15 @@ export class EventHub {
     return this.#clients.size;
   }
 }
+
+/** The raw bytes of a request body (an upload), up to `limit`. */
+export async function readRaw(req, limit = 16 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('That upload is too big.');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}

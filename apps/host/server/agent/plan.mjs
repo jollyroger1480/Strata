@@ -105,14 +105,19 @@ export function parsePoints(objective) {
   return { title: clip(aim || steps[0].text, 80), steps };
 }
 
+/** A step that is about looking at the result in a browser or window: it must never hang or fail a whole run on a machine with no screen. */
+export const isViewStep = text => /\b(open|view|launch|preview|look at|check|confirm|verify)\b[^\n]{0,60}\b(browser|in chrome|in edge|in firefox|window|on screen)\b/i.test(String(text ?? ''));
+
 /** The goal the Harness runs for step `index` (0-based): one step, with the aim and the steps around it named. */
 export function stepObjective(plan, index) {
   const n = plan.steps.length; const s = plan.steps[index];
-  const done = plan.steps.slice(0, index).map((x, i) => `${i + 1}. ${x.text}`).join('; ');
+  const done = plan.steps.slice(0, index).map((x, i) => `${i + 1}. ${x.text}${x.summary ? ' (' + String(x.summary).slice(0, 100) + ')' : ''}`).join('; ');
   return [
     `Overall aim: ${plan.title}.`,
     `You are on step ${index + 1} of ${n}: ${s.text}${s.detail ? ` (${s.detail})` : ''}.`,
     done ? `Already done: ${done}.` : '',
+    plan.briefing ? String(plan.briefing) : '',
+    isViewStep(s.text) ? 'This step is about seeing the result in a browser. Never wait for a program to close. If a person is at this computer, start the browser so the command returns at once (Windows: Start-Process; macOS: open; Linux: xdg-open) and say it is open. If there is no screen, check the page without a visible window: use the headless browser tool if you have one, otherwise read the file and its script for mistakes, and say in one plain sentence what you could and could not check. Then finish the step.' : '',
     'Do only this step, check that it worked, and then finish the goal.',
     index + 1 < n ? 'The next steps are handled separately: do not start them.' : '',
   ].filter(Boolean).join(' ');

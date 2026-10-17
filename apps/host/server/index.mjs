@@ -46,10 +46,15 @@ import * as engineInstall from './engine-install.mjs';
 import { detectBackend, currentBackend, streamChat } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
-import { EventHub, error, json, readBody, uid } from './util.mjs';
+import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
+import { createUploads } from './chat-uploads.mjs';
+import { createVisionProbe } from './vision-probe.mjs';
+import { isPrivateHost } from './agent/llm-shape.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
+import { createForkTimeskip } from './timeskip-fork.mjs';
+import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUpdater } from './app-updater.mjs';
@@ -62,7 +67,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { validateChatImages } from './chat-images.mjs';
-import { createTimeSkip, measureFolder, timeskipRevisionMessage } from './timeskip.mjs';
+import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -114,6 +119,7 @@ const native=createNativeControl({control,appUpdater,hardwareProbe:()=>(hardware
 const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 agentTools.ensureFile();
+const visionProbe = createVisionProbe();
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
@@ -135,7 +141,7 @@ const agent = createAgentBridge({
     // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
     mcpServers: i.mcpServers,
   })),
-  connections: () => modelProviders.withSecrets(),
+  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: visionProbe.known(c, m.id) })) })),
   log: line => console.log(line),
 });
 let storageChanging = false;
@@ -423,6 +429,11 @@ function loadWorkspaces() {
 }
 
 let workspaces = loadWorkspaces();
+/* The folder each chat works in ("Select a folder"): the agent's working folder and sandbox for that chat. */
+const chatAttachments = createAttachments();
+const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: chatId => chatFolders.get(chatId) ?? workspaces[0]?.path ?? WORKSPACE, attachments: chatAttachments });
+try { uploads.sweep(); } catch { /* best effort */ }
+const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
 
 function saveWorkspaces() {
   try {
@@ -483,7 +494,7 @@ function clientName(req) {
   return 'Local client';
 }
 
-async function runRemoteTurn({ selection, message, history, onFrame, signal, workspaceId }) {
+async function runRemoteTurn({ selection, message, history, images = [], onFrame, signal, workspaceId }) {
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let entry;
@@ -493,7 +504,7 @@ async function runRemoteTurn({ selection, message, history, onFrame, signal, wor
     const appliedSkills = selectSkills(skillState, message, workspaceId);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
-    const result = await modelProviders.stream({ selection, message, history, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
+    const result = await modelProviders.stream({ selection, message, history, images, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
       if (frame.type === 'start') noteSkillUse(appliedSkills);
       if (frame.type === 'done') serving.mark(entry.id, { tokensIn: frame.tokensIn, tokensOut: frame.tokensOut, usageSource: frame.usageSource });
       onFrame({ ...frame, requestId: entry.id, model: model.name, contextMax: model.contextMax, remoteModel: true, ...(frame.type === 'start' ? { skills: appliedSkills.map(s => s.name) } : {}) });
@@ -510,11 +521,16 @@ async function runRemoteTurn({ selection, message, history, onFrame, signal, wor
 }
 
 /** One agent turn for a chat, streamed to the caller as the NDJSON frames the chat already renders. */
-async function runAgentTurn({ res, controller, chatId, body, message, workspaceId }) {
+async function runAgentTurn({ res, controller, chatId, body, message, workspaceId, images = [] }) {
   const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
-  const cwd = (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
+  const cwd = chatFolders.get(chatId) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
   let choice, instance = null;
-  if (body.remoteModel) choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+  if (body.remoteModel) {
+    choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+    // Does this server read pictures? Asked before the agent is built, so a picture is never sent to one that cannot.
+    const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId);
+    if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId);
+  }
   else {
     try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
     catch (e) { write({ type: 'error', message: e.message }); return; }
@@ -527,10 +543,12 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
+    const attached = chatAttachments.take(chatId);
+    if (attached.length && !/^\//.test(message.trim())) message = withAttachments(message, attached);
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
-    const turnOptions = { chatId, message, workspacePath: cwd, choice, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
@@ -544,7 +562,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
 }
 
 async function runTurn({ message, history = [], onFrame, signal, client, workspaceId = null, sessionId = null, remoteModel = null, runtimeModelId = undefined, nativeModelId, images=[], useTools=false, thinking='medium', thinkingBudget=0 }) {
-  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, onFrame, signal, workspaceId });
+  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, images, onFrame, signal, workspaceId });
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){onFrame({type:'error',message:e.message});return {error:e.message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
@@ -798,6 +816,8 @@ function createTuning({ repoRoot, python, pythonArgs = [], env = process.env } =
 
 const tuning = createTuning({ repoRoot: REPO_ROOT, python: TS_PYTHON, pythonArgs: PYTHON.args });
 
+/* Time-skip: plan, lever, A all the way, B forked at the lever (notes-split-agent8.md). The older revise-the-draft job above stays reachable with legacy:true. */
+const forkTs = createForkTimeskip({ agent, dir: join(store.DATA_DIR, 'timeskip-fork'), notify: (type, data) => hub.send(type, data) });
 const timeskip = createTimeSkip({
   repoRoot: REPO_ROOT,
   python: TS_PYTHON,
@@ -997,10 +1017,11 @@ async function api(req, res, path, method, url) {
   // These routes only start it, follow it and apply its result; they never compute a status or a
   // score of their own, so the UI cannot show progress the job did not report.
   if (path === '/api/timeskip' && method === 'GET') {
-    return json(res, 200, { runs: timeskip.list(), stateDir: timeskip.stateDir() });
+    return json(res, 200, { runs: [...forkTs.list(), ...timeskip.list()], stateDir: timeskip.stateDir() });
   }
   if (path === '/api/timeskip/status' && method === 'GET') {
     const id = url.searchParams.get('id');
+    if (id && forkTs.has(id)) return json(res, 200, { run: forkTs.status(id) });
     const run = id ? timeskip.status(id) : null;
     if (!run) return error(res, 404, 'No such Time-skip run.');
     return json(res, 200, { run: { ...run, activity: trialActivity(run) } });
@@ -1010,6 +1031,21 @@ async function api(req, res, path, method, url) {
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
     const workspace = String(body.workspace ?? '').trim() || ((workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE);
     const prompt = String(body.prompt ?? '').trim().slice(0, 4000);
+    if (body.legacy !== true) {
+      if (!prompt) return error(res, 400, 'Say what you want made or improved after /time-skip.');
+      if (!existsSync(workspace)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a folder for this chat, then try again.');
+      const cwd = chatFolders.get(typeof body.sessionId === 'string' ? body.sessionId : '') ?? workspace;
+      if (resolve(cwd) === resolve(ROOT) || resolve(cwd).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
+      if (measureFolder(cwd).tooBig) return error(res, 400, 'This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
+      let choice, slots = 1;
+      if (body.remoteModel?.connectionId && body.remoteModel?.modelId) { choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+        { const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId); if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId); } slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
+      else { try { const inst = native.resolveInstance(native.state().defaultId); choice = { instanceId: inst.id }; slots = inst.metrics?.live?.slots?.length || inst.parallel || 1; } catch { return error(res, 503, 'Load a model first, then try Time-skip again.'); } }
+      const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
+      if (chatId && forkTs.byChat(chatId)) return error(res, 409, 'A Time-skip is already running in this chat.');
+      const run = forkTs.start({ prompt, workspace: cwd, chatId, choice, thinking: typeof body.thinking === 'string' ? body.thinking : 'Low', slots });
+      return json(res, 200, { run, simulated: false });
+    }
     const reviseCommand = body.useAgent === false ? null : TIMESKIP_REVISE;
     // The folder of the app itself is never a person's work: "Keep the update" would write into the installation.
     if (resolve(workspace) === resolve(ROOT) || resolve(workspace).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
@@ -1033,13 +1069,15 @@ async function api(req, res, path, method, url) {
     return json(res, 200, { run: { ...result.run, activity: trialActivity(result.run) }, simulated: false });
   }
   if (path === '/api/timeskip/files' && method === 'GET') {
-    const found = timeskip.files(url.searchParams.get('id'));
+    const fid = url.searchParams.get('id');
+    const found = forkTs.has(fid) ? forkTs.files(fid) : timeskip.files(fid);
     if (!found) return error(res, 404, 'No such Time-skip run.');
     return json(res, 200, found);
   }
   /* One picture of a run, original or updated, for the Compare view. Only pictures inside the run's own folders; served as an image and nothing else. */
   if (path === '/api/timeskip/file' && method === 'GET') {
-    const found = timeskip.image(url.searchParams.get('id'), url.searchParams.get('path'), url.searchParams.get('version'));
+    const iid = url.searchParams.get('id');
+    const found = forkTs.has(iid) ? (() => { const p = forkTs.image(iid, url.searchParams.get('path'), url.searchParams.get('version')); return p ? { path: p, type: imageTypeOf(p) } : null; })() : timeskip.image(iid, url.searchParams.get('path'), url.searchParams.get('version'));
     if (!found) return error(res, 404, 'No such picture in this Time-skip run.');
     res.writeHead(200, { 'content-type': found.type, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
     createReadStream(found.path).pipe(res);
@@ -1047,6 +1085,7 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/stop' && method === 'POST') {
     const body = await readBody(req);
+    if (forkTs.has(String(body.id ?? ''))) return json(res, 200, { stopped: await forkTs.stop(String(body.id)) });
     return json(res, 200, { stopped: await stopTrial(String(body.id ?? '')) });
   }
   // One revision attempt for a job this host started: the app's assistant works inside the candidate folder.
@@ -1091,6 +1130,10 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/timeskip/apply' && method === 'POST') {
     const body = await readBody(req);
+    if (forkTs.has(String(body.id ?? ''))) {
+      try { return json(res, 200, { apply: forkTs.apply({ id: String(body.id), which: body.which === 'a' ? 'a' : 'b', restore: Boolean(body.restore) }) }); }
+      catch (e) { return error(res, 400, e.message); }
+    }
     const result = await timeskip.apply({
       id: body.id, workspace: body.workspace ?? null,
       dryRun: Boolean(body.dryRun), restore: Boolean(body.restore), attempt: body.attempt ?? null,
@@ -1513,6 +1556,57 @@ async function api(req, res, path, method, url) {
     return json(res, 200, { path: rel, text, sizeKb: st.size / 1024, updatedAt: st.mtime.toISOString() });
   }
 
+  // The folder a chat works in, and opening its files by path (notes-split-agent8.md).
+  if (path === '/api/chat/folder' && method === 'GET') {
+    const id = url.searchParams.get('sessionId') ?? '';
+    return json(res, 200, { folder: chatFolders.info(id), default: workspaces[0]?.path ?? WORKSPACE });
+  }
+  if (path === '/api/chat/folder' && method === 'POST') {
+    const body = await readBody(req);
+    const id = String(body.sessionId ?? '');
+    if (!id) return error(res, 400, 'sessionId is required');
+    if (agent.isRunning(id)) return error(res, 409, 'This chat is still working. Stop it or wait for it to finish, then choose the folder.');
+    if (body.path === null || body.path === '') { chatFolders.clear(id); return json(res, 200, { folder: null }); }
+    try { return json(res, 200, { folder: chatFolders.set(id, body.path) }); } catch (e) { return error(res, 400, e.message); }
+  }
+  if (path === '/api/files/open' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, openFile(chatFolders.get(String(body.sessionId ?? '')), body.path, String(body.how ?? 'app'))); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  /* Files and pictures dropped or pasted into a chat: multipart, a JSON data address, or raw bytes. A picture comes back with an id the next message names (imageIds). */
+  if (path === '/api/chat/upload' && method === 'POST') {
+    const sid = url.searchParams.get('sessionId') ?? '';
+    if (!sid) return error(res, 400, 'sessionId is required');
+    try { const body = await readRaw(req); return json(res, 200, { files: uploads.accept(sid, { body, contentType: req.headers['content-type'], name: url.searchParams.get('name') }) }); }
+    catch (e) { return error(res, e.code === 'too-big' ? 413 : 400, e.message); }
+  }
+  const uploadGet = /^\/api\/chat\/upload\/([0-9a-f-]{36})$/.exec(path);
+  if (uploadGet && method === 'GET') {
+    const img = uploads.image(uploadGet[1]);
+    if (!img) return error(res, 404, 'That picture is no longer available.');
+    res.writeHead(200, { 'content-type': img.type, 'content-length': img.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(img.bytes); return undefined;
+  }
+  if (path === '/api/files/preview' && method === 'GET') {
+    const sid = url.searchParams.get('sessionId') ?? '';
+    try { return json(res, 200, previewFile(chatFolders.get(sid), url.searchParams.get('path'), sid)); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  if (path === '/api/files/raw' && method === 'GET') {
+    try { const f = rawFile(chatFolders.get(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  /* "Attach as context": the file is named in the next message of the chat, so the assistant reads it again. */
+  if (path === '/api/chat/attachments' && method === 'GET') return json(res, 200, { files: chatAttachments.list(url.searchParams.get('sessionId') ?? '') });
+  if (path === '/api/chat/attachments' && method === 'POST') {
+    const body = await readBody(req); const id = String(body.sessionId ?? '');
+    try { const file = resolveChatFile(chatFolders.get(id), body.path); return json(res, 200, { files: body.remove === true ? chatAttachments.remove(id, file) : chatAttachments.add(id, file) }); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
+  if (path === '/api/files/path' && method === 'GET') {
+    try { const p = resolveChatFile(chatFolders.get(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); return json(res, 200, { path: p }); }
+    catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
+  }
   if (path === '/api/workspaces' && method === 'GET') {
     return json(res, 200, { workspaces });
   }
@@ -1688,8 +1782,9 @@ async function api(req, res, path, method, url) {
   if ((path === '/api/chat/stream' || path === '/api/plan/start-goal') && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
     if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
-    let images;try{images=validateChatImages(body.images);}catch(e){return error(res,400,e.message);}
-    if(images.length){if(body.remoteModel)return error(res,409,'Choose a local image-reading model before sending attached pictures.');let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
+    let images;try{const named=Array.isArray(body.imageIds)&&body.imageIds.length?uploads.dataUrls(typeof body.sessionId==='string'?body.sessionId:'',body.imageIds):[];images=validateChatImages([...(Array.isArray(body.images)?body.images:[]),...named]);}catch(e){return error(res,400,e.message);}
+    if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);if(!(own&&own.protocol==='openai-chat'&&isPrivateHost(own.baseUrl)))return error(res,409,'Choose a local image-reading model before sending attached pictures.');}
+    else if(images.length){let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
     // The goal bar's Resume has no words of its own: it is the same turn as "/goal resume".
     const message = body.goalAction === 'resume' ? '/goal resume' : String(body.message ?? '').trim();
     if (!message) return error(res, 400, 'message is required');
@@ -1711,13 +1806,12 @@ async function api(req, res, path, method, url) {
     const agentSkip = process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
       : body.agent === false || body.tools === false ? 'This chat runs without the agent.'
       : !chatId ? 'This request did not name a chat.'
-      : images.length ? 'The agent does not take attached pictures yet; this message was sent directly.'
       : !(body.remoteModel || native.hasLive()) ? 'The agent needs a loaded Strata model or an API model.'
       : null;
     if (chatId && !agentSkip) {
       const capability = agent.status();
       if (capability.state !== 'unavailable') {
-        await runAgentTurn({ res, controller, chatId, body, message, workspaceId });
+        await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images });
         res.end();
         return undefined;
       }
