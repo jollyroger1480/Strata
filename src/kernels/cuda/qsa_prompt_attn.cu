@@ -2305,10 +2305,13 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                 cudaGetLastError();
                 return false;
             }
-            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card that has the Turing MMA (sm_75
+            // and newer), as RTX 20 runs them.  A card below sm_75 has no m16n8k8: its builds hold a __trap() in those
+            // kernels, so forcing them there killed the engine ("prefill copy_i32: unspecified launch failure" on a
+            // Tesla P100); such a card ignores the switch and keeps the kernel it runs without it.
             const char* w = std::getenv("STRATA_QSA_WARP");
-            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
-                      : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            const int real_cc = 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) && real_cc >= 75 ? 75 : real_cc;
         }
         if (cc[dev] < 70) return false;
         volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
