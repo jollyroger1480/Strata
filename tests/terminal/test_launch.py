@@ -112,6 +112,21 @@ class CatalogRules(unittest.TestCase):
         gyro = fit_on({"mem_total": True, "ram_needed_gb": 27.6}, 64, 12)
         self.assertEqual(gyro["memoryGb"], 27.6)
 
+    def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
+        hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
+              "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
+        with Home():
+            cat = catalog(hw)
+            rows = {r.model: r for r in cat.rows()}
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S"})
+            self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
+            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
+            self.assertEqual(rows["IQ3_S"].verdict, "tight")
+            self.assertGreater(rows["IQ3_S"].spill_gb, 10)
+            self.assertEqual(cat.max_context("qwen", "Q2_0", hw), 32768)
+            self.assertEqual(cat.computer().line(), "Apple M4 · 32 GB unified memory · " + cat.computer().line().split(" · ")[-1])
+            self.assertNotIn("0 GB", cat.computer().line())
+
     def test_verdict_words_never_block(self):
         self.assertEqual(verdict("fits")[0], "fits")
         self.assertEqual(verdict("does not fit")[0], "no")

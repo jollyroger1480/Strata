@@ -609,6 +609,73 @@ class Helpers(unittest.TestCase):
         self.assertEqual(r["context"], 32768)
 
 
+class MacCatalog(unittest.TestCase):
+    """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
+
+    def hw(self, ram, macos="27.2", chip="Apple M4"):
+        from strata_control import mac_fit
+        s = M.Strata(HERE.parent)
+        info = {"chip": chip, "ram_gb": float(ram), "macos": macos, "arm64": True, "clt": "", "perf_cores": 4}
+        with mock.patch.object(M.sys, "platform", "darwin"), mock.patch.object(mac_fit, "mac_info", return_value=info):
+            hw = s._hardware()
+        return s, hw
+
+    def test_the_hardware_is_one_apple_gpu_with_unified_memory(self):
+        s, hw = self.hw(32)
+        self.assertEqual(hw["ram_gb"], 32.0)
+        self.assertEqual(len(hw["gpus"]), 1)
+        g = hw["gpus"][0]
+        self.assertEqual((g["vendor"], g["name"], g["usable"], g["vram_gb"], g["unified_gb"]), ("apple", "Apple M4", True, 0.0, 32.0))
+        self.assertEqual(hw["mac"]["unified_gb"], 32.0)
+        self.assertFalse(hw["nvidia_smi"])
+
+    def test_recommendation_by_unified_memory(self):
+        cases = {32: ("Q2_0", 32768), 48: ("Q2_0", 32768), 80: ("IQ3_XXS", 32768), 128: ("IQ3_S", 65536)}
+        for ram, (model, ctx) in cases.items():
+            s, hw = self.hw(ram)
+            r = s.recommend(hw)
+            self.assertEqual((r["family"], r["model"], r["context"], r["backend"]), ("qwen", model, ctx, "metal"), ram)
+            self.assertNotIn("NVIDIA", r["why"])
+            self.assertFalse([n for n in r["notes"] if "UD-" in n], "the Unsloth sizes are not offered in the app yet")
+        s, hw = self.hw(32)
+        self.assertIn("read from the SSD", s.recommend(hw)["why"])
+        s, hw = self.hw(128)
+        self.assertIn("stays in memory", s.recommend(hw)["why"])
+
+    def test_a_mac_too_small_or_too_old_has_no_recommendation_and_says_why(self):
+        s, hw = self.hw(8)
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("8 GB of unified memory", r["why"])
+        s, hw = self.hw(32, macos="14.6")
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("macOS 15 or newer", r["why"])
+
+    def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
+        s, hw = self.hw(32)
+        fams = s.model_table(hw)
+        self.assertEqual([f["family"] for f in fams], ["qwen"], "no Unsloth, Swift or NVFP4 on a Mac in the app")
+        by = {x["model"]: x for x in fams[0]["sizes"]}
+        self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
+        self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
+        self.assertIn("slower", by["Q2_0"]["on_this_pc"])
+        self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
+        self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
+        self.assertFalse(any(x["images"] for x in by.values()))
+        s, hw = self.hw(128)
+        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
+        s, hw = self.hw(8)
+        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"does not fit"})
+
+    def test_a_pc_is_unchanged(self):
+        s = M.Strata(HERE.parent)
+        r = s.recommend({"ram_gb": 96, "gpus": [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}],
+                         "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertIn("unsloth", [f["family"] for f in s.model_table({"ram_gb": 96, "gpus": []})])
+
+
 if __name__ == "__main__":
     unittest.main()
 
