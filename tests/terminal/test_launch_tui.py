@@ -219,7 +219,9 @@ class ModelStep(Base):
     def test_a_model_that_does_not_fit_can_still_be_chosen(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "end", "enter")
-            self.assertEqual(ctx.settings.model, "NVFP4-NVIDIA")
+            last = ctx.rows[-1]
+            self.assertEqual(last.verdict, "no")                      # the last row does not fit a 12 GB card
+            self.assertEqual((ctx.settings.family, ctx.settings.model), (last.family, last.model))
             self.assertIn("Where should the model files be stored?", text_of(app))
             self.assertTrue(any("does not fit" in n for n in ctx.notes))
         self.run_app(case)

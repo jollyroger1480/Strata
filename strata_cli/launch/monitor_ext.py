@@ -28,6 +28,7 @@ class LaunchMonitor(MonitorApp):
     def __init__(self, endpoint, snapshot, *, info: dict, **kw) -> None:
         super().__init__(endpoint, snapshot, **kw)
         self.info = info
+        self.connect_enabled = True
         self.connect_open = False
         self.connect_index = 0
         self.show_key = False
