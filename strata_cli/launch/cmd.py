@@ -234,7 +234,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         if rows:
             r = rows[0]
             if r.verdict == "no":
-                notices.append(S.Notice("warn", f"{r.title} does not fit this computer ({r.words}).", "It can still start; expect it to be slow or to run out of memory."))
+                notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
             elif r.verdict == "tight":
                 notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
             if s.vision != "off" and not r.images:

@@ -46,7 +46,7 @@ server's `/metrics`, the same data as the browser Monitor), the other five views
 (`c` copy, `w` write it for you after a backup, `h` check it: one prompt and one tool call sent the way that app sends them). `q` asks: keep serving in the background, or stop
 (stopping unloads the model and frees the graphics memory).
 
-In the classic Windows console (Consolas) the monitor draws ASCII sparklines and square corners instead of block glyphs the font does not have (`STRATA_GLYPHS=unicode|ascii` forces either).
+In the classic Windows console (the Windows 10 default window) the monitor first switches that window's font to Cascadia Mono when it is installed (the console font API: no admin, nothing saved, gone with the window) and draws the full look; otherwise it draws a solid-block look: █ bars with a thin ▄ track, ▄ / █ sparklines, square boxes and the 16 palette colours (`•` instead of `●` when the font is not Consolas). It always shows one line: "For the full look, use Windows Terminal (built into Windows 11)". Windows Terminal, Linux and macOS are never touched. `STRATA_GLYPHS=unicode|ascii|solid` forces a look. With two or more graphics cards the Overview tiles show the busiest card (load), all cards (memory), the hottest card and the total power, a "Cards" strip lists each card (up to 4, then "press 5" for the Hardware view), and the CPU tile says "2 CPUs · 64 cores" from the server's new `sockets` figure.
 
 ## Without the screens (flags)
 

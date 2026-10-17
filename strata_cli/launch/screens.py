@@ -353,8 +353,8 @@ class ConfirmScreen(ModalScreen):
 class ModelScreen(Base):
     step_id = "model"
     hints = "↑↓ choose   Enter next   o use my own files   Esc back   ? help"
-    help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model wants (the app's figure); 'uses SSD N GB' is the part that does not fit and is read from the SSD while it answers; the n-gram table stays on "
-                 "your SSD and is not counted. 'Does not fit' is a warning, not a block: you can still try it.")
+    help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model wants (the app's figure); 'SSD N GB' is the part that does not fit and is read from the SSD while it answers; the n-gram table stays on "
+                 "your SSD and is not counted. 'Too big' is a warning, not a block: you can still try it.")
 
     BINDINGS = Base.BINDINGS + [Binding("o", "own", "Own files", show=False)]
 
@@ -390,7 +390,7 @@ class ModelScreen(Base):
             col = {"fits": "", "tight": WARN, "no": BAD}[r.verdict]
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
             need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
-            ssd = f" · uses SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
+            ssd = f" · SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
             items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell((r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag, col)], key=(r.family, r.model)))
             if (s.family, s.model) == (r.family, r.model):
                 sel = i

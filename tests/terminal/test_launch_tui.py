@@ -230,9 +230,9 @@ class ModelStep(Base):
             self.assertIn("44 GB", line)                              # the app's figure: experts 42.9 + 1 GB, RAM + VRAM together
             self.assertIn("(recommended)", line)
             self.assertIn("› ", line)                                 # the cursor starts on the recommendation
-            self.assertIn("does not fit (can still try)", t)          # NVFP4: a warning, not a block
+            self.assertIn("too big (can still try)", t)          # NVFP4: a warning, not a block
             big = next(l for l in t.splitlines() if "UD-Q5_K_XL" in l)
-            self.assertIn("uses SSD", big)                            # a model bigger than RAM says how much is read from the SSD, as the app does
+            self.assertIn("SSD ", big)                            # a model bigger than RAM says how much is read from the SSD, as the app does
             self.assertIn("The n-gram table stays on your SSD", t)
         self.run_app(case)
 
