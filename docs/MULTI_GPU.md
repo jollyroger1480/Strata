@@ -22,15 +22,21 @@ Strata can use it:
     GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
-  1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
-  2) GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) only
-  3) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) only
+  1) RTX 3090 + RAM: fits: needs 44 GB of the 70 GB available   (recommended)
+  2) RTX 3090 + RTX 5080 + RAM (layer split): fits: needs 44 GB of the 84 GB available
+       prompts are read about 20% faster; the cards share the layers (docs/MULTI_GPU.md)
+  3) RTX 5080 + RAM: fits: needs 44 GB of the 66 GB available
 Which GPUs? [1]:
 ```
 
-When two or more cards can share the model, the two best together are recommended (the newest generation first:
-it becomes the main card). A model installed on one card asks once, at its next start, whether to use both from
-now on; the answer is kept.
+**Which cards a model uses (one rule, in setup, `strata launch` and the app).** Strata first tries the model on your
+**largest** card plus the computer's memory, the normal hybrid mode, and recommends that when it fits (with some RAM to
+spare). Only when it does not fit one card, or would be too tight, the layer split over the two largest cards is
+recommended instead. Every option is listed with plain numbers (what the model needs and what the cards and RAM give;
+how much would be read from the SSD when it does not fit) and the choice is yours. The cards that count: not an
+integrated chip (it shares the system memory and adds nothing beside a real card), at least 4 GB of graphics memory, and
+8 GB or more to share a model. The arithmetic is the app's `fitOn` (strata_control/gpu_fit.py keeps its constants equal);
+each extra card of a split costs an estimated 2 GB of its own buffers.
 
 **Choosing yourself** (at setup or at any start):
 

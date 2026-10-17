@@ -539,7 +539,8 @@ class CardsScreen(Base):
             items.append(Item([label, Cell(o["words"], WARN if o["verdict"] in ("spills", "tight") else "")], key=o["cards"]))
             if cur is None and o["recommended"] or (cur is not None and o["cards"] == list(cur)):
                 sel = i
-        self.query_one(Menu).columns = [("", 58), ("", 0)]
+        wide = max((len(str(i.cells[0])) for i in items), default=40)
+        self.query_one(Menu).columns = [("", max(40, min(wide + 3, 70))), ("", 0)]
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 

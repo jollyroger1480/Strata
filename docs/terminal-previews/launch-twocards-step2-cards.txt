@@ -4,10 +4,9 @@
  STRATA  Set up   Step 2 of 10: Cards
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Which graphics cards should it use?
- › Let Strata choose (recommended): 2 cards
-   Only card 0: NVIDIA RTX A4000, 16 GB
-   Only card 1: NVIDIA RTX A4000, 16 GB
-   All of them together, as one
+ › RTX A4000 (card 0) + RAM   (recommended)                      fits: needs 44 GB of the 70 GB available
+   RTX A4000 (card 0) + RTX A4000 (card 1) + RAM (layer split)   fits: needs 44 GB of the 84 GB available
+   RTX A4000 (card 1) + RAM                                      fits: needs 44 GB of the 70 GB available
 
 
 
@@ -31,6 +30,7 @@
 
 
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
- This computer has several graphics cards. One card is simplest; several cards share the model so bigger
- models fit. Strata's own choice is a good default.
- ↑↓ choose   Enter next   Esc back   ? help   q quit
+ One card plus your RAM is the normal way and keeps things simple. Two cards share the layers: more room for
+ the model and prompts read about 20% faster, but a small second card can slow it down. Strata recommends one
+ of them; the choice is yours.
+ ↑↓ choose   Enter next   Esc back   ? help
