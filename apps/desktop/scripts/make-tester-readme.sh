@@ -32,18 +32,21 @@ sha_of() { sha256sum "$1" | awk '{print $1}'; }
 size_gb() { awk -v b="$(stat -c %s "$1" 2>/dev/null || stat -f %z "$1")" 'BEGIN{printf "%.1f", b/1000000000}'; }
 
 if [ -n "$VERIFY" ]; then
-  bad=0; seen=0
-  while IFS= read -r line; do
-    # "<hash>  <name>" or "<name>   <hash>" or "sha256 <hash>"
-    hash="$(grep -Eo '[0-9a-f]{64}' <<<"$line" | head -1 || true)"
-    [ -n "$hash" ] || continue
-    name="$(sed -E 's/[0-9a-f]{64}//; s/^[[:space:]]*(sha256|Checks:)?[[:space:]]*//; s/[[:space:]]*$//' <<<"$line")"
-    f="$(find_file "$name" 2>/dev/null || true)"
-    [ -n "$f" ] || continue
+  # every checksum in the README must be the checksum of a file that is here, and every file here that the README names must have its checksum in it
+  hashes=""; bad=0; seen=0
+  for d in "${DIRS[@]}"; do for f in "$d"/*; do [ -f "$f" ] && hashes="$hashes $(sha_of "$f")"; done; done
+  readme_hashes="$(grep -Eo '[0-9a-f]{64}' "$VERIFY" | sort -u || true)"
+  for h in $readme_hashes; do
     seen=$((seen + 1))
-    if [ "$(sha_of "$f")" != "$hash" ]; then echo "STALE: $name is $(sha_of "$f"), the README says $hash" >&2; bad=$((bad + 1)); fi
-  done < "$VERIFY"
-  echo "$seen checksum line(s) checked, $bad stale"
+    case " $hashes " in *" $h "*) ;; *) echo "STALE: the README lists $h, which is the checksum of no file in: ${DIRS[*]}" >&2; bad=$((bad + 1)) ;; esac
+  done
+  for d in "${DIRS[@]}"; do for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    if grep -qF "$(basename "$f")" "$VERIFY" && ! grep -qF "$(sha_of "$f")" "$VERIFY"; then
+      echo "STALE: $(basename "$f") is $(sha_of "$f"), which the README does not list" >&2; bad=$((bad + 1))
+    fi
+  done; done
+  echo "$seen checksum(s) in the README checked, $bad stale"
   [ "$bad" = 0 ] && [ "$seen" -gt 0 ]
   exit
 fi
