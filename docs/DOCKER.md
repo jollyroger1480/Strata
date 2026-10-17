@@ -190,7 +190,7 @@ docker stop strata && docker rm strata
 ```
 
 The models, the prepared pack, your preset and tuning stay in the volume `strata-data`; nothing is downloaded again. A new
-engine release can invalidate a tuning result: the first start says so and the preset is tuned again with `RETUNE=1`.
+engine can make an old tuning result less useful: start once with `-e TUNE=quick -e RETUNE=1` to tune again.
 `strata update` inside the container is not the way to update: the engine is part of the image.
 
 ## Troubleshooting
@@ -217,7 +217,7 @@ use the `cuda12` image or update the driver.
 container's user) must be allowed to use them. Add `--device /dev/kfd --device /dev/dri` and the groups
 `--group-add video --group-add $(getent group render | cut -d: -f3)` (the render group's number differs from computer to
 computer, so use the number, not the name). `ls -l /dev/kfd /dev/dri/renderD*` shows who owns them. On a computer with
-SELinux (Fedora, RHEL), add `--security-opt label=disable` for the device files to open.
+SELinux (Fedora, RHEL) that still refuses the device files, add `--security-opt label=disable` to the `docker run`.
 
 **Intel: no device found.** Pass `--device /dev/dri` and `--group-add <render group number>` as above. An Arc card needs the
 `i915` or `xe` driver on the host (`ls /dev/dri/renderD*` must show a device; `lspci -k | grep -A3 -i arc` shows the driver in use).

@@ -153,7 +153,7 @@ on_term() {
   say "Stop requested: shutting down."
   if [ -n "$launch_pid" ] && kill -0 "$launch_pid" 2>/dev/null; then
     kill -INT "$launch_pid" 2>/dev/null     # the launch is still downloading or loading: it stops what it started
-    i=0; while kill -0 "$launch_pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep 1; i=$((i+1)); done
+    i=0; while kill -0 "$launch_pid" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 1; i=$((i+1)); done
     kill -TERM "$launch_pid" 2>/dev/null || true
   fi
   "$STRATA" launch --stop --preset "$PRESET" || true
@@ -161,12 +161,17 @@ on_term() {
 }
 trap on_term TERM INT
 
+# A command started with & by a non-interactive sh ignores SIGINT, so `kill -INT` would do nothing. The launch must see it (it is how it
+# stops a download or a load cleanly), so it is started through a one-line Python that puts SIGINT back before it runs the Terminal.
+PYBIN="$APP/terminal/python/bin/python3"; [ -x "$PYBIN" ] || PYBIN=$(command -v python3 || echo python3)
+RESET_INT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])'
+
 phase preparing
 say "Starting Strata: ${MODEL:-recommended model}${model_path:+ from $model_path} (preset '$PRESET')."
 if [ -n "$key" ]; then
-  STRATA_LAUNCH_KEY="$key" "$STRATA" "$@" &
+  STRATA_LAUNCH_KEY="$key" "$PYBIN" -c "$RESET_INT" "$STRATA" "$@" &
 else
-  "$STRATA" "$@" &
+  "$PYBIN" -c "$RESET_INT" "$STRATA" "$@" &
 fi
 launch_pid=$!
 wait "$launch_pid"
