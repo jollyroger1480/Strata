@@ -290,6 +290,11 @@ class Runner:
             why = ""
             if isinstance(last, dict):
                 why = str((last.get("error") or {}).get("message") or last.get("message") or "")
+                if not why:
+                    for res in last.get("results") or []:
+                        if isinstance(res, dict) and res.get("status") == "failed" and res.get("error"):
+                            why = str(res["error"])
+                            break
             why = why or (tail[-1] if tail else "")
             raise LaunchError("The engine could not be installed." + (f" {why}" if why else ""),
                               "Check your internet connection, or point Strata at an update source with --feed, then try again.", 6)
