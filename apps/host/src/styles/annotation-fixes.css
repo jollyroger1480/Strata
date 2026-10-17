@@ -727,3 +727,17 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-manage-empty { padding:24px 8px; text-align:center; }
 .native-manage-foot { padding-top:12px; border-top:1px solid var(--st-line-soft); }
 @media(max-width:600px){ .native-manage-row { grid-template-columns:1fr; } }
+
+/* Graphics cards (several cards that count): a calm radio list, the recommended option pre-selected, neutral like the other calm controls */
+.native-cards { display:flex; flex-direction:column; gap:6px; margin-top:14px; }
+.native-cards__list { display:flex; flex-direction:column; gap:8px; }
+.native-cards__opt { display:grid; grid-template-columns:20px 1fr; gap:12px; align-items:start; text-align:left; padding:12px 14px; border:1px solid var(--st-line); border-radius:10px; background:var(--st-surface-2); color:var(--st-ink-soft); font:inherit; cursor:pointer; }
+.native-cards__opt[data-selected="true"] { background:var(--st-surface); color:var(--st-ink); box-shadow:var(--st-sh-card); border-color:color-mix(in srgb, var(--st-ink) 28%, var(--st-line)); }
+.native-cards__opt:disabled { cursor:default; opacity:.7; }
+.native-cards__opt:focus-visible { outline:2px solid var(--st-accent); outline-offset:1px; }
+.native-cards__dot { width:16px; height:16px; margin-top:2px; border-radius:50%; border:2px solid var(--st-line); box-sizing:border-box; }
+.native-cards__opt[data-selected="true"] .native-cards__dot { border-color:var(--st-ink); background:radial-gradient(circle, var(--st-ink) 0 42%, transparent 48%); }
+.native-cards__opt strong { display:block; font-size:13px; font-weight:600; }
+.native-cards__opt small { display:block; margin-top:4px; font-size:12px; line-height:1.55; color:var(--st-ink-muted); }
+.native-cards__opt small[data-warn="true"] { color:var(--st-ink-soft); }
+.native-cards__note { margin:2px 0 0; }
