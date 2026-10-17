@@ -389,6 +389,29 @@ class AdoptRules(unittest.TestCase):
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
 
+    def test_pictures_on_means_the_cpu_reader_on_an_amd_card(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            for vision, backend, want in (("on", "hip", "cpu"), ("on", "cuda", "yes"), ("off", "hip", "no"), ("gpu", "hip", "gpu"), ("cpu", "cuda", "cpu")):
+                r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision=vision), catalog=cat)
+                with mock.patch("strata_control.engine_component.detect_backend", return_value=(backend, None)):
+                    self.assertEqual(r.vision_word(), want, (vision, backend))
+
+    def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            seen = []
+            r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on"), catalog=cat, emit=seen.append)
+            path = h.base / "cfg.json"
+            path.write_text("{}")
+            with mock.patch.object(cat.strata, "describe_config", return_value={"images": "off"}):
+                r.check_pictures(path)
+            self.assertTrue(any("Pictures could not be switched on" in e.text and e.level == "warn" for e in seen))
+            seen.clear()
+            with mock.patch.object(cat.strata, "describe_config", return_value={"images": "cpu"}):
+                r.check_pictures(path)
+            self.assertEqual(seen, [])
+
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
         with Home() as h:
             d, m = self.files(h.base)

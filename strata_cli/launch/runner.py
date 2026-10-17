@@ -301,6 +301,37 @@ class Runner:
         self.emit("engine", "The engine is installed.", 100)
 
     # ---- 2. the model
+    def vision_word(self) -> str:
+        """What setup is told for the picture choice. "on" means "as well as this computer can": an AMD card has no GPU picture reader yet, and setup
+        would then switch pictures off without being asked; the CPU reader works there, so that is what "on" means on AMD."""
+        s = self.s
+        if s.vision == "off":
+            return "no"
+        if s.vision == "on":
+            try:
+                from strata_control import engine_component
+                if engine_component.detect_backend()[0] == "hip":
+                    return "cpu"
+            except Exception:                                # noqa: BLE001
+                pass
+            return "yes"
+        return s.vision
+
+    def check_pictures(self, path: Path) -> None:
+        """Pictures were asked for: say so in plain words when the installed settings still have them off."""
+        s = self.s
+        if s.vision == "off":
+            return
+        try:
+            desc = self.catalog.strata.describe_config(path)
+        except Exception:                                    # noqa: BLE001
+            return
+        if (desc or {}).get("images") in (None, "off"):
+            note = ("Pictures could not be switched on for this model and graphics card, so it will answer text only. "
+                    "Pick another model or a card the picture reader supports if you need them.")
+            self.notices.append(note)
+            self.emit("model", note, 100, level="warn")
+
     def setup_args(self) -> list[str]:
         cat, s = self.catalog, self.s
         fam, model = s.family, s.model
@@ -308,7 +339,7 @@ class Runner:
         ctx = s.context
         if ctx:
             args += ["--context", str(ctx)]
-        args += ["--vision", {"off": "no", "on": "yes"}.get(s.vision, s.vision)]
+        args += ["--vision", self.vision_word()]
         if s.kv:
             args += ["--kv", s.kv]
         if fam in ("qwen", "coder"):
@@ -423,6 +454,7 @@ class Runner:
             raise LaunchError("Setup finished but no run config was written for this model.",
                               "Run `strata launch` again; if it repeats, the setup output above says why.", 6)
         self.emit("model", f"{title} is ready.", 100)
+        self.check_pictures(path)
         return path
 
     def adopt_prepared_files(self, setup_error: str) -> Path | None:
