@@ -41,7 +41,7 @@ RUN set -e; \
     /venv/bin/cmake --build build --target strata strata_kq -j "$(nproc)"; \
     if [ "$BUILD_VISION" = "1" ]; then \
       /venv/bin/cmake -G Ninja -S tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=/src/third_party/llama.cpp \
-          -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"; \
+          -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON -DGGML_CUDA_NCCL=OFF "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"; \
       /venv/bin/cmake --build build-vision --target strata-vision -j "$(nproc)"; \
     fi
 RUN set -e; \
