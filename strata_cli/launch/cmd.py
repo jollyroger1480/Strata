@@ -428,7 +428,12 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
+        if not have_choices and not interactive and not a.plan:
+            return fail("`strata launch` with no choices opens screens, and this is not a terminal. Name what to start: --preset NAME, or --model NAME "
+                        "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
         if interactive and not have_choices:
+            if catalog is None:
+                return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
             from strata_cli.launch import app
             return app.run_tui(None, catalog=catalog, feed=a.feed)
         if catalog is None:

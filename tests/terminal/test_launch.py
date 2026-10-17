@@ -461,6 +461,13 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(s["model_path"], str(Path("/data/models/IQ3_XXS")))
         self.assertIsNone(s["model"])
 
+    def test_no_choices_and_no_terminal_does_not_start_anything(self):
+        with mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+            code, out, err = run_cli(["launch"])
+        self.assertEqual(code, 2)
+        self.assertIn("not a terminal", err)
+        self.assertIn("--preset NAME", err)
+
     def test_unknown_model_names_the_closest_one(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3xxs"])
         self.assertEqual(code, 2)
