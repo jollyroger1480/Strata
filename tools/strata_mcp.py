@@ -1537,6 +1537,12 @@ class Tools:
         sizes = s.sizes_of(models, family)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
+        mac = bool(hw.get("mac"))
+        if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
+            if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
+                raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
+            gpu = gpus = kv = low_ram = None
+            context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
             usable = [g for g in hw.get("gpus", []) if g.get("usable")]
             vram = max((g["vram_gb"] for g in usable), default=12)

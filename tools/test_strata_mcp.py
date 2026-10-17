@@ -668,6 +668,22 @@ class MacCatalog(unittest.TestCase):
         s, hw = self.hw(8)
         self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"does not fit"})
 
+    def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
+        s, hw = self.hw(32)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as own:
+            plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, "no", "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(plan["context"], 32768)
+        self.assertEqual(args[:9], ["--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "32768", "--vision"])
+        for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
+            self.assertNotIn(flag, args)
+        self.assertIn("--gguf-dir", args)
+        with self.assertRaises(M.ToolError):
+            s2, hw2 = self.hw(8)
+            s2.hardware = lambda fresh=False: hw2
+            M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
     def test_a_pc_is_unchanged(self):
         s = M.Strata(HERE.parent)
         r = s.recommend({"ram_gb": 96, "gpus": [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}],
