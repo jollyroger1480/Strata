@@ -1,0 +1,36 @@
+# strata launch preview: step2-cards
+# (text of the screen as drawn at the size named in tests/terminal/launch_previews.py)
+
+ STRATA  Set up   Step 2 of 10: Cards
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Which graphics cards should it use?
+ › Let Strata choose (recommended): 2 cards
+   Only card 0: NVIDIA RTX A4000, 16 GB
+   Only card 1: NVIDIA RTX A4000, 16 GB
+   All of them together, as one
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ This computer has several graphics cards. One card is simplest; several cards share the model so bigger
+ models fit. Strata's own choice is a good default.
+ ↑↓ choose   Enter next   Esc back   ? help   q quit

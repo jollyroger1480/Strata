@@ -869,7 +869,7 @@ class AdvancedScreen(Base):
 
     def body(self) -> ComposeResult:
         yield Static("", id="advhead", markup=False)
-        yield Menu([("Setting", 28), ("Default", 13), ("Tuned", 15), ("Yours", 13), ("What it does", 0)], id="menu", window=8)
+        yield Menu([("Setting", 24), ("Default", 11), ("Tuned", 13), ("Yours", 10), ("What it does", 0)], id="menu", window=8)
         yield Static("", id="cmdline", markup=False)
         yield Input(id="edit", classes="field", disabled=True)
 
