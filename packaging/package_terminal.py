@@ -340,6 +340,7 @@ def main() -> int:
             if not src.exists():
                 raise SystemExit(f"missing tools module: {item}")
             shutil.copy2(src, tools_dir / item)
+        installer = None if args.no_installer else add_installer(root)
         (root / "VERSION").write_text(version + "\n", encoding="utf-8")
 
         bin_dir = root / "bin"
