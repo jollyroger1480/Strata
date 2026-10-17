@@ -22,6 +22,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
 
 #if defined(__HIPCC__)
 #include "moe_f16_common.cuh"
@@ -1186,6 +1187,7 @@ struct DevInfo {
     bool done = false, ok = false;
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
     bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
+    bool s120 = false;  // compute capability 12.0 (sm120_series.hpp): the default for the formats measured there
     int sms = 0, occ = 1;
 };
 std::mutex g_mu;
@@ -1288,6 +1290,7 @@ const DevInfo& dev_info() {
     int major = 0, minor = 0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    d.s120 = strata::sm120_default(major, minor);   // (takes the raw attributes, as is_sm120 does)
     major = strata::cc_major_of(major);   // STRATA_EMULATE_CC counts (tests)
     minor = strata::cc_minor_of(minor);
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
@@ -1398,7 +1401,17 @@ bool native_supported(int gu_type, int d_type) {
     }();
     if (off || env == 0 || !gu_covered(gu_type)) return false;
 #if !defined(__HIPCC__)
-    if (env < 0) return false;   // the default is gfx12 (HIP) only
+    // CUDA: unset, on by default on a compute capability 12.0 card (sm120_series.hpp, STRATA_SM120_PERF=0 off) for the gate/up
+    // formats measured there - the IQ3_S pack's IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS layers with IQ4_NL / Q2_0 down (RTX PRO 5000:
+    // prompt +7.0% 4K, +5.2% 20K, +3.4% 98K; teacher-forced KL against MMQ 0.0002 over 5998 positions, 0.0010 over 1760 long
+    // ones; first-token KL against the FP16 prompt path 0.01181 vs MMQ's 0.01236 over 48 prompts; HumanEval, reasoning,
+    // agent, needles, CJK and tool calls the same).  IQ2_XXS / IQ2_XS gate/up (the IQ3_XXS and IQ2_XS packs) keep MMQ until
+    // measured.  Every other CUDA card: opt-in as before.
+    if (env < 0) {
+        if (gu_type != T_IQ2_S && gu_type != T_IQ3_XXS && gu_type != T_IQ3_S && gu_type != T_IQ4_XS) return false;
+        const DevInfo& d = dev_info();
+        return d.ok && d.s120 && !d.t75 && d_covered_on(d_type, d);
+    }
 #endif
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
     const DevInfo& d = dev_info();
