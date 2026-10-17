@@ -344,6 +344,20 @@ class Runner:
         desc = self.catalog.strata.describe_config(path)
         return path, desc
 
+    def download_gb(self) -> float:
+        """How much would be downloaded for this launch right now: 0 when the model is installed with these choices (or is the person's own files)."""
+        s = self.s
+        if s.model_path or not (s.family and s.model):
+            return 0.0
+        try:
+            path, desc = self.installed_state()
+            if path is not None and desc is not None and desc_matches(desc, s) and not files_present(read_config(path)):
+                return 0.0
+            row = next((r for r in self.catalog.rows() if r.family == s.family and r.model == s.model), None)
+            return float(row.download_gb) if row else 0.0
+        except Exception:                                    # noqa: BLE001
+            return 0.0
+
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
         if s.model_path and not (s.family and s.model):

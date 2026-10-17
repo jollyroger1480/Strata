@@ -221,10 +221,27 @@ class LaunchApp(App):
         self.ctx.settings = s
         self.run_launch()
 
-    def run_launch(self) -> None:
+    def run_launch(self, confirmed: bool = False) -> None:
         s = self.ctx.settings
         self.cancel = threading.Event()
         self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed)
+        gb = getattr(self.runner, "download_gb", lambda: 0.0)() if not confirmed else 0.0
+        if gb >= 1.0:
+            free = self.ctx.catalog.disk_free(s.data_dir or self.ctx.catalog.data_dir())
+            room = (f" There is {free:,.0f} GB free in the folder." if free is not None else "")
+            warn = (" That is less than the download needs; it will probably stop part way." if free is not None and free < gb + 8 else "")
+
+            def done(choice: str | None) -> None:
+                if choice == "go":
+                    self.run_launch(confirmed=True)
+                elif self.current == "start":
+                    pass
+
+            self.push_screen(ConfirmScreen(f"Download about {gb:.0f} GB?",
+                                           f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; an interrupted download continues where it stopped."
+                                           + room + warn,
+                                           [("go", "Download and start"), ("no", "Not now")]), done)
+            return
         screen = RunScreen()
         self.run_screen = screen
         self.current = "run"

@@ -36,10 +36,14 @@ class FakeRunner:
     instances: list = []
     behaviour = "ok"
     hold = 0
+    download = 0.0
 
     def __init__(self, s, *, catalog=None, emit=None, cancel=None, feed=None, **kw):
         self.s, self.emit_cb, self.cancel, self.feed = s, emit, cancel, feed
         FakeRunner.instances.append(self)
+
+    def download_gb(self):
+        return FakeRunner.download
 
     def run(self, start=True):
         e = self.emit_cb
@@ -85,6 +89,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.home.__exit__, None, None, None)
         FakeRunner.instances.clear()
         FakeRunner.behaviour = "ok"
+        FakeRunner.download = 0.0
         p = mock.patch("strata_cli.launch.app.Runner", FakeRunner)
         p.start()
         self.addCleanup(p.stop)
@@ -139,6 +144,26 @@ class StartScreenTests(Base):
             await pilot.pause(0.6)
             self.assertEqual(FakeRunner.instances[0].s.name, "Office")
             self.assertEqual(app.result.profile, "launch-x")
+        self.run_app(case)
+
+    def test_a_model_that_is_not_here_asks_before_downloading(self):
+        store.save(S.LaunchSettings(name="Big", family="qwen", model="IQ3_XXS", context=65536))
+        FakeRunner.download = 75.8
+
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter")
+            t = flat(app)
+            self.assertIn("Download about 76 GB?", t)
+            self.assertIn("not on this computer yet", t)
+            self.assertIn("Download and start", t)
+            self.assertEqual(FakeRunner.instances[-1].behaviour, "ok")
+            await press(pilot, "down", "enter")                      # Not now
+            await pilot.pause(0.3)
+            self.assertIsNone(app.result)
+            await press(pilot, "enter")
+            await press(pilot, "enter")                              # Download and start
+            await pilot.pause(0.8)
+            self.assertIsNotNone(app.result)
         self.run_app(case)
 
     def test_delete_asks_then_removes_only_the_preset(self):

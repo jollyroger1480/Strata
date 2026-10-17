@@ -1338,7 +1338,8 @@ class RunScreen(Base):
             t.append(f"   about {info['minutes_left']} min left")
         t.append("\n")
         for sp in (info.get("speeds") or [])[-6:]:
-            label = sp.get("label") or sp.get("id") or "?"
+            label = {"base": "Default settings", "base_aa": "Default settings, measured again"}.get(sp.get("label") or sp.get("id"),
+                                                                                                 sp.get("label") or sp.get("id") or "?")
             val = sp.get("decode_tok_s") or sp.get("value") or sp.get("tok_s")
             t.append(f"    {str(label)[:34]:<36}{val if val is not None else '-'}" + (" tokens/s" if val is not None else "") + "\n")
         t.append("  Close other heavy programs while it measures. You can stop it any time: nothing changes until it is done.\n", style=MUTE)
