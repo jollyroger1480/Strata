@@ -10621,6 +10621,23 @@ int main(int argc, char **argv) try {
             const DecSnap ds0 = dec_snap();
             double dt_run = 0, dt_commit = 0, dt_draft = 0;
             int64_t dec_windows = 0, dec_T = 0;
+            // STRATA_FOLLOW=<file> (test path, off by default): this request decodes the token ids in <file> (whitespace
+            // separated, read and deleted at the request's start) instead of the argmax, through the real verify windows
+            // with the MTP drafts; STRATA_FOLLOW_LOGPOS=<path> appends, for every valid window row, the teacher-forced
+            // log-probability of the forced token and the top STRATA_LOGPOS_TOPK log-probabilities
+            std::vector<int32_t> fol;
+            if (const char* fp = std::getenv("STRATA_FOLLOW")) {
+                if (std::FILE* ff = std::fopen(fp, "r")) {
+                    long long v;
+                    while (std::fscanf(ff, "%lld", &v) == 1) fol.push_back((int32_t) v);
+                    std::fclose(ff);
+                    std::remove(fp);
+                }
+            }
+            static std::FILE* fol_lp = [] {
+                const char* p = std::getenv("STRATA_FOLLOW_LOGPOS");
+                return p != nullptr ? std::fopen(p, "ab") : nullptr;
+            }();
             const int64_t decode_hits0 = drive.d.cache_hits;
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
@@ -11398,8 +11415,20 @@ int main(int argc, char **argv) try {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
+                int32_t fol_tgt[16];
+                if (!fol.empty()) {   // STRATA_FOLLOW: the forced continuation stands in for the argmax
+                    for (int i = 0; i < T && i < 16; ++i) {
+                        const size_t k = (size_t) produced_n + (size_t) i;
+                        fol_tgt[i] = k < fol.size() ? fol[k] : -1;
+                        if (fol_tgt[i] >= 0) outv[(size_t) i] = fol_tgt[i];
+                    }
+                }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (!fol.empty() && fol_lp != nullptr && !ver.window_logprobs(fol_tgt, a + 1, produced_n, -1, fol_lp, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (strata::core::MtpDrafter::top2_env() && !from_sfx && !first_window && a < T_mtp - 1 && a < 8) {
