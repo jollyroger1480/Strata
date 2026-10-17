@@ -173,6 +173,7 @@ class LaunchMonitor(MonitorApp):
         def work() -> None:
             res = check.run_checks(h.id, url, key, model)
             self.check_results[h.id] = res
+            self.notice = "Checked: " + ("both worked." if all(c.ok for c in res) else "something did not work; see the lines below the setup.")
             try:
                 self.call_from_thread(self._paint)
             except Exception:                                # noqa: BLE001
@@ -183,7 +184,13 @@ class LaunchMonitor(MonitorApp):
     # ---- painting
     def _paint(self, size=None) -> None:
         if not getattr(self, "connect_open", False):
-            return super()._paint(size)
+            super()._paint(size)
+            if not self.error and not self.selection_notice and self.connection_state == "connected" and not self.frozen:
+                try:
+                    self.query_one("#message", Static).update("Read only  |  q asks: keep serving or stop  |  7 connect an app")
+                except Exception:                            # noqa: BLE001
+                    pass
+            return
         size = self.screen.size if size is None else size
         width = max(40, size.width - 2)
         self.query_one("#content", Static).update(self.connect_text(width))
