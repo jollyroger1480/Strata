@@ -823,7 +823,9 @@ class Host:
                 return {**base, "ok": False, "state": "failed", "error": self.last_error, "exit_code": 6}
             return {**base, "state": "stopped"}
         if child.poll() is not None:
-            return {**base, "ok": False, "state": "failed", "exit_code": child.returncode,
+            # engine_exit_code: how the engine process ended (Windows: 0xC0000135 = a DLL was not found); `exit_code` is
+            # Control's own and the start command overwrites it with 6, so the engine's code travels under its own name.
+            return {**base, "ok": False, "state": "failed", "exit_code": child.returncode, "engine_exit_code": child.returncode,
                     "error": self.last_error or "server_exited", "log_tail": self._log_tail()}
         if self.ready_path is not None:
             try:

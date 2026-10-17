@@ -12,6 +12,7 @@ import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
+import { postWithFolderFallback } from './folder-pick';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -548,7 +549,7 @@ export const CONTENT_FONT_RANGE = { min: CONTENT_FS_MIN, max: CONTENT_FS_MAX };
 
 /** Opens the system folder chooser. Returns null when it is dismissed. */
 export async function pickWorkspace(): Promise<string | null> {
-  const res = await api.post<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick', {});
+  const res = await postWithFolderFallback<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick') as { path?: string };
   return res.path ?? null;
 }
 

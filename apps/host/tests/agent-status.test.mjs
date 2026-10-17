@@ -176,3 +176,14 @@ test('a goal step is always sent, even right after another status (it used to be
   advance(400);
   assert.ok(frames.some(f => f.phase === 'goal' && f.args.round === 1), frames.map(f => f.phase).join(','));
 });
+
+import { plainTurnFailure } from '../server/agent/agent-bridge.mjs';
+test('a start failure from the agent reads in plain words and keeps the raw text for Details', () => {
+  const raw = new Error('session/create: tool-bash (@deepseek-ai/dsh-tool-bash): waiting for shell\ntool-workflow: waiting for workflowEngine');
+  raw.code = 'agent-preset/invalid';
+  const f = plainTurnFailure(raw);
+  assert.doesNotMatch(f.message, /session\/create|waiting for|@deepseek-ai|workflowEngine/);
+  assert.match(f.message, /reinstall|reopen/i);
+  assert.match(f.details, /waiting for workflowEngine/);
+  assert.doesNotMatch(plainTurnFailure(new Error('turn/start: boom')).message, /turn\/start/);
+});

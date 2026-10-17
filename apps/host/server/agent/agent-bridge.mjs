@@ -44,6 +44,24 @@ export function plainAgentFailure(raw) {
   return text;
 }
 
+/**
+ * A failure thrown while a turn starts, as `{ message, details, code }` for the chat's error card. The agent's own errors read like
+ * `session/create: tool-bash (...): waiting for shell ...` (a plugin chain that never started): never shown raw. The plain sentence
+ * goes in `message`; the technical text goes in `details`, which the app shows only behind Details.
+ */
+export function plainTurnFailure(err) {
+  const raw = String(err?.message ?? err ?? '');
+  const details = typeof err?.details === 'string' && err.details ? err.details : raw;
+  if (err instanceof AgentUnavailable) return { message: err.message, details, code: err.code ?? 'AGENT_ERROR' };
+  if (err?.code === 'agent-preset/invalid' || /waiting for (shell|subprocess|ptcRuntime|workflowEngine|sandbox)|failed to import|did not activate/i.test(raw)) {
+    return { message: 'The coding assistant is missing a part it needs, so it cannot work on files yet. Close and reopen Strata. If it keeps happening, reinstall Strata. Chatting without tools still works.', details, code: 'AGENT_INCOMPLETE' };
+  }
+  if (/^[a-z][a-z-]*\/[a-z][a-z-]*: /i.test(raw) || /^(gateway|rpc)/i.test(raw)) {
+    return { message: 'The coding assistant could not start this message. Try again. If it keeps happening, close and reopen Strata.', details, code: err?.code ?? 'AGENT_ERROR' };
+  }
+  return { message: plainAgentFailure(raw), details, code: err?.code ?? 'AGENT_ERROR' };
+}
+
 /** Attached pictures (data addresses) as the Harness's image prompt parts. */
 export function imageParts(images) {
   return (Array.isArray(images) ? images : []).map(i => {

@@ -7456,7 +7456,7 @@ def with_component_engine(cfg: dict) -> dict:
         return cfg
     cfg = dict(cfg)
     cfg["exe"] = _component_exe(cfg["exe"], cfg)
-    cfg["lib_dirs"] = [str(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    cfg["lib_dirs"] = [*engine_component.package_lib_dirs(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
     return cfg
 
 

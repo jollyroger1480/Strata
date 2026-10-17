@@ -49,6 +49,14 @@ for d in control harness node engine-bundle; do
   [ -d "$RES/$d" ] || continue
   rsync -aL --checksum --delete --exclude .gitignore "$RES/$d/" "$LIB/$d/"
 done
+# The launcher records the environment the AppImage was started from, before its own hooks add the AppImage's libraries and GTK/GIO
+# settings (LD_LIBRARY_PATH, GTK_*, XDG_DATA_DIRS ...). The host gives it back to every program that is not Strata's own (zenity,
+# kdialog, xdg-open, the assistant's shell): apps/host/server/external-env.mjs. Without it a system program loads the AppImage's libssl
+# and dies ("OPENSSL_3.2.0 not found"). The line goes right after `this_dir=...`, ahead of every hook.
+if ! grep -q STRATA_ORIGINAL_ENV "$WORK/AppDir/AppRun"; then
+  sed -i '/^this_dir=/a # Strata: the environment this AppImage was started from (given back to programs that are not Strata'"'"'s own)\nexport STRATA_ORIGINAL_ENV="$(env -0 | base64 -w0)"' "$WORK/AppDir/AppRun"
+  grep -q STRATA_ORIGINAL_ENV "$WORK/AppDir/AppRun" || { echo "could not add the environment record to AppRun" >&2; exit 1; }
+fi
 mksquashfs "$WORK/AppDir" "$WORK/app.squashfs" -root-owned -noappend -comp zstd -b 131072 -no-progress >/dev/null
 head -c "$OFFSET" "$IN" > "$OUT"
 cat "$WORK/app.squashfs" >> "$OUT"

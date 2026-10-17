@@ -12,6 +12,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { externalEnvironment } from '../external-env.mjs';
 
 const URL_PATTERN = /http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)/;
 
@@ -23,7 +24,9 @@ const KEEP = /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|TMPDIR|HOME|USER
 /** The environment the agent gets: a filtered copy of the host's, plus exactly the names passed in `extra`. */
 export function agentEnvironment(base = process.env, extra = {}) {
   const out = {};
-  for (const [k, v] of Object.entries(base)) {
+  // The shell and tools the assistant runs for the person are the person's own programs: they get the environment the AppImage was
+  // started from, never Strata's bundled libraries and GTK/GIO settings (external-env.mjs). Outside an AppImage this is `base`.
+  for (const [k, v] of Object.entries(externalEnvironment(base))) {
     if (v === undefined || !KEEP.test(k) || SECRET_NAME.test(k)) continue;
     out[k] = v;
   }

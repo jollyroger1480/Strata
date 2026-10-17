@@ -38,7 +38,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  /* In the packaged app the model catalog, the GPU probe and the install job are Control's bundled tools/strata_mcp.py and
     setup.py, run on Control's own Python in the installer's mode (STRATA_CONTROL_INSTALL: no pip, no engine, no compiler).
     The install only runs when the user clicks Download; starting and serving (control.start) keep STRATA_NO_ACQUIRE. */
- const defaultInstall=()=>join(dirname(componentsDirectory()),'install');
+ const defaultInstall=()=>process.env.STRATA_INSTALL_DIR?resolve(process.env.STRATA_INSTALL_DIR):join(dirname(componentsDirectory()),'install');
  let packagedInstall=null;
  const NO_INSTALL='Installing, updating, tuning with calibration or rolling back model files and engines happens from the Terminal (strata install), never while the app runs.';
  let defaultId=null,timer=null,closing=false,polling=false;
@@ -51,7 +51,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb});
  /* A start that ends with `server_exited` carries the engine's last log line with it; the app turns the code into words and
     keeps this text under "Details" (src/lib/plain-errors.ts). */
- function humanStartError(error){const text=String(error?.message??error),tail=error?.output?.log_tail;return tail&&!text.includes(tail)?`${text}: ${tail}`:text;}
+ function exitCodeText(code){const n=Number(code);if(!Number.isFinite(n)||n===0)return '';const u=n<0?n+2**32:n;return u>=0x80000000?`exit code 0x${u.toString(16).toUpperCase().padStart(8,'0')}`:`exit code ${u}`;}
+ function humanStartError(error){const text=String(error?.message??error),tail=error?.output?.log_tail,code=exitCodeText(error?.output?.engine_exit_code);const head=code&&!text.includes(code)?`${text} (${code})`:text;return tail&&!head.includes(tail)?`${head}: ${tail}`:head;}
  /* A run config the app's install job wrote names files inside the app's own Control folder (`cwd`, `--expert-profile`). When the
     app is reinstalled to another folder, or an update moves Control, those absolute paths point at nothing and every installed
     model breaks. At every read of the installed models, a path that ends up inside a folder called `control` that no longer
@@ -63,7 +64,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
    const next={...config,...(config.cwd!==undefined?{cwd:fix(config.cwd)}:{}),...(Array.isArray(config.args)?{args:config.args.map(fix)}:{})};
    if(JSON.stringify(next)!==JSON.stringify(config)){try{writeModelConfig(path,next);}catch{/* read-only folder: the load reports it */}}}}
  function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;return {...entry,diskGb:entry.diskGb??entry.disk_gb,diskBytes:entry.diskBytes??entry.disk_bytes,dataFolder,visionPrepared:!!cfg.vision,visionEnabled:cfg.ui_vision_enabled??[...instances.values()].some(i=>i.model===entry.model&&i.status==='ready'&&i.vision),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
- function installRoot(){const found=[preferences.installDir,packagedInstall,snapshot.installDir].find(d=>d&&existsSync(d));if(found)return realpathSync(found);mkdirSync(defaultInstall(),{recursive:true});return realpathSync(defaultInstall());}
+ function installRoot(){const found=[preferences.installDir].find(d=>d&&existsSync(d));if(found)return realpathSync(found);mkdirSync(defaultInstall(),{recursive:true});return realpathSync(defaultInstall());}
  function repo(){if(packaged)return installRoot();const path=realpathSync(preferences.repo);if(!existsSync(join(path,'setup.py'))||!existsSync(join(path,'tools/strata_mcp.py'))||!existsSync(join(path,'serve/server.py')))throw new Error('Choose the Strata repository folder containing setup.py and tools/strata_mcp.py.');return path;}
  function python(){return resolvePython({repo:preferences.repo});}
  function send(method,params,timeout=30000){return new Promise((resolve,reject)=>{const id=++seq;const alarm=setTimeout(()=>{pending.delete(id);reject(new Error('The native engine did not respond in time. Check engine logs.'));},timeout);pending.set(id,{resolve,reject,alarm});child.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');});}
@@ -85,9 +86,9 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function controlTool(name){
   if(name==='strata_status'){
    for(const dir of [preferences.installDir,packagedInstall,installRoot()])repairControlPaths(dir);
-   let list=await control.installedModels({installDir:preferences.installDir&&existsSync(preferences.installDir)?preferences.installDir:null});
-   if(!preferences.installDir&&!(list.models??[]).length){const own=installRoot();if(realpathSync(list.install_dir)!==own)list=await control.installedModels({installDir:own});}
-   if(!preferences.installDir&&list.install_dir&&![preferences.installDir,packagedInstall,installRoot()].some(d=>d&&resolve(d).toLowerCase()===resolve(list.install_dir).toLowerCase())){repairControlPaths(list.install_dir);list=await control.installedModels({installDir:list.install_dir});}
+   // Always the app's own install folder (or the one the person chose in Settings): Control is told explicitly, so it never falls
+   // back to an older command-line Strata's folder remembered in %APPDATA% (tester report 2026-10-17: logs landed in T:\Strata).
+   const list=await control.installedModels({installDir:installRoot()});
    packagedInstall=list.install_dir;
    const engine=await control.engine();
    const installer=await mcpCall('strata_status',{hardware:true}).catch(error=>({error:error.message}));

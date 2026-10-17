@@ -38,7 +38,11 @@ SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "q
 
 def settings_path() -> Path:
     """The user's Strata settings file: the same place setup.py writes it (%APPDATA%\\Strata\\settings.json, or
-    $XDG_CONFIG_HOME/strata/settings.json)."""
+    $XDG_CONFIG_HOME/strata/settings.json). The desktop app sets STRATA_SETTINGS_FILE to a file of its own (in its data folder), so it
+    never reads an older command-line install's list of Strata folders."""
+    own = os.environ.get("STRATA_SETTINGS_FILE")
+    if own:
+        return Path(own)
     if os.name == "nt":
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"

@@ -89,6 +89,8 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false }
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
+  process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
   const configs = ['iq2_xs', 'iq3_s'].map(id => {
     const path = join(install, `strata-${id}.json`);
     writeFileSync(path, JSON.stringify({ exe: 'component:strata-engine', tokenizer: join(install, 'tok'), args: ['--max-context', '32768'], model_name: `Qwen ${id}`, port: 8080 }));
@@ -148,7 +150,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false }
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, saved, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, saved, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { if (earlierInstallEnv === undefined) delete process.env.STRATA_INSTALL_DIR; else process.env.STRATA_INSTALL_DIR = earlierInstallEnv; rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -520,4 +522,15 @@ test("preparing an adopted GGUF folder again never takes the folder's parent for
     assert.notEqual(sent.data_dir, own, "the person's own folder is not used for the packs");
     assert.equal(sent.gguf_dir, join(own, 'models', 'IQ3_S'));
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('the app never adopts an older command-line install: Control is always told the app\'s own folder, and has its own settings file', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    const asked = f.calls.filter(c => c[0] === 'installedModels').map(c => c[1]);
+    assert.ok(asked.length > 0 && asked.every(dir => dir === f.install || (dir && dir.toLowerCase() === f.install.toLowerCase())), `Control was asked about ${JSON.stringify(asked)}`);
+  } finally { f.cleanup(); }
+  const env = controlEnvironment({ dir: '/c' }, { env: { APPDATA: '/old/appdata' }, components: join(tmpdir(), 'Strata', 'components') });
+  assert.equal(env.STRATA_SETTINGS_FILE, join(tmpdir(), 'Strata', 'app-settings.json'));
 });

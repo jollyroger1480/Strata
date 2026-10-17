@@ -4560,7 +4560,17 @@ def ram_ctx(model, ram, low_ram=False) -> int:
     return max(c for c in CONTEXTS if c <= 131072 or (c != 204800 and (ctx_ram_need(model, c, low_ram) or 0) <= ram))
 
 
+def app_settings_file() -> Path | None:
+    """The desktop app keeps its own settings file (STRATA_SETTINGS_FILE, in the app's data folder) and never reads or writes the
+    one an older command-line Strata uses, so an old install is never adopted or moved."""
+    raw = os.environ.get("STRATA_SETTINGS_FILE")
+    return Path(raw) if raw else None
+
+
 def settings_path() -> Path:
+    own = app_settings_file()
+    if own is not None:
+        return own
     if WIN:
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
@@ -4595,7 +4605,7 @@ def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
     cands = [Path(p) for p in settings.get("installs", [])]
-    for base in dict.fromkeys((home().parent, home().parent.parent)):
+    for base in dict.fromkeys(() if app_settings_file() else (home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
                 if d.is_dir() and d.name.lower().startswith("strata"):

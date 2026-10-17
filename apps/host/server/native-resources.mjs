@@ -45,6 +45,9 @@ export function resourceSettings(config,hardware,profile,model={}){
    technical line for Details. The caller tries once and never again, and does not save this config. */
 export function saferStart(config,hardware,model,failure){
  const text=String(failure??'');
+ // A start that died for a reason that is not memory (a missing or bad DLL, a crash, a blocked file) is not helped by a memory setting, and must not be called a memory failure.
+ if(/0xC0000135|0xC000007B|0xC0000142|0xC000001D|0xC0000005|0xC0000409|0xC0000022|error while loading shared libraries|cannot open shared object file|\bENOENT\b|exit code 127|exit code 139|illegal instruction/i.test(text))return null;
+ const ranOut=/out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate|not enough memory|bad_alloc|insufficient memory/i.test(text),first=ranOut?'The first start ran out of memory':'The first start did not finish';
  if(!/server_exited|exited before|died before|engine stopped|pinned-memory-exhausted|mapped staging|out of memory|memory guard|\bkilled\b/i.test(text))return null;
  const args=[...(config.args??[])],env={...(config.env??{})};
  const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;
@@ -61,10 +64,10 @@ export function saferStart(config,hardware,model,failure){
  if(at>=0){
   const next=Math.floor((Number(args[at+1])||0)*.7);if(next<8)return null;
   args[at+1]=String(next);
-  return {config:{...config,args},words:`The first start ran out of memory, so Strata started again and keeps less of the model in RAM (${next} GB); more of it is read from the SSD, which is slower.`,detail:`--resident-budget-gib ${next}`};
+  return {config:{...config,args},words:`${first}, so Strata started again and keeps less of the model in RAM (${next} GB); more of it is read from the SSD, which is slower.`,detail:`--resident-budget-gib ${next}`};
  }
  if(!(ram>0&&arena>0))return null;
  const budget=Math.max(8,Math.floor(ram*.5)-4);if(budget>=arena)return null;
  args.push('--resident-budget-gib',String(budget));
- return {config:{...config,args},words:`The first start ran out of memory, so Strata started again in low-memory mode: ${budget} GB of the model stays in RAM and the rest is read from the SSD. It is slower, but it should load.`,detail:`--resident-budget-gib ${budget}`};
+ return {config:{...config,args},words:`${first}, so Strata started again in low-memory mode: ${budget} GB of the model stays in RAM and the rest is read from the SSD. It is slower, but it should load.`,detail:`--resident-budget-gib ${budget}`};
 }
