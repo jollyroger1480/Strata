@@ -263,6 +263,27 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     return refresh_residency(st, g, upto, error);
 }
 
+bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
+                                    int64_t captured, int64_t upto, bool index, std::string& error) {
+    if (upto < 0 || upto > captured) {
+        error = "conversation snapshot: prefix beyond the captured K/V";
+        return false;
+    }
+    if (!conversation_kv_validate(image, st, g, captured, index, error)) return false;
+    Layout l{};   // the prefix's extent; validation above checked the image against the captured one
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    for (size_t i = 0; i < src.size(); ++i)
+        if (sizes[i] > src[i]->size()) { error = "conversation snapshot: prefix beyond the K/V payload"; return false; }
+    const auto dst = pools(st);
+    for (size_t i = 0; i < src.size(); ++i)
+        if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
+            })) return false;
+    return refresh_residency(st, g, upto, error);
+}
+
 bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
                                 std::array<uint64_t, 5>& sizes, std::string& error) {
     Layout l{};
