@@ -92,6 +92,7 @@ function fixture({ failStarts = 0, config = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-par-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder: the host always names it to Control
   const path = join(install, 'strata-iq3_s.json');
   writeFileSync(path, JSON.stringify({ exe: 'component:strata-engine', tokenizer: join(install, 'tok'), args: ['--max-context', '32768', '--mtp', '/m', '--spec', '4'], model_name: 'Qwen iq3_s', port: 8080, ...config }));
   const saved = []; const calls = [];

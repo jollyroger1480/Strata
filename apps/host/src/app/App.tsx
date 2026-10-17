@@ -8,6 +8,7 @@ import { bootOnce, bootstrap, setNavOpen, setFocus, useStore, } from '../lib/sto
 import { Sidebar } from './Sidebar';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsDialog } from './Shortcuts';
+import { FolderPathDialog } from '../components/FolderPathDialog';
 import { handleAppShortcut, runCommand } from '../lib/commands';
 import { useMedia } from '../lib/responsive';
 import { Btn, Dialog, IconBtn, Toasts } from '../components/ui';
@@ -66,6 +67,7 @@ function AppShell() {
       <CommandPalette open={paletteOpen}/>
       <Dialog open={location.query.get('settings') === '1'} title={tr("Settings")} className="settings-dialog" onClose={closeSettings}><SettingsScreen /></Dialog>
       <ShortcutsDialog />
+      <FolderPathDialog />
       {tr(setupOpen ? (<div className="setupmodal" role="dialog" aria-modal="true" aria-label={tr("Set up Strata")}>
           <div className="scrim" data-open="true" aria-hidden="true"/>
           <div className="setupmodal__surface" ref={setupRef}>

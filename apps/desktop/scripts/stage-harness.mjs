@@ -18,6 +18,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
 import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { flattenPnpm } from './flatten-pnpm.mjs';
+import { isOtherOsBinaryFolder, missingHarnessImports } from './harness-prune.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -118,11 +119,6 @@ const flat = flattenPnpm(out, { skip: /libreoffice-kit|sherpa-onnx/i });
 console.log(`flattened: ${flat.packages} placed (${flat.nested} nested for a second version)`);
 
 // --- prune ------------------------------------------------------------------------------------------------------------
-const OTHER_OS = platform === 'win32' ? /(^|[\\/._-])(darwin|linux|android|freebsd|musl)([\\/._-]|$)/i
-  : platform === 'darwin' ? /(^|[\\/._-])(win32|linux|android|freebsd|musl)([\\/._-]|$)/i
-    : /(^|[\\/._-])(win32|darwin|android|freebsd|musl|arm64|aarch64|armv7|arm|ia32|riscv64|ppc64|s390x|loong64)([\\/._-]|$)/i;
-// Linux: the AppImage bundler (linuxdeploy) resolves the libraries of every ELF file under resources and stops on one it
-// cannot satisfy (koffi's musl build wants libc.musl). The app is glibc x86_64, so musl and other-CPU builds are dropped.
 /** Whole packages the app never loads: office-document conversion (hundreds of MB) and speech input. */
 const DROP_PACKAGES = [/libreoffice-kit/i, /sherpa-onnx/i];
 /** Only when sitting directly in a package's root (a library may have a runtime folder called `doc`, e.g. yaml/dist/doc). */
@@ -137,7 +133,7 @@ function prune(dir) {
     if (e.isSymbolicLink()) continue;
     if (e.isDirectory()) {
       const inLib = p.split(sep).includes('lib');
-      if ((DROP_DIRS.has(e.name) && !inLib && existsSync(join(dir, 'package.json'))) || DROP_PACKAGES.some(r => r.test(e.name)) || (OTHER_OS.test(e.name) && /prebuild|bin|native|platform|-(win32|darwin|linux)/i.test(p))) {
+      if ((DROP_DIRS.has(e.name) && !inLib && existsSync(join(dir, 'package.json'))) || DROP_PACKAGES.some(r => r.test(e.name)) || isOtherOsBinaryFolder(platform, e.name, p)) {
         rmSync(p, { recursive: true, force: true }); removed++; continue;
       }
       prune(p);
@@ -165,7 +161,13 @@ writeFileSync(join(out, 'BUNDLE.json'), JSON.stringify({
 
 if (keepIgnore) writeFileSync(join(out, '.gitignore'), keepIgnore);
 
-// --- proof: the staged copy answers --version and boots the web profile once ----------------------------------------
+// --- proof 1: nothing the Harness imports by name was pruned ------------------------------------------------------------
+// (2026-10-17: the other-OS rule once removed @deepseek-ai/dsh-win32-process, which every platform imports; Linux/Mac agent chats died.)
+const lost = missingHarnessImports(out);
+if (lost.length) { console.error(['staged Harness is missing imported packages:', ...lost.map(l => `  ${l.from} -> ${l.missing}`)].join(String.fromCharCode(10))); process.exit(1); }
+console.log('import check: every @deepseek-ai package the Harness imports is staged');
+
+// --- proof 2: the staged copy answers --version and boots the web profile once ----------------------------------------
 const bin = join(out, 'apps', 'cli', 'lib', 'bin.js');
 const entry = existsSync(bin) ? bin : join(out, 'lib', 'bin.js');
 const v = spawnSync(process.execPath, [entry, '--version'], { encoding: 'utf8' });

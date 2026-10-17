@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { api } from './client';
+import { postWithFolderFallback } from './folder-pick';
 
 /** A chat's project folder (notes-split-agent8.md, item 4): the assistant works inside it and can only touch files in it. */
 export interface ChatFolder { path: string; name: string; exists: boolean }
@@ -35,7 +36,7 @@ export async function loadFolder(chatId: string) {
 
 /** Ask the system for a folder (null when the person closes the dialog), then make it this chat's. */
 export async function chooseChatFolder(chatId: string): Promise<'chosen' | 'cancelled'> {
-  const picked = await api.post<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick', {});
+  const picked = await postWithFolderFallback<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick') as { path?: string };
   if (!picked.path) return 'cancelled';
   await setChatFolder(chatId, picked.path);
   return 'chosen';

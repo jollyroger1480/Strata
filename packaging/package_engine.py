@@ -35,6 +35,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import binary_deps  # noqa: E402
 from strata_control import engine_component as ec  # noqa: E402
 from strata_control.components import BACKEND_MATRIX, host_platform  # noqa: E402
 
@@ -84,7 +87,7 @@ def select(src: Path, entrypoint: str, *, tree: bool, include: list[str]) -> lis
 def build(src: Path, backend: str, version: str, target: str, out: Path, *, entry: str | None = None,
           archs: tuple[str, ...] = (), min_driver: dict | None = None, build_id: str | None = None,
           min_runtime: str | None = None, notes: str = "", tree: bool = False, include: list[str] | None = None,
-          variant: str = "") -> Path:
+          variant: str = "", search: list[Path] | None = None, allow_libs: list[str] | None = None) -> Path:
     if backend not in BACKEND_MATRIX:
         raise SystemExit(f"unknown backend {backend!r}")
     if backend != "cpu" and not archs:
@@ -106,6 +109,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src / rel, destination)
             files.append({"path": rel, "sha256": sha256(destination), "bytes": destination.stat().st_size})
+        files += _bundle_missing_libraries(staging, target, [f["path"] for f in files], search or [], allow_libs or [])
         manifest = {"schema_version": ec.SCHEMA_VERSION, "id": ec.COMPONENT_ID, "name": ec.COMPONENT_ID,
                     "version": version, "platform": target, "backend": backend, "archs": list(archs),
                     "min_driver": dict(min_driver or {}), "build_id": build_id or git_build_id(),
@@ -125,6 +129,52 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return folder
+
+
+def _default_search(target: str) -> list[Path]:
+    """Where a Windows build finds the redistributable DLLs its engine imports: the CUDA/HIP toolkits and PATH."""
+    if not target.startswith("windows"):
+        return []
+    found: list[Path] = []
+    for var in ("CUDA_PATH", "HIP_PATH"):
+        root = os.environ.get(var)
+        if root:
+            found += [Path(root) / "bin" / "x64", Path(root) / "bin"]
+    found += [Path(x) for x in os.environ.get("PATH", "").split(os.pathsep) if x]
+    return [d for d in found if d.is_dir()]
+
+
+def _bundle_missing_libraries(staging: Path, target: str, rels: list[str], search: list[Path], allow: list[str]) -> list[dict]:
+    """Every library the package's binaries import must be in the package, or belong to the OS or the GPU driver
+    (binary_deps.py). Windows builds copy a missing one from the search folders (the CUDA toolkit's bin/x64, PATH): the packager
+    runs on a PC that has the toolkit, the person's PC does not. Anything still missing refuses the package."""
+    added: list[dict] = []
+    roots = search or _default_search(target)
+    for _ in range(8):                                   # a copied DLL can import more DLLs
+        missing = [(f, n) for f, n in binary_deps.uncovered(staging) if n.lower() not in {a.lower() for a in allow}]
+        if not missing:
+            return added
+        progressed = False
+        for _file, name in sorted(set(missing), key=lambda x: x[1].lower()):
+            if not target.startswith("windows"):
+                continue
+            hit = next((d / name for d in roots if (d / name).is_file()), None)
+            if hit is None:
+                hit = next((c for d in roots for c in d.glob("*") if c.name.lower() == name.lower() and c.is_file()), None)
+            if hit is None or (staging / hit.name).exists():
+                continue
+            shutil.copy2(hit, staging / hit.name)
+            added.append({"path": hit.name, "sha256": sha256(staging / hit.name), "bytes": (staging / hit.name).stat().st_size})
+            progressed = True
+            print(f"bundled {hit.name} (imported by the engine; from {hit.parent})")
+        if not progressed:
+            break
+    left = [(f, n) for f, n in binary_deps.uncovered(staging) if n.lower() not in {a.lower() for a in allow}]
+    if left:
+        lines = "\n".join(f"  {f} needs {n}" for f, n in sorted(set(left)))
+        raise SystemExit("refusing to package: these libraries are neither bundled nor part of the OS or the GPU driver, so a clean PC could not "
+                         f"start the engine (0xC0000135 / 'library not found'):\n{lines}\nGive --search <folder holding them> or fix the build.")
+    return added
 
 
 def package_sha256(folder: Path) -> str:
@@ -150,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-runtime", default=None)
     ap.add_argument("--notes", default="")
     ap.add_argument("--tree", action="store_true", help="every regular file under --src, recursively")
+    ap.add_argument("--search", action="append", default=[], type=Path, metavar="DIR",
+                    help="folder to copy a missing imported DLL from (default on Windows: CUDA_PATH/bin/x64, HIP_PATH/bin, PATH)")
+    ap.add_argument("--allow-lib", action="append", default=[], metavar="NAME",
+                    help="an imported library that really is provided by the target system (rare; named so the check passes)")
     ap.add_argument("--include", action="append", default=[], metavar="GLOB", help="more files, relative to --src")
     a = ap.parse_args(argv)
     if a.verify:
@@ -158,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
             ec.verify(component, full=True)
         except ec.ComponentProblem as exc:
             print(f"{a.verify}: REFUSED: {exc}")
+            return 1
+        bad = binary_deps.uncovered(a.verify)
+        if bad:
+            for rel, name in bad:
+                print(f"{a.verify}: REFUSED: {rel} needs {name}, which is neither bundled nor an OS / GPU driver library")
             return 1
         print(f"{a.verify}: ok ({len(component.files)} files, manifest sha256 {package_sha256(a.verify)})")
         return 0
@@ -173,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     folder = build(a.src, a.backend, a.version, a.platform or host_platform(), a.out, entry=a.entrypoint,
                    archs=tuple(a.arch), min_driver=drivers, build_id=a.build_id, min_runtime=a.min_runtime,
-                   notes=a.notes, tree=a.tree, include=a.include, variant=a.variant)
+                   notes=a.notes, tree=a.tree, include=a.include, variant=a.variant,
+                   search=a.search, allow_libs=a.allow_lib)
     entries = [p for p in folder.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in entries)
     print(f"{folder}  ({total / (1 << 20):.1f} MiB, {len(entries)} files, manifest sha256 {package_sha256(folder)})")

@@ -7383,6 +7383,15 @@ textarea {
 .native-choice__col .native-resource-choice button[data-selected="true"] { background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-card); }
 .native-choice__col .native-resource-choice button:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 1px; }
 
+/* Context dropdown and the two Computer use buttons share one line, the buttons level with the dropdown (tester report 2026-10-17: they sat
+   16px lower, from the 16px top margin of the onboarding version of this control, and touched the separator under the row). They wrap
+   below the dropdown only when the card is too narrow for both. */
+.native-choice__row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 20px; margin-bottom: 4px; }
+.native-choice__row > .native-choice__col:first-child { flex: 0 1 240px; min-width: 200px; }
+.native-choice__row > .native-choice__col:last-child { flex: 0 1 auto; }
+.native-choice__col .native-resource-choice { margin-top: 0; height: 44px; box-sizing: border-box; align-items: center; align-self: flex-start; }
+.native-choice__col .native-resource-choice button { height: 36px; }
+
 /* the version dropdown's chevron turns when it opens (round 8, item 7) */
 .version-trigger__chev { transition: transform var(--st-t-local, 160ms) var(--st-ease-in-out, ease); }
 .version-trigger[aria-expanded="true"] .version-trigger__chev { transform: rotate(180deg); }
