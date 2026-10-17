@@ -94,8 +94,20 @@ def read_config(path: Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
-    """Does the installed model's config already carry the context, memory format and picture choice of these settings?"""
+def gpus_of(desc_gpu, largest: int | None) -> list[int] | None:
+    """The card numbers an installed config uses: a list, one number, or nothing written (setup then took the largest card)."""
+    if isinstance(desc_gpu, list):
+        return sorted(int(x) for x in desc_gpu)
+    if isinstance(desc_gpu, int):
+        return [desc_gpu]
+    return [largest] if largest is not None else None
+
+
+def desc_matches(desc: dict, s: S.LaunchSettings, gpus: list[int] | None = None, largest: int | None = None) -> bool:
+    """Does the installed model's config already carry the context, memory format, picture choice and graphics cards of these settings?
+    `gpus`: the cards these settings mean (None: this computer has one card that counts, nothing to compare)."""
+    if gpus is not None and gpus_of(desc.get("gpu"), largest) != sorted(gpus):
+        return False
     if s.context and desc.get("context") != s.context:
         return False
     want_kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
@@ -370,6 +382,24 @@ class Runner:
         desc = self.catalog.strata.describe_config(path)
         return path, desc
 
+    def wanted_gpus(self) -> tuple[list[int] | None, int | None]:
+        """(the cards these settings mean, the largest card): the cards named, else the recommended ones by the shared fit rule
+        (strata_control/gpu_fit.py); (None, None) when this computer has one card that counts."""
+        try:
+            from strata_control import gpu_fit
+            comp = self.catalog.computer()
+            keep = comp.usable_gpus
+            if len(keep) < 2:
+                return None, None
+            largest = keep[0].get("index")
+            if self.s.gpus:
+                return sorted(int(g) for g in self.s.gpus), largest
+            row = next((r for r in self.catalog.rows() if (r.family, r.model) == (self.s.family, self.s.model)), None)
+            mem = float(row.memory_gb) if row is not None and row.memory_gb else 44.0
+            return sorted(gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus)), largest
+        except Exception:                                    # noqa: BLE001 - never block a launch over this comparison
+            return None, None
+
     def download_gb(self) -> float:
         """How much would be downloaded for this launch right now: 0 when the model is installed with these choices (or is the person's own files)."""
         s = self.s
@@ -381,7 +411,7 @@ class Runner:
             if lost and all("mmproj" in Path(x).name.lower() for x in lost):
                 return 0.9                                   # only the picture reader's file is gone
             if path is not None and desc is not None and not lost:
-                if desc_matches(desc, s):
+                if desc_matches(desc, s, *self.wanted_gpus()):
                     return 0.0
                 # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)
                 return 0.9 if (s.vision != "off" and (desc.get("images") or "off") == "off") else 0.0
@@ -397,7 +427,7 @@ class Runner:
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
         path, desc = self.installed_state()
-        if path is not None and desc is not None and desc_matches(desc, s) and not files_present(read_config(path)):
+        if path is not None and desc is not None and desc_matches(desc, s, *self.wanted_gpus()) and not files_present(read_config(path)):
             self.emit("model", f"{s.family} {s.model} is already installed with these choices.", 100)
             return path
         title = f"{s.family} {s.model}"

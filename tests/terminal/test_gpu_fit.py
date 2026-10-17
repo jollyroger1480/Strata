@@ -58,6 +58,16 @@ class GpuFitRule(unittest.TestCase):
         self.assertTrue(all(c["why_ignored"] for c in r["ignored"]))
         self.assertEqual(G.recommended_cards(44.0, 62.0, cards), [0])
 
+    def test_a_unified_memory_chip_counts_when_it_is_the_only_device(self):
+        mac = {"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}
+        keep, ignored = G.usable_cards([mac])
+        self.assertEqual((len(keep), ignored), (1, []))
+        igpu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 64.0, "uma": True, "usable": True}
+        self.assertEqual(len(G.usable_cards([igpu])[0]), 1)                 # a Strix Halo PC: the integrated chip IS the device
+        keep, ignored = G.usable_cards([card(0, "RTX 3070 Ti", 8), igpu])   # beside a real card it adds nothing
+        self.assertEqual([c["index"] for c in keep], [0] if keep[0]["name"] == "RTX 3070 Ti" else [])
+        self.assertEqual(len(ignored), 1)
+
     def test_an_unusable_card_is_ignored_with_its_own_reason(self):
         r = G.options(44.0, 62.0, [card(0, "RTX 3070 Ti", 8), card(1, "GTX 1060", 6, usable=False, problem="older than the RTX 20 series")])
         self.assertEqual([o["key"] for o in r["options"]], ["single"])

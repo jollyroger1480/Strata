@@ -1460,6 +1460,8 @@ def choose_gpus(a, found) -> list:
     for g in found:
         if gpu_problem(g, together=True) is not None:
             say(f"     (GPU {g['index']}, {g['name']}: {gpu_problem(g, together=True)})")
+    for g in split_short(can[:2]):                     # #448: the note for a second card that cannot lend a 4096-token chunk
+        say(f"     ({split_short_note(g)})")
     pick = opts[int(ask("Which GPUs?", [str(i) for i in range(1, len(opts) + 1)], str(rec), a.yes or a.check)) - 1]
     return [g["index"] for g in pick]
 

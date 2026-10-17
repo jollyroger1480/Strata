@@ -68,23 +68,34 @@ def verdict(f: dict) -> str:
     return "fits" if f["spare_ram_gb"] >= FITS_SPARE_RAM_GB or f["ram_use_gb"] <= 0 else "tight"
 
 
+def _shares_memory(c: dict) -> bool:
+    """An integrated chip or a unified-memory chip (Apple, Strix Halo): its memory is the system RAM."""
+    return bool(c.get("integrated") or c.get("uma") or c.get("unified_memory") or c.get("unified_gb") or str(c.get("vendor")) == "apple")
+
+
 def usable_cards(cards: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(cards that count, cards ignored with a plain reason in 'why_ignored'). Largest memory first, then the card number."""
+    """(cards that count, cards ignored with a plain reason in 'why_ignored'). Largest memory first, then the card number.
+
+    A chip that shares the system memory is ignored when the computer has a card with memory of its own (it adds nothing to it); when it is
+    the only device (a Mac, a Strix Halo PC) it is the one that counts. A card under MIN_CARD_GB cannot hold the dense weights."""
+    flagged = [c for c in (cards or []) if c.get("usable") is not False]
+    has_real = any(not _shares_memory(c) and float(c.get("vram_gb") or 0) >= MIN_CARD_GB for c in flagged)
     keep, ignored = [], []
     for c in cards or []:
         vram = float(c.get("vram_gb") or 0)
         why = None
         if c.get("usable") is False:
             why = c.get("problem") or "Strata cannot use this card"
-        elif c.get("integrated") or c.get("uma") or c.get("unified_memory"):
-            why = "it shares the system memory (an integrated graphics chip), so it adds nothing"
+        elif _shares_memory(c):
+            if has_real:
+                why = "it shares the system memory (an integrated graphics chip), so it adds nothing"
         elif vram < MIN_CARD_GB:
             why = f"only {vram:.0f} GB of graphics memory"
         if why:
             ignored.append({**c, "why_ignored": why})
         else:
             keep.append(c)
-    keep.sort(key=lambda c: (-round(float(c.get("vram_gb") or 0)), c.get("index", 0)))
+    keep.sort(key=lambda c: (-round(float(c.get("vram_gb") or c.get("unified_gb") or 0)), c.get("index", 0)))
     return keep, ignored
 
 

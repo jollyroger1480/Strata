@@ -455,6 +455,24 @@ class AdoptRules(unittest.TestCase):
             with mock.patch.object(r, "installed_state", return_value=(cfgfile, {"context": 32768, "kv": "int8", "images": "cpu"})):
                 self.assertAlmostEqual(r.download_gb(), 0.9)
 
+    def test_the_installed_config_must_carry_the_chosen_cards(self):
+        from tests.terminal.launch_support import HW_2X16
+        with Home():
+            cat = catalog(HW_2X16)
+            base = {"context": 32768, "kv": "int8", "images": "off"}
+            auto = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768), catalog=cat)
+            self.assertEqual(auto.wanted_gpus(), ([0], 0))                    # the recommended: the largest card + RAM
+            both = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, gpus=[0, 1]), catalog=cat)
+            self.assertEqual(both.wanted_gpus(), ([0, 1], 0))
+            # a config written for one card (no "gpu" key: setup took the largest) is right for the default and wrong for the split
+            self.assertTrue(desc_matches({**base, "gpu": None}, auto.s, *auto.wanted_gpus()))
+            self.assertFalse(desc_matches({**base, "gpu": None}, both.s, *both.wanted_gpus()))
+            self.assertTrue(desc_matches({**base, "gpu": [1, 0]}, both.s, *both.wanted_gpus()))
+            self.assertFalse(desc_matches({**base, "gpu": [0, 1]}, auto.s, *auto.wanted_gpus()))
+        with Home():
+            one = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768), catalog=catalog(HW_12))
+            self.assertEqual(one.wanted_gpus(), (None, None))                 # one card: nothing to compare
+
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:
             cat = catalog(HW_12)

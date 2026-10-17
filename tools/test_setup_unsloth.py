@@ -372,7 +372,7 @@ class Main(Base):
         self.assertAlmostEqual(need, setup.MODELS[M]["download_gb"] + setup.UNSLOTH_RAM_LEFT_GB)
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)       # no --gpus: stays on one GPU
         self.assertEqual(code, 0, out)
-        self.assertIn("uses them together anyway", out)
+        self.assertNotIn("uses them together anyway", out)                      # one card + RAM is the default now: nothing to warn about
         self.assertNotIn("layer_split", cfg)
         self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "71")   # all of them
         code, out, cfg = self.main(["--context", "8192", "--gpus", "0,1"], n_gpus=2, ram=127.8)   # asked for by name
@@ -428,8 +428,8 @@ class Main(Base):
     def test_yes_alone_keeps_one_gpu(self):
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=165.0)
         self.assertEqual(code, 0, out)
-        self.assertIn("runs on one GPU: using", out)
-        self.assertIn("--gpus 0,1 shares it", out)
+        self.assertIn("layer split", out)                                       # the second card is offered as a split
+        self.assertIn("(recommended)", out)
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--resident-budget-gib", cfg["args"])
 
@@ -629,10 +629,10 @@ class LayerSplit(unittest.TestCase):
         argv = ["--family", "unsloth", "--model", M, "--context", "32768", "--no-start"]
         code, out, cfg, asked = install(165.0, self.found, argv, answers={"which GPUs?": "1", "Which GPUs?": "1"})
         self.assertEqual(code, 0, out)
-        self.assertTrue(any(f"{M}: which GPUs?" in q and "[1]" in q for q in asked), asked)
+        self.assertTrue(any("Which GPUs? [1]" in q for q in asked), asked)     # the fit rule's question: the largest card + RAM is the default
         self.assertEqual(cfg["gpu"], 0)
         self.assertIn("--resident-budget-gib", cfg["args"])
-        code, out, cfg, asked = install(165.0, self.found, argv, answers={f"{M}: which GPUs?": "2"})
+        code, out, cfg, asked = install(165.0, self.found, argv, answers={"Which GPUs?": "2", f"{M}: which GPUs?": "2"})
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
@@ -791,7 +791,7 @@ class Resident(Base):
 
     def test_two_gpus_split_with_every_expert_in_ram(self):
         """Where the experts fit, two cards are the GGUF models' layer split (no budget question, no #498 note)."""
-        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)
+        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8, answers={"Which GPUs?": "2"})     # the split chosen
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
