@@ -356,7 +356,7 @@ class Runner:
             prog = cat.mcp.install_progress(lines)
             prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
             dl = prog.get("download")
-            if dl and not s.model_path:
+            if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
                 self.emit("model", f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB", float(dl["percent"]), step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))

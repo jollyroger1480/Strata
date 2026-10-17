@@ -30,7 +30,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'strata installer: %s\n' "$*" >&2; exit 1; }
 
 case "$FEED" in
-  __FEED__|"") die "this installer does not know where the Strata release folder is. Set STRATA_FEED to its address and run it again, for example: STRATA_FEED=https://example.org/strata sh install.sh" ;;
+  "__FE""ED__"|"") die "this installer does not know where the Strata release folder is. Set STRATA_FEED to its address and run it again, for example: STRATA_FEED=https://example.org/strata sh install.sh" ;;
 esac
 
 # ---- tools

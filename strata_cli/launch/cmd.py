@@ -275,6 +275,10 @@ def _printer(quiet: bool = False):
             if ev.pct < 100 and ev.pct < state["pct"] + 10 and state["stage"] == ev.stage:
                 return
             state["pct"] = ev.pct
+        if ev.stage == "start" and ev.text.startswith("Loading the model") and state["stage"] == "start" and not isatty:
+            n = int("".join(ch for ch in ev.text.split("…")[-1] if ch.isdigit()) or 0)
+            if n % 15:
+                return                                       # one line every 15 seconds when nobody is watching a live screen
         if ev.stage != state["stage"] or text != state["last"]:
             marker = {"warn": "[!] ", "error": "[X] "}.get(ev.level, "    ")
             _say(f"{marker}{text}")
@@ -464,9 +468,11 @@ def run_launch(a: argparse.Namespace) -> int:
             result = runner.run()
         except LaunchError as e:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
-        if a.save_preset or a.preset:
+        if a.save_preset:
             saved = store.save(s, s.name)
             store.touch_used(saved.name)
+        elif a.preset:
+            store.touch_used(a.preset)                      # flags next to --preset change this start only
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,
@@ -533,7 +539,7 @@ def run_connect(a: argparse.Namespace) -> int:
         _say("[!] No running Strata server was found, so this uses the default address. Start one with: strata launch")
     for f in out["files"]:
         _say("")
-        _say(f"File: {f['path']}" + ("   (merged into an existing file)" if f["merge"] else ""))
+        _say(f"File: {f['path']}" + ("   (merged with the file if it exists)" if f["merge"] else ""))
         for line in (f["text"] if shown_key else harness.mask(f["text"], key)).splitlines():
             _say("  " + line)
     if out["env"]:

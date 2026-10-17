@@ -24,7 +24,7 @@ function Die([string]$msg) { [Console]::Error.WriteLine("strata installer: $msg"
 
 $feed = if ($env:STRATA_FEED) { $env:STRATA_FEED } else { '__FEED__' }
 $feed = $feed.TrimEnd('/')
-if ($feed -eq '__FEED__' -or -not $feed) {
+if ($feed -eq ('__FE' + 'ED__') -or -not $feed) {
     Die 'this installer does not know where the Strata release folder is. Set $env:STRATA_FEED to its address and run it again, for example: $env:STRATA_FEED=''https://example.org/strata'''
 }
 if ([Environment]::OSVersion.Platform -ne 'Win32NT') { Die 'this is the Windows installer; on Linux or macOS use install.sh.' }
