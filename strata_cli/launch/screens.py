@@ -353,7 +353,7 @@ class ConfirmScreen(ModalScreen):
 class ModelScreen(Base):
     step_id = "model"
     hints = "↑↓ choose   Enter next   o use my own files   Esc back   ? help"
-    help_text = ("Pick the model. 'Needs' is the graphics memory and RAM it uses on this computer; the n-gram table stays on "
+    help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model wants (the app's figure); 'uses SSD N GB' is the part that does not fit and is read from the SSD while it answers; the n-gram table stays on "
                  "your SSD and is not counted. 'Does not fit' is a warning, not a block: you can still try it.")
 
     BINDINGS = Base.BINDINGS + [Binding("o", "own", "Own files", show=False)]
@@ -375,8 +375,8 @@ class ModelScreen(Base):
     def widths(self) -> list[tuple[str, int]]:
         w = self.width()
         if w >= 100:
-            return [("Model", 42), ("Download", 10), ("Needs (graphics + RAM)", 24), ("On this computer", 0)]
-        return [("Model", 41), ("Download", 9), ("Needs (gfx + RAM)", 18), ("On this computer", 0)]
+            return [("Model", 42), ("Download", 10), ("Needs (RAM + VRAM)", 20), ("On this computer", 0)]
+        return [("Model", 41), ("Download", 9), ("Needs (RAM+VRAM)", 17), ("On this computer", 0)]
 
     def build_menu(self, initial: bool = False) -> None:
         s = self.ctx.settings
@@ -389,8 +389,9 @@ class ModelScreen(Base):
         for i, r in enumerate(self.rows):
             col = {"fits": "", "tight": WARN, "no": BAD}[r.verdict]
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
-            need = f"{r.need_vram_gb:.0f} GB + {r.need_ram_gb:.0f} GB" if r.need_vram_gb or r.need_ram_gb else "-"
-            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(r.words + tag, col)], key=(r.family, r.model)))
+            need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
+            ssd = f" · uses SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
+            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell((r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag, col)], key=(r.family, r.model)))
             if (s.family, s.model) == (r.family, r.model):
                 sel = i
         m = self.query_one(Menu)

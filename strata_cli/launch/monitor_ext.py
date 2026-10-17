@@ -25,9 +25,10 @@ from strata_cli.render import VIEWS, safe
 class LaunchMonitor(MonitorApp):
     BINDINGS = MonitorApp.BINDINGS + [Binding("7", "connect", "Connect view", show=False)]
 
-    def __init__(self, endpoint, snapshot, *, info: dict, **kw) -> None:
+    def __init__(self, endpoint, snapshot, *, info: dict, ask_quit: bool = True, **kw) -> None:
         super().__init__(endpoint, snapshot, **kw)
         self.info = info
+        self.ask_quit = ask_quit                  # False: plain `strata monitor` (q detaches, nothing to stop)
         self.connect_enabled = True
         self.connect_open = False
         self.connect_index = 0
@@ -41,6 +42,8 @@ class LaunchMonitor(MonitorApp):
     def action_quit(self) -> None:
         if self.closing:
             return
+        if not self.ask_quit:
+            return super().action_quit()
 
         def done(choice: str | None) -> None:
             if choice == "keep":
@@ -122,7 +125,9 @@ class LaunchMonitor(MonitorApp):
     def _rendered(self) -> dict:
         h = self._harness()
         key = self.info.get("key") or ""
-        return harness.render(h, harness.target(self.info["url"], key, self.info.get("model") or "strata", self.info.get("context")))
+        if not self.info.get("model"):
+            self.info["model"] = ((self.latest or {}).get("model") or {}).get("id") or "strata"
+        return harness.render(h, harness.target(self.info["url"], key, self.info.get("model") or ((self.latest or {}).get("model") or {}).get("id") or "strata", self.info.get("context")))
 
     def _copy(self) -> None:
         out = self._rendered()
@@ -185,7 +190,7 @@ class LaunchMonitor(MonitorApp):
     def _paint(self, size=None) -> None:
         if not getattr(self, "connect_open", False):
             super()._paint(size)
-            if not self.error and not self.selection_notice and self.connection_state == "connected" and not self.frozen:
+            if self.ask_quit and not self.error and not self.selection_notice and self.connection_state == "connected" and not self.frozen:
                 try:
                     self.query_one("#message", Static).update("Read only  |  q asks: keep serving or stop  |  7 connect an app")
                 except Exception:                            # noqa: BLE001

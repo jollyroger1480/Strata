@@ -193,8 +193,14 @@ def run(a: argparse.Namespace) -> int:
             from strata_cli.monitor import MonitorApp
         except ImportError:
             return _error("monitor component missing; install the optional terminal UI dependency", 5, machine)
-        MonitorApp(endpoint, None, interval=a.interval, requests=a.requests,
-                   theme=a.theme, color=a.color, glyphs=a.glyphs).run()
+        try:                                       # the monitor with its Connect view (key 7); q just detaches here
+            from strata_cli.launch.monitor_ext import LaunchMonitor
+            LaunchMonitor(endpoint, None, info={"url": endpoint.base_url, "urls": [endpoint.base_url], "key": endpoint.credential or "", "model": "",
+                                                "profile": None, "name": None}, ask_quit=False, interval=a.interval, requests=a.requests,
+                          theme=a.theme, color=a.color, glyphs=a.glyphs).run()
+        except ImportError:
+            MonitorApp(endpoint, None, interval=a.interval, requests=a.requests,
+                       theme=a.theme, color=a.color, glyphs=a.glyphs).run()
         return 0
     except ClientError as e:
         return _error(str(e), e.exit_code, machine)
