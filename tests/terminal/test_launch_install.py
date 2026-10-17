@@ -119,15 +119,13 @@ class Feed(unittest.TestCase):
                 # an archive with one top folder (a terminal archive, not the feed's control package) installs too
                 data = archive.read_bytes()
                 (feed / "top.tar.gz").write_bytes(data)
-                (feed / "install-manifest.txt").write_text(f"linux-x86_64 9.9.9 top.tar.gz {hashlib.sha256(data).hexdigest()} {len(data)}
-")
+                (feed / "install-manifest.txt").write_text(f"linux-x86_64 9.9.9 top.tar.gz {hashlib.sha256(data).hexdigest()} {len(data)}" + chr(10))
                 home3 = work / "home3"
                 home3.mkdir()
                 r = subprocess.run(["sh", str(feed / "install.sh")], capture_output=True, text=True, env={**env, "HOME": str(home3)}, timeout=240)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertTrue((home3 / ".local" / "share" / "strata" / "terminal" / "9.9.9" / "bin" / "strata").exists())
-                (feed / "install-manifest.txt").write_text(" ".join(line) + "
-")
+                (feed / "install-manifest.txt").write_text(" ".join(line) + chr(10))
                 # a damaged download is refused and nothing is installed
                 data = (feed / line[2]).read_bytes()
                 (feed / line[2]).write_bytes(data[:-10] + b"x" * 10)
