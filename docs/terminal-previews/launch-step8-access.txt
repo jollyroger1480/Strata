@@ -29,9 +29,9 @@
 
 
 
-
-
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Windows may ask whether to allow Strata (python.exe) on your network: choose Allow for private networks. If
+ you choose Cancel, the model still works on this computer.
  Other computers on your network can use it at the address shown. Keep the API key on.
  ↑↓ choose   Enter next   p port   k new key   t key on/off   Esc back   ? help
  An API key was made for you, because this reaches beyond your computer.

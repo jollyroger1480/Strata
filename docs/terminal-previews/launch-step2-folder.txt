@@ -5,7 +5,7 @@
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Where should the model files be stored?
  Needs about 84 GB (the download plus working room).
- Free space in that folder's drive: 93 GB
+ Free space in that folder's drive: 94 GB
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  │  C:\Users\AI-Server\Documents\Strata                                                                     │
  └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘

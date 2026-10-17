@@ -1,7 +1,7 @@
 # strata launch preview: start screen with saved presets
 # (text of the screen as drawn at the size named in tests/terminal/launch_previews.py)
 
- STRATA  Launch                                            NVIDIA RTX A4000 16 GB x2 · 64 GB RAM · 93 GB free
+ STRATA  Launch                                            NVIDIA RTX A4000 16 GB x2 · 64 GB RAM · 94 GB free
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Start from a saved preset
 
@@ -31,6 +31,6 @@
 
 
  ────────────────────────────────────────────────────────────────────────────────────────────────────────────
- This computer: NVIDIA RTX A4000 16 GB x2 · 64 GB RAM · 93 GB free.  Preset: model, context, parallel
+ This computer: NVIDIA RTX A4000 16 GB x2 · 64 GB RAM · 94 GB free.  Preset: model, context, parallel
  requests, tuned settings, access. Shared with the Strata app.
  ↑↓ choose   Enter launch   e edit preset   d delete   ? help   q quit

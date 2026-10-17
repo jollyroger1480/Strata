@@ -3,19 +3,19 @@
 
  STRATA  Connect   http://127.0.0.1:8080                                                                         [LIVE]
  1 Overview  2 Serving  3 Requests  4 Engine  5 Hardware  6 Logs  [7 Connect]
- ────────────────────────────────────────────────────────────────────────────────────────────────────
- Connect an app     URL http://127.0.0.1:8080/v1    model qwen3.8-flash-next-iq3_xxs    key sk-strata-••••  (k show)
+ ----------------------------------------------------------------------------------------------------
+ Connect an app     URL http://127.0.0.1:8080/v1    model qwen3.8-flash-next-iq3_xxs    key sk-strata-****  (k show)
       also reachable at http://192.168.88.21:8080/v1
 
     App                 Works with            Status
-   › OpenCode            chat + tools          tested ✓
-     Codex CLI           responses + tools     tested ✓
-     Claude Code         messages + tools      tested ✓
-     oh-my-pi (omp)      chat + tools          tested ✓
-     pi (pi.dev)         chat + tools          tested ✓
-     Hermes Agent        chat + tools          tested ✓
-     OpenClaw            chat + tools          tested ✓
-     DeepSeek Harness    the Strata app        tested ✓
+   > OpenCode            chat + tools          tested ok
+     Codex CLI           responses + tools     tested ok
+     Claude Code         messages + tools      tested ok
+     oh-my-pi (omp)      chat + tools          tested ok
+     pi (pi.dev)         chat + tools          tested ok
+     Hermes Agent        chat + tools          tested ok
+     OpenClaw            chat + tools          tested ok
+     DeepSeek Harness    the Strata app        tested ok
 
  OpenCode setup   ~/.config/opencode/opencode.json
    {
