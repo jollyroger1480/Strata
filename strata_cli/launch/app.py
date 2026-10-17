@@ -171,6 +171,7 @@ class LaunchApp(App):
         self.runner: Runner | None = None
         self.run_screen: RunScreen | None = None
         self.running = False
+        self.current = "start"
 
     def on_mount(self) -> None:
         if self.auto_run:
@@ -234,8 +235,6 @@ class LaunchApp(App):
             def done(choice: str | None) -> None:
                 if choice == "go":
                     self.run_launch(confirmed=True)
-                elif self.current == "start":
-                    pass
 
             self.push_screen(ConfirmScreen(f"Download about {gb:.0f} GB?",
                                            f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; an interrupted download continues where it stopped."
