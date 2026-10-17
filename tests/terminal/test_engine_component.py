@@ -284,6 +284,31 @@ class NeverAcquires(unittest.TestCase):
         self.assertFalse(data["ok"])
         self.assertIn("never downloads an engine", data["notice"])
 
+    def test_a_driver_too_old_for_every_engine_gets_one_plain_line_naming_the_version(self):
+        a = make_package(self.root, version="0.1.45", backend="cuda")
+        rewrite(a, min_driver={"nvidia": "580.65"})
+        with mock.patch.object(ec, "nvidia_driver_version", return_value="550.120"):
+            with self.assertRaises(ec.EngineMissing) as caught:
+                ec.resolve(self.root, backend="cuda", runtime="1")
+            note = ec.status(self.root, backend="cuda")["notice"]
+        self.assertIn("580.65", str(caught.exception), "the technical reason stays for the log")
+        self.assertIn("(550.120)", note)
+        self.assertIn("driver 580 or newer", note)
+        self.assertNotIn("component", note)
+        # two builds: the line names the lower requirement; a driver that runs one of them is no problem
+        folder = self.root / "engine" / "0.1.45-twelve"
+        folder.mkdir(parents=True)
+        for item in a.iterdir():
+            (folder / item.name).write_bytes(item.read_bytes())
+        (folder / "strata").chmod(0o755) if not WINDOWS else None
+        rewrite(folder, min_driver={"nvidia": "575.51"})
+        with mock.patch.object(ec, "nvidia_driver_version", return_value="550.120"):
+            self.assertIn("driver 575 or newer", ec.status(self.root, backend="cuda")["notice"])
+        with mock.patch.object(ec, "nvidia_driver_version", return_value="576.02"):
+            self.assertEqual(ec.resolve(self.root, backend="cuda", runtime="1").root.name, "0.1.45-twelve")
+        with mock.patch.object(ec, "nvidia_driver_version", return_value="580.178.04"):
+            self.assertEqual(ec.resolve(self.root, backend="cuda", runtime="1").root.name, a.name, "the newer-driver build wins")
+
     def test_the_component_fetcher_refuses_where_acquiring_is_forbidden(self):
         store = components.ComponentStore(self.root / "store")
         artifact = components.Artifact(name="engine.tar.gz", url="https://example.invalid/e.tgz",
