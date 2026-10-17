@@ -3138,5 +3138,10 @@
   "s3142": "Erlaube Strata in deiner Sicherheitssoftware und versuche es dann erneut.",
   "s3143": "Strata hat eine Datei nicht gefunden, die zum Starten der Engine nötig ist.",
   "s3144": "Installiere Strata neu oder drücke auf Reparieren.",
-  "s3145": "Das Modell wurde beim Starten angehalten."
+  "s3145": "Das Modell wurde beim Starten angehalten.",
+  "s3146": "Es wurde kein Ordner-Auswahldialog gefunden. Installiere zenity oder kdialog, um einen Ordner auszuwählen, oder gib den Pfad ein.",
+  "s3147": "Der Ordner-Auswahldialog konnte nicht geöffnet werden. Installiere zenity oder kdialog, um einen Ordner auszuwählen, oder gib den Pfad ein.",
+  "s3148": "Ordnerpfad eingeben",
+  "s3149": "Ordnerpfad",
+  "s3150": "/home/du/Dokumente"
 }

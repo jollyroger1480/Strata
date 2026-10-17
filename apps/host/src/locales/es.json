@@ -3138,5 +3138,10 @@
   "s3142": "Permite Strata en tu software de seguridad y vuelve a intentarlo.",
   "s3143": "Strata no encontró un archivo que necesita para iniciar el motor.",
   "s3144": "Reinstala Strata o pulsa Reparar.",
-  "s3145": "El modelo se detuvo al iniciarse."
+  "s3145": "El modelo se detuvo al iniciarse.",
+  "s3146": "No se encontró ningún selector de carpetas. Instala zenity o kdialog para elegir una carpeta, o escribe la ruta.",
+  "s3147": "No se pudo abrir el selector de carpetas. Instala zenity o kdialog para elegir una carpeta, o escribe la ruta.",
+  "s3148": "Escribe la ruta de la carpeta",
+  "s3149": "Ruta de la carpeta",
+  "s3150": "/home/tu/Documentos"
 }

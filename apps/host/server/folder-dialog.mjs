@@ -104,7 +104,7 @@ async function chooseLinuxFolder(prompt, { run, portal }) {
   return {
     unavailable: true, failed: failures.length > 0, ...(failures.length ? { detail: failures.join('; ') } : {}),
     reason: failures.length
-      ? `The folder chooser could not open (${failures[0]}). Install zenity or kdialog to pick a folder, or type the path.`
+      ? 'The folder chooser could not open. Install zenity or kdialog to pick a folder, or type the path.'
       : 'No folder chooser was found. Install zenity or kdialog to pick a folder, or type the path.',
   };
 }
@@ -152,7 +152,7 @@ export const TYPE_A_PATH = 'No folder chooser is available on this system, so ty
 
 /** The host's answer when no chooser works: a plain sentence and a code the app turns into a field for typing the path. */
 export function chooserUnavailable(picked) {
-  return { message: picked.failed ? picked.reason : `${TYPE_A_PATH} ${picked.reason}`, code: 'folder-chooser-unavailable', details: picked.detail };
+  return { message: picked.reason, code: 'folder-chooser-unavailable', details: picked.detail };
 }
 
 /** A typed path stands in for the dialog: it must be an absolute directory that exists. */

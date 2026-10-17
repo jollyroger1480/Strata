@@ -3138,5 +3138,10 @@
   "s3142": "Permita o Strata no seu software de segurança e tente de novo.",
   "s3143": "O Strata não encontrou um arquivo de que precisa para iniciar o motor.",
   "s3144": "Reinstale o Strata ou clique em Reparar.",
-  "s3145": "O modelo parou ao iniciar."
+  "s3145": "O modelo parou ao iniciar.",
+  "s3146": "Nenhum seletor de pastas foi encontrado. Instale o zenity ou o kdialog para escolher uma pasta, ou digite o caminho.",
+  "s3147": "Não foi possível abrir o seletor de pastas. Instale o zenity ou o kdialog para escolher uma pasta, ou digite o caminho.",
+  "s3148": "Digite o caminho da pasta",
+  "s3149": "Caminho da pasta",
+  "s3150": "/home/voce/Documentos"
 }
