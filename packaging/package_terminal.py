@@ -451,11 +451,14 @@ Install
 What it does NOT include
 ------------------------
 The **engine** is a separate, independently versioned component and is not bundled: the right engine package
-depends on your OS, CPU and GPU. Install one with SETUP / `strata install` from a full Strata folder, or point
-Strata at one with STRATA_ENGINE. Model weights are likewise not included.
+depends on your OS, CPU and GPU. `strata launch` (or `strata update`) fetches the one for your card from the signed
+release feed; or point Strata at one with STRATA_ENGINE. Model weights are likewise not included: `strata launch`
+downloads the one you choose (the installer files setup.py and tools/ are in this archive for that).
 
 Useful commands
 ---------------
+    strata launch                     choose a model, tune it, serve it and watch it (guided screens; docs/TERMINAL_LAUNCH.md)
+    strata connect opencode           the setup for a coding app on the running server (also codex, claude-code, omp, pi, hermes, openclaw)
     strata --version                  the version and the interpreter it runs on
     strata doctor                     read-only component inventory
     strata profile list               saved serving profiles

@@ -1,5 +1,7 @@
 # Terminal quick start (source checkout)
 
+New here? `strata launch` sets up a model, serves it and opens the monitor in one guided flow: [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md).
+
 These commands describe the current `Strata-TUI-CLI` development branch. Run them from the repository root with the Python environment used for Strata. Substitute `python3` on systems without a `python` command. They do not install a model or change the existing one-click setup path. The complete options, permissions and limits are in [TERMINAL.md](TERMINAL.md).
 
 ## Read a running server

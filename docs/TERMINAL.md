@@ -1,5 +1,7 @@
 # Strata terminal commands (implementation in progress)
 
+`strata launch` (guided setup, serve and monitor) and `strata connect` (setup for your coding apps): see [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md).
+
 For the shortest path through the source-checkout commands, use the [terminal quick start](TERMINAL_QUICKSTART.md).
 
 This checkout adds a source-run terminal entry point beside the existing server:

@@ -656,7 +656,19 @@ ISSUE_WORDS = {
 
 
 def plain_issue(code: str) -> str:
-    return ISSUE_WORDS.get(code, code.replace("_", " "))
+    """One problem from the GGUF preview, in words (it may be `file.gguf: GGUF shard is not a nonempty regular file` and the like)."""
+    if code in ISSUE_WORDS:
+        return ISSUE_WORDS[code]
+    low = code.lower()
+    if "not a nonempty regular file" in low or "unreadable" in low:
+        return "a file is empty, unreadable or not a regular file"
+    if "does not begin with a gguf header" in low or "header version" in low:
+        return "a file is not a GGUF model file"
+    if "unsupported_architecture" in low:
+        return "this is not a model Strata can run"
+    if "symlink" in low:
+        return "a file is a shortcut (symbolic link); point at the real file"
+    return code.replace("_", " ")
 
 
 def _read_json(path: Path) -> dict | None:
