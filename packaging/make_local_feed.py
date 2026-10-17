@@ -43,7 +43,10 @@ def extract_terminal(archive: Path, into: Path) -> Path:
             zf.extractall(into)
     else:
         with tarfile.open(archive) as tf:
-            tf.extractall(into, filter="data")
+            try:
+                tf.extractall(into, filter="data")
+            except TypeError:                       # Python before 3.12 (a Mac's system 3.9): no extraction filters; the archive is our own
+                tf.extractall(into)
     (inner,) = [p for p in into.iterdir() if p.is_dir()]
     return inner
 
@@ -79,7 +82,7 @@ def main(argv=None) -> int:
             v = version or (folder / "VERSION").read_text(encoding="utf-8").strip()
             version = v
             platform = ("windows-x86_64" if (folder / "python" / "python.exe").exists() else
-                        "darwin-arm64" if "darwin" in term.name else "linux-x86_64")
+                        "macos-arm64" if ("darwin" in term.name or "macos" in term.name) else "linux-x86_64")      # the feed's own platform names
             fmt = "zip" if platform.startswith("windows") else "tar.gz"
             entry = ft.pack_control(folder, out / "control", version=v, platform=platform, fmt=fmt)
             manifest_lines.append(f"{platform} {v} {entry['url']} {entry['sha256']} {entry['size']}")

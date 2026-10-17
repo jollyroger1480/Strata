@@ -54,7 +54,7 @@ command -v tar >/dev/null 2>&1 || die "tar is not installed; install it and run 
 os=$(uname -s); arch=$(uname -m)
 case "$os-$arch" in
   Linux-x86_64|Linux-amd64) platform=linux-x86_64 ;;
-  Darwin-arm64|Darwin-aarch64) platform=darwin-arm64 ;;
+  Darwin-arm64|Darwin-aarch64) platform=macos-arm64 ;;
   *) die "this computer ($os $arch) has no Strata Terminal yet. Supported: Linux x86_64, macOS on Apple silicon (Windows: use install.ps1)." ;;
 esac
 gpu=""
