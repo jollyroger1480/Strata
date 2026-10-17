@@ -2217,6 +2217,33 @@ signal, early cleanup and `--errors` error-propagation checks. Its `--synchronou
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
 
+## Decode on compute capability 12.0 cards: four bitwise switches on by default, interleaved matvec up to 8 tokens
+
+Measured on an RTX PRO 5000 Blackwell 72 GB (110 SMs, sm_120, Linux, CUDA 13.2), IQ3_S with every expert in VRAM, setup's
+flags (`--spec 4 --spec-min-p 0.5`), 6 interleaved pairs of fresh engines, 300-token greedy answers, medians:
+
+| | story | code | 8K document | 4K / 20K / 98K prompt |
+|---|---|---|---|---|
+| before (tok/s) | 168.8 | 224.5 | 186.8 | 3827 / 4607 / 4767 |
+| now | 189.0 (+11.9%, 6/6 pairs) | 256.2 (+14.0%, 6/6) | 211.2 (+13.1%, 6/6) | unchanged |
+
+The answers are the same tokens (every case and pair), and the identity gate passes (10 prompts plus the 4K and 20K prompt
+dumps, with the fixed small cache and with every expert resident). What changed:
+
+- On a 12.0 card these existing switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
+  branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=2` (the
+  hyper-connection read's up projection with its loads hoisted, and its down projection as token pairs). Each is bitwise equal
+  to the kernel it replaces. A fixed 4-token verify round went 13.70 -> 12.23 ms with the four together.
+  `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
+- The interleaved small-batch matvec (`native_mmvq_il`, docs/MMVQ_IL_TABLE.md) also runs 5 to 8 tokens (it stopped at 4, and a
+  5-token window cost 2 ms more than a 4-token one), with a 12.0 table for 5-8 tokens and, on 12.0 cards with 80+ SMs, its own
+  2-4 token table. Bitwise (`mmvq_il_parity`, 1-8 tokens). `STRATA_MMVQ_IL_WIDE=0` / `STRATA_MMVQ_IL_120=0` turn them off.
+- With the cheaper rows, deeper speculation was measured again (3 pairs): `--spec 3` 1.145 / 1.020 / 1.123 of before,
+  `--spec 4` 1.122 / 1.141 / 1.132, `--spec 5` 1.079 / 1.101 / 1.074, `--spec 6` 1.060 / 1.177 / 1.097, `--spec 8` 1.027 /
+  1.105 / 1.069 (story / code / document). `--spec 4 --spec-min-p 0.5` stays the default.
+
+Not measured: other 12.0 cards (an RTX 5070 has not been run with these defaults), Windows, and partly-resident caches.
+
 ## CUDA opt-in switches measured for 0.1.45 (RTX 3060 and RTX A4000, sm_86; all off unless you set them)
 
 Ported from open pull requests and A/B'd as whole engine runs against the default (a fresh engine per side, IQ3_XXS, 5 pairs, medians;
