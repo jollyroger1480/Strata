@@ -374,8 +374,11 @@ class Runner:
             return 0.0
         try:
             path, desc = self.installed_state()
-            if path is not None and desc is not None and desc_matches(desc, s) and not files_present(read_config(path)):
-                return 0.0
+            if path is not None and desc is not None and not files_present(read_config(path)):
+                if desc_matches(desc, s):
+                    return 0.0
+                # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)
+                return 0.9 if (s.vision != "off" and (desc.get("images") or "off") == "off") else 0.0
             row = next((r for r in self.catalog.rows() if r.family == s.family and r.model == s.model), None)
             return float(row.download_gb) if row else 0.0
         except Exception:                                    # noqa: BLE001

@@ -413,6 +413,17 @@ class AdoptRules(unittest.TestCase):
                 self.assertEqual(mod.control_engine_step({}, "cpu")[5], "cpu")            # the component carries it: the choice is kept
                 self.assertEqual(mod.control_engine_step({}, "none")[5], "none")
 
+    def test_turning_pictures_on_for_an_installed_model_downloads_only_the_reader(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            cfgfile = h.base / "strata-x.json"
+            cfgfile.write_text("{}")
+            for vision, images, ctx, want in (("on", "off", 32768, 0.9), ("on", "cpu", 32768, 0.0), ("off", "off", 32768, 0.0), ("off", "off", 65536, 0.0)):
+                r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision=vision, context=ctx), catalog=cat)
+                desc = {"context": 32768, "kv": "int8", "images": images}
+                with mock.patch.object(r, "installed_state", return_value=(cfgfile, desc)):
+                    self.assertAlmostEqual(r.download_gb(), want, msg=(vision, images, ctx))
+
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:
             cat = catalog(HW_12)
