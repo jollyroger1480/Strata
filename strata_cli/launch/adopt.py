@@ -25,6 +25,20 @@ def setup_cannot_handle_this_card(message: str) -> bool:
             or "no mac model installer" in low)
 
 
+def intel_driver() -> str:
+    """The kernel driver of the first Intel graphics card: "i915" (an A-series Arc) or "xe" (a B-series Arc), "" when it cannot be read."""
+    import glob
+    import os
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]/device")):
+        try:
+            if Path(card, "vendor").read_text().strip() != "0x8086":
+                continue
+            return os.path.basename(os.path.realpath(os.path.join(card, "driver")))
+        except OSError:
+            continue
+    return ""
+
+
 def find_shards(folder: Path) -> list[Path]:
     """The shards of one GGUF set in `folder` (-00001-of-0000N ... -0000N-of-0000N), sorted; [] if the set is incomplete."""
     found: dict[tuple[str, int], dict[int, Path]] = {}
@@ -71,6 +85,14 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         if mtp.exists():
             args += ["--mtp", str(mtp)]
         args += ["--max-context", str(context), "--kv", kv or ("int8" if context > 8192 else "fp16")]
+        if backend == "sycl":
+            # an Intel Arc, as sycl/setup_intel.py writes it: an A-series card on i915 loads the experts into a RAM arena and the CPU computes the misses
+            # (--ple-io ram); every other Arc (xe: the B70) streams the experts from the GGUF into VRAM (--stream-experts); both keep a VRAM reserve
+            reserve = "1024" if context <= 32768 else "2048"
+            if intel_driver() == "i915":
+                args += ["--ple-io", "ram", "--vram-reserve-mib", reserve]
+            else:
+                args += ["--stream-experts", "--vram-reserve-mib", reserve]
     cfg = {"exe": "component:strata-engine", "args": args, "cwd": str(src), "tokenizer": str(tokenizer), "model_name": model_name,
            "log": str(log), "lib_dirs": [], "port": 8080}
     if backend == "metal":
