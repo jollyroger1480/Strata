@@ -14,7 +14,8 @@ checks and starts; it is not signed, not published, and nothing here uploads it.
 (`engine_component.register_signature_verifier`); `--sign-with` is deliberately absent until then.
 
 Files taken from --src, by default: the entrypoint, every `*.dll` / `*.so` / `*.so.*` / `*.dylib` / `*.metallib`
-beside it, `BUILD.json`, and `LICENSE*`. `--include GLOB` (repeatable, relative to --src, `**` allowed) adds more, for
+beside it, `BUILD.json`, `LICENSE*`, and the picture reader `strata-vision[.exe]` when the build has one (without it the
+engine answers text only: setup.py Control mode keeps the person's picture choice only when it is there). `--include GLOB` (repeatable, relative to --src, `**` allowed) adds more, for
 example `strata-vision.exe`, `strata-device.exe` or `rocm/**`. `--tree` takes every regular file under --src (the HIP
 package ships a `rocm/` tree of kernels). Symlinks are never followed or copied.
 """
@@ -49,7 +50,7 @@ def sha256(path: Path) -> str:
 def wanted(path: Path) -> bool:
     name = path.name.lower()
     return (name.endswith((".dll", ".so", ".dylib", ".metallib")) or ".so." in name or name == "build.json"
-            or name.startswith("license"))
+            or name.startswith("license") or name in ("strata-vision", "strata-vision.exe"))      # the picture reader beside the engine (pictures need it)
 
 
 def git_build_id(repo: Path = ROOT) -> str:

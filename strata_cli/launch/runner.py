@@ -119,6 +119,9 @@ def files_present(cfg: dict) -> list[str]:
         args = [str(a) for a in cfg.get("args") or []]
         if flag in args and args.index(flag) + 1 < len(args) and not Path(args[args.index(flag) + 1]).exists():
             missing.append(args[args.index(flag) + 1])
+    vision = cfg.get("vision")
+    if isinstance(vision, dict) and vision.get("mmproj") and not Path(str(vision["mmproj"])).exists():
+        missing.append(str(vision["mmproj"]))                 # the picture reader's file: setup fetches it again
     return missing
 
 
@@ -301,6 +304,29 @@ class Runner:
         self.emit("engine", "The engine is installed.", 100)
 
     # ---- 2. the model
+    def vision_word(self) -> str:
+        """What setup is told for the picture choice. "on" is setup's "yes": setup (Control mode) picks the CPU encoder on a card under 24 GB
+        and on AMD, the GPU encoder on a bigger NVIDIA card, and downloads the pinned picture-reader file (mmproj) with the model."""
+        s = self.s
+        if s.vision == "off":
+            return "no"
+        return "yes" if s.vision == "on" else s.vision
+
+    def check_pictures(self, path: Path) -> None:
+        """Pictures were asked for: say so in plain words when the installed settings still have them off."""
+        s = self.s
+        if s.vision == "off":
+            return
+        try:
+            desc = self.catalog.strata.describe_config(path)
+        except Exception:                                    # noqa: BLE001
+            return
+        if (desc or {}).get("images") in (None, "off"):
+            note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
+                    "so it will answer text only.")
+            self.notices.append(note)
+            self.emit("model", note, 100, level="warn")
+
     def setup_args(self) -> list[str]:
         cat, s = self.catalog, self.s
         fam, model = s.family, s.model
@@ -308,7 +334,7 @@ class Runner:
         ctx = s.context
         if ctx:
             args += ["--context", str(ctx)]
-        args += ["--vision", {"off": "no", "on": "yes"}.get(s.vision, s.vision)]
+        args += ["--vision", self.vision_word()]
         if s.kv:
             args += ["--kv", s.kv]
         if fam in ("qwen", "coder"):
@@ -351,8 +377,14 @@ class Runner:
             return 0.0
         try:
             path, desc = self.installed_state()
-            if path is not None and desc is not None and desc_matches(desc, s) and not files_present(read_config(path)):
-                return 0.0
+            lost = files_present(read_config(path)) if path is not None else []
+            if lost and all("mmproj" in Path(x).name.lower() for x in lost):
+                return 0.9                                   # only the picture reader's file is gone
+            if path is not None and desc is not None and not lost:
+                if desc_matches(desc, s):
+                    return 0.0
+                # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)
+                return 0.9 if (s.vision != "off" and (desc.get("images") or "off") == "off") else 0.0
             row = next((r for r in self.catalog.rows() if r.family == s.family and r.model == s.model), None)
             return float(row.download_gb) if row else 0.0
         except Exception:                                    # noqa: BLE001
@@ -424,6 +456,7 @@ class Runner:
             raise LaunchError("Setup finished but no run config was written for this model.",
                               "Run `strata launch` again; if it repeats, the setup output above says why.", 6)
         self.emit("model", f"{title} is ready.", 100)
+        self.check_pictures(path)
         return path
 
     def adopt_prepared_files(self, setup_error: str) -> Path | None:

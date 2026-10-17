@@ -404,6 +404,72 @@ class AdoptRules(unittest.TestCase):
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
 
+    def test_pictures_on_is_setups_yes_and_setup_picks_the_encoder(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            for vision, want in (("on", "yes"), ("off", "no"), ("gpu", "gpu"), ("cpu", "cpu")):
+                r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision=vision), catalog=cat)
+                self.assertEqual(r.vision_word(), want, vision)
+            argv = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on"), catalog=cat).setup_args()
+            self.assertEqual(argv[argv.index("--vision") + 1], "yes")
+
+    def test_setup_control_mode_keeps_pictures_when_the_engine_carries_the_reader(self):
+        from types import SimpleNamespace
+        with Home() as h:
+            mod = catalog(HW_12).strata.setup_module()
+            if mod is None or not hasattr(mod, "control_engine_step"):
+                self.skipTest("no setup.py in this checkout")
+            engine = h.base / "engine"
+            engine.mkdir()
+            found = SimpleNamespace(root=engine, version="0.1.45", backend="cuda", platform="linux-x86_64")
+            with mock.patch.object(mod, "get_llama_cpp", return_value=engine), mock.patch("strata_control.engine_component.resolve", return_value=found):
+                self.assertEqual(mod.control_engine_step({}, "cpu")[5], "none")           # no strata-vision beside the engine: off, with a note
+                (engine / mod.VEXE).write_text("x")
+                self.assertEqual(mod.control_engine_step({}, "cpu")[5], "cpu")            # the component carries it: the choice is kept
+                self.assertEqual(mod.control_engine_step({}, "none")[5], "none")
+
+    def test_turning_pictures_on_for_an_installed_model_downloads_only_the_reader(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            cfgfile = h.base / "strata-x.json"
+            cfgfile.write_text("{}")
+            for vision, images, ctx, want in (("on", "off", 32768, 0.9), ("on", "cpu", 32768, 0.0), ("off", "off", 32768, 0.0), ("off", "off", 65536, 0.0)):
+                r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision=vision, context=ctx), catalog=cat)
+                desc = {"context": 32768, "kv": "int8", "images": images}
+                with mock.patch.object(r, "installed_state", return_value=(cfgfile, desc)):
+                    self.assertAlmostEqual(r.download_gb(), want, msg=(vision, images, ctx))
+
+    def test_a_missing_picture_reader_file_is_fetched_again(self):
+        from strata_cli.launch.runner import files_present
+        with Home() as h:
+            mm = h.base / "mmproj-x.gguf"
+            cfg = {"args": [], "vision": {"mmproj": str(mm)}}
+            self.assertEqual(files_present(cfg), [str(mm)])
+            mm.write_text("x")
+            self.assertEqual(files_present(cfg), [])
+            mm.unlink()
+            cat = catalog(HW_12)
+            cfgfile = h.base / "strata-x.json"
+            cfgfile.write_text(json.dumps(cfg))
+            r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on", context=32768), catalog=cat)
+            with mock.patch.object(r, "installed_state", return_value=(cfgfile, {"context": 32768, "kv": "int8", "images": "cpu"})):
+                self.assertAlmostEqual(r.download_gb(), 0.9)
+
+    def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
+        with Home() as h:
+            cat = catalog(HW_12)
+            seen = []
+            r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on"), catalog=cat, emit=seen.append)
+            path = h.base / "cfg.json"
+            path.write_text("{}")
+            with mock.patch.object(cat.strata, "describe_config", return_value={"images": "off"}):
+                r.check_pictures(path)
+            self.assertTrue(any("Pictures could not be switched on" in e.text and e.level == "warn" for e in seen))
+            seen.clear()
+            with mock.patch.object(cat.strata, "describe_config", return_value={"images": "cpu"}):
+                r.check_pictures(path)
+            self.assertEqual(seen, [])
+
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
         with Home() as h:
             d, m = self.files(h.base)

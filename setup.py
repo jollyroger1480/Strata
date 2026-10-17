@@ -5837,7 +5837,10 @@ def control_engine_step(gpu, vision):
         warn(f"no engine is installed for this PC yet ({e}). The model is downloaded and prepared now; install the engine "
              "component for your GPU (a later step of the app, or the Terminal) before loading it")
     if vision != "none":
-        warn("images are not part of the app's first release: images off for this model")
+        if (eng / VEXE).is_file():
+            ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
+            return llama, eng, meta, [], gpu, vision
+        warn("this engine component has no image encoder (strata-vision): images off for this model")
     return llama, eng, meta, [], gpu, "none"
 
 
@@ -6273,7 +6276,7 @@ def mac_control_setup(a) -> int:
     for n in MF.model_note(model, ram):
         warn(n)
     if a.vision in ("yes", "gpu", "cpu"):
-        warn("images are not part of the app's first release: images off for this model")
+        warn("the Mac engine has no picture reader yet: images off for this model (text works as usual)")
     ctx = a.context or MF.recommend_context(ram)
     if ctx > MF.TESTED_CONTEXT:
         say(f"  context {ctx}: measured on the Mac up to {MF.TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")

@@ -25,7 +25,10 @@ to your graphics card) comes with the first model: `strata launch` fetches the o
    *(Cards: only with two or more usable graphics cards.)*
 3. **Folder**: where model files are stored, free space shown.
 4. **Context** (8K to 512K, with the extra memory each costs) and the memory format (`m`: 8-bit or 4-bit).
-5. **Pictures**: only for models that can read them; says what it adds.
+5. **Pictures**: only for models that can read them; says what it adds (about 0.9 GB: the picture-reader file, downloaded with the model through
+   setup's Control mode, the same path the app's "Read pictures" uses). On a card under 24 GB and on AMD the picture reader runs on the CPU (nothing taken
+   from the graphics card); on a bigger NVIDIA card it runs on the GPU. It needs `strata-vision` beside the engine in the engine package; the screen
+   warns in plain words when the installed engine has none, and the run says "Pictures could not be switched on" instead of silently answering text only.
 6. **Parallel requests**: "fit to your card" (12 GB: 1, 20: 2, 24: 3, 32+: 4) or 1 to 4; a warning if it will not fit.
 7. **Tuning**: quick (about 20 minutes) / thorough (up to 2 hours) / skip (`strata tune auto`; the "answers may change very slightly" tick is off).
 8. **Advanced** (optional): every engine setting with default, tuned value and your value; edit, reset, add a setting by name (checked against the engine's own list; a warning, not a refusal);
