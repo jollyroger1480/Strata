@@ -21,7 +21,7 @@ const safeId=value=>typeof value==='string'&&/^[a-z0-9_-]{1,80}$/i.test(value);
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});

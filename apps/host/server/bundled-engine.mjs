@@ -9,7 +9,8 @@
  * The copy is made under a hidden temporary name and renamed into place, so an interrupted run leaves nothing half-installed
  * (the next start removes the leftover and tries again).
  */
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -45,6 +46,27 @@ function sha256(path) {
   });
 }
 
+/**
+ * The NVIDIA driver version of this PC (the oldest when several cards disagree), or null when there is none or it cannot be read.
+ * Linux: the kernel module's own file; anywhere: nvidia-smi. Never throws.
+ */
+export function nvidiaDriverVersion() {
+  try {
+    const text = readFileSync('/proc/driver/nvidia/version', 'utf8');
+    const found = /Kernel Module\s+(\d+(?:\.\d+)+)/.exec(text);
+    if (found) return found[1];
+  } catch { /* not Linux, or no NVIDIA driver */ }
+  try {
+    const out = execFileSync('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'], { encoding: 'utf8', timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const versions = out.split(/\r?\n/).map(line => line.trim()).filter(line => /^\d+(\.\d+)+$/.test(line));
+    if (versions.length) return versions.sort(compareVersions)[0];
+  } catch { /* no nvidia-smi */ }
+  return null;
+}
+
+/** One engine can ship as several builds of the same backend (CUDA 13 and CUDA 12 differ in the oldest driver they run on). */
+const variantOf = manifest => `${manifest.platform}/${manifest.backend}/${manifest.min_driver?.nvidia ?? ''}`;
+
 /** Does every file the manifest lists exist with its size (and, when `deep`, its SHA-256)? */
 export async function packageIsWhole(folder, manifest, { deep = false } = {}) {
   for (const item of manifest.files) {
@@ -63,7 +85,7 @@ export async function packageIsWhole(folder, manifest, { deep = false } = {}) {
  * Install the bundled engine when it is needed.
  * Returns { action: 'installed' | 'repaired' | 'kept' | 'none' | 'refused', folder?, version?, reason? }; never throws.
  */
-export async function installBundledEngine({ bundleDir, components, platform = null, log = () => {} } = {}) {
+export async function installBundledEngine({ bundleDir, components, platform = null, log = () => {}, driver = undefined } = {}) {
   try {
     if (!bundleDir || !components || !existsSync(bundleDir)) return { action: 'none' };
     let packages = [];
@@ -74,13 +96,27 @@ export async function installBundledEngine({ bundleDir, components, platform = n
     }
     if (platform) packages = packages.filter(p => p.manifest.platform === platform);
     if (!packages.length) return { action: 'none' };
-    // the newest bundled package of each platform/backend
+    // The CUDA builds the NVIDIA driver here can run: all of them when the driver is unknown or fits several; when none fits, the one with the lowest
+    // requirement, so that Control can name the driver to install (copying the others would only waste disk).
+    const driverHere = driver === undefined ? nvidiaDriverVersion() : driver;
+    const need = item => item.manifest.min_driver?.nvidia ?? null;
+    if (driverHere) {
+      const cuda = packages.filter(p => need(p));
+      const fits = cuda.filter(p => compareVersions(driverHere, need(p)) >= 0);
+      if (cuda.length && !fits.length) {
+        const lowest = [...cuda].sort((a, b) => compareVersions(need(a), need(b)))[0];
+        packages = packages.filter(p => !need(p) || p === lowest);
+      } else {
+        packages = packages.filter(p => !need(p) || fits.includes(p));
+      }
+    }
+    // the newest bundled package of each platform/backend/driver requirement
     packages.sort((a, b) => compareVersions(b.manifest.version, a.manifest.version));
     const engineRoot = join(components, 'engine');
     let last = { action: 'none' };
     const done = new Set();
     for (const { name, manifest } of packages) {
-      const key = `${manifest.platform}/${manifest.backend}`;
+      const key = variantOf(manifest);
       if (done.has(key)) continue;
       done.add(key);
       if (!/^[\w.+-]+$/.test(name)) { last = { action: 'refused', reason: 'the package folder name is not plain' }; continue; }
@@ -90,7 +126,7 @@ export async function installBundledEngine({ bundleDir, components, platform = n
         for (const entry of await readdir(engineRoot, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
           const installed = await readManifest(join(engineRoot, entry.name));
-          if (!installed || installed.platform !== manifest.platform || installed.backend !== manifest.backend) continue;
+          if (!installed || variantOf(installed) !== variantOf(manifest)) continue;
           if (entry.name === name) sameFolder = installed;
           if (!newestInstalled || compareVersions(installed.version, newestInstalled.version) > 0) newestInstalled = installed;
         }
