@@ -958,12 +958,25 @@ class Strata:
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
                               "mem_total": bool(d.get("mem_total")),
                               "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
-                              "on_this_pc": verdict, "installed": tag in have, "id": tag})
+                              "on_this_pc": verdict, "installed": tag in have, "id": tag,
+                              # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
+                              # only with two or more cards that count; "recommended" names the pre-selected option
+                              "gpu_options": self.gpu_options(d, ram, hw)})
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
         return out
+
+    @staticmethod
+    def gpu_options(d: dict, ram, hw) -> dict | None:
+        try:
+            from strata_control import gpu_fit
+            mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
+            res = gpu_fit.options(round(mem, 1), ram, (hw or {}).get("gpus", []))
+            return res if len(res["options"]) >= 2 else None
+        except Exception:                                  # noqa: BLE001 - the choice is a convenience: never break the model list
+            return None
 
     # ---- the running server
     def ports(self, port: int | None) -> list[int]:

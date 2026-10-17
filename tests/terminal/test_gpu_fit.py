@@ -106,5 +106,36 @@ class GpuFitRule(unittest.TestCase):
             self.assertAlmostEqual(a["ramUseGb"], b["ram_use_gb"])
 
 
+class GpuFitInTheModelList(unittest.TestCase):
+    """The app reads the options from the model list (tools/strata_mcp.py model_table): the same rule, nothing duplicated in the UI."""
+
+    def setUp(self):
+        from tests.terminal.launch_support import Home
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+
+    def sizes(self, hw):
+        from tests.terminal.launch_support import catalog
+        table = catalog(hw).strata.model_table(hw)
+        return {s["model"]: s for f in table for s in f["sizes"]}
+
+    def test_two_cards_give_options_on_every_model(self):
+        from tests.terminal.launch_support import HW_2X16
+        s = self.sizes(HW_2X16)["IQ3_XXS"]
+        res = s["gpu_options"]
+        self.assertEqual([o["key"] for o in res["options"]][:2], ["single", "split"])
+        self.assertEqual(res["recommended"], "single")
+
+    def test_one_card_has_no_choice_to_show(self):
+        from tests.terminal.launch_support import HW_12
+        self.assertIsNone(self.sizes(HW_12)["IQ3_XXS"]["gpu_options"])
+
+    def test_an_integrated_chip_beside_one_card_is_no_choice(self):
+        from tests.terminal.launch_support import HW_2X16
+        hw = dict(HW_2X16)
+        hw["gpus"] = [dict(HW_2X16["gpus"][0]), {"index": 1, "name": "AMD Radeon Graphics", "vram_gb": 16.0, "usable": False, "uma": True, "problem": "integrated graphics"}]
+        self.assertIsNone(self.sizes(hw)["IQ3_XXS"]["gpu_options"])
+
+
 if __name__ == "__main__":
     unittest.main()
