@@ -281,6 +281,7 @@ fn resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// Tauri returns Windows paths in the verbatim form (`\\?\C:\...`). Node cannot take such a path as
 /// its entry script (`EISDIR ... lstat 'C:'`), so the host died at once and the window sat
 /// unresponsive until the health wait gave up. Use the ordinary drive (or UNC) form.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn plain_path(p: PathBuf) -> PathBuf {
     let text = p.to_string_lossy().into_owned();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
