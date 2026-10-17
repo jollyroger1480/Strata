@@ -89,6 +89,8 @@ export function createAppUi({ env = process.env, shutdown = () => {}, open = ope
       bridge = createUpdater({ env: { STRATA_SHELL_BRIDGE: url, STRATA_SHELL_TOKEN: token } });
       return true;
     },
+    /** Open the page in the default browser without changing the mode (a second start while Strata runs). */
+    openPage: url => open(url),
     /** The shell moves everyone to a browser tab: the window could not start or has stopped. */
     async switchToBrowser({ url, reason: why = 'window-failed', notice = '', openPage = true } = {}) {
       mode = 'browser'; reason = String(why).slice(0, 40); bridge = null;

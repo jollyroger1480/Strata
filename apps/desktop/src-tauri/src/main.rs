@@ -37,6 +37,8 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
+#[cfg(target_os = "linux")]
+mod supervisor;
 
 /// The kill-on-close Job Object that holds everything this app starts (Windows). Its only handle is this process's,
 /// which the system closes however the process ends; closing the last handle ends every process in the job.
@@ -185,12 +187,15 @@ fn contain_app() -> bool {
 }
 
 /// The running App Host, kept so it can be stopped on exit.
+#[cfg(not(target_os = "linux"))]
 struct HostProcess(Mutex<Option<Child>>);
 
 /// The port the App Host bound, so the window (and the frontend) can be pointed at it.
+#[cfg(not(target_os = "linux"))]
 struct HostPort(Mutex<Option<u16>>);
 
 /// The secret that lets this shell (and nothing else) ask the host for a clean stop.
+#[cfg(not(target_os = "linux"))]
 struct ShutdownToken(Mutex<Option<String>>);
 
 /// 256 random bits as hex, from the standard library's per-process random hasher keys (no extra crate).
@@ -260,6 +265,7 @@ fn pick_stable_port() -> Result<u16, String> {
 /// In a packaged `.app` Tauri places `bundle.resources` under `Contents/Resources`. During
 /// development they are not copied, so the repository layout is the fallback. Both are tried so
 /// `tauri dev` and the packaged bundle behave the same way.
+#[cfg(not(target_os = "linux"))]
 fn resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(dir) = app.path().resource_dir() {
         if dir.join("host").join("server").join("index.mjs").exists() {
@@ -363,6 +369,11 @@ fn http_get_body(url: &str) -> Result<(String, String), String> {
 }
 
 fn http_request(method: &str, url: &str, headers: &[(&str, &str)]) -> Result<(String, String), String> {
+    http_request_body(method, url, headers, None)
+}
+
+/// Like `http_request`, with an optional body (sent as given; the caller sets content-type in `headers`).
+fn http_request_body(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>) -> Result<(String, String), String> {
     use std::io::{Read, Write};
     let rest = url.strip_prefix("http://").ok_or("only http:// is supported")?;
     let (authority, path) = match rest.find('/') {
@@ -377,13 +388,13 @@ fn http_request(method: &str, url: &str, headers: &[(&str, &str)]) -> Result<(St
     stream.set_read_timeout(Some(Duration::from_secs(20))).map_err(|e| e.to_string())?;
     let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
     stream
-        .write_all(format!("{method} {path} HTTP/1.1\r\nHost: {authority}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+        .write_all(format!("{method} {path} HTTP/1.1\r\nHost: {authority}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{}", body.map(str::len).unwrap_or(0), body.unwrap_or("")).as_bytes())
         .map_err(|e| e.to_string())?;
     let mut buf = String::new();
     stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
     let status = buf.lines().next().unwrap_or_default().to_string();
-    let body = buf.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
-    Ok((status, body))
+    let response = buf.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    Ok((status, response))
 }
 
 /// A minimal blocking HTTP GET, so the shell needs no async runtime for one health probe.
@@ -413,9 +424,9 @@ fn ureq_get_ok(url: &str) -> Result<bool, String> {
     Ok(status.contains(" 200") || status.contains(" 204"))
 }
 
-/// Start the App Host and return the port it should serve on.
-fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
-    let res = resource_dir(app)?;
+/// The App Host's command, ready to start: the bundled Node runs the host on `port`, serving the built UI, on 127.0.0.1 only.
+/// `shutdown_token` is the secret that lets the shell (and nothing else) ask the host for a clean stop.
+fn host_command(res: &Path, port: u16, shutdown_token: &str) -> Result<Command, String> {
     let host_dir = if res.join("host").join("server").join("index.mjs").exists() {
         res.join("host")
     } else {
@@ -432,9 +443,7 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
             dist.display()
         ));
     }
-    let node = node_binary(&res)?;
-
-    let port = pick_stable_port()?;
+    let node = node_binary(res)?;
 
     let mut cmd = Command::new(&node);
     cmd.arg(&entry)
@@ -449,23 +458,35 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
         .env("STRATA_REAL_ENGINE", "1")
         // the host leaves, after stopping what this app started, when this shell is gone (killed, crashed)
         .env("STRATA_EXIT_WITH_PARENT", "1")
+        // the host listens on the loopback address only, whatever the caller's environment says
+        .env("STRATA_BIND", "127.0.0.1")
+        .env("STRATA_SHUTDOWN_TOKEN", shutdown_token)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    apply_runtime_policy(&mut cmd, &res);
-    // The signed app updater (Tauri) is reached by the host through a token-protected loopback bridge.
-    let bridge = updater::start(app, random_token());
-    updater::apply_env(&mut cmd, app, bridge.as_ref());
-    let token = random_token();
-    cmd.env("STRATA_SHUTDOWN_TOKEN", &token);
-    *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
+    apply_runtime_policy(&mut cmd, res);
     hide_console(&mut cmd);
     // A user with the Strata API worker on a different port sets this; unset means the worker's
     // documented loopback default.
     if let Ok(url) = std::env::var("STRATA_SERVER_URL") {
         cmd.env("STRATA_SERVER_URL", url);
     }
+    Ok(cmd)
+}
 
+/// Windows and macOS: start the App Host from inside the app process and return the port it serves on.
+#[cfg(not(target_os = "linux"))]
+fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
+    let res = resource_dir(app)?;
+    let port = pick_stable_port()?;
+    let token = random_token();
+    let mut cmd = host_command(&res, port, &token)?;
+    // The signed app updater (Tauri) is reached by the host through a token-protected loopback bridge.
+    let bridge = updater::start(app, random_token());
+    updater::apply_env(&mut cmd, app, bridge.as_ref());
+    *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
+
+    let node = node_binary(&res)?;
     let child = cmd
         .spawn()
         .map_err(|e| format!("could not start the App Host on {}: {e}", node.display()))?;
@@ -493,28 +514,32 @@ const HOST_STOP_SECONDS: u64 = 60;
 /// The host stops them through Control (profiles `app-N`), then exits. Engines another client started (the
 /// Terminal's `strata runtime start`) are not touched. If the host does not finish in time it is ended, and the
 /// engines are ended by the job object (Windows) or by their owners following the host (`--die-with-pid`).
+#[cfg(not(target_os = "linux"))]
 fn stop_host(app: &tauri::AppHandle) {
     let port = app.try_state::<HostPort>().and_then(|s| *s.0.lock().unwrap());
     let token = app.try_state::<ShutdownToken>().and_then(|s| s.0.lock().unwrap().clone());
     if let Some(state) = app.try_state::<HostProcess>() {
         if let Some(mut child) = state.0.lock().unwrap().take() {
-            // A clean stop first: the host stops, through Control, the engines this app started, then exits.
-            // Engines another client started (the Terminal) are not touched. If it does not finish in time the
-            // process is ended as before.
-            if let (Some(port), Some(token)) = (port, token) {
-                let _ = http_post(&format!("http://127.0.0.1:{port}/api/control/shutdown"), &[("x-strata-shutdown", token.as_str())]);
-                let deadline = Instant::now() + Duration::from_secs(HOST_STOP_SECONDS);
-                while Instant::now() < deadline {
-                    if let Ok(Some(_)) = child.try_wait() {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_host_child(&mut child, port, token.as_deref());
         }
     }
+}
+
+/// A clean stop first: the host stops, through Control, the engines this app started, then exits. Engines another client
+/// started (the Terminal) are not touched. If it does not finish in time the process is ended.
+fn stop_host_child(child: &mut Child, port: Option<u16>, token: Option<&str>) {
+    if let (Some(port), Some(token)) = (port, token) {
+        let _ = http_post(&format!("http://127.0.0.1:{port}/api/control/shutdown"), &[("x-strata-shutdown", token)]);
+        let deadline = Instant::now() + Duration::from_secs(HOST_STOP_SECONDS);
+        while Instant::now() < deadline {
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Where a packaged build keeps `bundle.resources`, found from the executable's own path.
@@ -788,6 +813,23 @@ fn main() {
         std::process::exit(code);
     }
 
+    // Linux: this executable is two programs. The shell (no GTK, no WebKit) owns the host and survives a crash of the window; the
+    // window process (`--window-child`) only shows the page. See supervisor.rs.
+    #[cfg(target_os = "linux")]
+    {
+        let options = supervisor::parse_args(&args, std::env::var("STRATA_UI").ok().as_deref());
+        if !options.window_child {
+            std::process::exit(supervisor::run(&options));
+        }
+        run_window_process();
+    }
+    #[cfg(not(target_os = "linux"))]
+    run_embedded();
+}
+
+/// Windows and macOS: one process owns the host and the window.
+#[cfg(not(target_os = "linux"))]
+fn run_embedded() {
     tauri::Builder::default()
         // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -809,16 +851,7 @@ fn main() {
                 eprintln!("[strata] {e}");
                 Box::<dyn std::error::Error>::from(e)
             })?;
-
-            let origin = format!("http://127.0.0.1:{port}");
-            let url = origin.parse().expect("a valid loopback URL");
-
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                .title("Strata")
-                .inner_size(1440.0, 920.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
-
+            open_window(app, port)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -833,6 +866,76 @@ fn main() {
                 stop_host(app);
             }
         });
+}
+
+/// The one window, on the host's own origin so the page and its API share an origin exactly as the browser build does.
+fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let origin = format!("http://127.0.0.1:{port}");
+    let url = origin.parse().expect("a valid loopback URL");
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+        .title("Strata")
+        .inner_size(1440.0, 920.0)
+        .min_inner_size(900.0, 600.0)
+        .build()?;
+    Ok(())
+}
+
+/// Linux window process: shows the page of the host the shell started and registers the app updater with it. It starts no host and
+/// stops nothing: when the window closes it just exits, and the shell stops the host. If WebKit crashes this process, only this
+/// process dies; the shell moves to browser mode.
+#[cfg(target_os = "linux")]
+fn run_window_process() -> ! {
+    let port: u16 = std::env::var("STRATA_WINDOW_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(PREFERRED_PORT);
+    let token = std::env::var("STRATA_SHUTDOWN_TOKEN").unwrap_or_default();
+    // A way to prove the safety net on a computer where the window works (tests only): this process dies the way a WebKit crash does.
+    if std::env::var_os("STRATA_WINDOW_TEST_CRASH").is_some() {
+        eprintln!("[strata] STRATA_WINDOW_TEST_CRASH is set: the window process aborts on purpose.");
+        std::process::abort();
+    }
+    // The shell is this process's parent: when it is gone (killed, crashed, logged off) the window goes too.
+    let parent = std::os::unix::process::parent_id();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if std::os::unix::process::parent_id() != parent {
+            std::process::exit(0);
+        }
+    });
+    tauri::Builder::default()
+        // First, as the plugin requires: a second window process ends here after telling the open window to show itself.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(move |app| {
+            // The signed app updater (Tauri) is reached by the host through a token-protected loopback bridge; tell the host where it is.
+            let bridge_token = random_token();
+            if let Some(bridge) = updater::start(app.handle(), bridge_token) {
+                let body = serde_json::json!({ "bridge": { "url": bridge.url, "token": bridge.token } }).to_string();
+                if let Err(e) = http_request_body(
+                    "POST",
+                    &format!("http://127.0.0.1:{port}/api/control/ui"),
+                    &[("x-strata-shutdown", token.as_str()), ("content-type", "application/json")],
+                    Some(&body),
+                ) {
+                    eprintln!("[strata] the app updater could not be registered with the host: {e}");
+                }
+            }
+            open_window(app, port)
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                window.app_handle().exit(0);
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building the Strata application")
+        .run(|_app, _event| {});
+    std::process::exit(0)
 }
 
 #[cfg(test)]

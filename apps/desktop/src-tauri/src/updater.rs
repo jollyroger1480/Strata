@@ -231,6 +231,7 @@ pub fn start(app: &AppHandle, token: String) -> Option<Bridge> {
 }
 
 /// Environment for the App Host: where the bridge is, which app version this is.
+#[allow(dead_code)]
 pub fn apply_env(cmd: &mut std::process::Command, app: &AppHandle, bridge: Option<&Bridge>) {
     cmd.env("STRATA_APP_VERSION", app.package_info().version.to_string());
     if let Some(bridge) = bridge {

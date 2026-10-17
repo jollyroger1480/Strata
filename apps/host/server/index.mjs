@@ -1230,6 +1230,7 @@ async function api(req, res, path, method, url) {
     try {
       if (body.bridge) appUi.setBridge(body.bridge);
       if (body.mode === 'browser') return json(res, 200, await appUi.switchToBrowser({ url: `http://127.0.0.1:${PORT}/`, reason: body.reason, notice: typeof body.notice === 'string' ? body.notice.slice(0, 300) : '', openPage: body.open !== false }));
+      if (body.open === true) return json(res, 200, { ...appUi.state(), opened: await appUi.openPage(`http://127.0.0.1:${PORT}/`) });
       return json(res, 200, appUi.state());
     } catch (err) { return error(res, 400, err.message); }
   }
