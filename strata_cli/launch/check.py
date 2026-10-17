@@ -68,14 +68,16 @@ def _tool_request(wire: str, base: str, model: str) -> tuple[str, dict]:
 
 def answer_text(wire: str, data: dict) -> str:
     if wire == "responses":
-        if isinstance(data.get("output_text"), str):
-            return data["output_text"]
         parts = []
         for item in data.get("output") or []:
+            if not isinstance(item, dict) or item.get("type") not in (None, "message"):
+                continue                                   # reasoning items are not the answer
             for c in item.get("content") or []:
-                if isinstance(c, dict) and c.get("text"):
+                if isinstance(c, dict) and c.get("type") in (None, "output_text", "text") and c.get("text"):
                     parts.append(c["text"])
-        return "".join(parts)
+        if parts:
+            return "".join(parts)
+        return data["output_text"] if isinstance(data.get("output_text"), str) else ""
     if wire == "messages":
         return "".join(b.get("text", "") for b in data.get("content") or [] if isinstance(b, dict) and b.get("type") == "text")
     try:
