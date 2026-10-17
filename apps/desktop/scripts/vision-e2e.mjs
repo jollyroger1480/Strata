@@ -71,7 +71,9 @@ async function main() {
   const done = await waitJob(started.body.id, 3600);
   record('Download and prepare finishes', done.job.state === 'done', `${done.job.state} ${done.job.error ?? done.job.summary}`);
   const native = (await call('/api/native?refresh=1')).body;
-  const model = native.installed?.models?.find(m => m.model === modelId || m.id === modelId);
+  console.log('    installed models: ' + JSON.stringify((native.installed?.models ?? []).map(m => ({ id: m.id, model: m.model, ready: m.ready, visionPrepared: m.visionPrepared, images: m.images, config: m.config }))));
+  const want = modelId.toLowerCase();
+  const model = native.installed?.models?.find(m => [m.id, m.model, m.tag].some(x => String(x ?? '').toLowerCase() === want));
   record('the model is installed with the picture reader prepared (visionPrepared)', !!model?.visionPrepared, JSON.stringify({ ready: model?.ready, visionPrepared: model?.visionPrepared, images: model?.images }));
   const configFile = model?.configPath ?? (model?.config ? join(dirs.models, model.config) : null);
   let cfg = {};
@@ -82,7 +84,7 @@ async function main() {
     `vision=${cfg.vision ? 'yes' : 'no'} --vision=${(cfg.args ?? []).includes('--vision')} mmproj=${mm ? Math.round(statSync(mm).size / 1048576) + ' MB' : 'none'}`);
 
   // ---- load with the picture reader
-  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: modelId, vision: device } });
+  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.id ?? modelId, vision: device } });
   const loaded = await waitJob(load.body.id, 900);
   const instance = loaded.state.instances[0];
   record('load starts the engine with the picture reader', loaded.job.state === 'done' && instance?.status === 'ready', `${loaded.job.state} ${loaded.job.error ?? ''}; instance=${instance?.status}; vision=${instance?.vision}`);
