@@ -90,6 +90,16 @@ export function closeSettings() {
   navigateHash(locationHref(location), false);
 }
 
+/**
+ * WebKitGTK (the Linux app window; Safari does not exist on Linux) crashes its own UI process with a null pointer in
+ * AcceleratedBackingStore::update when a page calls the View Transitions API (seen on Ubuntu 24.04 and 26.04, WebKitGTK
+ * 2.52, under Xvfb and on a real NVIDIA/Wayland desktop alike; one startViewTransition call is enough). The route
+ * cross-fade is only a nicety, so on that engine a route changes at once.
+ */
+export function isWebKitGtk(ua: string = navigator.userAgent): boolean {
+  return /AppleWebKit/.test(ua) && /Linux|X11/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
+}
+
 function navigateHash(next: string, morph = true) {
   if (window.location.hash === next) return;
 
@@ -97,6 +107,7 @@ function navigateHash(next: string, morph = true) {
   const mayMorph =
     morph &&
     typeof document.startViewTransition === 'function' &&
+    !isWebKitGtk() &&
     root.dataset.motion !== 'reduced' &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
     root.dataset.streaming !== 'true';
