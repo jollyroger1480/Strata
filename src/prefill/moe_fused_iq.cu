@@ -1401,7 +1401,7 @@ bool native_supported(int gu_type, int d_type) {
     }();
     if (off || env == 0 || !gu_covered(gu_type)) return false;
 #if !defined(__HIPCC__)
-    // CUDA: unset, on by default on a compute capability 12.0 card (sm120_series.hpp, STRATA_SM120_PERF=0 off) for the gate/up
+    // CUDA: unset, on by default on a compute capability 12.0 card with 80+ SMs (sm120_series.hpp, STRATA_SM120_PERF=0 off) for the gate/up
     // formats measured there - the IQ3_S pack's IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS layers with IQ4_NL / Q2_0 down (RTX PRO 5000:
     // prompt +7.0% 4K, +5.2% 20K, +3.4% 98K; teacher-forced KL against MMQ 0.0002 over 5998 positions, 0.0010 over 1760 long
     // ones; first-token KL against the FP16 prompt path 0.01181 vs MMQ's 0.01236 over 48 prompts; HumanEval, reasoning,
@@ -1410,7 +1410,9 @@ bool native_supported(int gu_type, int d_type) {
     if (env < 0) {
         if (gu_type != T_IQ2_S && gu_type != T_IQ3_XXS && gu_type != T_IQ3_S && gu_type != T_IQ4_XS) return false;
         const DevInfo& d = dev_info();
-        return d.ok && d.s120 && !d.t75 && d_covered_on(d_type, d);
+        // 12.0 cards with 80+ SMs only (RTX PRO 5000 / 6000, RTX 5080 / 5090): on an RTX 5070 (48 SMs, IQ2_XS pack, experts
+        // partly in RAM) the fused kernels were 4.7% slower on 20K prompts (0/6 pairs) - it keeps MMQ unless STRATA_PF_FUSED=1
+        return d.ok && d.s120 && d.sms >= 80 && !d.t75 && d_covered_on(d_type, d);
     }
 #endif
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two

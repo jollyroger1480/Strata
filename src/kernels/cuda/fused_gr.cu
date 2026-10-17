@@ -1221,18 +1221,21 @@ int down_tg(int ct) {
     if (env >= 0) return env > 0 && env <= 3 && ct % env == 0 ? env : 0;
     // fused_gr_bench cold on an RTX 2080 Ti (down incl. a stamp): T 4 29.1 -> 27.3 us, T 6 38.5 -> 32.2 with pairs;
     // one token per block is slower at every T (the weights are read from L2 once per group)
-    static int per_dev[64];   // 0 unknown, 1 no, 2 sm_75, 3 a 12.0 card
+    static int per_dev[64];   // 0 unknown, 1 no, 2 sm_75, 3 a 12.0 card with 80+ SMs, 4 a smaller 12.0 card
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return 0;
     if (!per_dev[dev]) {
-        int major = 0, minor = 0;
+        int major = 0, minor = 0, sms = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        per_dev[dev] = strata::sm75_default(major, minor) ? 2 : strata::sm120_default(major, minor) ? 3 : 1;   // Turing, STRATA_SM75_PERF=1
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+        per_dev[dev] = strata::sm75_default(major, minor) ? 2 : strata::sm120_default(major, minor) ? (sms >= 80 ? 3 : 4) : 1;   // Turing, STRATA_SM75_PERF=1
     }
-    // a 12.0 card (sm120_series.hpp): one token a block row for every launch of 2+ tokens (RTX PRO 5000, fixed rounds against
-    // token pairs: 2 tokens -2.1%, 3 -2.3%, 4 -0.2%, 5 -2.5%; pairs against no split at 4 tokens -2.4%)
+    // a 12.0 card (sm120_series.hpp) with 80+ SMs: one token a block row for every launch of 2+ tokens (RTX PRO 5000, fixed
+    // rounds against token pairs: 2 tokens -2.1%, 3 -2.3%, 4 -0.2%, 5 -2.5%; pairs against no split at 4 tokens -2.4%); a
+    // smaller one (RTX 5070, 48 SMs: 1 and 2 could not be told apart, an earlier run leaned to 2) token pairs at every even launch
     if (per_dev[dev] == 3) return ct >= 2 ? 1 : 0;
+    if (per_dev[dev] == 4) return ct % 2 == 0 ? 2 : 0;
     return per_dev[dev] == 2 && (ct == 4 || ct == 6) ? 2 : 0;
 #endif
 }

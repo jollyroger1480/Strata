@@ -2233,14 +2233,16 @@ level because of the fused prompt experts (below). What changed:
 
 - On a 12.0 card these bitwise switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
   branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=1` (the
-  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token),
+  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token; token
+  pairs, `=2`, below 80 SMs),
   `STRATA_GU_SWIGLU=1` (new: the routed experts' gate/up, SwiGLU and q8_1 in one launch). A fixed 4-token verify round went
   13.70 -> 11.80 ms with them. `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
 - The interleaved small-batch matvec (`native_mmvq_il`, docs/MMVQ_IL_TABLE.md) also runs 5 to 8 tokens (it stopped at 4, and a
   5-token window cost 2 ms more than a 4-token one), with a 12.0 table for 5-8 tokens and, on 12.0 cards with 80+ SMs, its own
   2-4 token table. Bitwise (`mmvq_il_parity`, 1-8 tokens). `STRATA_MMVQ_IL_WIDE=0` / `STRATA_MMVQ_IL_120=0` turn them off.
-- The native packs' prompt experts run on the fused int8 kernels (`STRATA_PF_FUSED`, the rule gfx12 has) for IQ2_S, IQ3_XXS,
-  IQ3_S and IQ4_XS gate/up; IQ2_XXS / IQ2_XS keep MMQ until measured. Quality on IQ3_S: teacher-forced KL against MMQ 0.0002
+- On 12.0 cards with 80 or more SMs the native packs' prompt experts run on the fused int8 kernels (`STRATA_PF_FUSED`, the rule
+  gfx12 has) for IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS gate/up; IQ2_XXS / IQ2_XS keep MMQ until measured. An RTX 5070 (48 SMs, IQ2_XS
+  pack, experts partly in RAM) was 4.7% slower on 20K prompts with them (0/6 pairs), so smaller 12.0 cards keep MMQ. Quality on IQ3_S: teacher-forced KL against MMQ 0.0002
   (5998 positions; MMQ against itself 0.0000) and 0.0010 after ~6K-token documents (1760 positions); first-token KL against
   the FP16 prompt path 0.01181 vs MMQ's 0.01236 (48 prompts of 1.5K-24K tokens); HumanEval 156/164, reasoning 26/30, agent
   6/6, needles 6/6, CJK 8/8, tool calls 4/5, the same as MMQ. `STRATA_PF_FUSED=0` keeps MMQ.
