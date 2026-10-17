@@ -82,7 +82,7 @@ export function improvementPrompt({ request, steps, lever, doneSummaries }) {
 
 const stepObjectiveBriefing = ctx => ctx;
 
-export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.now, stepTimeoutMs = 20 * 60_000 }) {
+export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.now, stepTimeoutMs = 15 * 60_000 }) {
   mkdirSync(dir, { recursive: true });
   const runs = new Map();     // id -> internal run
 
