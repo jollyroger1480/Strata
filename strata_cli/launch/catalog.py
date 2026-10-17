@@ -214,11 +214,31 @@ class Catalog:
             hw.setdefault("disk_free_gb", self.strata.disk_free(self.strata.data_dir()))
             return hw
         hw = dict(self.strata.hardware(fresh=fresh))
+        hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
         if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()
             if arc:
                 hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
         return hw
+
+    @staticmethod
+    def _admit_old_nvidia(gpus: list[dict]) -> list[dict]:
+        """Pascal / Volta cards (P100, P40, V100: compute capability 6.0-7.0) run on the experimental CUDA 12 engine. setup.py admits them when they
+        are the only kind of graphics card in the computer (`old_gpus_opt_in`: "it is the only kind of NVIDIA GPU in this PC"); the shared hardware
+        reader does not, so the screens said "no usable graphics card found" and left out the Cards step on a computer with several V100s.
+        A newer NVIDIA card or a usable AMD card keeps the old cards out of the way, exactly as in setup."""
+        def arch(g: dict) -> int:
+            try:
+                return int(g.get("arch"))
+            except (TypeError, ValueError):
+                return 0
+        old = [g for g in gpus if g.get("vendor") == "nvidia" and 60 <= arch(g) <= 70 and not g.get("usable", True)]
+        if not old:
+            return gpus
+        if any(g.get("usable", True) for g in gpus):
+            return gpus
+        return [({**g, "usable": True, "problem": None,
+                  "note": "experimental: the CUDA 12 engine (docs/OLDER_GPUS.md)"} if g in old else g) for g in gpus]
 
     def computer(self, fresh: bool = False) -> Computer:
         hw = self.hardware(fresh)
