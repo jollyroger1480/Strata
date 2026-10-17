@@ -104,8 +104,9 @@ def tool_calls(wire: str, data: dict) -> list[tuple[str, dict]]:
     return out
 
 
-def run_checks(harness_id: str, url: str, key: str, model: str, *, timeout: float = 240.0, poster=_post) -> list[Check]:
+def run_checks(harness_id: str, url: str, key: str, model: str, *, timeout: float = 240.0, poster=None) -> list[Check]:
     """The two checks for one harness. `poster` is replaceable for tests."""
+    poster = poster or _post
     base = url.rstrip("/")
     wire = wire_for(harness_id)
     checks: list[Check] = []

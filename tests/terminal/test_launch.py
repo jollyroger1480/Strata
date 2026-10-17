@@ -614,6 +614,61 @@ class ConnectCommand(unittest.TestCase):
         self.assertEqual(out["files"], [])
         self.assertIn("Strata app", " ".join(out["limits"]))
 
+    def test_check_sends_the_apps_own_wire_format_and_reports_pass_or_fail(self):
+        from strata_cli.launch import check
+        seen = []
+
+        def good(url, key, body, headers=None, timeout=0):
+            seen.append(url)
+            if url.endswith("/v1/responses"):
+                if "tools" in body:
+                    return {"output": [{"type": "function_call", "name": "get_weather", "arguments": json.dumps({"city": "Paris"})}]}
+                return {"output_text": "pong"}
+            if url.endswith("/v1/messages"):
+                if "tools" in body:
+                    return {"content": [{"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}}]}
+                return {"content": [{"type": "text", "text": "pong"}]}
+            if "tools" in body:
+                return {"choices": [{"message": {"content": None, "tool_calls": [{"function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]}}]}
+            return {"choices": [{"message": {"content": "Pong."}}]}
+
+        for h, ending in (("opencode", "/v1/chat/completions"), ("codex", "/v1/responses"), ("claude-code", "/v1/messages")):
+            seen.clear()
+            res = check.run_checks(h, "http://127.0.0.1:1", "k", "m", poster=good)
+            self.assertEqual([r.ok for r in res], [True, True], h)
+            self.assertTrue(all(u.endswith(ending) for u in seen), (h, seen))
+
+        def wrong(url, key, body, headers=None, timeout=0):
+            if "tools" in body:
+                return {"choices": [{"message": {"content": "It is sunny.", "tool_calls": None}}]}
+            return {"choices": [{"message": {"content": "hello there"}}]}
+
+        res = check.run_checks("pi", "http://127.0.0.1:1", "k", "m", poster=wrong)
+        self.assertEqual([r.ok for r in res], [False, False])
+        self.assertIn("not the word asked for", res[0].detail)
+        self.assertIn("did not call the tool", res[1].detail)
+
+        import urllib.error
+
+        def refused(url, key, body, headers=None, timeout=0):
+            raise urllib.error.HTTPError(url, 401, "no", None, None)
+        res = check.run_checks("pi", "http://127.0.0.1:1", "", "m", poster=refused)
+        self.assertIn("refused the key", res[0].detail)
+
+    def test_connect_check_flag_prints_pass_lines(self):
+        from strata_cli.launch import check
+        ok = [check.Check("prompt", True, "It answered: 'pong'.", 1.0), check.Check("tool call", True, "It called get_weather with {}.", 2.0)]
+        with mock.patch.object(check, "run_checks", return_value=ok):
+            code, out, err = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:1", "--check"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("PASS prompt", out)
+        self.assertIn("PASS tool call", out)
+        bad = [check.Check("prompt", False, "x", 1.0), ok[1]]
+        with mock.patch.object(check, "run_checks", return_value=bad):
+            code, out, err = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:1", "--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL prompt", out)
+
     def test_context_flag_reaches_the_config(self):
         code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
         self.assertIn('"contextWindow": 65536', out)

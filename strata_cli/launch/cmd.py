@@ -124,6 +124,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     c.add_argument("--model", metavar="NAME", help="the model name the server reports (default: the running launch's)")
     c.add_argument("--context", type=_context, metavar="SIZE", help="the context the server was started with (default: the running launch's, else 32k)")
     c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
+    c.add_argument("--check", action="store_true", help="send one prompt and one tool call to the running server the way this app would, and say if each worked")
     c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
     c.add_argument("--yes", action="store_true", help="do not ask before --write")
     c.add_argument("--show-key", action="store_true", help="print the real key instead of a masked one")
@@ -480,14 +481,20 @@ def run_launch(a: argparse.Namespace) -> int:
             return 0
         _say("")
         _say("Strata is serving.")
-        for i, u in enumerate(result.urls):
-            _say(f"  {'This computer' if i == 0 and '127.0.0.1' in u else 'Address':<14} {u}/v1")
+        for u in result.urls:
+            label = ("This computer" if "127.0.0.1" in u else "Cloudflare" if "trycloudflare" in u else
+                     "Tailscale" if ("ts.net" in u or u.split("//")[1].startswith("100.")) else "Network")
+            _say(f"  {label:<14} {u}/v1")
         if result.key:
             from strata_cli.launch import access
             _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key --preset \"{s.name}\")")
         for n in result.notices:
             _say(f"[!] {n}")
-        _say(f"  Watch it:    strata monitor --url {result.urls[0] if result.urls else ''}")
+        local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
+        if result.key:
+            _say(f"  Watch it:    STRATA_API_KEY=$(strata launch --show-key) strata monitor --url {local} --credential-env STRATA_API_KEY")
+        else:
+            _say(f"  Watch it:    strata monitor --url {local}")
         _say(f"  Connect an app:  strata connect opencode      Stop:  strata launch --stop --preset \"{s.name}\"")
         return 0
     except store.PresetError as e:
@@ -558,6 +565,15 @@ def run_connect(a: argparse.Namespace) -> int:
         _say(f"Install the app (if you have not): {h.install}")
     if h.run:
         _say(f"Then try: {h.run}")
+    if a.check:
+        from strata_cli.launch import check
+        _say("")
+        _say("Checking: one prompt and one tool call, sent the way this app sends them (this can take a minute).")
+        results = check.run_checks(h.id if not h.built_in else "opencode", tgt.url, key, tgt.model)
+        for r in results:
+            _say(f"{'PASS' if r.ok else 'FAIL'} {r.name}: {r.detail} ({r.seconds:.0f} s)")
+        if not all(r.ok for r in results):
+            return 1
     if a.write:
         if not out["files"]:
             _say("Nothing to write for this app.")
