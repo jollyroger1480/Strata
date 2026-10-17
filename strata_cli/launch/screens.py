@@ -754,7 +754,7 @@ class PicturesScreen(Base):
         self.supported = True if r is None else r.images
         items = [Item(["No pictures"], key="off")]
         if self.supported:
-            items.append(Item(["Yes, read pictures"], key="on"))
+            items.append(Item(["Yes, read pictures" + ("" if S.TERMINAL_SETS_UP_PICTURES else "  (this Terminal cannot set it up yet)")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
         sel = 1 if s.vision != "off" and self.supported else 0
@@ -768,7 +768,11 @@ class PicturesScreen(Base):
                  if vram < 24 else "a 0.9 GB download, and about 1.4 GB of graphics memory kept free for the picture reader (text is a few % slower).")
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
-        return Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        out = Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        if not S.TERMINAL_SETS_UP_PICTURES:
+            out.append("\nHeads up: the model installer in this Terminal does not set up the picture reader yet (it is not part of the first release), "
+                       "so the model will answer text only. Your choice is saved for when it does.", style=WARN)
+        return out
 
     def commit(self) -> None:
         self.ctx.settings.vision = self.menu().current.key
