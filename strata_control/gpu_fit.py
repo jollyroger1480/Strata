@@ -1,0 +1,162 @@
+"""Which graphics cards a model should use: ONE place for the app, `strata launch` and setup.
+
+The rule (owner decision):
+1. First try the model on ONE card (the largest) plus system RAM, the normal hybrid mode.
+2. Only when that does not fit, or would be too tight, offer to add the second card as a layer split.
+3. Let the person choose: every option comes with plain numbers and a recommended one is pre-selected (recommend, never force).
+
+The memory arithmetic is native-fit.ts `fitOn` (apps/host/src/lib/native-fit.ts) with the same constants (a test keeps them equal):
+the experts are held first in the graphics memory beyond about DENSE_GB (the dense weights, buffers and a 32K cache), then in RAM beyond
+about SYSTEM_ROOM_GB left for the system; whatever is left would be read from the SSD (`spill_gb`). A split adds the memory of the extra
+cards but every extra card holds its own dense layers and prompt buffers, so each one costs SPLIT_CARD_OVERHEAD_GB of that (an estimate:
+docs/MULTI_GPU.md says each card "holds the dense weights of its layers and its own prompt buffers").
+
+Cards that count: not integrated (an iGPU shares the system RAM and is ignored), at least MIN_CARD_GB of graphics memory, flagged usable by
+the caller's own driver checks (NVIDIA RTX 20 or newer, a supported AMD card, ...). A card needs SPLIT_MIN_VRAM_GB to share a model.
+Pure functions, no I/O: setup.py, strata_cli/launch and tools/strata_mcp.py import it.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+DENSE_GB = 5.0                 # = native-fit.ts DENSE_GB
+SYSTEM_ROOM_GB = 10.0          # = native-fit.ts SYSTEM_ROOM_GB
+DENSE_EXTRA_GB = 1.0           # = native-fit.ts DENSE_EXTRA_GB
+SPLIT_CARD_OVERHEAD_GB = 2.0   # each extra card of a split: its own dense layers and prompt buffers
+SPLIT_MIN_VRAM_GB = 8.0        # setup.py SPLIT_MIN_VRAM_GB: a card sharing a model needs this much
+SPLIT_PROMPT_VRAM_GB = 12.0    # setup.py SPLIT_PROMPT_VRAM_GB (#448): a smaller second card caps the prompt chunk
+MIN_CARD_GB = 4.0              # under this a card cannot hold the dense weights: ignored (an iGPU, a display card)
+FITS_SPARE_RAM_GB = 4.0        # RAM left beyond the experts below which "fits" becomes "tight"
+SPLIT_PROMPT_GAIN = "about 20% faster"   # setup.py's own words for prompts read on two cards (docs/MULTI_GPU.md)
+
+
+def _round1(x: float) -> float:
+    return round(float(x) * 10) / 10
+
+
+def memory_needed(variant: dict) -> float:
+    """RAM + VRAM the model asks for (native-fit.ts memoryNeeded)."""
+    if isinstance(variant.get("memory_gb"), (int, float)):
+        return float(variant["memory_gb"])
+    if variant.get("mem_total") and isinstance(variant.get("ram_needed_gb"), (int, float)):
+        return float(variant["ram_needed_gb"])
+    return _round1(float(variant.get("experts_gb") or variant.get("ram_needed_gb") or 0) + DENSE_EXTRA_GB)
+
+
+def fit(memory_gb: float, ram_gb: float | None, vram_gb: float) -> dict[str, Any]:
+    """native-fit.ts `fitOn` for a given memory need: where the weights go. Keys: vram_use_gb, ram_use_gb, spill_gb, spare_ram_gb, known."""
+    vram = float(vram_gb or 0)
+    if not ram_gb or ram_gb <= 0:
+        return {"vram_use_gb": 0.0, "ram_use_gb": 0.0, "spill_gb": 0.0, "spare_ram_gb": 0.0, "known": False}
+    experts = max(0.0, memory_gb - DENSE_EXTRA_GB)
+    on_gpu = max(0.0, min(experts, vram - DENSE_GB))
+    ram_room = max(0.0, float(ram_gb) - SYSTEM_ROOM_GB)
+    spill = max(0.0, experts - on_gpu - ram_room)
+    in_ram = max(0.0, experts - on_gpu - spill)
+    return {"vram_use_gb": _round1(min(vram, DENSE_GB + on_gpu) if vram > 0 else 0.0),
+            "ram_use_gb": _round1(in_ram + (DENSE_EXTRA_GB if vram <= 0 else 0)), "spill_gb": _round1(spill),
+            "spare_ram_gb": _round1(max(0.0, ram_room - in_ram)), "known": True}
+
+
+def verdict(f: dict) -> str:
+    """fits / tight / spills: all in memory with room to spare / all in memory but little RAM left / part of it is read from the SSD."""
+    if not f.get("known"):
+        return "unknown"
+    if f["spill_gb"] >= 1.0:
+        return "spills"
+    return "fits" if f["spare_ram_gb"] >= FITS_SPARE_RAM_GB or f["ram_use_gb"] <= 0 else "tight"
+
+
+def usable_cards(cards: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(cards that count, cards ignored with a plain reason in 'why_ignored'). Largest memory first, then the card number."""
+    keep, ignored = [], []
+    for c in cards or []:
+        vram = float(c.get("vram_gb") or 0)
+        why = None
+        if c.get("usable") is False:
+            why = c.get("problem") or "Strata cannot use this card"
+        elif c.get("integrated") or c.get("uma") or c.get("unified_memory"):
+            why = "it shares the system memory (an integrated graphics chip), so it adds nothing"
+        elif vram < MIN_CARD_GB:
+            why = f"only {vram:.0f} GB of graphics memory"
+        if why:
+            ignored.append({**c, "why_ignored": why})
+        else:
+            keep.append(c)
+    keep.sort(key=lambda c: (-round(float(c.get("vram_gb") or 0)), c.get("index", 0)))
+    return keep, ignored
+
+
+def _name(c: dict) -> str:
+    n = str(c.get("name") or f"card {c.get('index')}")
+    for junk in ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD "):
+        n = n.replace(junk, "")
+    return n
+
+
+def _option(key: str, cards: list[dict], memory_gb: float, ram_gb: float | None) -> dict[str, Any]:
+    n = len(cards)
+    total = sum(float(c.get("vram_gb") or 0) for c in cards)
+    eff = total - SPLIT_CARD_OVERHEAD_GB * (n - 1)
+    f = fit(memory_gb, ram_gb, eff)
+    v = verdict(f)
+    names = " + ".join(_name(c) for c in cards)
+    label = f"{names} + RAM" if n == 1 else f"{names} + RAM (layer split)"
+    have = (eff + max(0.0, float(ram_gb or 0) - SYSTEM_ROOM_GB))
+    if v == "unknown":
+        words = "memory of this computer unknown"
+    elif v == "spills":
+        words = f"does not fit in memory: about {f['spill_gb']:.0f} GB is read from the SSD while answering (slower)"
+    elif v == "tight":
+        words = f"fits, but tight: needs {memory_gb:.0f} GB of the {have:.0f} GB available"
+    else:
+        words = f"fits: needs {memory_gb:.0f} GB of the {have:.0f} GB available"
+    notes = []
+    if n >= 2:
+        notes.append(f"prompts are read {SPLIT_PROMPT_GAIN}; the cards share the layers (docs/MULTI_GPU.md)")
+        small = [c for c in cards[1:] if float(c.get("vram_gb") or 0) < SPLIT_PROMPT_VRAM_GB - 0.5]
+        if small and float(cards[0].get("vram_gb") or 0) >= SPLIT_PROMPT_VRAM_GB - 0.5:
+            notes.append(f"{_name(small[0])} is small: it can make prompts slower than the first card alone")
+    return {"key": key, "cards": [c.get("index") for c in cards], "label": label, "verdict": v, "summary": f"{label}: {words}",
+            "words": words, "vram_gb": _round1(total), "spill_gb": f["spill_gb"], "ram_use_gb": f["ram_use_gb"],
+            "spare_ram_gb": f["spare_ram_gb"], "notes": notes, "recommended": False}
+
+
+_RANK = {"fits": 0, "tight": 1, "unknown": 2, "spills": 3}
+
+
+def options(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> dict[str, Any]:
+    """The choices for this model on this computer: {"options": [...], "recommended": key, "ignored": [...], "cards": n counted}.
+
+    Options (best known first): the largest card alone; with two or more cards that can share a model, the two largest as a layer split
+    (and all of them when there are more than two); then every other card alone. Exactly one option is recommended:
+    the single largest card when the model fits it (with RAM); otherwise the split if it fits better (a smaller verdict or less SSD use);
+    otherwise the single largest card again (nothing better to offer)."""
+    keep, ignored = usable_cards(cards)
+    out: dict[str, Any] = {"options": [], "recommended": None, "ignored": ignored, "cards": len(keep)}
+    if not keep:
+        return out
+    opts = [_option("single", [keep[0]], memory_gb, ram_gb)]
+    share = [c for c in keep if float(c.get("vram_gb") or 0) >= SPLIT_MIN_VRAM_GB - 0.5]
+    if len(share) >= 2:
+        opts.append(_option("split", share[:2], memory_gb, ram_gb))
+        if len(share) > 2:
+            opts.append(_option("split-all", share, memory_gb, ram_gb))
+    for c in keep[1:]:
+        opts.append(_option(f"single-{c.get('index')}", [c], memory_gb, ram_gb))
+    single = opts[0]
+    best = single
+    if single["verdict"] != "fits":
+        for o in opts[1:]:
+            if len(o["cards"]) > 1 and (_RANK[o["verdict"]], o["spill_gb"]) < (_RANK[best["verdict"]], best["spill_gb"]):
+                best = o
+    best["recommended"] = True
+    out["options"], out["recommended"] = opts, best["key"]
+    return out
+
+
+def recommended_cards(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> list[int]:
+    """The card numbers of the recommended option (empty: no usable card)."""
+    res = options(memory_gb, ram_gb, cards)
+    return next((o["cards"] for o in res["options"] if o["recommended"]), [])
