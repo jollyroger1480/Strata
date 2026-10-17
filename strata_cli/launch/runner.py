@@ -302,20 +302,12 @@ class Runner:
 
     # ---- 2. the model
     def vision_word(self) -> str:
-        """What setup is told for the picture choice. "on" means "as well as this computer can": an AMD card has no GPU picture reader yet, and setup
-        would then switch pictures off without being asked; the CPU reader works there, so that is what "on" means on AMD."""
+        """What setup is told for the picture choice. "on" is setup's "yes": setup (Control mode) picks the CPU encoder on a card under 24 GB
+        and on AMD, the GPU encoder on a bigger NVIDIA card, and downloads the pinned picture-reader file (mmproj) with the model."""
         s = self.s
         if s.vision == "off":
             return "no"
-        if s.vision == "on":
-            try:
-                from strata_control import engine_component
-                if engine_component.detect_backend()[0] == "hip":
-                    return "cpu"
-            except Exception:                                # noqa: BLE001
-                pass
-            return "yes"
-        return s.vision
+        return "yes" if s.vision == "on" else s.vision
 
     def check_pictures(self, path: Path) -> None:
         """Pictures were asked for: say so in plain words when the installed settings still have them off."""
@@ -327,8 +319,8 @@ class Runner:
         except Exception:                                    # noqa: BLE001
             return
         if (desc or {}).get("images") in (None, "off"):
-            note = ("Pictures could not be switched on for this model and graphics card, so it will answer text only. "
-                    "Pick another model or a card the picture reader supports if you need them.")
+            note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
+                    "so it will answer text only.")
             self.notices.append(note)
             self.emit("model", note, 100, level="warn")
 

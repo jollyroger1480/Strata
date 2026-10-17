@@ -766,13 +766,22 @@ class PicturesScreen(Base):
         s = self.ctx.settings
         return next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
 
+    def reader(self) -> str:
+        """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
+        "unknown" before any engine is installed (the first launch fetches it)."""
+        exe = self.ctx.engine_exe()
+        if not exe:
+            return "unknown"
+        folder = Path(str(exe)).parent
+        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+
     def on_mount(self) -> None:
         s = self.ctx.settings
         r = self.row()
         self.supported = True if r is None else r.images
         items = [Item(["No pictures"], key="off")]
         if self.supported:
-            items.append(Item(["Yes, read pictures" + ("" if S.TERMINAL_SETS_UP_PICTURES else "  (this Terminal cannot set it up yet)")], key="on"))
+            items.append(Item(["Yes, read pictures" + ("  (this engine has no picture reader)" if self.reader() == "missing" else "")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
         sel = 1 if s.vision != "off" and self.supported else 0
@@ -787,9 +796,10 @@ class PicturesScreen(Base):
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
         out = Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
-        if not S.TERMINAL_SETS_UP_PICTURES:
-            out.append("\nHeads up: the model installer in this Terminal does not set up the picture reader yet (it is not part of the first release), "
-                       "so the model will answer text only. Your choice is saved for when it does.", style=WARN)
+        if self.reader() == "missing":
+            out.append("\nHeads up: the engine installed here does not carry the picture reader, so the model would answer text only. "
+                       "Update the engine, or say No.", style=WARN)
+        return out
         return out
 
     def commit(self) -> None:

@@ -25,7 +25,6 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
                 "tailscale": "Tailscale"}
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
-TERMINAL_SETS_UP_PICTURES = False          # setup.py in control mode says "images are not part of the app's first release": flip when it does
 KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
 DEFAULT_PORT = 8080
 

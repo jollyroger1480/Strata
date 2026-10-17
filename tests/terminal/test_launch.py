@@ -389,13 +389,29 @@ class AdoptRules(unittest.TestCase):
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
 
-    def test_pictures_on_means_the_cpu_reader_on_an_amd_card(self):
+    def test_pictures_on_is_setups_yes_and_setup_picks_the_encoder(self):
         with Home() as h:
             cat = catalog(HW_12)
-            for vision, backend, want in (("on", "hip", "cpu"), ("on", "cuda", "yes"), ("off", "hip", "no"), ("gpu", "hip", "gpu"), ("cpu", "cuda", "cpu")):
+            for vision, want in (("on", "yes"), ("off", "no"), ("gpu", "gpu"), ("cpu", "cpu")):
                 r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision=vision), catalog=cat)
-                with mock.patch("strata_control.engine_component.detect_backend", return_value=(backend, None)):
-                    self.assertEqual(r.vision_word(), want, (vision, backend))
+                self.assertEqual(r.vision_word(), want, vision)
+            argv = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="on"), catalog=cat).setup_args()
+            self.assertEqual(argv[argv.index("--vision") + 1], "yes")
+
+    def test_setup_control_mode_keeps_pictures_when_the_engine_carries_the_reader(self):
+        from types import SimpleNamespace
+        with Home() as h:
+            mod = catalog(HW_12).strata.setup_module()
+            if mod is None or not hasattr(mod, "control_engine_step"):
+                self.skipTest("no setup.py in this checkout")
+            engine = h.base / "engine"
+            engine.mkdir()
+            found = SimpleNamespace(root=engine, version="0.1.45", backend="cuda", platform="linux-x86_64")
+            with mock.patch.object(mod, "get_llama_cpp", return_value=engine), mock.patch("strata_control.engine_component.resolve", return_value=found):
+                self.assertEqual(mod.control_engine_step({}, "cpu")[5], "none")           # no strata-vision beside the engine: off, with a note
+                (engine / mod.VEXE).write_text("x")
+                self.assertEqual(mod.control_engine_step({}, "cpu")[5], "cpu")            # the component carries it: the choice is kept
+                self.assertEqual(mod.control_engine_step({}, "none")[5], "none")
 
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:
