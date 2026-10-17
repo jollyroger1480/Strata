@@ -35,7 +35,8 @@ ROOT = Path(__file__).resolve().parents[2]
 ASSET = "strata-windows-x64-hip.zip"
 PROGRAMS = ("strata.exe", "strata-device.exe")
 DYNAMIC = ("amd_comgr.dll",)                     # LoadLibrary'd by amdhip64_7.dll: not in any import table
-CRT = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+CRT = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll",
+       "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll", "vcruntime140_threads.dll", "concrt140.dll")      # strata.exe imports msvcp140_atomic_wait.dll (VS 2022 std::atomic wait)
 KPACKS = ("blas_lib",)       # rocblas.dll's own device code; rocSOLVER's (27 MB per arch) is never launched by Strata
 LICENSES = ("rocblas", "rocsolver", "hipblas", "hipblas-common", "hipblaslt", "amd_comgr", "rocm-core")
 NOTICE = """Strata's Windows HIP engine ships these AMD ROCm components unmodified, from AMD's TheRock Python wheels
@@ -105,6 +106,7 @@ def main() -> int:
         sys.exit("VCToolsRedistDir is not set: run this from a Visual Studio x64 developer prompt (vcvars64.bat)")
     for d in sorted(crt):
         shutil.copy2(cdir / d, stage / "rocm" / "bin" / d)
+        shutil.copy2(cdir / d, stage / d)                 # and beside the exes: the folder Windows searches first, with no PATH needed
     # #468 #461: the HIP runtime (and the compiler it loads by name) next to the exes as well - Windows searches the
     # exe's folder before System32, where an AMD driver may install its own amdhip64_7.dll (found before PATH's
     # rocm/bin); rocBLAS/hipBLASLt stay in rocm/bin, which they resolve their kernel libraries and ../.kpack from

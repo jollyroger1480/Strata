@@ -321,6 +321,9 @@ class Validation(FakeRoot):
             self.assertFalse(err, res)
         with mock.patch.object(M, "WIN", True):
             self.assertRejected("strata_install", {"backend": "hip", "vision": "cpu"}, "Linux")
+            res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})      # the Windows AMD engine is no longer refused outright
+            self.assertFalse(err, res)
+            self.assertIn("--backend hip", res["plan"]["setup_command"])
 
     def test_data_dir_paths(self):
         self.assertRejected("strata_install", {"data_dir": "models"}, "absolute")
@@ -709,6 +712,19 @@ class MixedGraphics(unittest.TestCase):
         # with no NVIDIA card the integrated GPU stays what it was
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+    def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        cards = [{"index": 0, "name": "AMD Radeon RX 9070 XT", "vram_gb": 15.9, "arch": "gfx1201", "driver": "32.0.1"},
+                 {"index": 1, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5, "arch": "unknown (PCI 164E)", "driver": "32.0.1"}]
+        with mock.patch.object(M, "WIN", True), mock.patch.object(S, "gpus", lambda: []),                 mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in cards]),                 mock.patch.object(M, "windows_video_controllers", lambda: [{"name": "AMD Radeon RX 9070 XT", "driver": "32"}]),                 mock.patch.object(S, "ram_gb", lambda: 64.0), mock.patch.object(S, "page_file_gb", lambda: 10.0):
+            hw = s._hardware()
+            by = {g["name"]: g for g in hw["gpus"]}
+            self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
+            self.assertFalse(by["AMD Radeon(TM) Graphics"]["usable"])
+            rec = s.recommend({**hw, "ram_gb": 64.0})
+            self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("hip", "AMD Radeon RX 9070 XT"))
 
 
 if __name__ == "__main__":

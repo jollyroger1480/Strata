@@ -202,6 +202,18 @@ class ComponentStart(unittest.TestCase):
             server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda"})
         self.assertEqual(caught.exception.code, 5)
 
+    def test_the_build_json_lib_dirs_follow_the_package_folder(self):
+        """The Windows HIP package keeps the ROCm DLLs in rocm/bin (BUILD.json lib_dirs): strata.exe does not load without them on PATH."""
+        from serve import server
+        folder = install_fake_engine(self.components)
+        (folder / "rocm" / "bin").mkdir(parents=True)
+        (folder / "BUILD.json").write_text(json.dumps({"lib_dirs": ["rocm/bin", "../escape", "missing", "/abs"]}), encoding="utf-8")
+        cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
+        self.assertEqual(cfg["lib_dirs"], [str(folder), str(folder / "rocm" / "bin"), "/other"])
+        env = server.child_env(cfg)
+        var = "PATH" if WINDOWS else "LD_LIBRARY_PATH"
+        self.assertTrue(env[var].startswith(str(folder) + os.pathsep + str(folder / "rocm" / "bin")))
+
     def test_doctor_names_the_missing_engine(self):
         from strata_control.doctor import inspect
         report = inspect(self.config)
