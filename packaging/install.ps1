@@ -17,6 +17,7 @@
 # folder (a URL) to use it, for example a local test feed:  $env:STRATA_FEED='http://127.0.0.1:8099'; irm http://127.0.0.1:8099/install.ps1 | iex
 # Optional: $env:STRATA_DATA_DIR (default %LOCALAPPDATA%\Strata), $env:STRATA_INSTALL_TEST_TRUST='1' (a test feed: trust only its
 # test-trust.json for step 4), $env:STRATA_NO_PATH='1' (do not change the user PATH).
+& {   # a child scope: `irm | iex` runs in the caller's scope, and this script's variables must not overwrite the caller's
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -76,8 +77,11 @@ try {
     }
     Write-Host "Checking the release's signature..."
     $strata = Join-Path $incoming 'bin\strata.cmd'
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'      # a native program's stderr note must not stop the script
     $out = & $strata update --check --no-engine --feed $feed 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($code -ne 0) {
         ($out -split "`n" | Select-Object -First 6 | ForEach-Object { "    $_" }) | ForEach-Object { [Console]::Error.WriteLine($_) }
         Remove-Item -Recurse -Force $incoming
         Die "the release folder's signed feed could not be verified, so nothing was installed. If you trust this source, ask its owner to publish a signed feed."
@@ -104,4 +108,5 @@ try {
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+}
 }

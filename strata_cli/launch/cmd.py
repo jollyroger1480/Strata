@@ -491,7 +491,9 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in result.notices:
             _say(f"[!] {n}")
         local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
-        if result.key:
+        if result.key and os.name == "nt":
+            _say(f"  Watch it:    $env:STRATA_API_KEY = strata launch --show-key; strata monitor --url {local} --credential-env STRATA_API_KEY")
+        elif result.key:
             _say(f"  Watch it:    STRATA_API_KEY=$(strata launch --show-key) strata monitor --url {local} --credential-env STRATA_API_KEY")
         else:
             _say(f"  Watch it:    strata monitor --url {local}")

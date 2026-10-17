@@ -491,7 +491,7 @@ class Runner:
             s.tuned_preset, s.tuned_at = preset["id"], time.strftime("%Y-%m-%d")
         elif result and result.get("outcome") == "default_confirmed":
             s.tuned_at = time.strftime("%Y-%m-%d")
-        self.emit("tune", sentence, 100, level="info" if word in ("faster", "already fastest") else "warn", word=word)
+        self.emit("tune", f"Tuning result: {word}. {sentence}", 100, level="info" if word in ("faster", "already fastest") else "warn", word=word)
 
     tune_word: str | None = None
 
