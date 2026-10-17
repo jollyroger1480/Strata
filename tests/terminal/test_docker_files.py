@@ -18,7 +18,7 @@ SH = shutil.which("sh")
 class Scripts(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_shell_scripts_parse(self):
-        for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh"):
+        for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "smoke-test.sh"):
             r = subprocess.run([SH, "-n", str(DOCKER / name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
 

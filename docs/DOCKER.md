@@ -275,6 +275,7 @@ Terminal exactly as the release archive (Python 3.12 and the locked packages, fe
 engine package before it may enter the image: every file's SHA-256, and that every library it imports is bundled or belongs
 to the system or the graphics driver (`packaging/binary_deps.py`); finally it checks that the dynamic linker resolves every
 library inside the finished image. A package that fails any of these stops the build. Nothing is pushed anywhere.
+`docker/smoke-test.sh` runs the checks we ran on real cards (serves, key, chat, tool call, monitor, clean stop, memory freed, restart); see its first lines for the variables.
 
 **From source.** `docker build -t strata:src .` in the repository compiles the CUDA 13 engine inside Docker, makes the package
 and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For AMD and Intel
