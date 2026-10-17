@@ -65,9 +65,9 @@ while IFS= read -r token; do
     SIZE_GB) value="$(size_gb "$f")" ;;
     *) echo "make-tester-readme: unknown placeholder $token" >&2; exit 1 ;;
   esac
-  # replace every occurrence of this exact token (the token contains no sed-special characters except . and -)
-  esc="$(printf '%s' "$token" | sed 's/[.[\*^$/]/\&/g')"
-  sed "s/$esc/$value/g" "$TMP" > "$TMP.2" && mv "$TMP.2" "$TMP"
+  # replace every occurrence of this exact token (plain text, no pattern characters)
+  text="$(cat "$TMP"; printf x)"; text="${text%x}"
+  printf '%s' "${text//"$token"/$value}" > "$TMP"
 done < <(grep -Eo '@(SHA256|SIZE_GB):[^@ ]+@' "$TMP" | sort -u)
 
 if grep -Eq '@[A-Z0-9_]+[:@]' "$TMP"; then echo "make-tester-readme: placeholders left over:" >&2; grep -En '@[A-Z0-9_]+[:@]' "$TMP" >&2; exit 1; fi
