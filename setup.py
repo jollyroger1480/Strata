@@ -6276,7 +6276,7 @@ def mac_control_setup(a) -> int:
     for n in MF.model_note(model, ram):
         warn(n)
     if a.vision in ("yes", "gpu", "cpu"):
-        warn("images are not part of the app's first release: images off for this model")
+        warn("the Mac engine has no picture reader yet: images off for this model (text works as usual)")
     ctx = a.context or MF.recommend_context(ram)
     if ctx > MF.TESTED_CONTEXT:
         say(f"  context {ctx}: measured on the Mac up to {MF.TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
