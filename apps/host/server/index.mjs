@@ -13,7 +13,7 @@ import { skillEdit } from './skill-edits.mjs';
 import { materializeSkills, parseSkillFile, skillSlug, writeCreatedSkill } from './skill-files.mjs';
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
-import { createAgentBridge } from './agent/agent-bridge.mjs';
+import { createAgentBridge, plainTurnFailure } from './agent/agent-bridge.mjs';
 import { createAgentTools } from './agent/tools-settings.mjs';
 import { withPlainStatus } from './agent/status.mjs';
 import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
@@ -563,8 +563,9 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
-    write({ type: 'error', message: err.message, ...(err.details ? { details: err.details } : {}), code: err.code ?? 'AGENT_ERROR' });
-    settle(null, err.message);
+    const plain = plainTurnFailure(err);
+    write({ type: 'error', message: plain.message, ...(plain.details ? { details: plain.details } : {}), code: plain.code });
+    settle(null, plain.message);
   }
 }
 
