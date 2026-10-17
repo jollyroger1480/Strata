@@ -26,9 +26,17 @@ def choose_glyphs(requested: str, encoding: str | None, term: str | None) -> str
     """Prefer readable Unicode when the output stream can encode its graph cells."""
     if requested != "auto":
         return requested
-    from strata_cli.consoleinfo import legacy_console
-    if term == "dumb" or not encoding or legacy_console():
+    from strata_cli import consoleinfo
+    if term == "dumb" or not encoding:
         return "ascii"
+    if consoleinfo.legacy_console():
+        forced = os.environ.get("STRATA_GLYPHS", "").strip().lower()
+        if forced in ("ascii", "legacy"):
+            return "ascii"
+        if forced == "solid":
+            return "solid"
+        # the classic Windows console: the full Unicode look when the window's font could be switched to Cascadia Mono, else solid blocks
+        return "unicode" if consoleinfo.classic_style()["mode"] == "full" else "solid"
     try:
         "▁█░".encode(encoding)
     except (LookupError, UnicodeEncodeError):
@@ -128,8 +136,9 @@ class MonitorApp(App):
         self.theme_choice = "terminal" if theme == "auto" else theme
         self.color_choice = "never" if os.environ.get("NO_COLOR") is not None else color
         self.glyph_choice = choose_glyphs(glyphs, sys.stdout.encoding, os.environ.get("TERM"))
-        from strata_cli.consoleinfo import legacy_console
-        self.margin = 3 if legacy_console() else 2        # one more column of room in the classic Windows console (its scroll bar)
+        from strata_cli import consoleinfo
+        self.classic = consoleinfo.classic_style() if consoleinfo.legacy_console() else None
+        self.margin = 3 if self.classic else 2        # one more column of room in the classic Windows console (its scroll bar)
         self.history = MonitorHistory()
         self.activity_continuity = ActivityContinuity()
         self.displayed_activity_continuity = self.activity_continuity.status()
@@ -166,6 +175,11 @@ class MonitorApp(App):
         self.query_one("#content").styles.color = fg
         self.query_one("#message").styles.color = mute
 
+    @property
+    def text_glyphs(self) -> str:
+        """The glyph set of the text views (2-6): the Overview's solid look is not theirs, they keep the plain ASCII fallback."""
+        return "ascii" if self.glyph_choice == "solid" else self.glyph_choice
+
     def _paint(self, size=None) -> None:
         size = self.screen.size if size is None else size
         snapshot = {**self.displayed, "recent": (self.displayed.get("recent") or [])[:self.requests]}
@@ -178,13 +192,14 @@ class MonitorApp(App):
                 self.metrics_model, width=max(30, min(size.width - self.margin, 100 if self.margin > 2 else 1000)), height=max(8, size.height - 2),
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen, glyphs=self.glyph_choice,
-                color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled)
+                color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled,
+                bullet=(self.classic or {}).get("bullet", "●"))
         elif self.view == 0 and size.width >= 78 and size.height >= 23:
             display = render_dashboard(
                 snapshot, width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                 history=self.history, connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
-                filter_text=self.filter_text, glyphs=self.glyph_choice,
+                filter_text=self.filter_text, glyphs=self.text_glyphs,
                 color=self.color_choice != "never", theme=self.theme_choice)
         elif self.view != 0 and size.width >= 128 and size.height >= 36 and self.connection_state not in (
                 "connecting", "disconnected", "auth_required", "incompatible"):
@@ -193,14 +208,14 @@ class MonitorApp(App):
                 height=max(8, size.height - 2), history=self.history,
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
-                filter_text=self.filter_text, glyphs=self.glyph_choice,
+                filter_text=self.filter_text, glyphs=self.text_glyphs,
                 color=self.color_choice != "never", theme=self.theme_choice,
                 selected=self.selected, detail=self.detail, serving_pane=self.serving_pane)
         else:
             content = render_view(snapshot, VIEWS[self.view],
                                   width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                                   selected=self.selected, frozen=self.frozen,
-                                  filter_text=self.filter_text, glyphs=self.glyph_choice,
+                                  filter_text=self.filter_text, glyphs=self.text_glyphs,
                                   connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                                   serving_pane=self.serving_pane,
                                   detail=self.detail, connection_state=self.connection_state)
@@ -223,6 +238,8 @@ class MonitorApp(App):
         self.query_one("#content", Static).update(display)
         idle_message = ("Read only  |  q keeps server on" if size.width < 60 else
                         "Read only  |  q detaches without stopping Strata")
+        if self.classic and self.classic.get("tip"):             # the classic Windows console: one line about the full look
+            idle_message = ("Read only  |  q detaches  |  " if size.width >= 100 else "") + self.classic["tip"]
         msg = self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
                              "Telemetry unavailable; status only" if self.connection_state == "telemetry_unavailable" else
                              "Frozen display; collection continues" if self.frozen else

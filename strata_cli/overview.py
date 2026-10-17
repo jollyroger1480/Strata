@@ -28,6 +28,8 @@ RED = "#f28b82"
 ACCENT = "#34d399"
 GREY = "#59636b"
 STATES = ("Idle", "Reading", "Generating", "Queued", "Error")
+# the classic Windows console draws with its 16 palette colours; these are the names that map onto them (glyphs="solid")
+SOLID_ACCENT, SOLID_BLUE, SOLID_AMBER, SOLID_RED, SOLID_TRACK = "bright_green", "bright_blue", "yellow", "red", "bright_black"
 
 
 def _num(v: Any) -> float | None:
@@ -55,6 +57,26 @@ def request_speed(r: dict) -> float | None:
     if r.get("decode_tok_s") is not None and _num(r.get("decode_tok_s")) is not None:
         return _num(r.get("decode_tok_s"))
     return round(out / (ms / 1000.0), 1) if out and ms and ms > 0 else None
+
+
+def _cards(hw: dict, static: dict) -> list[dict]:
+    """Each graphics card's own readings when the server lists two or more (hardware.gpus); [] for one card or none: the Overview then
+    draws exactly what it always drew."""
+    raw = hw.get("gpus") if isinstance(hw.get("gpus"), list) else []
+    cards = [{"index": c.get("index"), "name": c.get("name"), "util": _num(c.get("util")), "mem_used": _gib(c.get("mem_used")),
+              "mem_total": _gib(c.get("mem_total")), "temp": _num(c.get("temp")), "power": _num(c.get("power")),
+              "power_limit": _num(c.get("power_limit"))} for c in raw[:16] if isinstance(c, dict)]
+    return cards if len(cards) >= 2 else []
+
+
+def _total(values: list) -> float | None:
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
+def _most(values: list) -> float | None:
+    present = [v for v in values if v is not None]
+    return max(present) if present else None
 
 
 def build(metrics: dict | None) -> dict | None:
@@ -105,14 +127,15 @@ def build(metrics: dict | None) -> dict | None:
     slots, total_slots = _num(engine.get("expert_slots")), _num(engine.get("experts"))
     cache_mib = _num(engine.get("expert_cache_mib"))
     gen, genmax, width = _num(hw.get("gpu_pcie_gen")), _num(hw.get("gpu_pcie_gen_max")), _num(hw.get("gpu_pcie_width"))
-    return {
+    model = {
         "model": engine.get("model"), "max_context": max_ctx, "state": state, "state_raw": state_raw, "queued": int(queued),
         "progress": (done, total), "phase_text": {"Idle": "Waiting for a request", "Reading": "Reading prompt", "Generating": "Generating a reply",
                                                  "Queued": "Requests are queued", "Error": "Model unavailable"}[state],
         "context": (used, max_ctx),
         "speed": (speed, speed_note, _series(history, "tok_s") if speed_note == "now" or not _series(history, "prefill_tok_s_mean") else
                   _series(history, "tok_s")),
-        "gpu": {"name": static.get("gpu_name"), "util": _num(hw.get("gpu_util")), "util_hist": _series(history, "gpu_util"),
+        "gpu": {"cards": _cards(hw, static),
+                "name": static.get("gpu_name"), "util": _num(hw.get("gpu_util")), "util_hist": _series(history, "gpu_util"),
                 "vram_used": _gib(hw.get("gpu_mem_used")), "vram_total": _gib(hw.get("gpu_mem_total")) or
                 (_num(static.get("gpu_vram_total_mib")) / 1024.0 if _num(static.get("gpu_vram_total_mib")) else None),
                 "vram_hist": _series(history, "gpu_mem_used", GIB), "temp": _num(hw.get("gpu_temp")), "temp_hist": _series(history, "gpu_temp"),
@@ -120,7 +143,8 @@ def build(metrics: dict | None) -> dict | None:
                 "pcie_rx": _num(hw.get("gpu_pcie_rx_mb")), "pcie_hist": _series(history, "gpu_pcie_rx_mb"),
                 "pcie_gen": gen if gen is not None else genmax, "pcie_width": width, "count": _num(static.get("gpu_count"))},
         "cpu": {"load": _num(hw.get("cpu_pct") if hw.get("cpu_pct") is not None else hw.get("cpu")), "hist": _series(history, "cpu"),
-                "cores": _num(static.get("cores")), "threads": _num(static.get("threads"))},
+                "cores": _num(static.get("cores")), "threads": _num(static.get("threads")), "sockets": _num(static.get("sockets")),
+                "numa": _num(static.get("numa_nodes"))},
         "disk": {"read": _num(hw.get("disk_read_mb")), "write": _num(hw.get("disk_write_mb")), "hist": _series(history, "disk_read_mb")},
         "ram": (_gib(hw.get("ram_used")), _gib(hw.get("ram_total"))),
         "experts": {"slots": slots, "total": total_slots, "gb": (cache_mib / 1024.0 if cache_mib is not None else None)},
@@ -131,12 +155,53 @@ def build(metrics: dict | None) -> dict | None:
                     "tps": request_speed(r), "duration": _num(r.get("duration_s"))} for r in recent[:6]],
         "sampled_at": _num(metrics.get("time")),
     }
+    cards = model["gpu"]["cards"]
+    if cards:                                  # two or more cards: the tiles say it for the whole computer, the Cards strip says it per card
+        g = model["gpu"]
+        g["util"] = _most([c["util"] for c in cards])                          # the busiest card
+        g["vram_used"] = _total([c["mem_used"] for c in cards])                # all cards together
+        g["vram_total"] = _total([c["mem_total"] for c in cards])
+        g["vram_hist"] = [g["vram_used"]] * 60 if g["vram_used"] is not None else []     # the server keeps a history of card 0 only: a flat line, not a wrong one
+        g["temp"] = _most([c["temp"] for c in cards])                          # the hottest card
+        g["power"] = _total([c["power"] for c in cards])
+        g["power_limit"] = _total([c["power_limit"] for c in cards])
+        g["count"] = float(len(cards))
+    return model
 
 
 # ------------------------------------------------------------------------------------------------ drawing
 
-def spark(values: list[float | None], width: int, glyphs: str, lo: float | None = None, hi: float | None = None) -> str:
-    """One row of block characters for the last `width` samples; blanks where a sample is missing; ASCII ramp when `glyphs` is ascii."""
+def solid_spark(values: list, width: int, lo: float | None, hi: float | None) -> Text:
+    """The classic console's sparkline (glyphs="solid"): only solid blocks, no dithered shades (ClearType fringes those with colour):
+    a thin dim ▄ for the lowest quarter, ▄ for the middle, █ for the top."""
+    vals = values[-width:]
+    present = [v for v in vals if v is not None]
+    if not present:
+        return Text(" " * width)
+    out = Text(" " * (width - len(vals)))
+    low = min(present) if lo is None else lo
+    high = max(present) if hi is None else hi
+    if high - low < 1e-9:
+        high = low + 1.0
+    for v in vals:
+        if v is None:
+            out.append(" ")
+            continue
+        f = (v - low) / (high - low)
+        if f < 0.25:
+            out.append("▄", style=SOLID_TRACK)
+        elif f < 0.6:
+            out.append("▄")
+        else:
+            out.append("█")
+    return out
+
+
+def spark(values: list[float | None], width: int, glyphs: str, lo: float | None = None, hi: float | None = None) -> str | Text:
+    """One row of block characters for the last `width` samples; blanks where a sample is missing; ASCII ramp when `glyphs` is ascii,
+    solid blocks (a Text) in the classic console's solid look."""
+    if glyphs == "solid":
+        return solid_spark(values, width, lo, hi)
     ramp = ".:-=+*#@" if glyphs == "ascii" else "▁▂▃▄▅▆▇█"
     vals = values[-width:]
     present = [v for v in vals if v is not None]
@@ -156,8 +221,13 @@ def spark(values: list[float | None], width: int, glyphs: str, lo: float | None 
 
 
 def bar(frac: float | None, width: int, glyphs: str, color: str, empty: str = GREY) -> Text:
-    full, hollow = ("#", ".") if glyphs == "ascii" else ("█", "░")
     t = Text(no_wrap=True)
+    if glyphs == "solid":                       # solid █ and a thin ▄ track: no dithered shades in the classic console
+        n = 0 if frac is None else int(round(max(0.0, min(1.0, frac)) * width))
+        t.append("█" * n, style=color)
+        t.append("▄" * (width - n), style=SOLID_TRACK)
+        return t
+    full, hollow = ("#", ".") if glyphs == "ascii" else ("█", "░")
     if frac is None:
         t.append(hollow * width, style=GREY)
         return t
@@ -197,19 +267,48 @@ def _tile(title: str, big: str, sub: str, series: str, width: int, *, accent: st
     body = Text(no_wrap=True, overflow="crop")
     body.append(big + "\n", style=big_style)
     body.append(sub + "\n", style="dim")
-    body.append(series, style=accent)
+    if isinstance(series, Text):                # the solid look's sparkline carries its own styles
+        styled = Text(style=accent)
+        styled.append_text(series)
+        body.append_text(styled)
+    else:
+        body.append(series, style=accent)
     return Panel(body, title=Text(title, style="dim"), title_align="left", box=box_style, padding=(0, 1), width=width,
                  border_style="dim")
 
 
+def _cards_strip(cards: list[dict], glyphs: str, accent: str, ascii_mode: bool) -> Text:
+    """One line per card (up to 4): a small load bar, load %, memory, temperature and power; "+ N more cards" beyond that."""
+    t = Text(no_wrap=True, overflow="crop")
+    t.append("Cards" + chr(10), style=f"bold {accent}")
+    shown = cards[:4]
+    names = [short_gpu(c.get("name")) for c in shown]
+    pad = min(16, max(len(n) for n in names))
+    for c, name in zip(shown, names):
+        util = c["util"]
+        used, total = c["mem_used"], c["mem_total"]
+        t.append(f"GPU {c['index'] if c['index'] is not None else '?'}  {name[:pad]:<{pad}}  ")
+        t.append_text(bar((util / 100.0) if util is not None else None, 10, glyphs, accent))
+        mem = f"{fmt(used, 1)} / {fmt(total, 0)} GB" if used is not None and total is not None else "-- GB"
+        temp = f"{fmt(c['temp'])} {'C' if ascii_mode else '°C'}"
+        t.append(f"  {fmt(util):>3} %   {mem:<14}  {temp:>6}   {fmt(c['power']):>4} W" + chr(10))
+    if len(cards) > 4:
+        t.append(f"+ {len(cards) - 4} more cards: press 5" + chr(10), style="dim")
+    return t
+
+
 def render(model: dict, *, width: int, height: int, connection: str, connection_state: str = "connected", frozen: bool = False,
            glyphs: str = "unicode", color: bool = True, theme: str = "dark", connect: bool = False, view_label: str = "Overview",
-           now: float | None = None) -> Group:
+           now: float | None = None, bullet: str = "●") -> Group:
     now = time.time() if now is None else now
     ascii_mode = glyphs == "ascii"
-    box_style = box.SQUARE if ascii_mode else box.ROUNDED
+    solid = glyphs == "solid"                   # the classic Windows console without Cascadia Mono: solid blocks, square boxes, palette colours
+    box_style = box.SQUARE if (ascii_mode or solid) else box.ROUNDED
     accent = ("#0c8a60" if theme == "light" else ACCENT) if color else "default"
-    plain = (lambda s: "default") if not color else (lambda s: s)
+    blue, amber, red = BLUE, AMBER, RED
+    if solid and color:
+        accent, blue, amber, red = SOLID_ACCENT, SOLID_BLUE, SOLID_AMBER, SOLID_RED
+    plain = (lambda s: "default") if not color else (lambda s: {BLUE: blue, AMBER: amber, RED: red}.get(s, s))
     state = model["state"]
     state_color = plain({"Idle": "default", "Reading": BLUE, "Generating": accent, "Queued": AMBER, "Error": RED}[state])
     age = None if model.get("sampled_at") is None else now - model["sampled_at"]
@@ -229,7 +328,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     label = f"{model.get('model') or ''} {k(ctx_max) if ctx_max else ''}".strip()
     head.append(label, style="bold")
     right = Text()
-    right.append(("● " if not ascii_mode else "* ") + model["phase_text"] + (f" · {pct}%" if pct is not None and state in ("Reading", "Generating") else ""),
+    right.append((bullet + " " if not ascii_mode else "* ") + model["phase_text"] + (f" · {pct}%" if pct is not None and state in ("Reading", "Generating") else ""),
                  style=state_color if state != "Idle" else "dim")
     right.append("   ")
     right.append(f"[{marker}]", style=f"bold {accent}" if marker == "LIVE" else "bold yellow")
@@ -260,24 +359,29 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
 
     # ---- tiles
     g = model["gpu"]
+    cards = g.get("cards") or []
+    ncards = len(cards)
     tile_w = max(18, (min(width, 110) - 3) // 4)
     inner = tile_w - 4
     spd, spd_note, spd_hist = model["speed"]
     util_scale = dict(lo=0, hi=100)
     tiles1 = [
         _tile("Speed", f"{fmt(spd, 1)} tok/s" if spd is not None else "-- tok/s", spd_note, spark(spd_hist, inner, glyphs), tile_w, accent=accent, box_style=box_style),
-        _tile("GPU load", f"{fmt(g['util'])} %", short_gpu(g["name"]) if g["count"] in (None, 1) else f"{short_gpu(g['name'])} +{int(g['count']) - 1}",
+        _tile("GPU load", f"{fmt(g['util'])} %", f"busiest of {ncards} cards" if ncards else
+              short_gpu(g["name"]) if g["count"] in (None, 1) else f"{short_gpu(g['name'])} +{int(g['count']) - 1}",
               spark(g["util_hist"], inner, glyphs, **util_scale), tile_w, accent=accent, box_style=box_style),
         _tile("VRAM", f"{fmt(g['vram_used'], 1)} / {fmt(g['vram_total'], 0)} GB",
-              (f"{int(model['experts']['slots']):,} experts cached" if model["experts"]["slots"] is not None else "graphics memory"),
+              (f"all {ncards} cards" if ncards else
+               f"{int(model['experts']['slots']):,} experts cached" if model["experts"]["slots"] is not None else "graphics memory"),
               spark(g["vram_hist"], inner, glyphs, lo=0, hi=g["vram_total"]), tile_w, accent=accent, box_style=box_style),
-        _tile("GPU temp", f"{fmt(g['temp'])} °C" if not ascii_mode else f"{fmt(g['temp'])} C", "",
+        _tile("GPU temp", f"{fmt(g['temp'])} °C" if not ascii_mode else f"{fmt(g['temp'])} C", "hottest card" if ncards else "",
               spark(g["temp_hist"], inner, glyphs, lo=20, hi=100), tile_w, accent=plain(AMBER) if color else "default", box_style=box_style),
     ]
     c, d = model["cpu"], model["disk"]
     gen = f"Gen{int(g['pcie_gen'])}" if g["pcie_gen"] else "PCIe"
     link = f"{gen} x{int(g['pcie_width'])}" if g["pcie_width"] else gen
-    cpu_sub = (f"{int(c['cores'])} cores · {int(c['threads'])} threads" if c["cores"] and c["threads"] else
+    cpu_sub = (f"{int(c['sockets'])} CPUs · {int(c['cores'])} cores" if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
+               f"{int(c['cores'])} cores · {int(c['threads'])} threads" if c["cores"] and c["threads"] else
                f"{int(c['threads'])} threads" if c["threads"] else "")
     tiles2 = [
         _tile("Power", f"{fmt(g['power'])} W", f"of {fmt(g['power_limit'])} W limit" if g["power_limit"] else "", spark(g["power_hist"], inner, glyphs, lo=0),
@@ -321,7 +425,8 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     for col, just in (("TIME", "left"), ("STATUS", "left"), ("PROMPT", "right"), ("REUSED", "right"), ("OUTPUT", "right"), ("TOK/S", "right"),
                       ("DURATION", "right")):
         req.add_column(col, justify=just, no_wrap=True)
-    show = max(2, min(6, height - 20))
+    strip_rows = (1 + min(ncards, 4) + (1 if ncards > 4 else 0) + 1) if ncards else 0
+    show = max(2, min(6, height - 20 - strip_rows))
     for r in model["recent"][:show]:
         stamp = time.strftime("%H:%M:%S", time.localtime(r["time"])) if r["time"] else "--"
         req.add_row(stamp, Text(r["state"], style=plain(accent) if r["state"] == "Done" else plain(RED if r["state"] == "Error" else AMBER)),
@@ -335,5 +440,8 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     bottom.add_row(Group(*lines), right)
 
     hint = Text(("1-7 views" if connect else "1-6 views") + "   / filter   Space freeze   r refresh   t theme   b open in browser   ? help   q quit", style="dim")
-    parts: list[Any] = [head, tabs, rule, st, state_bar, Text(""), row(tiles1), row(tiles2), bottom, Text(""), hint]
+    parts: list[Any] = [head, tabs, rule, st, state_bar, Text(""), row(tiles1), row(tiles2)]
+    if ncards:
+        parts += [Text(""), _cards_strip(cards, glyphs, accent, ascii_mode)]
+    parts += [bottom, Text(""), hint]
     return Group(*parts)

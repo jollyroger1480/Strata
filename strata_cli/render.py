@@ -224,7 +224,9 @@ def _device(row: dict, width: int) -> str:
     mem = f"{number(used / 2**30 if isinstance(used, (int, float)) else None, '', 1)}/{number(total / 2**30 if isinstance(total, (int, float)) else None, ' GiB', 1)}"
     if width < 80:
         return _line(f"{label:<7} {mem:<17} util {number(row.get('util'), '%')}", width)
-    return _line(f"{label:<7} {field(row.get('name'), 18)} {mem:<17} {number(row.get('util'), '%'):>5}  {number(row.get('temp'), ' C'):>6}  {number(row.get('power'), ' W'):>7}", width)
+    from strata_cli.overview import short_gpu              # "NVIDIA GeForce RTX 3090" -> "RTX 3090": the maker's prefix used to cut the model off
+    name = short_gpu(row.get("name")) if row.get("name") else None
+    return _line(f"{label:<7} {field(name, 20)} {mem:<17} {number(row.get('util'), '%'):>5}  {number(row.get('temp'), ' C'):>6}  {number(row.get('power'), ' W'):>7}", width)
 
 
 def _device_stage(topology: dict, index: Any, width: int) -> str:

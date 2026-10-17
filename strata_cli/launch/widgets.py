@@ -23,9 +23,12 @@ ACCENT, WARN, BAD, SEL, RULE = "#34d399", "#f5c56b", "#f28b82", "#1f2a27", "#3a4
 def unicode_ok() -> bool:
     if os.environ.get("TERM") == "dumb":
         return False
-    from strata_cli.consoleinfo import legacy_console
-    if legacy_console():                      # the classic Windows console's font has no arrows, check marks or block glyphs
-        return False
+    from strata_cli import consoleinfo
+    if consoleinfo.legacy_console():          # the classic Windows console's font has no arrows, check marks or block glyphs ...
+        if os.environ.get("STRATA_GLYPHS", "").strip().lower() in ("ascii", "legacy"):
+            return False
+        if consoleinfo.classic_style()["mode"] != "full":         # ... unless the window's font could be switched to Cascadia Mono
+            return False
     enc = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
         "›─↑↓•█░".encode(enc)
