@@ -3125,5 +3125,18 @@
   "s3129": "Das war ein Beispieldurchlauf, während die App ihren Host nicht erreichen konnte.",
   "s3130": "Startet noch",
   "s3131": "Time-skip braucht eine fertig gestartete App. Versuche es gleich noch einmal.",
-  "s3132": "Arbeitet an einer Kopie deiner Dateien."
+  "s3132": "Arbeitet an einer Kopie deiner Dateien.",
+  "s3133": "Die Engine konnte nicht starten, weil auf diesem Computer eine ihrer Programmdateien fehlt.",
+  "s3134": "Installiere Strata neu (das Installationsprogramm enthält die Datei) oder drücke auf Reparieren. Andere Programme zu schließen hilft nicht.",
+  "s3135": "Die Engine konnte nicht starten, weil eine ihrer Programmdateien nicht zu diesem Computer passt oder beschädigt ist.",
+  "s3136": "Installiere Strata neu oder drücke auf Reparieren. Wenn es weiter passiert, aktualisiere den Grafiktreiber.",
+  "s3137": "Die Engine braucht eine neuere Prozessorfunktion, als dieser Computer hat.",
+  "s3138": "Öffne die Details und teile sie mit, wenn du um Hilfe bittest.",
+  "s3139": "Die Engine ist beim Starten abgestürzt.",
+  "s3140": "Starte den Computer neu und versuche es erneut. Wenn es weiter passiert, aktualisiere den Grafiktreiber und öffne die Details, wenn du um Hilfe bittest.",
+  "s3141": "Windows oder deine Sicherheitssoftware hat den Start der Engine verhindert.",
+  "s3142": "Erlaube Strata in deiner Sicherheitssoftware und versuche es dann erneut.",
+  "s3143": "Strata hat eine Datei nicht gefunden, die zum Starten der Engine nötig ist.",
+  "s3144": "Installiere Strata neu oder drücke auf Reparieren.",
+  "s3145": "Das Modell wurde beim Starten angehalten."
 }

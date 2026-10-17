@@ -51,7 +51,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb});
  /* A start that ends with `server_exited` carries the engine's last log line with it; the app turns the code into words and
     keeps this text under "Details" (src/lib/plain-errors.ts). */
- function humanStartError(error){const text=String(error?.message??error),tail=error?.output?.log_tail;return tail&&!text.includes(tail)?`${text}: ${tail}`:text;}
+ function exitCodeText(code){const n=Number(code);if(!Number.isFinite(n)||n===0)return '';const u=n<0?n+2**32:n;return u>=0x80000000?`exit code 0x${u.toString(16).toUpperCase().padStart(8,'0')}`:`exit code ${u}`;}
+ function humanStartError(error){const text=String(error?.message??error),tail=error?.output?.log_tail,code=exitCodeText(error?.output?.engine_exit_code);const head=code&&!text.includes(code)?`${text} (${code})`:text;return tail&&!head.includes(tail)?`${head}: ${tail}`:head;}
  /* A run config the app's install job wrote names files inside the app's own Control folder (`cwd`, `--expert-profile`). When the
     app is reinstalled to another folder, or an update moves Control, those absolute paths point at nothing and every installed
     model breaks. At every read of the installed models, a path that ends up inside a folder called `control` that no longer
