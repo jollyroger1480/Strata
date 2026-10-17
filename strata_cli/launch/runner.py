@@ -263,7 +263,11 @@ class Runner:
             argv += ["--feed", feed]
         if self.components_dir:
             argv += ["--components-dir", self.components_dir]
-        p = self._spawn(argv)
+        env = self._env()
+        for key, value in self.s.extra.items():              # the engine's own environment settings (device selectors, ...) apply to its test start too
+            if not key.startswith("--") and value.lower() not in ("off", "unset", "none"):
+                env[key] = value
+        p = self._spawn(argv, env=env)
         last = None
         tail: list[str] = []
         for line in p.stdout:                                # type: ignore[union-attr]
