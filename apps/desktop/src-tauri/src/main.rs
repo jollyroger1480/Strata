@@ -31,6 +31,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(not(target_os = "linux"))]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
