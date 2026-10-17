@@ -120,7 +120,9 @@ console.log(`flattened: ${flat.packages} placed (${flat.nested} nested for a sec
 // --- prune ------------------------------------------------------------------------------------------------------------
 const OTHER_OS = platform === 'win32' ? /(^|[\\/._-])(darwin|linux|android|freebsd|musl)([\\/._-]|$)/i
   : platform === 'darwin' ? /(^|[\\/._-])(win32|linux|android|freebsd|musl)([\\/._-]|$)/i
-    : /(^|[\\/._-])(win32|darwin|android|freebsd)([\\/._-]|$)/i;
+    : /(^|[\\/._-])(win32|darwin|android|freebsd|musl|arm64|aarch64|armv7|arm|ia32|riscv64|ppc64|s390x|loong64)([\\/._-]|$)/i;
+// Linux: the AppImage bundler (linuxdeploy) resolves the libraries of every ELF file under resources and stops on one it
+// cannot satisfy (koffi's musl build wants libc.musl). The app is glibc x86_64, so musl and other-CPU builds are dropped.
 /** Whole packages the app never loads: office-document conversion (hundreds of MB) and speech input. */
 const DROP_PACKAGES = [/libreoffice-kit/i, /sherpa-onnx/i];
 /** Only when sitting directly in a package's root (a library may have a runtime folder called `doc`, e.g. yaml/dist/doc). */
