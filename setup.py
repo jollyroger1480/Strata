@@ -5037,6 +5037,12 @@ def is_wsl() -> bool:
     return sys.platform.startswith("linux") and "microsoft" in platform.uname().release.lower()
 
 
+def ple_ram_platform_ok() -> bool:
+    """147-verify: --ple-io ram for a PC with RAM to spare was measured on Linux only (Windows locks pages differently and
+    WSL pins little), so only there."""
+    return not WIN and not is_wsl()
+
+
 def rotational_disk(path) -> str | None:
     """#605 (Linux): the disk's name when `path` is on a rotational disk (sysfs queue/rotational), else None."""
     if WIN:
@@ -7345,6 +7351,24 @@ def main() -> int:
             warn(f"the model is on a rotational disk ({disk}): its n-gram table is read from it at random, which can "
                  f"stall prompts for minutes (#605). An SSD is recommended; with ~{table_gb:.0f} GB more RAM, "
                  "--ple-io ram in the config's args keeps the table in RAM instead")
+    elif not low_ram and ple_ram_platform_ok():
+        # 147-verify: on an SSD too, a PC with RAM to spare keeps the n-gram table in RAM: a new prompt's first chunk then
+        # does not wait for its table rows (65,536 random SSD reads at 4K tokens).  RTX PRO 5000 (Linux, NVMe, fresh engine
+        # per prompt, 3 rounds, the same bits): prompt 4K 1298 -> 1059 ms (-18%), 20K 4644 -> 4223 ms (-9%), 98K 20447 ->
+        # 20027 ms (-2%), decode +0.8%.  On a card whose prompt is slow (R9700) the read hides behind layer 0 and nothing
+        # changes.  It costs the table's size in RAM, so only with 16 GB to spare beyond the model's own need; a smaller PC
+        # keeps reading from the SSD as before.
+        try:
+            tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
+            size = ple.stat().st_size if ready else getattr(tensor, "expected_bytes", lambda: None)()
+        except Exception:
+            size = None
+        table_gb = size / 1e9 if size else 28.8
+        if ram >= MODELS[model]["ram_gb"] + table_gb + 16:
+            args += ["--ple-io", "ram"]
+            ok(f"{ram:.0f} GB of RAM: the {table_gb:.0f} GB n-gram table is kept in RAM (--ple-io ram), so a new prompt does "
+               "not wait for its rows from the SSD (a 4K prompt about 18% sooner on a fast card); remove --ple-io ram from "
+               "the config's args to read it from the SSD instead")
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 10.6 KB with K8V4, 7.5 KB with 4-bit, so only
