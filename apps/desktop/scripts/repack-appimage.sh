@@ -61,4 +61,8 @@ mksquashfs "$WORK/AppDir" "$WORK/app.squashfs" -root-owned -noappend -comp zstd 
 head -c "$OFFSET" "$IN" > "$OUT"
 cat "$WORK/app.squashfs" >> "$OUT"
 chmod +x "$OUT"
+# The checksum is computed here, from the finished file, every time: a README or a note must take it from this file
+# (apps/desktop/scripts/make-tester-readme.sh) and never from an older build.
+( cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 echo "repacked: $OUT ($(stat -c %s "$OUT") bytes)"
+cat "$OUT.sha256"
