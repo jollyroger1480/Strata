@@ -809,17 +809,46 @@ class SaveAndRun(Base):
 
 
 class CardsStep(Base):
-    def test_cards_step_only_with_two_cards(self):
+    def test_cards_step_defaults_to_the_largest_card_plus_ram_and_offers_the_split(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Which graphics cards should it use?", t)
             self.assertIn("Step 2 of 10", t)
-            self.assertIn("Let Strata choose (recommended)", t)
-            await press(pilot, "down", "enter")
-            self.assertEqual(ctx.settings.gpus, [0])
+            flat = " ".join(t.split())
+            self.assertIn("+ RAM", flat)                             # every choice says what it uses
+            self.assertIn("(layer split)", flat)                     # the second card is offered as a split
+            self.assertIn("recommended", flat)
+            self.assertIn("fits: needs", flat)                       # plain numbers
+            cur = app.screen.menu().current
+            self.assertEqual(len(cur.key), 1)                        # the recommended choice is the single largest card
+            await press(pilot, "enter")                              # keeping it stores "let Strata choose": the same rule runs in setup
+            self.assertIsNone(ctx.settings.gpus)
             self.assertIn("Where should the model files be stored?", text_of(app))
         self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_choosing_the_split_stores_both_cards(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "down", "enter")
+            self.assertEqual(ctx.settings.gpus, [0, 1])
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_a_model_too_big_for_one_card_and_ram_recommends_the_split(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter")
+            cur = app.screen.menu().current
+            self.assertEqual(sorted(cur.key), [0, 1])
+        hw = dict(HW_2X16)
+        hw["ram_gb"] = 24.0
+        self.run_app(case, ctx=make_ctx(hw))
+
+    def test_an_integrated_chip_beside_one_card_gives_no_cards_step(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter")
+            self.assertIn("Step 1 of 9", text_of(app))
+        hw = dict(HW_2X16)
+        hw["gpus"] = [dict(HW_2X16["gpus"][0]), {"index": 1, "name": "AMD Radeon Graphics", "vram_gb": 16.0, "usable": True, "integrated": True}]
+        self.run_app(case, ctx=make_ctx(hw))
 
     def test_one_card_has_nine_steps(self):
         async def case(app, pilot, ctx):

@@ -119,7 +119,14 @@ class Computer:
 
     @property
     def usable_gpus(self) -> list[dict]:
-        return [g for g in self.gpus if g.get("usable", True)]
+        """The cards that count (strata_control/gpu_fit.py: an integrated chip or a tiny card is ignored), the largest first."""
+        from strata_control import gpu_fit
+        return gpu_fit.usable_cards(self.gpus)[0]
+
+    @property
+    def ignored_gpus(self) -> list[dict]:
+        from strata_control import gpu_fit
+        return gpu_fit.usable_cards(self.gpus)[1]
 
     @property
     def main_vram_gb(self) -> float:

@@ -92,7 +92,7 @@ def _name(c: dict) -> str:
     n = str(c.get("name") or f"card {c.get('index')}")
     for junk in ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD "):
         n = n.replace(junk, "")
-    return n
+    return n + (f" (card {c.get('index')})" if c.get("_dup") else "")
 
 
 def _option(key: str, cards: list[dict], memory_gb: float, ram_gb: float | None) -> dict[str, Any]:
@@ -137,6 +137,8 @@ def options(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> dict[s
     out: dict[str, Any] = {"options": [], "recommended": None, "ignored": ignored, "cards": len(keep)}
     if not keep:
         return out
+    names = [str(c.get("name")) for c in keep]
+    keep = [{**c, "_dup": names.count(str(c.get("name"))) > 1} for c in keep]       # two cards of one model: told apart by their number
     opts = [_option("single", [keep[0]], memory_gb, ram_gb)]
     share = [c for c in keep if float(c.get("vram_gb") or 0) >= SPLIT_MIN_VRAM_GB - 0.5]
     if len(share) >= 2:

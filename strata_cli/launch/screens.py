@@ -511,34 +511,63 @@ class ModelScreen(Base):
 
 class CardsScreen(Base):
     step_id = "cards"
-    help_text = "Strata can use several graphics cards for one model. 'Let Strata choose' is the recommendation."
+    help_text = ("Strata tries the model on your largest graphics card plus the computer's memory first. A second card is offered as a layer "
+                 "split: it adds room and reads prompts faster. The recommended choice is already selected; pick another if you prefer.")
+    hints = "↑↓ choose   Enter next   Esc back   ? help"
 
     def body(self) -> ComposeResult:
         yield Static(Text("Which graphics cards should it use?", style=f"bold {ACCENT}"), markup=False)
-        yield Menu(id="menu")
+        yield Menu([("", 0)], id="menu")
+        yield Static("", id="cardnotes", markup=False)
+
+    def model_memory(self) -> float:
+        s = self.ctx.settings
+        r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        return float(r.memory_gb) if r is not None and r.memory_gb else 44.0
+
+    def choices(self) -> dict:
+        from strata_control import gpu_fit
+        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus)
 
     def on_mount(self) -> None:
-        gpus = self.ctx.computer.usable_gpus
-        items = [Item([f"Let Strata choose (recommended): {len(gpus)} cards"], key=None)]
-        for g in gpus:
-            items.append(Item([f"Only card {g.get('index')}: {g.get('name')}, {float(g.get('vram_gb') or 0):.0f} GB"], key=[g.get("index")]))
-        if len(gpus) > 2:
-            pass
-        items.append(Item(["All of them together, as one"], key=[g.get("index") for g in gpus]))
+        self.res = self.choices()
+        items = []
         sel = 0
         cur = self.ctx.settings.gpus
-        for i, it in enumerate(items):
-            if it.key == cur:
+        for i, o in enumerate(self.res["options"]):
+            label = o["label"] + ("   (recommended)" if o["recommended"] else "")
+            items.append(Item([label, Cell(o["words"], WARN if o["verdict"] in ("spills", "tight") else "")], key=o["cards"]))
+            if cur is None and o["recommended"] or (cur is not None and o["cards"] == list(cur)):
                 sel = i
+        self.query_one(Menu).columns = [("", 58), ("", 0)]
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 
+    def refresh_body(self) -> None:
+        lines = Text()
+        cur = self.menu().current if self.menu() else None
+        opt = next((o for o in self.res["options"] if cur is not None and o["cards"] == cur.key), None)
+        for n in (opt or {}).get("notes", []):
+            lines.append(f"  {n}\n", style=MUTE)
+        for g in self.res["ignored"]:
+            lines.append(f"  Not used: {g.get('name')} ({g['why_ignored']}).\n", style=MUTE)
+        try:
+            self.query_one("#cardnotes", Static).update(lines)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    def on_cursor(self) -> None:
+        self.refresh_body()
+
     def explain(self) -> Text:
-        return Text("This computer has several graphics cards. One card is simplest; several cards share the model so bigger "
-                    "models fit. Strata's own choice is a good default.", style=MUTE)
+        return Text("One card plus your RAM is the normal way and keeps things simple. Two cards share the layers: more room for the model and "
+                    "prompts read about 20% faster, but a small second card can slow it down. Strata recommends one of them; the choice is yours.",
+                    style=MUTE)
 
     def commit(self) -> None:
-        self.ctx.settings.gpus = self.menu().current.key
+        cur = self.menu().current
+        rec = next((o["cards"] for o in self.res["options"] if o["recommended"]), None)
+        self.ctx.settings.gpus = None if cur.key == rec else list(cur.key)         # the recommended choice stays "let Strata choose" (the same rule in setup)
 
 
 # ------------------------------------------------------------------------------------------------ 3 folder
