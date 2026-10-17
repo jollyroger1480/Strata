@@ -73,53 +73,15 @@ def extract(archive: Path, destination: Path) -> Path:
     return inner
 
 
-#: What the app's installer needs on top of the Terminal bundle: the model catalog and GPU probe (tools/strata_mcp.py reads
-#: setup.py's tables), and the install job, which downloads a model the user chose, prepares it with the bundled tools and
-#: writes a run config naming "component:strata-engine". setup.py runs in its CONTROL mode there (no pip, no engine fetch,
-#: no compiler). Entry points; their local imports under tools/ come with them.
-INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
-INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
-                   "strata_tokenizer", "gguf_reader")
-INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
-
-
-def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
-    """The tools/ modules `entry` imports, transitively (static: import and from-import statements)."""
-    import ast
-    seen: set[str] = set()
-    todo = list(entry)
-    while todo:
-        name = todo.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        source = folder / "tools" / f"{name}.py"
-        if not source.exists():
-            raise SystemExit(f"installer tool missing: tools/{name}.py")
-        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8-sig"))):
-            names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else \
-                [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
-            todo += [m for m in names if (folder / "tools" / f"{m}.py").exists() and m not in seen]
-    return sorted(seen)
+#: What the app's installer needs on top of the Terminal bundle: the model catalog, GPU probe and install job. The list and the copy
+#: live in packaging/package_terminal.py (the Terminal archive carries the same files, for `strata launch`).
+INSTALLER_FILES, INSTALLER_TOOLS, INSTALLER_DATA = pt.INSTALLER_FILES, pt.INSTALLER_TOOLS, pt.INSTALLER_DATA
+local_imports = pt.local_imports
 
 
 def add_installer(folder: Path) -> dict:
     """Copy the installer's files from the source tree into the staged Control (after the Terminal bundle is in place)."""
-    tools = local_imports(ROOT, INSTALLER_TOOLS)
-    copied = []
-    for name in INSTALLER_FILES:
-        (folder / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / name, folder / name)
-        copied.append(name)
-    (folder / "tools").mkdir(exist_ok=True)
-    for name in tools:
-        shutil.copy2(ROOT / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
-        copied.append(f"tools/{name}.py")
-    if (folder / INSTALLER_DATA).exists():
-        shutil.rmtree(folder / INSTALLER_DATA)
-    shutil.copytree(ROOT / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
-    return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
-            "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
+    return pt.add_installer(folder, ROOT)
 
 
 def write_bundle_record(folder: Path, archive: Path) -> dict:

@@ -579,6 +579,13 @@ def binary_smoke(component: ec.EngineComponent, timeout: float = 60) -> dict:
     except (OSError, subprocess.SubprocessError) as exc:
         raise TestStartFailed(component.version, f"the engine could not run ({type(exc).__name__}: {exc})") from None
     if done.returncode != 0:
+        text = (done.stderr or "") + "\n" + (done.stdout or "")
+        options = re.findall(r"^\s+--[a-z0-9][a-z0-9-]*", text, re.MULTILINE)
+        if done.returncode == 2 and len(options) >= 5:
+            # an engine built before it answered --version prints its usage (the list of its own options) and exits 2: it loaded, its libraries
+            # resolved, the GPU runtime started and its argument parser ran. That is what this test is for; say so, do not fail it.
+            return {"mode": "binary-only", "detail": "no model is installed yet; this engine does not answer --version, but it loaded and listed its options "
+                                                     f"({len(options)} of them), so it runs", "output": ""}
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
         raise TestStartFailed(component.version, f"--version exited {done.returncode}: {tail[0][:200]}")
     return {"mode": "binary-only", "detail": "no model is installed yet, so the engine was run with --version only",

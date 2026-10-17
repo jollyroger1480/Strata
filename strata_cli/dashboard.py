@@ -26,6 +26,19 @@ from strata_cli.render import (_queue_wait, activity_continuity_notice, activity
 WORK_SAMPLE_MAX_AGE_S = 5.0
 
 
+_ASCII_BOXES = False
+
+
+def _rounded():
+    """Panel corners: rounded where the font has them, square (Consolas has these) in the classic Windows console."""
+    return box.SQUARE if _ASCII_BOXES else box.ROUNDED
+
+
+def set_ascii_boxes(on: bool) -> None:
+    global _ASCII_BOXES
+    _ASCII_BOXES = bool(on)
+
+
 def _current_sample(row: dict, age_key: str) -> bool:
     """A retained engine sample stops representing current work after five seconds."""
     age = row.get(age_key)
@@ -214,7 +227,7 @@ def _panel(lines: list[str], title: str, accent: str, *, color: bool) -> Panel:
         body.highlight_regex(r"\b(?:DISCONNECTED|INCOMPATIBLE|REJECTED|AUTH REQUIRED)\b", "red")
         body.highlight_regex(r"[\u2800-\u28ff▁▂▃▄▅▆▇█]+", accent)
     return Panel(body, title=Text(title, style=f"bold {accent}" if color else "bold"),
-                 border_style="dim" if color else "", box=box.ROUNDED, padding=(0, 1))
+                 border_style="dim" if color else "", box=_rounded(), padding=(0, 1))
 
 
 def _columns(left: list[Panel], right: list[Panel]) -> Table:
@@ -734,6 +747,7 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
 
     Smaller terminals retain the existing compact text renderer in MonitorApp.
     """
+    set_ascii_boxes(glyphs == "ascii")
     compact = width < 100 or height < 27
     accent = ("#0c8a60" if theme == "light" else "#34d399") if color else "default"
     danger = ("#b01a2e" if theme == "light" else "#ff8a98") if color else "default"
@@ -755,7 +769,7 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
                                  "bold"))
     heading.append(f"   {safe(connection, max(0, width - 45))}")
     blocked = connection_state in ("disconnected", "auth_required", "incompatible")
-    header = Panel(heading, box=box.ROUNDED,
+    header = Panel(heading, box=_rounded(),
                    border_style=danger_border if blocked else accent, padding=(0, 1))
 
     if connection_state in ("connecting", "disconnected", "auth_required", "incompatible"):
@@ -776,7 +790,7 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
                       Text(message), Text(action, style="dim"), Text(last_seen, style="dim"))
         panel = Panel(Align.center(lines, vertical="middle"),
                       title=Text("CONNECTION", style=f"bold {danger}" if blocked else f"bold {accent}"),
-                      border_style=danger_border if blocked else "dim", box=box.ROUNDED,
+                      border_style=danger_border if blocked else "dim", box=_rounded(),
                       height=max(8, height - 4))
         return Group(header, panel, Text("r Retry   q Detach   1-6 Views", style="dim"))
 

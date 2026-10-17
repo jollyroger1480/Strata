@@ -26,7 +26,8 @@ def choose_glyphs(requested: str, encoding: str | None, term: str | None) -> str
     """Prefer readable Unicode when the output stream can encode its graph cells."""
     if requested != "auto":
         return requested
-    if term == "dumb" or not encoding:
+    from strata_cli.consoleinfo import legacy_console
+    if term == "dumb" or not encoding or legacy_console():
         return "ascii"
     try:
         "▁█░".encode(encoding)
@@ -91,6 +92,7 @@ class MonitorApp(App):
         Binding("right", "next_view", "Next view", show=False),
         Binding("enter", "request_detail", "Row detail", show=False),
         Binding("question_mark", "help", "Help"), Binding("f1", "help", "Help", show=False),
+        Binding("b", "browser", "Open in browser", show=False),
     ]
 
     def __init__(self, endpoint: Endpoint, snapshot: dict | None, *, interval: float = 1.0,
@@ -105,6 +107,8 @@ class MonitorApp(App):
         self.connection_state = ("telemetry_unavailable" if self.has_snapshot and
                                  (self.latest.get("quality") or {}).get("telemetry") == "unavailable" else
                                  "connected" if self.has_snapshot else "connecting")
+        self.metrics_model = None            # the Overview's numbers, from /metrics (None: an older server; the earlier Overview is drawn)
+        self.connect_enabled = False         # launch's monitor adds a Connect view (key 7)
         self.interval = interval
         self.requests = requests
         self.view = 0
@@ -124,6 +128,8 @@ class MonitorApp(App):
         self.theme_choice = "terminal" if theme == "auto" else theme
         self.color_choice = "never" if os.environ.get("NO_COLOR") is not None else color
         self.glyph_choice = choose_glyphs(glyphs, sys.stdout.encoding, os.environ.get("TERM"))
+        from strata_cli.consoleinfo import legacy_console
+        self.margin = 3 if legacy_console() else 2        # one more column of room in the classic Windows console (its scroll bar)
         self.history = MonitorHistory()
         self.activity_continuity = ActivityContinuity()
         self.displayed_activity_continuity = self.activity_continuity.status()
@@ -166,9 +172,16 @@ class MonitorApp(App):
         snapshot["activity_continuity"] = self.displayed_activity_continuity
         snapshot["work"] = {**(self.displayed.get("work") or {}),
                             "requests": ((self.displayed.get("work") or {}).get("requests") or [])[:self.requests]}
-        if self.view == 0 and size.width >= 78 and size.height >= 23:
+        if self.view == 0 and size.width >= 78 and size.height >= 23 and self.metrics_model is not None and                 self.connection_state in ("connected", "stale", "telemetry_unavailable"):
+            from strata_cli import overview
+            display = overview.render(
+                self.metrics_model, width=max(30, min(size.width - self.margin, 100 if self.margin > 2 else 1000)), height=max(8, size.height - 2),
+                connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
+                connection_state=self.connection_state, frozen=self.frozen, glyphs=self.glyph_choice,
+                color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled)
+        elif self.view == 0 and size.width >= 78 and size.height >= 23:
             display = render_dashboard(
-                snapshot, width=max(30, size.width - 2), height=max(8, size.height - 2),
+                snapshot, width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                 history=self.history, connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.glyph_choice,
@@ -176,7 +189,7 @@ class MonitorApp(App):
         elif self.view != 0 and size.width >= 128 and size.height >= 36 and self.connection_state not in (
                 "connecting", "disconnected", "auth_required", "incompatible"):
             display = render_detail_dashboard(
-                snapshot, VIEWS[self.view], width=max(30, size.width - 2),
+                snapshot, VIEWS[self.view], width=max(30, size.width - self.margin),
                 height=max(8, size.height - 2), history=self.history,
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
@@ -185,7 +198,7 @@ class MonitorApp(App):
                 selected=self.selected, detail=self.detail, serving_pane=self.serving_pane)
         else:
             content = render_view(snapshot, VIEWS[self.view],
-                                  width=max(30, size.width - 2), height=max(8, size.height - 2),
+                                  width=max(30, size.width - self.margin), height=max(8, size.height - 2),
                                   selected=self.selected, frozen=self.frozen,
                                   filter_text=self.filter_text, glyphs=self.glyph_choice,
                                   connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
@@ -230,6 +243,7 @@ class MonitorApp(App):
             fresh = with_aggregate_rate(self.rate_previous or {},
                                         await asyncio.to_thread(self.endpoint.snapshot))
             self.latest = fresh
+            await self._poll_metrics()
             self.rate_previous = fresh if _fresh_rate_sample(fresh) else None
             self.activity_continuity.add(fresh)
             if not self.frozen:
@@ -266,6 +280,28 @@ class MonitorApp(App):
             self.polling = False
             if not self.closing and self.is_mounted:
                 self._paint()
+
+    async def _poll_metrics(self) -> None:
+        """The browser Monitor's own data (/metrics: live state, engine facts, hardware with a minute of history, last requests)."""
+        getter = getattr(self.endpoint, "get", None)
+        if getter is None:
+            self.metrics_model = None
+            return
+        try:
+            from strata_cli import overview
+            self.metrics_model = overview.build(await asyncio.to_thread(getter, "/metrics"))
+        except Exception:                                # noqa: BLE001 - an older server has no /metrics: keep the earlier Overview
+            self.metrics_model = None
+
+    def action_browser(self) -> None:
+        import webbrowser
+        url = getattr(self.endpoint, "base_url", None) or getattr(self.endpoint, "root", "")
+        try:
+            opened = webbrowser.open(url) if url else False
+        except Exception:                                # noqa: BLE001
+            opened = False
+        self.error = f"Opened {url} in your browser" if opened else f"Open {url} in a browser (none could be started here)"
+        self._paint()
 
     def on_resize(self, event) -> None:
         self._paint(event.size)

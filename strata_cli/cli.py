@@ -449,6 +449,8 @@ def parser() -> argparse.ArgumentParser:
 
     tune_commands.add_tune_auto(tune_sp)
     tune_commands.add_presets(sp)
+    from strata_cli.launch import cmd as launch_cmd
+    launch_cmd.add_parsers(sp)
     monitor_commands.add_status(sp)
     monitor_commands.add_monitor(sp)
     monitor_commands.add_logs(sp)
@@ -1783,8 +1785,14 @@ def _install(a: argparse.Namespace) -> int:
                       "set STRATA_INSTALL_DIR to that folder to run it from here. To update the engine and Control "
                       "from the signed update feed, run `strata update`", 5)
     extra = [x for x in a.setup_args if x != "--"]
+    env = dict(os.environ)
+    if (ROOT / "python").is_dir() and (ROOT / "VERSION").is_file():
+        # the Terminal bundle: its installer only downloads and prepares the model (no pip, no engine fetch, no compiler)
+        env["STRATA_CONTROL_INSTALL"] = "1"
+        from strata_cli.launch.catalog import install_root
+        env.setdefault("STRATA_INSTALL_DIR", str(install_root()))
     return subprocess.call([sys.executable, str(installer), "--update" if a.update else "--setup", *extra],
-                           cwd=str(installer.parent))
+                           cwd=str(installer.parent), env=env)
 
 
 def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
@@ -1847,6 +1855,9 @@ def _run(a: argparse.Namespace) -> int:
             return _timeskip(a)
         if a.command == "presets":
             return tune_commands.presets_command(a)
+        if a.command in ("launch", "connect"):
+            from strata_cli.launch import cmd as launch_cmd
+            return launch_cmd.run_launch(a) if a.command == "launch" else launch_cmd.run_connect(a)
         if a.command == "tune":
             return _tune(a)
         if a.command == "runtime":
@@ -1915,7 +1926,13 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:                          # a thin bundle ships without strata_control
         pass
     ap = parser()
-    a = ap.parse_args(argv)
+    a, extras = ap.parse_known_args(argv)
+    if extras:
+        if getattr(a, "command", None) in ("launch", "connect"):
+            from strata_cli.launch import cmd as launch_cmd
+            print("strata: " + launch_cmd.unknown_option_message(a.command, extras, ap), file=sys.stderr)
+            return 2
+        ap.error("unrecognized arguments: " + " ".join(extras))
     if getattr(a, "json", False) and a.command not in ("status", "monitor", "logs", "connection", "config"):
         if a.output == "jsonl":
             return _serve_error(a, "--json is one-shot only; use --output jsonl for foreground events")
