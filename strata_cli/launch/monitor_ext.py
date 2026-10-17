@@ -121,7 +121,7 @@ class LaunchMonitor(MonitorApp):
     def _rendered(self) -> dict:
         h = self._harness()
         key = self.info.get("key") or ""
-        return harness.render(h, url=self.info["url"], key=key or "<your API key>", model=self.info.get("model") or "strata")
+        return harness.render(h, harness.target(self.info["url"], key, self.info.get("model") or "strata", self.info.get("context")))
 
     def _copy(self) -> None:
         out = self._rendered()
@@ -216,7 +216,7 @@ class LaunchMonitor(MonitorApp):
         for i, h in enumerate(harness.HARNESSES):
             sel = i == self.connect_index % len(harness.HARNESSES)
             res = self.check_results.get(h.id)
-            status = h.status + (f" {g.tick}" if h.tested else "")
+            status = ("tested " + g.tick) if h.tested else "not tested yet"
             style = ""
             if res == "running":
                 status, style = "checking…", WARN
@@ -228,28 +228,39 @@ class LaunchMonitor(MonitorApp):
             t.append(row.ljust(width - 1) + "\n", style=(f"bold {ACCENT} on #1f2a27" if sel else style))
         h = self._harness()
         out = self._rendered()
+        key = self.info.get("key") or ""
+        height = max(12, self.screen.size.height)
+        used = t.plain.count("\n") + 2
+        room = max(3, height - used - 3)
         t.append("\n")
         paths = ", ".join(f["path"] for f in out["files"]) or ("built into the Strata app" if h.built_in else "")
         t.append(f"{h.title} setup", style=f"bold {ACCENT}")
         t.append(f"   {paths}\n", style=MUTE)
-        if not h.tested and not h.built_in:
-            t.append("  Not tested with this app yet: a starting point, not a promise.\n", style=WARN)
-        for n in h.notes:
-            t.append(f"  {n}\n", style=MUTE)
-        shown_lines = []
+        room -= 2
+        import textwrap
+        limit_lines: list[str] = []
+        for n in out["limits"]:
+            wrapped = textwrap.wrap(n, max(30, width - 6)) or [n]
+            limit_lines += ["  - " + wrapped[0]] + ["    " + w for w in wrapped[1:]]
+        code: list[str] = []
         for f in out["files"][:1]:
             body = f["text"] if self.show_key else harness.mask(f["text"], key)
-            shown_lines += body.splitlines()
+            code += ["  " + ln for ln in body.splitlines()]
         for k, v in out["env"].items():
-            shown_lines.append(f"{k}={v if self.show_key else harness.mask(v, key)}")
-        room = max(3, 0)
-        for line in shown_lines[:14]:
-            t.append("  " + line + "\n")
-        if len(shown_lines) > 14:
-            t.append(f"  … {len(shown_lines) - 14} more lines (c copies all)\n", style=MUTE)
+            code.append(f"  {k}={v if self.show_key else harness.mask(v, key)}")
         res = self.check_results.get(h.id)
+        res_lines = ([f"  {g.tick if c.ok else 'x'} {c.name}: {c.detail}" for c in res] if isinstance(res, list) else [])
+        want_code = min(len(code), max(3, room - min(len(limit_lines), 6) - len(res_lines) - 1))
+        for ln in code[:want_code]:
+            t.append(ln + "\n")
+        if len(code) > want_code:
+            t.append(f"  ... {len(code) - want_code} more lines (c copies all)\n", style=MUTE)
+        left = max(0, room - want_code - (1 if len(code) > want_code else 0) - len(res_lines))
+        if limit_lines:
+            t.append("Good to know\n", style=f"bold {ACCENT}")
+            for ln in limit_lines[:max(2, left)]:
+                t.append(ln + "\n", style=WARN if ln.lstrip().startswith("- WARNING") else MUTE)
         if isinstance(res, list):
-            t.append("\n")
-            for c in res:
-                t.append(f"  {g.tick if c.ok else 'x'} {c.name}: {c.detail}\n", style=ACCENT if c.ok else BAD)
+            for c, ln in zip(res, res_lines):
+                t.append(ln + "\n", style=ACCENT if c.ok else BAD)
         return t

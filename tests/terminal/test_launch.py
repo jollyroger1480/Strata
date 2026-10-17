@@ -512,6 +512,7 @@ class ConnectCommand(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("http://127.0.0.1:8123/v1", out)
         self.assertIn("opencode.json", out)
+        self.assertIn("limit", out)
         self.assertNotIn("abcdefghij1234", out)
         code, out, _ = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:8123", "--key", "sk-strata-abcdefghij1234", "--show-key"])
         self.assertIn("sk-strata-abcdefghij1234", out)
@@ -547,11 +548,76 @@ class ConnectCommand(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Nothing to write", out)
 
-    def test_untested_drafts_say_so(self):
-        h = harness.find("hermes")
-        if not h.tested:
-            code, out, _ = run_cli(["connect", "hermes"])
-            self.assertIn("not been tested", out)
+    def render(self, name, **kw):
+        h = harness.find(name)
+        t = harness.target(kw.get("url", "http://127.0.0.1:18900"), kw.get("key"), "qwen3.8-flash-next-q2_0", kw.get("context", 32768))
+        return harness.render(h, t)
+
+    def test_all_eight_are_tested_configs(self):
+        self.assertEqual([h.id for h in harness.HARNESSES],
+                         ["opencode", "codex", "claude-code", "omp", "pi", "hermes", "openclaw", "deepseek-harness"])
+        for h in harness.HARNESSES:
+            self.assertTrue(h.tested, h.id)
+            self.assertIn("tested", h.status)
+
+    def test_opencode_has_limit_input_and_the_15k_compaction_buffer(self):
+        cfg = json.loads(self.render("opencode")["files"][0]["text"])
+        m = cfg["provider"]["strata"]["models"]["qwen3.8-flash-next-q2_0"]
+        self.assertEqual(m["limit"], {"context": 32768, "input": 28672, "output": 4096})
+        self.assertEqual(cfg["compaction"]["buffer"], 13672)                  # 28672 - 15000
+        self.assertEqual(cfg["provider"]["strata"]["options"]["baseURL"], "http://127.0.0.1:18900/v1")
+        self.assertEqual(cfg["provider"]["strata"]["options"]["apiKey"], "strata-local")
+
+    def test_codex_uses_responses_and_the_key_variable(self):
+        out = self.render("codex", key="sk-real")
+        text = out["files"][0]["text"]
+        self.assertIn('wire_api = "responses"', text)
+        self.assertIn("model_auto_compact_token_limit = 15000", text)
+        self.assertIn('base_url = "http://127.0.0.1:18900/v1"', text)
+        self.assertEqual(out["env"], {"STRATA_API_KEY": "sk-real"})
+
+    def test_claude_code_sets_window_and_output_cap_and_has_no_login(self):
+        out = self.render("claude-code")
+        env = out["env"]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:18900")
+        self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "32768")
+        self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "4096")
+        self.assertEqual(env["CLAUDE_CODE_SIMPLE"], "1")                      # the full prompt is 15.6K tokens
+        self.assertEqual(json.loads(out["files"][0]["text"])["env"], env)
+        big = self.render("claude-code", context=131072)["env"]
+        self.assertEqual(big["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "131072")
+        self.assertNotIn("CLAUDE_CODE_SIMPLE", big)
+        self.assertTrue(any("CLAUDE_CODE_MAX_OUTPUT_TOKENS" in n for n in out["limits"]))
+
+    def test_pi_omp_hermes_openclaw_numbers(self):
+        pi = self.render("pi")["files"]
+        self.assertEqual(json.loads(pi[1]["text"])["compaction"]["reserveTokens"], 17768)       # 32768 - 15000
+        self.assertEqual(json.loads(pi[0]["text"])["providers"]["strata"]["models"][0]["contextWindow"], 32768)
+        omp = self.render("omp")["files"]
+        self.assertIn("thresholdTokens: 15000", omp[1]["text"])
+        self.assertIn("contextWindow: 32768", omp[0]["text"])
+        hermes = self.render("hermes")
+        self.assertIn("provider: lmstudio", hermes["files"][0]["text"])
+        self.assertIn("context_length: 65536", hermes["files"][0]["text"])
+        self.assertTrue(any("WARNING" in n and "64K" in n for n in hermes["limits"]))
+        self.assertFalse(any("WARNING" in n for n in self.render("hermes", context=131072)["limits"]))
+        oc = json.loads(self.render("openclaw")["files"][0]["text"])
+        self.assertEqual(oc["models"]["providers"]["strata"]["models"][0]["contextTokens"], 23192)
+        self.assertTrue(any("Node 24.16" in n for n in self.render("openclaw")["limits"]))
+
+    def test_limits_are_in_plain_words_for_every_app(self):
+        for h in harness.HARNESSES:
+            self.assertTrue(self.render(h.id)["limits"], h.id)
+
+    def test_deepseek_harness_is_the_app(self):
+        out = self.render("deepseek-harness")
+        self.assertEqual(out["files"], [])
+        self.assertIn("Strata app", " ".join(out["limits"]))
+
+    def test_context_flag_reaches_the_config(self):
+        code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
+        self.assertIn('"contextWindow": 65536', out)
+        self.assertIn('"reserveTokens": 50536', out)
 
 
 if __name__ == "__main__":

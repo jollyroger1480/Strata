@@ -300,7 +300,7 @@ def _info_for(result: Result, s: S.LaunchSettings) -> dict:
     except (OSError, ValueError):
         pass
     return {"url": result.urls[0] if result.urls else f"http://127.0.0.1:{s.port}", "urls": result.urls, "key": result.key,
-            "model": cfg.get("model_name") or "strata", "name": s.name, "profile": result.profile, "running": True,
+            "model": cfg.get("model_name") or "strata", "context": s.context, "name": s.name, "profile": result.profile, "running": True,
             "tunnel": result.tunnel}
 
 

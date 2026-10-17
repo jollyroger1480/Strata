@@ -122,6 +122,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     c.add_argument("--key", metavar="KEY", help="the API key (default: the running launch's)")
     c.add_argument("--key-env", metavar="NAME", help="read the key from this environment variable")
     c.add_argument("--model", metavar="NAME", help="the model name the server reports (default: the running launch's)")
+    c.add_argument("--context", type=_context, metavar="SIZE", help="the context the server was started with (default: the running launch's, else 32k)")
     c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
     c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
     c.add_argument("--yes", action="store_true", help="do not ask before --write")
@@ -329,6 +330,16 @@ def running_launches() -> list[dict]:
     return out
 
 
+def _cfg_context(cfg: dict) -> int | None:
+    args = [str(x) for x in cfg.get("args") or []]
+    if "--max-context" in args and args.index("--max-context") + 1 < len(args):
+        try:
+            return int(args[args.index("--max-context") + 1])
+        except ValueError:
+            return None
+    return None
+
+
 def launch_info(name: str | None = None) -> dict | None:
     """Address, key and model name of a launch that is running (or the named preset), for `connect` and the monitor's Connect view."""
     from strata_cli.launch import store
@@ -350,7 +361,7 @@ def launch_info(name: str | None = None) -> dict | None:
         return None
     port = (pick or {}).get("port") or (preset.port if preset else S.DEFAULT_PORT)
     return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": cfg.get("api_key") or (preset.api_key if preset else None),
-            "model": cfg.get("model_name") or "strata", "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
+            "model": cfg.get("model_name") or "strata", "context": _cfg_context(cfg), "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
             "port": port, "access": preset.access if preset else None}
 
 
@@ -508,18 +519,18 @@ def run_connect(a: argparse.Namespace) -> int:
     url = a.url or info.get("url") or f"http://127.0.0.1:{S.DEFAULT_PORT}"
     key = a.key or (os.environ.get(a.key_env) if a.key_env else None) or info.get("key") or ""
     model = a.model or info.get("model") or "strata"
-    out = harness.render(h, url=url, key=key or "<your API key>", model=model)
+    context = a.context or info.get("context") or 32768
+    tgt = harness.target(url, key, model, context)
+    out = harness.render(h, tgt)
     shown_key = key if a.show_key else None
     if machine:
-        print(json.dumps({"schema_version": 1, "ok": True, **{k: (harness.mask(json.dumps(v), key) if False else v) for k, v in out.items()}}))
+        print(json.dumps({"schema_version": 1, "ok": True, **{k: (harness.mask(v, key) if isinstance(v, str) else v) for k, v in out.items()
+                                                              if k != "files"},
+                          "files": [{**f, "text": harness.mask(f["text"], key)} for f in out["files"]]}))
         return 0
     _say(f"{h.title}  ({h.speaks}; {h.status})")
     if not info.get("running") and not a.url:
         _say("[!] No running Strata server was found, so this uses the default address. Start one with: strata launch")
-    if not h.built_in and not h.tested:
-        _say("[!] This setup has not been tested with this app yet; treat it as a starting point.")
-    for n in h.notes:
-        _say(f"  {n}")
     for f in out["files"]:
         _say("")
         _say(f"File: {f['path']}" + ("   (merged into an existing file)" if f["merge"] else ""))
@@ -527,12 +538,20 @@ def run_connect(a: argparse.Namespace) -> int:
             _say("  " + line)
     if out["env"]:
         _say("")
-        _say("Environment:" if True else "")
+        _say("Environment:")
         for k, v in out["env"].items():
-            _say(f"  {k}={v if shown_key else harness.mask(v, key)}" if os.name != "nt" else f"  set {k}={v if shown_key else harness.mask(v, key)}")
+            _say((f"  {k}={v}" if os.name != "nt" else f"  set {k}={v}") if shown_key or v == key and not key else
+                 (f"  {k}={harness.mask(v, key)}" if os.name != "nt" else f"  set {k}={harness.mask(v, key)}"))
+    if out["limits"]:
+        _say("")
+        _say("Good to know:")
+        for n in out["limits"]:
+            _say(f"  - {n}")
     if h.install:
         _say("")
         _say(f"Install the app (if you have not): {h.install}")
+    if h.run:
+        _say(f"Then try: {h.run}")
     if a.write:
         if not out["files"]:
             _say("Nothing to write for this app.")
