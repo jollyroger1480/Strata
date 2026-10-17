@@ -8,6 +8,9 @@
 //   STRATA_ATTN_DAILY=1  the Daily's decode attention (attn_chunk_kernel_pre75 + merge v2)
 //   STRATA_GR_UP75=1     the hyper-connection up projection with its rows' loads hoisted
 //   STRATA_GR_DOWN_TG=1  the hyper-connection down projection with one token a block row (T times the blocks)
+//   STRATA_GU_SWIGLU=1   gate/up, SwiGLU and the q8_1 blocks of the routed experts in one launch
+// and one that rounds differently (KL-checked, the AMD gfx12 rule): STRATA_PF_FUSED (the native packs' prompt experts on the
+// fused int8 kernels, IQ2_S / IQ3_XXS / IQ3_S / IQ4_XS gate/up only; =0 keeps MMQ, =1 takes every covered format).
 //
 //   STRATA_SM120_PERF=0  turns the whole set off on a 12.0 card (the defaults every other card has).
 // Each switch's own variable still wins in both directions (=0 off, =1 / =2 on), on any card, as before.
