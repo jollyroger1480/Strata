@@ -3143,5 +3143,12 @@
   "s3147": "Não foi possível abrir o seletor de pastas. Instale o zenity ou o kdialog para escolher uma pasta, ou digite o caminho.",
   "s3148": "Digite o caminho da pasta",
   "s3149": "Caminho da pasta",
-  "s3150": "/home/voce/Documentos"
+  "s3150": "/home/voce/Documentos",
+  "s3151": "Sair do Strata",
+  "s3152": "Sair do Strata?",
+  "s3153": "Isto para o modelo e encerra o Strata. Os seus chats e ficheiros ficam como estão. Fechar apenas o separador do navegador deixaria o Strata a funcionar.",
+  "s3154": "O Strata parou",
+  "s3155": "O Strata parou. Pode fechar este separador. Para o usar de novo, inicie o Strata a partir do seu ícone.",
+  "s3156": "Não foi possível parar o Strata a partir daqui. Execute a app com --quit num terminal ou tente novamente.",
+  "s3157": "A sair…"
 }

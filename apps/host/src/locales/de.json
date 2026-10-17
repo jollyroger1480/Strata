@@ -3143,5 +3143,12 @@
   "s3147": "Der Ordner-Auswahldialog konnte nicht geöffnet werden. Installiere zenity oder kdialog, um einen Ordner auszuwählen, oder gib den Pfad ein.",
   "s3148": "Ordnerpfad eingeben",
   "s3149": "Ordnerpfad",
-  "s3150": "/home/du/Dokumente"
+  "s3150": "/home/du/Dokumente",
+  "s3151": "Strata beenden",
+  "s3152": "Strata beenden?",
+  "s3153": "Dadurch wird das Modell gestoppt und Strata beendet. Deine Chats und Dateien bleiben erhalten. Nur den Browser-Tab zu schließen, lässt Strata weiterlaufen.",
+  "s3154": "Strata wurde beendet",
+  "s3155": "Strata wurde beendet. Du kannst diesen Tab schließen. Um es wieder zu nutzen, starte Strata über sein Symbol.",
+  "s3156": "Strata konnte von hier aus nicht beendet werden. Starte die App im Terminal mit --quit oder versuche es erneut.",
+  "s3157": "Wird beendet …"
 }

@@ -3143,5 +3143,12 @@
   "s3147": "No se pudo abrir el selector de carpetas. Instala zenity o kdialog para elegir una carpeta, o escribe la ruta.",
   "s3148": "Escribe la ruta de la carpeta",
   "s3149": "Ruta de la carpeta",
-  "s3150": "/home/tu/Documentos"
+  "s3150": "/home/tu/Documentos",
+  "s3151": "Salir de Strata",
+  "s3152": "¿Salir de Strata?",
+  "s3153": "Esto detiene el modelo y cierra Strata. Tus chats y archivos se quedan como están. Cerrar solo la pestaña del navegador dejaría Strata en marcha.",
+  "s3154": "Strata se ha detenido",
+  "s3155": "Strata se ha detenido. Puedes cerrar esta pestaña. Para volver a usarlo, inicia Strata desde su icono.",
+  "s3156": "No se pudo detener Strata desde aquí. Ejecuta la app con --quit en una terminal o inténtalo de nuevo.",
+  "s3157": "Saliendo…"
 }
