@@ -759,6 +759,10 @@ class Strata:
                 amd = []
             if not amd and shutil.which("rocm-smi"):
                 amd = rocm_smi_gpus()
+        if any(g.get("usable") for g in nv):
+            for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
+                if g.get("uma") and g.get("usable"):
+                    g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         hw["gpus"] = nv + amd
         if WIN:
             hw["display_adapters"] = windows_video_controllers()

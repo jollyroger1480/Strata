@@ -474,6 +474,12 @@ def _smi_query(field_name: str) -> list[str]:
 def nvidia_driver_version() -> str | None:
     """The NVIDIA driver version nvidia-smi reports (the oldest one when several cards disagree); None when unreadable."""
     versions = _smi_query("driver_version")
+    if not versions:                      # Linux without nvidia-smi (Fedora: it is in xorg-x11-drv-nvidia-cuda): the kernel module says
+        try:
+            found = re.search(r"Kernel Module\s+(\d+(?:\.\d+)+)", Path("/proc/driver/nvidia/version").read_text())
+            versions = [found.group(1)] if found else []
+        except OSError:
+            versions = []
     return min(versions, key=_version_key) if versions else None
 
 

@@ -309,6 +309,15 @@ class NeverAcquires(unittest.TestCase):
         with mock.patch.object(ec, "nvidia_driver_version", return_value="580.178.04"):
             self.assertEqual(ec.resolve(self.root, backend="cuda", runtime="1").root.name, a.name, "the newer-driver build wins")
 
+    def test_the_driver_version_comes_from_the_kernel_module_when_there_is_no_nvidia_smi(self):
+        text = "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.95.05  Thu Sep 11 2026 GCC version: gcc 15"
+        with mock.patch.object(ec, "_smi_query", return_value=[]), mock.patch.object(Path, "read_text", return_value=text):
+            self.assertEqual(ec.nvidia_driver_version(), "580.95.05")
+        with mock.patch.object(ec, "_smi_query", return_value=["575.57.08", "580.95.05"]):
+            self.assertEqual(ec.nvidia_driver_version(), "575.57.08", "the oldest when cards disagree")
+        with mock.patch.object(ec, "_smi_query", return_value=[]), mock.patch.object(Path, "read_text", side_effect=OSError):
+            self.assertIsNone(ec.nvidia_driver_version())
+
     def test_the_component_fetcher_refuses_where_acquiring_is_forbidden(self):
         store = components.ComponentStore(self.root / "store")
         artifact = components.Artifact(name="engine.tar.gz", url="https://example.invalid/e.tgz",

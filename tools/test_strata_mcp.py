@@ -692,6 +692,25 @@ class MacCatalog(unittest.TestCase):
         self.assertIn("unsloth", [f["family"] for f in s.model_table({"ram_gb": 96, "gpus": []})])
 
 
+class MixedGraphics(unittest.TestCase):
+    def test_an_integrated_amd_gpu_beside_an_nvidia_card_is_not_offered(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        nv = [{"index": 0, "name": "NVIDIA GeForce RTX 5090", "vram_gb": 31.8, "arch": "120", "driver": "580.95"}]
+        igpu = [{"index": 0, "name": "AMD Radeon Graphics", "vram_gb": 0.5, "arch": "gfx1036", "uma": True}]
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: [dict(g) for g in nv]), mock.patch.object(S, "gpu_problem", lambda g: None),                 mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]), mock.patch.object(S, "amd_problem", lambda g: None):
+            hw = s._hardware()
+        by = {g["vendor"]: g for g in hw["gpus"]}
+        self.assertTrue(by["nvidia"]["usable"])
+        self.assertFalse(by["amd"]["usable"])
+        self.assertIn("NVIDIA card", by["amd"]["problem"])
+        rec = s.recommend({**hw, "ram_gb": 92.0})
+        self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
+        # with no NVIDIA card the integrated GPU stays what it was
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
+            self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
