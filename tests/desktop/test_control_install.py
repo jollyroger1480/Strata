@@ -113,6 +113,33 @@ class ControlModeTests(unittest.TestCase):
             data, _ = S.data_folder_in_place()
         self.assertEqual(data, self.home.resolve().parent / "Strata-data")
 
+    @unittest.skipIf(os.name == "nt", "a launcher is a shell script: Linux and macOS bundles")
+    def test_the_bundle_keeps_one_real_python_and_launchers_for_the_other_names(self):
+        sys.path.insert(0, str(ROOT / "apps" / "desktop" / "scripts"))
+        try:
+            spec = importlib.util.spec_from_file_location("stage_control_for_launchers", ROOT / "apps" / "desktop" / "scripts" / "stage-control.py")
+            stage = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(stage)
+        finally:
+            sys.path.pop(0)
+        folder = Path(self.tmp.name) / "bundle"
+        bindir = folder / "python" / "bin"
+        bindir.mkdir(parents=True)
+        real = bindir / "python3.12"
+        real.write_text("#!/bin/sh"+chr(10)+"echo real "+chr(34)+"$@"+chr(34)+chr(10))
+        real.chmod(0o755)
+        os.symlink("python3.12", bindir / "python3")
+        os.symlink("python3", bindir / "python")
+        self.assertEqual(stage.dedupe_python(folder), ["python", "python3"])
+        for name in ("python", "python3"):
+            f = bindir / name
+            self.assertFalse(f.is_symlink())
+            self.assertLess(f.stat().st_size, 400, "a launcher, not a second copy of the interpreter")
+            self.assertTrue(os.access(f, os.X_OK))
+        out = subprocess.run([str(bindir / "python"), "a b", "c"], capture_output=True, text=True).stdout
+        self.assertEqual(out.strip(), "real a b c")
+        self.assertEqual(stage.dedupe_python(folder), [], "run twice: nothing left to change")
+
     def test_the_bundle_lists_everything_the_install_imports(self):
         sys.path.insert(0, str(ROOT / "apps" / "desktop" / "scripts"))
         try:
