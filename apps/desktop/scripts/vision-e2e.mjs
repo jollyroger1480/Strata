@@ -84,7 +84,7 @@ async function main() {
     `vision=${cfg.vision ? 'yes' : 'no'} --vision=${(cfg.args ?? []).includes('--vision')} mmproj=${mm ? Math.round(statSync(mm).size / 1048576) + ' MB' : 'none'}`);
 
   // ---- load with the picture reader
-  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.id ?? modelId, vision: device } });
+  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? modelId.toLowerCase(), vision: device } });
   const loaded = await waitJob(load.body.id, 900);
   const instance = loaded.state.instances[0];
   record('load starts the engine with the picture reader', loaded.job.state === 'done' && instance?.status === 'ready', `${loaded.job.state} ${loaded.job.error ?? ''}; instance=${instance?.status}; vision=${instance?.vision}`);
