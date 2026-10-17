@@ -57,7 +57,7 @@ import { createForkTimeskip } from './timeskip-fork.mjs';
 import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
-import { createAppUpdater } from './app-updater.mjs';
+import { createAppUi } from './app-ui.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
@@ -111,7 +111,9 @@ const CONTROL = findControl();
 const control = createControl({ control: CONTROL });
 // Files a run as administrator made in Strata's own folders (owner Administrators) are given back to the user at every start; best effort, never blocks.
 if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
-const appUpdater = createAppUpdater();
+/* Which window shows the page (the app window or, when that cannot run, a browser tab) and what only the app window can do: app-ui.mjs. */
+const appUi = createAppUi({ shutdown: () => shutdown() });
+const appUpdater = appUi.updater;
 /* The engine that ships inside the installer is put in the components folder when this PC has none (or an older one); no network, hashes checked. The model list waits for it. */
 const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   ? installBundledEngine({ bundleDir: process.env.STRATA_ENGINE_BUNDLE_DIR || resolve(HERE, '..', '..', 'engine-bundle'), components: componentsDirectory(), log: line => console.log(line) })
@@ -1207,12 +1209,33 @@ async function api(req, res, path, method, url) {
       acquisition: { forbidden: acquisitionForbidden(), env: process.env.STRATA_NO_ACQUIRE ?? null },
     });
   }
-  // The shell asks for a clean stop (engines this app started are stopped through Control) before it ends the process.
-  if (path === '/api/control/shutdown' && method === 'POST') {
+  // The shell (and nothing else) holds the secret that lets it end the host or tell it which window is in use.
+  const fromShell = () => {
     const token = process.env.STRATA_SHUTDOWN_TOKEN ?? '';
     const given = String(req.headers['x-strata-shutdown'] ?? '');
-    const same = token.length >= 32 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
-    if (!same) return error(res, 403, 'Not allowed.');
+    return token.length >= 32 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
+  };
+  // Which window the person is using: the page shows "Quit Strata" in browser mode only.
+  if (path === '/api/app/mode' && method === 'GET') return json(res, 200, appUi.state());
+  if (path === '/api/app/quit' && method === 'POST') {
+    // A web page cannot send this header without the browser asking the host first, and the host refuses pages that are not local (above).
+    if (!req.headers['x-strata-client']) return error(res, 403, 'Not allowed.');
+    const verdict = appUi.quit();
+    return verdict.ok ? json(res, verdict.status, { stopping: true }) : error(res, verdict.status, verdict.error);
+  }
+  // The shell: the window process registers its updater; or the window could not run and everything moves to a browser tab.
+  if (path === '/api/control/ui' && method === 'POST') {
+    if (!fromShell()) return error(res, 403, 'Not allowed.');
+    const body = await readBody(req);
+    try {
+      if (body.bridge) appUi.setBridge(body.bridge);
+      if (body.mode === 'browser') return json(res, 200, await appUi.switchToBrowser({ url: `http://127.0.0.1:${PORT}/`, reason: body.reason, notice: typeof body.notice === 'string' ? body.notice.slice(0, 300) : '', openPage: body.open !== false }));
+      return json(res, 200, appUi.state());
+    } catch (err) { return error(res, 400, err.message); }
+  }
+  // The shell asks for a clean stop (engines this app started are stopped through Control) before it ends the process.
+  if (path === '/api/control/shutdown' && method === 'POST') {
+    if (!fromShell()) return error(res, 403, 'Not allowed.');
     json(res, 202, { stopping: true });
     setImmediate(() => void shutdown());
     return;
