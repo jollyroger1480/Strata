@@ -36,10 +36,15 @@ RUN python3 /src/packaging/package_terminal.py --out /out --cache /cache \
  && tar -xzf /out/strata-terminal-*-linux-x86_64.tar.gz -C /opt/strata \
  && mv /opt/strata/strata-terminal-* /opt/strata/terminal \
  && /opt/strata/terminal/bin/strata --version
-# llama.cpp at the commit setup.py pins (its vocabularies and gguf tools): fetched here, so the first start does not depend on GitHub
+# llama.cpp at the commit setup.py pins: fetched here, so the first start does not depend on GitHub. Only gguf-py (the model preparation
+# tools) and the file setup.py looks for (ggml/CMakeLists.txt) are kept: 170 MB become a few
 RUN cd /opt/strata/terminal && STRATA_CONTROL_INSTALL=1 STRATA_INSTALL_DIR=/opt/strata/seed PYTHONNOUSERSITE=1 \
       /opt/strata/terminal/python/bin/python3 -c "import setup; print(setup.get_llama_cpp())" \
- && rm -rf /opt/strata/seed/third_party/*.zip* && du -sh /opt/strata/seed
+ && rm -rf /opt/strata/seed/third_party/*.zip* \
+ && cd /opt/strata/seed/third_party/llama.cpp \
+ && find . -mindepth 1 -maxdepth 1 ! -name gguf-py ! -name ggml ! -name 'LICENSE*' -exec rm -rf {} + \
+ && find ggml -mindepth 1 -depth ! -type d ! -name CMakeLists.txt -delete && find ggml -mindepth 1 -type d -empty -delete \
+ && du -sh /opt/strata/seed
 
 # ---- 2. the engine package, checked before it is allowed into the image: every file's hash, and every library it imports is
 #         bundled or belongs to the OS / GPU driver (packaging/binary_deps.py, the check the packager runs)
