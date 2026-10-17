@@ -448,9 +448,9 @@ class Runner:
                               "Use model files that were prepared on this computer already (folder + pack), or install on a computer with an NVIDIA or AMD card.", 5)
         path = cat.root / f"strata-{tag}.json"
         adopt.write(path, cfg)
-        self.notices.append("The installer does not support this graphics card yet, so Strata wrote the run settings itself from your prepared files "
-                            f"({path.name}). Nothing was downloaded.")
-        self.emit("model", f"Wrote the run settings from your prepared files ({path.name}); the installer does not support this card.", 100, level="warn")
+        self.notices.append("The downloader built into this Terminal sets up NVIDIA and AMD cards only (Intel Arc cards have a separate installer), so Strata wrote the "
+                            f"run settings itself from the prepared model files already on this computer ({path.name}). Nothing was downloaded.")
+        self.emit("model", f"Used your prepared model files and wrote the run settings ({path.name}); this card is not one the built-in downloader sets up.", 100, level="warn")
         return path
 
     def resolve_own_files(self) -> None:

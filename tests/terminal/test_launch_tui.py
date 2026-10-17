@@ -661,6 +661,16 @@ class AccessStep(Base):
             self.assertIn("http://127.0.0.1:9090", text_of(app))
         self.run_app(case)
 
+    def test_windows_firewall_line_shows_on_lan_only(self):
+        async def case(app, pilot, ctx):
+            with mock.patch.object(access, "WINDOWS", True):
+                await press(pilot, *self.reach())
+                self.assertNotIn("Windows may ask", flat(app))
+                await press(pilot, "down")
+                self.assertIn("Windows may ask whether to allow Strata", flat(app))
+                self.assertIn("choose Allow for private networks", flat(app))
+        self.run_app(case)
+
     def test_key_toggle_and_new_key(self):
         async def case(app, pilot, ctx):
             await press(pilot, *self.reach(), "down")

@@ -1093,6 +1093,9 @@ class AccessScreen(Base):
             missing = acc.missing_helper(cur.key)
             if missing:
                 out.append(missing + "\n", style=WARN)
+            fw = acc.firewall_note(cur.key)
+            if fw:
+                out.append(fw + "\n", style=WARN)
             if cur.key == "cloudflare":
                 out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so keep the API key on.", style=MUTE)
             elif cur.key == "lan":

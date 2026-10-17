@@ -175,7 +175,7 @@ class MonitorApp(App):
         if self.view == 0 and size.width >= 78 and size.height >= 23 and self.metrics_model is not None and                 self.connection_state in ("connected", "stale", "telemetry_unavailable"):
             from strata_cli import overview
             display = overview.render(
-                self.metrics_model, width=max(30, size.width - self.margin), height=max(8, size.height - 2),
+                self.metrics_model, width=max(30, min(size.width - self.margin, 100 if self.margin > 2 else 1000)), height=max(8, size.height - 2),
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen, glyphs=self.glyph_choice,
                 color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled)

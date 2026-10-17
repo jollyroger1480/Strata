@@ -411,6 +411,15 @@ class AccessRules(unittest.TestCase):
             self.assertEqual(access.urls_for(S.LaunchSettings(access="cloudflare", port=8080), tunnel_url="https://a.trycloudflare.com")[0],
                              "https://a.trycloudflare.com")
 
+    def test_the_windows_firewall_question_is_announced_before_it_happens(self):
+        with mock.patch.object(access, "WINDOWS", True):
+            self.assertIn("choose Allow for private networks", access.firewall_note("lan"))
+            self.assertIn("still works on this computer", access.firewall_note("tailscale"))
+            self.assertIsNone(access.firewall_note("local"))
+            self.assertIsNone(access.firewall_note("cloudflare"))
+        with mock.patch.object(access, "WINDOWS", False):
+            self.assertIsNone(access.firewall_note("lan"))
+
     def test_helper_output_filter_drops_login_lines(self):
         self.assertEqual(access.filter_line("Please open this URL to login: https://dash.cloudflare.com/argotunnel?token=abc"), "")
         self.assertEqual(access.filter_line("Your quick Tunnel has been created: https://x.trycloudflare.com"),

@@ -198,6 +198,14 @@ def urls_for(s: LaunchSettings, *, tunnel_url: str | None = None) -> list[str]:
     return base
 
 
+def firewall_note(kind: str) -> str | None:
+    """Windows asks the first time a program listens for other computers: say so before it happens, in plain words."""
+    if WINDOWS and kind in ("lan", "tailscale"):
+        return ("Windows may ask whether to allow Strata (python.exe) on your network: choose Allow for private networks. "
+                "If you choose Cancel, the model still works on this computer.")
+    return None
+
+
 def new_key() -> str:
     import secrets
     return "sk-strata-" + secrets.token_urlsafe(24)

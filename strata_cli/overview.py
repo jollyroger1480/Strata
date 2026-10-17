@@ -167,6 +167,16 @@ def bar(frac: float | None, width: int, glyphs: str, color: str, empty: str = GR
     return t
 
 
+def short_gpu(name: str | None) -> str:
+    """The card's name without the maker prefixes that eat a tile's width ("NVIDIA GeForce RTX 5070" -> "RTX 5070")."""
+    if not name:
+        return "graphics card"
+    for prefix in ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD ", "Intel(R) ", "Intel "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    return name
+
+
 def fmt(v: float | None, digits: int = 0, unit: str = "") -> str:
     if v is None:
         return "--"
@@ -256,7 +266,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     util_scale = dict(lo=0, hi=100)
     tiles1 = [
         _tile("Speed", f"{fmt(spd, 1)} tok/s" if spd is not None else "-- tok/s", spd_note, spark(spd_hist, inner, glyphs), tile_w, accent=accent, box_style=box_style),
-        _tile("GPU load", f"{fmt(g['util'])} %", (g["name"] or "graphics card") if g["count"] in (None, 1) else f"{g['name']} +{int(g['count']) - 1}",
+        _tile("GPU load", f"{fmt(g['util'])} %", short_gpu(g["name"]) if g["count"] in (None, 1) else f"{short_gpu(g['name'])} +{int(g['count']) - 1}",
               spark(g["util_hist"], inner, glyphs, **util_scale), tile_w, accent=accent, box_style=box_style),
         _tile("VRAM", f"{fmt(g['vram_used'], 1)} / {fmt(g['vram_total'], 0)} GB",
               (f"{int(model['experts']['slots']):,} experts cached" if model["experts"]["slots"] is not None else "graphics memory"),

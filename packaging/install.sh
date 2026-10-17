@@ -92,7 +92,14 @@ dest="$DATA_DIR/terminal/$version"
 mkdir -p "$DATA_DIR/terminal" "$BIN_DIR"
 rm -rf "$dest.incoming"; mkdir -p "$dest.incoming"
 tar -xzf "$work/terminal.tar.gz" -C "$dest.incoming" || die "the archive could not be unpacked (is the disk full?). Nothing was installed."
-[ -x "$dest.incoming/bin/strata" ] || chmod +x "$dest.incoming/bin/strata" 2>/dev/null || true
+if [ ! -f "$dest.incoming/bin/strata" ]; then                  # an archive with one top folder (a terminal archive instead of the feed's control package)
+  inner=$(ls -d "$dest.incoming"/*/ 2>/dev/null | head -1)
+  if [ -n "$inner" ] && [ -f "${inner}bin/strata" ]; then
+    mv "${inner%/}" "$dest.inner" && rm -rf "$dest.incoming" && mv "$dest.inner" "$dest.incoming"
+  fi
+fi
+[ -f "$dest.incoming/bin/strata" ] || { rm -rf "$dest.incoming"; die "the archive does not look like a Strata Terminal (no bin/strata). Nothing was installed."; }
+chmod +x "$dest.incoming/bin/strata" 2>/dev/null || true
 
 # ---- 4. the signed feed, checked with the Terminal just unpacked
 if [ "${STRATA_INSTALL_TEST_TRUST:-}" = 1 ]; then

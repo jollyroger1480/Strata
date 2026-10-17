@@ -467,6 +467,10 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in notes:
             if not machine:
                 _say(f"[!] {n.line()}")
+        from strata_cli.launch import access as _access
+        fw = _access.firewall_note(s.access)
+        if fw and not machine:
+            _say(f"[!] {fw}")
         if interactive and have_choices:
             from strata_cli.launch import app
             return app.run_tui(s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))

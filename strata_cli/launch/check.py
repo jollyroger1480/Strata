@@ -55,13 +55,13 @@ def _prompt_request(wire: str, base: str, model: str) -> tuple[str, dict]:
 
 def _tool_request(wire: str, base: str, model: str) -> tuple[str, dict]:
     if wire == "responses":
-        return base + "/v1/responses", {"model": model, "input": TOOL_PROMPT, "max_output_tokens": 512, "tool_choice": "auto",
+        return base + "/v1/responses", {"model": model, "input": TOOL_PROMPT, "max_output_tokens": 1536, "tool_choice": "auto",
                                         "tools": [{"type": "function", "name": "get_weather", "description": "Weather of a city",
                                                    "parameters": TOOL_SCHEMA}]}
     if wire == "messages":
-        return base + "/v1/messages", {"model": model, "max_tokens": 512, "messages": [{"role": "user", "content": TOOL_PROMPT}],
+        return base + "/v1/messages", {"model": model, "max_tokens": 1536, "messages": [{"role": "user", "content": TOOL_PROMPT}],
                                        "tools": [{"name": "get_weather", "description": "Weather of a city", "input_schema": TOOL_SCHEMA}]}
-    return base + "/v1/chat/completions", {"model": model, "max_tokens": 512, "messages": [{"role": "user", "content": TOOL_PROMPT}],
+    return base + "/v1/chat/completions", {"model": model, "max_tokens": 1536, "messages": [{"role": "user", "content": TOOL_PROMPT}],
                                            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Weather of a city",
                                                                                       "parameters": TOOL_SCHEMA}}]}
 
