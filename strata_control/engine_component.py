@@ -400,9 +400,9 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
             if backend == "sycl" and "level_zero" not in done.stdout.lower() and "gpu" not in done.stdout.lower():
                 continue
             return backend, command[0]
-    found = _drm_vendor_backend()
+    found = _drm_vendor_backend() if os.name != "nt" else _windows_vendor_backend()
     if found:
-        return found, "sysfs pci vendor"
+        return found, "sysfs pci vendor" if os.name != "nt" else "display adapters"
     return None, "no GPU tool answered"
 
 
@@ -429,6 +429,83 @@ def _drm_vendor_backend() -> str | None:
     return None
 
 
+#: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
+#: keeps the two equal): the architecture Strata runs the card as. Integrated Radeons are not in it (the one APU that is supported,
+#: Strix Halo, 0x1586, is in WIN_AMD_UMA_IDS), so an integrated Radeon beside a card never counts as "the GPU".
+WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 0x747E: "gfx1101", 0x7480: "gfx1102",
+                       0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
+                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73DF: "gfx1031"}
+WIN_AMD_UMA_IDS = {0x1586: "gfx1151"}                                   # Strix Halo: unified memory, supported
+WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x1901, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
+_WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+
+
+def windows_display_adapters() -> list[dict]:
+    """The display adapters Windows has a driver for (the display-class registry key, readable without admin and without running
+    anything): {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name", "vram_gb"}. Empty off Windows or when it cannot be read."""
+    found: list[dict] = []
+    try:
+        import winreg
+        cls = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WIN_DISPLAY_CLASS)
+    except (ImportError, OSError):
+        return found
+    index = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(cls, index)
+        except OSError:
+            break
+        index += 1
+        if not sub.isdigit():
+            continue
+        try:
+            key = winreg.OpenKey(cls, sub)
+        except OSError:
+            continue
+        values = {}
+        for name in ("DriverDesc", "MatchingDeviceId", "HardwareInformation.qwMemorySize"):
+            try:
+                values[name] = winreg.QueryValueEx(key, name)[0]
+            except OSError:
+                pass
+        match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", str(values.get("MatchingDeviceId") or ""), re.I)
+        if not match:
+            continue
+        memory = values.get("HardwareInformation.qwMemorySize")
+        if isinstance(memory, bytes):
+            memory = int.from_bytes(memory[:8], "little")
+        found.append({"vendor": match.group(1).lower(), "device": int(match.group(2), 16),
+                      "name": str(values.get("DriverDesc") or ""),
+                      "vram_gb": (int(memory) / 2 ** 30) if isinstance(memory, int) and memory > 0 else 0.0})
+    return found
+
+
+def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
+    """The AMD graphics cards (not an integrated Radeon) among the Windows display adapters, each with the architecture Strata
+    runs it as ("" when the id is not in the table but the adapter has 3 GB or more of its own memory, so it is no APU)."""
+    cards = []
+    for adapter in (windows_display_adapters() if adapters is None else adapters):
+        if adapter.get("vendor") != "1002":
+            continue
+        device = adapter.get("device")
+        arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
+        if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
+            continue                                                    # an integrated Radeon (512 MB of carve-out)
+        cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})
+    return cards
+
+
+def _windows_vendor_backend(adapters: list[dict] | None = None) -> str | None:
+    """Windows without nvidia-smi / hipInfo on PATH: the display adapters decide, NVIDIA first, then an AMD card (an AMD
+    integrated GPU alone is not one), as on Linux. Read-only registry, nothing is run."""
+    adapters = windows_display_adapters() if adapters is None else adapters
+    if any(a.get("vendor") == "10de" for a in adapters):
+        return "cuda"
+    if windows_amd_cards(adapters):
+        return "hip"
+    return None
+
+
 def cuda_archs_present(environ=None) -> list[str]:
     """``sm_XX`` for each NVIDIA card nvidia-smi reports; empty when it cannot say."""
     found = []
@@ -441,7 +518,10 @@ def cuda_archs_present(environ=None) -> list[str]:
 
 def hip_archs_present(kfd_root: str = "/sys/class/kfd/kfd/topology/nodes") -> list[str]:
     """``gfxNNNN`` for each AMD GPU the Linux kernel driver lists (``gfx_target_version`` is MMmmss: gfx1201 = 120001,
-    gfx1103 = 110003, gfx90a = 90010); empty when it cannot say (Windows, no amdgpu/kfd, no permission)."""
+    gfx1103 = 110003, gfx90a = 90010); Windows: from the display adapters' PCI ids (integrated Radeons left out); empty when
+    it cannot say (no amdgpu/kfd, no permission, an id not in the table)."""
+    if os.name == "nt":
+        return sorted({c["arch"] for c in windows_amd_cards() if c["arch"]})
     found = []
     try:
         nodes = sorted(Path(kfd_root).iterdir())

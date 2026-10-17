@@ -747,18 +747,17 @@ class Strata:
                 g["problem"] = None
             g["usable"] = g["problem"] is None
         amd = []
-        if not WIN:
-            try:
-                amd = S.amd_gpus() if S else []
-                for g in amd:
-                    g["vendor"] = "amd"
-                    g["vram_gb"] = round(g["vram_gb"], 1)
-                    g["problem"] = S.amd_problem(g)
-                    g["usable"] = g["problem"] is None
-            except Exception:                           # noqa: BLE001
-                amd = []
-            if not amd and shutil.which("rocm-smi"):
-                amd = rocm_smi_gpus()
+        try:                                            # Linux: the kernel's KFD topology; Windows: the display adapters' PCI ids + registry (setup.amd_gpus_win)
+            amd = S.amd_gpus() if S else []
+            for g in amd:
+                g["vendor"] = "amd"
+                g["vram_gb"] = round(g["vram_gb"], 1)
+                g["problem"] = S.amd_problem(g)
+                g["usable"] = g["problem"] is None
+        except Exception:                               # noqa: BLE001
+            amd = []
+        if not WIN and not amd and shutil.which("rocm-smi"):
+            amd = rocm_smi_gpus()
         if any(g.get("usable") for g in nv):
             for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
                 if g.get("uma") and g.get("usable"):
@@ -868,7 +867,7 @@ class Strata:
         ram = hw.get("ram_gb") or 0
         if not usable:
             why = ("no NVIDIA RTX 20-series-or-newer GPU found (nvidia-smi did not list one)"
-                   + ("; AMD cards run on Linux only" if WIN and any(
+                   + ("; the AMD graphics in this PC is not a card Strata supports (an RX 7000 or 9000 series card, or a Ryzen AI Max, is needed)" if WIN and any(
                        "amd" in str(a.get("name", "")).lower() or "radeon" in str(a.get("name", "")).lower()
                        for a in hw.get("display_adapters", [])) else ""))
             return {"family": None, "model": None, "why": why}
@@ -911,7 +910,7 @@ class Strata:
             notes.append("this CPU has no AVX2: EXPERIMENTAL and slow - setup compiles the engine on this PC for the "
                          "older CPU (10-20 minutes), and the CPU's share of the experts runs a few times slower")
         if backend == "hip":
-            notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images")
+            notes.append("AMD (experimental): no GPU picture reader yet")
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
                f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
@@ -1518,9 +1517,6 @@ class Tools:
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
             raise ToolError("give gpu (one card) or gpus (several), not both")
-        if backend == "hip" and WIN:
-            raise ToolError("the AMD (hip) backend runs on Linux only; on Windows Strata needs an NVIDIA RTX 20 "
-                            "series or newer card")
         if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
             raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
