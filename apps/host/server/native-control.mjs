@@ -21,7 +21,7 @@ const safeId=value=>typeof value==='string'&&/^[a-z0-9_-]{1,80}$/i.test(value);
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});
@@ -105,6 +105,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function tool(name,args={}){if(packaged&&name==='strata_status')return controlTool(name,args);return mcpCall(name,args);}
  async function mcpCall(name,args={}){await connect();if(!definitions.some(d=>d.name===name))throw new Error(`This Strata installation does not support ${name}. Update the installation first.`);const result=await send('tools/call',{name,arguments:args},120000);let value=result.structuredContent;if(!value){const text=result.content?.find(c=>c.type==='text')?.text;try{value=JSON.parse(text);}catch{value={summary:text};}}if(result.isError)throw new Error(value?.error??value?.summary??'Native operation failed.');return value;}
  async function refresh(force=false){
+  if(ready)await ready.catch(()=>{});
   if(closing)return state();
   /* A read that is not forced never makes the window wait for the (slow) status of Control: it gets the last state at once, and a stale one
      is refreshed in the background. Only the first read, and a forced one after an operation, waits. */
@@ -124,6 +125,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function watchInstall(job,current){job.summary=current.step??'Resuming preparation status…';job.result={install:current};while(job.state==='running'){await new Promise(r=>setTimeout(r,1500));const result=await tool('strata_install');job.summary=result.summary;job.result=result;emit();if(!result.install?.running){if(result.install?.exit_code!==0)throw new Error(result.install?.error??'Preparation did not finish. Retry to reuse completed files.');return {summary:'Model preparation complete. Load it from Models.'};}}}
  function externalRunning(){return Array.isArray(snapshot.external)?snapshot.external.filter(s=>![...instances.values()].some(i=>i.port===s.port)):[];}
  async function install(job,args){
+  if(ready)await ready.catch(()=>{});
   if(job.state!=='running')return;
   if(externalRunning().length)throw new Error('Stop the native server running outside this UI before preparing files.');
   if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel requests before preparing model files.');
