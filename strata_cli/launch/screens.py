@@ -600,7 +600,25 @@ class FolderScreen(Base):
                 out.append(f"   Not enough for {need:.0f} GB. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
         else:
             out.append("The free space of that folder could not be read.", style=MUTE)
+        moving = self.models_that_would_move(value)
+        if moving:
+            out.append(f"\nModel files Strata already keeps in {moving} are moved into this folder when you start "
+                       "(quick on the same drive; on another drive they stay where they are and are used from there).", style=WARN)
         self.query_one("#folderinfo", Static).update(out)
+
+    def models_that_would_move(self, value: str) -> str | None:
+        """The folder holding model files today when a different one is typed (setup gathers the model files into the data folder), else None."""
+        try:
+            old = Path(self.ctx.catalog.data_dir())
+            new = Path(value).expanduser() if value else old
+            if os.path.normcase(str(new.resolve())) == os.path.normcase(str(old.resolve())):
+                return None
+            models = old / "models"
+            if models.is_dir() and any(models.iterdir()):
+                return str(old)
+        except OSError:
+            pass
+        return None
 
     def explain(self) -> Text:
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
@@ -748,13 +766,22 @@ class PicturesScreen(Base):
         s = self.ctx.settings
         return next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
 
+    def reader(self) -> str:
+        """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
+        "unknown" before any engine is installed (the first launch fetches it)."""
+        exe = self.ctx.engine_exe()
+        if not exe:
+            return "unknown"
+        folder = Path(str(exe)).parent
+        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+
     def on_mount(self) -> None:
         s = self.ctx.settings
         r = self.row()
         self.supported = True if r is None else r.images
         items = [Item(["No pictures"], key="off")]
         if self.supported:
-            items.append(Item(["Yes, read pictures"], key="on"))
+            items.append(Item(["Yes, read pictures" + ("  (this engine has no picture reader)" if self.reader() == "missing" else "")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
         sel = 1 if s.vision != "off" and self.supported else 0
@@ -768,7 +795,12 @@ class PicturesScreen(Base):
                  if vram < 24 else "a 0.9 GB download, and about 1.4 GB of graphics memory kept free for the picture reader (text is a few % slower).")
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
-        return Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        out = Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        if self.reader() == "missing":
+            out.append("\nHeads up: the engine installed here does not carry the picture reader, so the model would answer text only. "
+                       "Update the engine, or say No.", style=WARN)
+        return out
+        return out
 
     def commit(self) -> None:
         self.ctx.settings.vision = self.menu().current.key

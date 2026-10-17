@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Btn, Dialog, Empty, Icon, IconBtn, Select, ErrorNotice } from '../components/ui';
 import { Screen } from '../components/layout';
 import { api } from '../lib/client';
+import { postWithFolderFallback } from '../lib/folder-pick';
 import { editSkill, loadSkills, toggleSkill, useStore } from '../lib/store';
 import type { Skill } from '../lib/types';
 export function SkillsScreen() {
@@ -31,10 +32,13 @@ export function SkillsScreen() {
         }
     }
     async function add() {
-        const result = await api.post<{
+        const result = await postWithFolderFallback<{
             cancelled?: boolean;
             added?: string;
-        }>('/api/skills/add');
+        }>('/api/skills/add') as {
+            cancelled?: boolean;
+            added?: string;
+        };
         if (!result.cancelled)
             await loadSkills();
     }

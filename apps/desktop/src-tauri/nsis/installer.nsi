@@ -202,6 +202,9 @@ ShowInstDetails nevershow
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
+; 1 when this installer was started on an installed copy of the SAME version and the person chose Uninstall: after it ran the
+; uninstaller this installer ends. (Stock Tauri goes on to the install pages, so Uninstall reinstalled Strata at once; tester report 2026-10-17.)
+Var UninstallOnly
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
   ; Uninstall previous WiX installation if exists.
@@ -346,6 +349,7 @@ Function PageLeaveReinstall
     ${If} $R1 = 1              ; User chose to add/reinstall
       Goto reinst_done
     ${Else}                    ; User chose to uninstall
+      StrCpy $UninstallOnly 1
       Goto reinst_uninstall
     ${EndIf}
   ${ElseIf} $R0 = 1 ; Upgrading
@@ -408,6 +412,12 @@ Function PageLeaveReinstall
       Delete "$4\uninstall.exe"
       RMDir "$4"
     ${EndIf}
+
+    ; Uninstall means uninstall: do not go on to the install pages.
+    ${If} $UninstallOnly = 1
+      MessageBox MB_OK|MB_ICONINFORMATION "Strata was uninstalled."
+      Quit
+    ${EndIf}
   reinst_done:
 FunctionEnd
 
@@ -451,45 +461,33 @@ FunctionEnd
 ; 1. Confirm uninstall page
 Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
-!define /ifndef WS_EX_LAYOUTRTL         0x00400000
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
-Function un.ConfirmShow ; Add add a `Delete app data` check box
-  ; $1 inner dialog HWND
-  ; $2 window DPI
-  ; $3 style
-  ; $4 x
-  ; $5 y
-  ; $6 width
-  ; $7 height
-  FindWindow $1 "#32770" "" $HWNDPARENT ; Find inner dialog
-  System::Call "user32::GetDpiForWindow(p r1) i .r2"
-  ${If} $(^RTL) = 1
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE} | ${WS_EX_LAYOUTRTL}"
-    IntOp $4 50 * $2
-  ${Else}
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE}"
-    IntOp $4 0 * $2
-  ${EndIf}
-  IntOp $5 100 * $2
-  IntOp $6 400 * $2
-  IntOp $7 25 * $2
-  IntOp $4 $4 / 96
-  IntOp $5 $5 / 96
-  IntOp $6 $6 / 96
-  IntOp $7 $7 / 96
-  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
-  Pop $DeleteAppDataCheckbox
-  SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1
-  SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1
-FunctionEnd
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
-Function un.ConfirmLeave
-  SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
-FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
 !insertmacro MUI_UNPAGE_CONFIRM
 
-; 2. Uninstalling Page
+; 2. "Also remove my Strata data": unticked by default, and it says exactly what it deletes. Skipped when updating or in passive mode
+;    (an update never deletes anything). Model folders the person chose themselves are never touched.
+UninstPage custom un.DataPage un.DataPageLeave
+Function un.DataPage
+  ${If} $PassiveMode = 1
+  ${OrIf} $UpdateMode = 1
+    Abort
+  ${EndIf}
+  !insertmacro MUI_HEADER_TEXT "Remove your Strata data too?" "Your models, chats and settings stay on this PC unless you tick the box."
+  nsDialogs::Create 1018
+  Pop $0
+  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+  ${NSD_CreateCheckBox} 0 0 100% 12u "Also remove my Strata data (models, chats, settings)"
+  Pop $DeleteAppDataCheckbox
+  ${NSD_CreateLabel} 12u 18u -12u 96u "If you tick it, these folders are deleted, and nothing else:$\r$\n$\r$\n$LOCALAPPDATA\Strata   (engine, installed copy, tunings)$\r$\n$APPDATA\Strata   (settings)$\r$\n$PROFILE\.strata   (your chats, app settings)$\r$\n$DOCUMENTS\Strata\Models   (models Strata downloaded into its own folder)$\r$\n$\r$\nA model folder you chose yourself is never deleted."
+  Pop $0
+  ${NSD_SetFocus} $DeleteAppDataCheckbox
+  nsDialogs::Show
+FunctionEnd
+Function un.DataPageLeave
+  ${NSD_GetState} $DeleteAppDataCheckbox $DeleteAppDataCheckboxState
+FunctionEnd
+
+; 3. Uninstalling Page
 !insertmacro MUI_UNPAGE_INSTFILES
 
 ;Languages
@@ -931,6 +929,21 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+
+    ; Strata's own data, for a fresh start: the folders listed on the page, nothing else. Each path is checked first.
+    ${If} "$LOCALAPPDATA" != ""
+      RmDir /r "$LOCALAPPDATA\Strata"
+    ${EndIf}
+    ${If} "$APPDATA" != ""
+      RmDir /r "$APPDATA\Strata"
+    ${EndIf}
+    ${If} "$PROFILE" != ""
+      RmDir /r "$PROFILE\.strata"
+    ${EndIf}
+    ${If} "$DOCUMENTS" != ""
+      RmDir /r "$DOCUMENTS\Strata\Models"
+      RmDir "$DOCUMENTS\Strata"          ; only if it is empty now
+    ${EndIf}
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

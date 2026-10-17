@@ -483,6 +483,8 @@ class Strata:
 
     # ---- paths
     def settings_path(self) -> Path:
+        if os.environ.get("STRATA_SETTINGS_FILE"):
+            return Path(os.environ["STRATA_SETTINGS_FILE"])
         if WIN:
             return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
         return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"

@@ -82,6 +82,9 @@ export function controlEnvironment(control, { env = process.env, components = co
     ...next,
     PYTHONNOUSERSITE: '1', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
     STRATA_NO_ACQUIRE: '1', STRATA_COMPONENTS_DIR: components,
+    // The app's own settings file, beside its components: Control and the installer never read or write the file an older
+    // command-line Strata keeps in %APPDATA% / ~/.config (its list of Strata folders), so an old install is never adopted.
+    ...(components ? { STRATA_SETTINGS_FILE: env.STRATA_SETTINGS_FILE || join(dirname(components), 'app-settings.json') } : {}),
     ...(control?.dir ? { STRATA_CONTROL_DIR: control.dir } : {}),
   };
   // Only the explicit update step (`strata update`) may acquire; every other Control process keeps the switch on.

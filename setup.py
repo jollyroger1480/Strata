@@ -4551,7 +4551,17 @@ def ram_ctx(model, ram, low_ram=False) -> int:
     return max(c for c in CONTEXTS if c <= 131072 or (c != 204800 and (ctx_ram_need(model, c, low_ram) or 0) <= ram))
 
 
+def app_settings_file() -> Path | None:
+    """The desktop app keeps its own settings file (STRATA_SETTINGS_FILE, in the app's data folder) and never reads or writes the
+    one an older command-line Strata uses, so an old install is never adopted or moved."""
+    raw = os.environ.get("STRATA_SETTINGS_FILE")
+    return Path(raw) if raw else None
+
+
 def settings_path() -> Path:
+    own = app_settings_file()
+    if own is not None:
+        return own
     if WIN:
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
@@ -4586,7 +4596,7 @@ def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
     cands = [Path(p) for p in settings.get("installs", [])]
-    for base in dict.fromkeys((home().parent, home().parent.parent)):
+    for base in dict.fromkeys(() if app_settings_file() else (home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
                 if d.is_dir() and d.name.lower().startswith("strata"):
@@ -5837,7 +5847,10 @@ def control_engine_step(gpu, vision):
         warn(f"no engine is installed for this PC yet ({e}). The model is downloaded and prepared now; install the engine "
              "component for your GPU (a later step of the app, or the Terminal) before loading it")
     if vision != "none":
-        warn("images are not part of the app's first release: images off for this model")
+        if (eng / VEXE).is_file():
+            ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
+            return llama, eng, meta, [], gpu, vision
+        warn("this engine component has no image encoder (strata-vision): images off for this model")
     return llama, eng, meta, [], gpu, "none"
 
 
@@ -6273,7 +6286,7 @@ def mac_control_setup(a) -> int:
     for n in MF.model_note(model, ram):
         warn(n)
     if a.vision in ("yes", "gpu", "cpu"):
-        warn("images are not part of the app's first release: images off for this model")
+        warn("the Mac engine has no picture reader yet: images off for this model (text works as usual)")
     ctx = a.context or MF.recommend_context(ram)
     if ctx > MF.TESTED_CONTEXT:
         say(f"  context {ctx}: measured on the Mac up to {MF.TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
