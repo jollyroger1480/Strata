@@ -858,10 +858,10 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
         const uint8_t* wrow = GU ? blob + ((ur & 1) ? geo.up_off : 0) + (size_t) (fb * (NW_ROWS / 2) + (ur >> 1)) * geo.gu_row
                                  : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
         auto unit = [&](int s) -> const uint8_t* {
-            if (GU) return wrow + (s >> 2) * BS;
+            if (GU && WT != T_Q2_0) return wrow + (s >> 2) * BS;   // (Q2_0 gate/up: 64-value blocks, one a stage, like its down)
             return (WT == T_IQ4_NL || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
         };
-        auto sub = [&](int s) { return GU ? 2 * (s & 3) + uj : uj; };
+        auto sub = [&](int s) { return GU && WT != T_Q2_0 ? 2 * (s & 3) + uj : uj; };
         auto put = [&](const uint32_t (&raw)[raw_words(WT)], int buf) {
             uint32_t q[8];
             float s0, s1;
@@ -1334,6 +1334,7 @@ bool gu_covered(int t) {
            || (t == T_Q2_0 && dev_info().t75)   // the canonical Q2_0 pack's gate/up: Turing opt-in only (sm_80+ keeps MMQ for it)
 #endif
 #if defined(__HIPCC__)
+           || (t == T_Q2_0 && dev_info().w12)   // gfx12: the native Q2_0 pack's gate/up on native_w11_kernel (64-value blocks)
            || ((t == T_Q4_K || t == T_Q5_K) && kq_on())   // the gfx11 kernels only
 #endif
         ;
@@ -1450,7 +1451,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         const bool occ_gu = false, occ_d = false;
 #else
         const bool occ_gu = g.gu_type == T_IQ2_XXS || g.gu_type == T_IQ2_XS || g.gu_type == T_IQ2_S ||
-                            g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS;
+                            g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS || g.gu_type == T_Q2_0;
         const bool occ_d = g.d_type == T_Q2_0 || g.d_type == T_Q8_0 || g.d_type == T_IQ4_NL;
 #endif
         if (d.w12 && (reinterpret_cast<uintptr_t>(dm) & 15) != 0) {   // gfx12's down store: two float4 per lane
@@ -1492,6 +1493,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
             case T_IQ2_S: STRATA_NW_GU(T_IQ2_S); break;
             case T_IQ3_XXS: STRATA_NW_GU(T_IQ3_XXS); break;
             case T_IQ3_S: STRATA_NW_GU(T_IQ3_S); break;
+            case T_Q2_0: STRATA_NW_GU(T_Q2_0); break;
             case T_Q4_K: STRATA_NW_GU(T_Q4_K); break;
             case T_Q5_K: STRATA_NW_GU(T_Q5_K); break;
             default: STRATA_NW_GU(T_IQ4_XS); break;
