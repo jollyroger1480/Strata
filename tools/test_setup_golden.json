@@ -341,12 +341,8 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": [
-    0,
-    1
-   ],
+   "gpu": 0,
    "gpus_asked": true,
-   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -386,12 +382,8 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": [
-    0,
-    1
-   ],
+   "gpu": 0,
    "gpus_asked": true,
-   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -529,12 +521,8 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": [
-    0,
-    1
-   ],
+   "gpu": 0,
    "gpus_asked": true,
-   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -573,12 +561,8 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": [
-    0,
-    1
-   ],
+   "gpu": 0,
    "gpus_asked": true,
-   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -617,12 +601,8 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": [
-    0,
-    1
-   ],
+   "gpu": 0,
    "gpus_asked": true,
-   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],

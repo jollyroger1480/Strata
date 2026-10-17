@@ -1436,23 +1436,30 @@ def choose_gpus(a, found) -> list:
     can = together_ok(found)
     if not can:
         return [single[0]["index"]]
+    # the owner's rule (strata_control/gpu_fit.py, shared with the app and `strata launch`): the model goes on the LARGEST card + RAM first;
+    # the second card is offered as a layer split and recommended only when the model does not fit one card (with RAM) or would be too tight
+    from strata_control import gpu_fit
+    mem = None
+    d = MODELS.get(getattr(a, "model", None) or "")
+    if d:
+        mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
+    cards = [{"index": g["index"], "name": g["name"], "vram_gb": g["vram_gb"], "usable": gpu_problem(g) is None} for g in found]
+    res = gpu_fit.options(mem if mem is not None else 0.0, ram_gb(), cards)
+    by_key = {o["key"]: o for o in res["options"]}
     say()
-    say(f"  Strata can run the model on one GPU, or share it across {'these' if len(can) > 2 else 'both'}: then each"
-        " card holds the")
-    say("  experts of its own layers, so together they hold about twice as many, and prompts are read about 20%")
-    say("  faster (details: docs/MULTI_GPU.md). A much slower extra card can also make it slower.")
-    opts = [can[:2]] + ([can] if len(can) > 2 else []) + [[g] for g in single]
-    # #448: a pair whose second card cannot lend a 4096-token chunk recommends the first card alone (still offered)
-    short = split_short(can[:2])
-    rec = next(i for i, o in enumerate(opts, 1) if o == [can[0]]) if short else 1
-    for i, o in enumerate(opts, 1):
-        label = (" + ".join(gpu_name(g) for g in o) + " together") if len(o) > 1 else gpu_name(o[0]) + " only"
-        say(f"  {i}) {label}" + ("   (recommended)" if i == rec else ""))
+    say("  Strata first tries the model on your largest GPU plus the PC's memory; a second GPU is offered as a layer split")
+    say("  (each card holds the experts of its own layers: more room, prompts read about 20% faster; details: docs/MULTI_GPU.md).")
+    if mem is None:
+        say("  (the model is chosen below; the numbers here are for the recommended size when you name one: --model)")
+    opts = [[g for g in found if g["index"] in o["cards"]] for o in res["options"]]
+    rec = next((i for i, o in enumerate(res["options"], 1) if o["recommended"]), 1) if mem is not None else 1
+    for i, o in enumerate(res["options"], 1):
+        say(f"  {i}) {o['summary'] if mem is not None else o['label']}" + ("   (recommended)" if i == rec else ""))
+        for n in o["notes"]:
+            say(f"       {n}")
     for g in found:
         if gpu_problem(g, together=True) is not None:
             say(f"     (GPU {g['index']}, {g['name']}: {gpu_problem(g, together=True)})")
-    for g in short:
-        say(f"     ({split_short_note(g)})")
     pick = opts[int(ask("Which GPUs?", [str(i) for i in range(1, len(opts) + 1)], str(rec), a.yes or a.check)) - 1]
     return [g["index"] for g in pick]
 
