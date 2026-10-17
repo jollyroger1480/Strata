@@ -342,6 +342,22 @@ class AdoptRules(unittest.TestCase):
             self.assertEqual((cfg["exe"], cfg["backend"]), ("component:strata-engine", "sycl"))
             self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
 
+    def test_plan_intel_flags_follow_the_driver(self):
+        from unittest import mock
+        from strata_cli.launch import adopt
+        for driver, want, other in (("i915", ["--ple-io", "ram"], "--stream-experts"), ("xe", ["--stream-experts"], "--ple-io")):
+            with Home() as h, mock.patch.object(adopt, "intel_driver", return_value=driver):
+                d, m = self.files(h.base)
+                for ctx, reserve in ((32768, "1024"), (65536, "2048")):
+                    cfg, problems = adopt.plan(family="qwen", model="IQ3_XXS", model_dir=m, data_dir=d, src=Path(__file__).resolve().parents[2],
+                                               context=ctx, kv=None, model_name="x", family_def={}, log=h.base / "x.log", backend="sycl")
+                    self.assertEqual(problems, [])
+                    a = cfg["args"]
+                    for w in want:
+                        self.assertIn(w, a)
+                    self.assertNotIn(other, a)
+                    self.assertEqual(a[a.index("--vram-reserve-mib") + 1], reserve)
+
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
         with Home() as h:
