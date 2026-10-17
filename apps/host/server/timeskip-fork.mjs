@@ -191,6 +191,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
         }
         const end = agent.planState(bChat);
         r.b.state = end?.steps.every(x => ['done', 'skipped'].includes(x.state)) ? 'done' : 'failed';
+        if (r.b.state === 'done') r.b.note = end.steps.some(x => x.state === 'skipped') ? 'A step that could not finish was left as it is.' : null;
         if (r.b.state === 'failed') r.b.note = stopped() ? 'Stopped.' : 'B did not finish, so only A is shown.';
         announce(r);
       };
@@ -238,7 +239,9 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       if (bDone) await bDone.catch(e => { r.b.state = 'failed'; r.b.note = 'B stopped: ' + String(e.message ?? e).slice(0, 160); });
       if (stopped()) return;
       setPhase(r, 'checking'); say(r, 'comparing', 'Comparing A and B…');
-      r.finishedAt = now(); r.activity = null; setPhase(r, 'completed');
+      r.finishedAt = now();
+      r.activity = r.b?.state === 'done' ? { code: 'ready', text: 'Both versions are ready. Compare A and B, then keep the one you like.', args: {} } : { code: 'ready', text: 'The result is ready.' + (r.b?.note ? ' ' + r.b.note : ''), args: {} };
+      setPhase(r, 'completed');
     } catch (e) {
       if (stopped()) return;
       r.error = String(e.message ?? e).slice(0, 400); r.finishedAt = now(); r.activity = null; setPhase(r, 'failed');

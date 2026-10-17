@@ -61,6 +61,7 @@ test('plan -> lever (with its why) -> A runs every step -> B forks after step 1 
   assert.deepEqual([done.a.state, done.a.step, done.a.total], ['done', 3, 3]);
   assert.equal(done.b.state, 'done'); assert.equal(done.b.plan.length, 2);
   assert.equal(done.needsUserReview, true);
+  assert.match(done.activity.text, /^Both versions are ready/); assert.equal(done.b.note ?? null, null, 'no stale warning when B finished');
   assert.deepEqual(done.labels, { original: 'A', updated: 'B' });
   // events told the story in order
   const phases = r.events.map(e => e.phase);
