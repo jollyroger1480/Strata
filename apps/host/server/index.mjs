@@ -48,6 +48,7 @@ import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
+import { createVisionProbe } from './vision-probe.mjs';
 import { isPrivateHost } from './agent/llm-shape.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
@@ -118,6 +119,7 @@ const native=createNativeControl({control,appUpdater,hardwareProbe:()=>(hardware
 const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 agentTools.ensureFile();
+const visionProbe = createVisionProbe();
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
@@ -139,7 +141,7 @@ const agent = createAgentBridge({
     // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
     mcpServers: i.mcpServers,
   })),
-  connections: () => modelProviders.withSecrets(),
+  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: visionProbe.known(c, m.id) })) })),
   log: line => console.log(line),
 });
 let storageChanging = false;
@@ -523,7 +525,12 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
   const cwd = chatFolders.get(chatId) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
   let choice, instance = null;
-  if (body.remoteModel) choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+  if (body.remoteModel) {
+    choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+    // Does this server read pictures? Asked before the agent is built, so a picture is never sent to one that cannot.
+    const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId);
+    if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId);
+  }
   else {
     try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
     catch (e) { write({ type: 'error', message: e.message }); return; }
@@ -1031,7 +1038,8 @@ async function api(req, res, path, method, url) {
       if (resolve(cwd) === resolve(ROOT) || resolve(cwd).startsWith(resolve(ROOT) + sep)) return error(res, 400, 'Time-skip works on a folder of your own. Choose a workspace folder for this chat, then try again.');
       if (measureFolder(cwd).tooBig) return error(res, 400, 'This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
       let choice, slots = 1;
-      if (body.remoteModel?.connectionId && body.remoteModel?.modelId) { choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) }; slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
+      if (body.remoteModel?.connectionId && body.remoteModel?.modelId) { choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
+        { const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId); if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId); } slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
       else { try { const inst = native.resolveInstance(native.state().defaultId); choice = { instanceId: inst.id }; slots = inst.metrics?.live?.slots?.length || inst.parallel || 1; } catch { return error(res, 503, 'Load a model first, then try Time-skip again.'); } }
       const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
       if (chatId && forkTs.byChat(chatId)) return error(res, 409, 'A Time-skip is already running in this chat.');

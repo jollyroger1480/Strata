@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
-import { createForkTimeskip, leverPrompt, parseLever, defaultLever, improvementPrompt, copyProject } from '../server/timeskip-fork.mjs';
+import { isViewStep, stepObjective } from '../server/agent/plan.mjs';
+import { UNATTENDED, createForkTimeskip, leverPrompt, parseLever, defaultLever, improvementPrompt, copyProject } from '../server/timeskip-fork.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
@@ -37,13 +38,13 @@ test('copyProject leaves out dependency and VCS folders', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-async function rig(t, slots) {
+async function rig(t, slots, opts = {}) {
   const worker = await startScriptedWorker({});
   const dir = mkdtempSync(join(tmpdir(), 'strata-tsf-'));
   const project = join(dir, 'project'); mkdirSync(project); writeFileSync(join(project, 'keep.txt'), 'original');
   const bridge = createAgentBridge({ dataDir: join(dir, 'data'), localInstances: () => [{ id: 'i', label: 'S', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots }], connections: () => [], env: process.env, startTimeoutMs: 90_000 });
   const events = [];
-  const ts = createForkTimeskip({ agent: bridge, dir: join(dir, 'ts'), notify: (type, data) => events.push(data) });
+  const ts = createForkTimeskip({ agent: bridge, dir: join(dir, 'ts'), notify: (type, data) => events.push(data), ...opts });
   t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
   return { ts, events, project, dir, worker };
 }
@@ -60,6 +61,7 @@ test('plan -> lever (with its why) -> A runs every step -> B forks after step 1 
   assert.deepEqual([done.a.state, done.a.step, done.a.total], ['done', 3, 3]);
   assert.equal(done.b.state, 'done'); assert.equal(done.b.plan.length, 2);
   assert.equal(done.needsUserReview, true);
+  assert.match(done.activity.text, /^Both versions are ready/); assert.equal(done.b.note ?? null, null, 'no stale warning when B finished');
   assert.deepEqual(done.labels, { original: 'A', updated: 'B' });
   // events told the story in order
   const phases = r.events.map(e => e.phase);
@@ -101,4 +103,20 @@ test('Stop ends both agents, removes the copies and leaves the folder alone', { 
   assert.ok(!existsSync(join(r.dir, 'ts', run.id)));
   assert.equal(readFileSync(join(r.project, 'keep.txt'), 'utf8'), 'original');
   assert.equal(r.ts.files(run.id), null);
+});
+
+test('a step about looking at the page in a browser is recognised, carries the no-hang rule, and the unattended note forbids windows', () => {
+  assert.ok(isViewStep('Open goku.html in a browser to confirm rendering')); assert.ok(isViewStep('Preview the page in a window')); assert.ok(!isViewStep('Write the HTML file')); assert.ok(!isViewStep('Count the voxels'));
+  const plan = { title: 'T', steps: [{ text: 'Write it' }, { text: 'Open it in a browser to check', detail: '' }] };
+  assert.match(stepObjective(plan, 1), /Never wait for a program to close/); assert.match(stepObjective(plan, 1), /Start-Process/); assert.ok(!/Start-Process/.test(stepObjective(plan, 0)));
+  assert.match(UNATTENDED, /Never open a visible window/);
+});
+
+test('a step that never finishes is stopped after the time limit and left as it is with a plain note; the version still completes', { skip }, async (t) => {
+  const r = await rig(t, 2, { stepTimeoutMs: 4000 });
+  const run = r.ts.start({ prompt: 'SCRIPT:planslow', workspace: r.project, choice: { instanceId: 'i' }, slots: 2 });
+  const done = await until(() => { const s = r.ts.status(run.id); return ['completed', 'failed'].includes(s.phase) ? s : null; }, 150_000);
+  assert.equal(done.phase, 'completed', done.error);
+  assert.ok(r.events.some(e => /step 2 took too long and was left as it is/.test(e.activity?.text ?? '')), 'the person was told which step was left');
+  assert.equal(done.a.state, 'done');
 });

@@ -16,6 +16,10 @@ import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { diffRun, runImagePath, isNoisePath } from './timeskip.mjs';
+import { isViewStep } from './agent/plan.mjs';
+
+/** The note both agents carry on every step: the work is in a copy, unattended, on whatever machine this is. */
+export const UNATTENDED = 'This work runs in a copy of the folder with nobody watching. Never open a visible window and never wait for a program to close. To check a web page use the headless browser tool if you have one; otherwise read the file and say plainly what you could not check. A check that cannot be done here is noted in one sentence and the step is finished.';
 
 const SKIP = new Set(['.git', '.strata', '.timeskip', 'node_modules', '__pycache__']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -78,7 +82,7 @@ export function improvementPrompt({ request, steps, lever, doneSummaries }) {
 
 const stepObjectiveBriefing = ctx => ctx;
 
-export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.now }) {
+export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.now, stepTimeoutMs = 15 * 60_000 }) {
   mkdirSync(dir, { recursive: true });
   const runs = new Map();     // id -> internal run
 
@@ -106,6 +110,34 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
     return text;
   }
 
+  /**
+   * One plan step in its own session: tried twice if it ends early; stopped when it takes longer than `stepTimeoutMs` (a small model that keeps
+   * debugging one step must not hold the whole version for an hour). A step that cannot finish (too long, or a look-in-a-browser step on a machine
+   * with no screen) is left as it is with a plain note and the next step goes on; any other step that fails ends the version.
+   * Returns 'done' | 'skipped' | 'failed' | 'stopped'.
+   */
+  async function runOneStep(r, { tag, chat, planId, plan, at, root, choice, thinking, onFrame }) {
+    let finished = false, timedOut = false;
+    for (let attempt = 0; attempt < 2 && !finished && !timedOut && !r.stopping; attempt++) {
+      if (attempt) { agent.reopenPlan(chat); say(r, tag + '-retry', `${tag.toUpperCase()}, trying step ${at + 1} again…`, { step: at + 1 }); }
+      agent.resetSession(chat);
+      const turn = agent.planGoal({ chatId: chat, planId, once: true, workspacePath: root, mode: 'bypass', choice, thinking, onFrame });
+      let timer;
+      const raced = await Promise.race([turn.then(() => 'ended'), new Promise(res => { timer = setTimeout(() => res('timeout'), stepTimeoutMs); timer.unref?.(); })]);
+      clearTimeout(timer);
+      if (raced === 'timeout') { timedOut = true; try { await agent.stop(chat, { waitMs: 15_000 }); } catch { /* ending anyway */ } await turn.catch(() => {}); }
+      if (r.stopping) return 'stopped';
+      finished = agent.planState(chat)?.steps[at]?.state === 'done';
+    }
+    if (finished) return 'done';
+    if (timedOut || isViewStep(plan.steps[at].text)) {
+      agent.skipStep(chat, at, timedOut ? 'This step took too long, so it was left as it is.' : 'Could not look at the page here; the files were checked instead.');
+      say(r, tag + '-skip', timedOut ? `${tag.toUpperCase()}, step ${at + 1} took too long and was left as it is.` : `${tag.toUpperCase()}, step ${at + 1} (viewing the page) was skipped on this machine.`, { step: at + 1 });
+      return 'skipped';
+    }
+    return 'failed';
+  }
+
   async function runFlow(r, { choice, thinking, slots }) {
     const aChat = `ts:${r.id}:A`, bChat = `ts:${r.id}:B`, leverChat = `ts:${r.id}:lever`;
     r.chats = [aChat, bChat, leverChat];
@@ -118,6 +150,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       if (stopped()) return;
       const plan = agent.planState(aChat);
       if (!plan || plan.steps.length < 2) throw new Error('The assistant could not split this request into steps. Describe the steps you want, or use /goal instead.');
+      agent.setPlanBriefing(aChat, UNATTENDED);
       agent.planControl({ chatId: aChat, planId: plan.id, action: 'approve' });
       r.plan = { id: plan.id, title: plan.title, steps: plan.steps.map(s => ({ id: s.id, text: s.text, detail: s.detail })) };
       announce(r);
@@ -142,28 +175,23 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
         if (stopped()) return;
         const bp = agent.planState(bChat);
         if (!bp || bp.steps.length < 2) { r.b.state = 'failed'; r.b.note = 'The improvement plan could not be written, so only A is shown.'; announce(r); return; }
-        agent.setPlanBriefing(bChat, 'This work continues from a first attempt that is already in this folder; its notes are in .timeskip/context.md (read them first). Improve on it where it is weak instead of starting over.');
+        agent.setPlanBriefing(bChat, UNATTENDED + ' This work continues from a first attempt that is already in this folder; its notes are in .timeskip/context.md (read them first). Improve on it where it is weak instead of starting over.');
         agent.planControl({ chatId: bChat, planId: bp.id, action: 'approve' });
         r.b.plan = bp.steps.map(s => ({ id: s.id, text: s.text }));
         r.b.state = 'running'; r.b.total = bp.steps.length; announce(r);
         for (let at = 0; at < bp.steps.length && !stopped(); at++) {
-         let finished = false;
-         for (let attempt = 0; attempt < 2 && !finished && !stopped(); attempt++) {
-          if (attempt) { agent.reopenPlan(bChat); say(r, 'b-retry', `B, trying step ${at + 1} again…`, { step: at + 1 }); }
-          agent.resetSession(bChat);
-          await agent.planGoal({ chatId: bChat, planId: bp.id, once: true, workspacePath: r.b.root, mode: 'bypass', choice, thinking,
+          const res = await runOneStep(r, { tag: 'b', chat: bChat, planId: bp.id, plan: bp, at, root: r.b.root, choice, thinking,
             onFrame: f => {
               if (f.type === 'error') r.b.note = String(f.message ?? '').slice(0, 240);
               if (f.type === 'goal' && f.goal?.blocked) r.b.note = String(f.goal.blocked).slice(0, 240);
               if (f.type === 'plan-step') { r.b.step = f.index; r.b.total = f.total; r.b.text = f.text; r.b.line = f.line; say(r, 'b-step', `B, ${f.line}`, { step: f.index, steps: f.total }); }
             } });
-          if (stopped()) return;
-          finished = agent.planState(bChat)?.steps[at]?.state === 'done';
-         }
-          if (agent.planState(bChat)?.steps[at]?.state !== 'done') break;
+          if (res === 'stopped') return;
+          if (res === 'failed') break;
         }
         const end = agent.planState(bChat);
-        r.b.state = end?.steps.every(x => x.state === 'done') ? 'done' : 'failed';
+        r.b.state = end?.steps.every(x => ['done', 'skipped'].includes(x.state)) ? 'done' : 'failed';
+        if (r.b.state === 'done') r.b.note = end.steps.some(x => x.state === 'skipped') ? 'A step that could not finish was left as it is.' : null;
         if (r.b.state === 'failed') r.b.note = stopped() ? 'Stopped.' : 'B did not finish, so only A is shown.';
         announce(r);
       };
@@ -187,12 +215,7 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       // Each step is its own turn in its own agent session (the folder carries the work from step to step): a small model window never fills up
       // across a long plan. The fork happens between two steps, so B gets exactly the files of the finished steps.
       for (let at = 0; at < plan.steps.length && !stopped(); at++) {
-       let finished = false;
-       // A step that does not finish (the model stopped, a program never returned) is tried once more in a fresh session before the run gives up.
-       for (let attempt = 0; attempt < 2 && !finished && !stopped(); attempt++) {
-        if (attempt) { agent.reopenPlan(aChat); say(r, 'a-retry', `A, trying step ${at + 1} again…`, { step: at + 1 }); }
-        agent.resetSession(aChat);
-        await agent.planGoal({ chatId: aChat, planId: plan.id, once: true, workspacePath: r.a.root, mode: 'bypass', choice, thinking,
+        const res = await runOneStep(r, { tag: 'a', chat: aChat, planId: plan.id, plan, at, root: r.a.root, choice, thinking,
           onFrame: f => {
             if (f.type === 'error') r.a.note = String(f.message ?? '').slice(0, 240);
             if (f.type === 'goal' && f.goal) r.a.goal = { phase: f.goal.phase, blocked: f.goal.blocked ?? null, round: f.goal.round };
@@ -202,16 +225,13 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
               say(r, 'a-step', `A, ${f.line}`, { step: f.index, steps: f.total });
             }
           } });
-        if (stopped()) return;
-        finished = agent.planState(aChat)?.steps[at]?.state === 'done';
-       }
-        const now = agent.planState(aChat);
-        if (!now || now.steps[at]?.state !== 'done') break;
+        if (res === 'stopped') return;
+        if (res === 'failed') break;
         if (r.lever && at + 1 === r.lever.step - 1) { try { forkNow(); } catch (e) { r.b = { ...r.b, state: 'failed', note: 'B could not be prepared, so only A is shown.' }; } }
       }
       if (stopped()) return;
       const aEnd = agent.planState(aChat);
-      r.a.state = aEnd?.state === 'done' || aEnd?.steps.every(x => x.state === 'done') ? 'done' : 'failed';
+      r.a.state = aEnd?.steps.every(x => ['done', 'skipped'].includes(x.state)) ? 'done' : 'failed';
       announce(r);
       if (r.a.state !== 'done') throw new Error('A did not finish the plan' + (r.a.note ? ' (' + r.a.note + ')' : r.a.goal?.blocked ? ' (' + r.a.goal.blocked + ')' : '') + ', so there is nothing to compare. Your files were not changed.');
       if (r.lever && !forked) { forkNow(); }
@@ -219,7 +239,9 @@ export function createForkTimeskip({ agent, dir, notify = () => {}, now = Date.n
       if (bDone) await bDone.catch(e => { r.b.state = 'failed'; r.b.note = 'B stopped: ' + String(e.message ?? e).slice(0, 160); });
       if (stopped()) return;
       setPhase(r, 'checking'); say(r, 'comparing', 'Comparing A and B…');
-      r.finishedAt = now(); r.activity = null; setPhase(r, 'completed');
+      r.finishedAt = now();
+      r.activity = r.b?.state === 'done' ? { code: 'ready', text: 'Both versions are ready. Compare A and B, then keep the one you like.', args: {} } : { code: 'ready', text: 'The result is ready.' + (r.b?.note ? ' ' + r.b.note : ''), args: {} };
+      setPhase(r, 'completed');
     } catch (e) {
       if (stopped()) return;
       r.error = String(e.message ?? e).slice(0, 400); r.finishedAt = now(); r.activity = null; setPhase(r, 'failed');

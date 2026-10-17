@@ -233,7 +233,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
-        input: ownServer ? ['text', 'image'] : ['text'],
+        // Pictures only when the server itself says it reads them (the host asks its model list): a server started without a vision encoder refuses the whole request when a picture is in it.
+        input: ownServer && m.vision === true ? ['text', 'image'] : ['text'],
         ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };
