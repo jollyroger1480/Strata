@@ -99,53 +99,10 @@ split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_
 
 ## Docker (Linux)
 
-The same idea, in a container (NVIDIA cards).
-
-1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-   and a driver **580 or newer** (CUDA 13.0).
-2. Build (this compiles the engine into the image, so the container never compiles):
-   `docker build -t strata .`
-   `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
-   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
-   set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
-3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
-   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
-
-   The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
-   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
-   `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
-   precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
-   Only the model files, the prepared pack, the MTP layer and the install config live in the
-   `strata-data` volume; the engine is part of the image. Switching between models already on the
-   volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
-   `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
-   api_key, LOW_RAM), since those are recorded in its config.
-   `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
-   `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
-   several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
-   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
-   a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
-   file the server starts with.
-   Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
-   layer split is setup's recommended default ([MULTI_GPU.md](MULTI_GPU.md)), and a volume
-   set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
-   or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
-   A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
-   keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
-   see a cap. LOW_RAM runs on one card unless `GPUS` names several (then the experts the cards do not hold are
-   read through the OS file cache, which can fill the RAM during long prompts).
-   The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
-   to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
-   healthy once the model is loaded, and `GET /v1/status` says what it is running.
-   Model files you already have (setup's `--gguf-dir`): mount their folder and name it, e.g.
-   `-v /models/UD-Q4_K_XL:/gguf -e GGUF_DIR=/gguf -e FAMILY=unsloth -e MODEL=UD-Q4_K_XL`.
-   Mount it writable for the first start: setup checks the Unsloth file's SHA-256 once and keeps the
-   result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
-   `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
-   and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
-   Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
-   Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
-   `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
+Ready-made images for NVIDIA (CUDA 13 and CUDA 12), AMD (RX 9000 / R9700 and RX 7000) and Intel Arc cards, with the Terminal
+inside: `docker run` one command, the model downloads on the first start into a volume, nothing is compiled on your computer.
+Which image for which card, the commands, Docker Compose, the API key, updating and troubleshooting: [DOCKER.md](DOCKER.md).
+Building from source: `docker build -t strata:src .` (CUDA 13; [DOCKER.md](DOCKER.md#build-it-yourself)).
 
 ## Older CPUs (experimental)
 
