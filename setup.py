@@ -256,8 +256,47 @@ NVFP4_REPOS = {
         "qwen-nvidia-nvfp4-dense.gguf": ("dense", 5992176896, "0f795ca0cbb908e0cf2b894b30103e21455b5a05346a7ef79da208540cfd2be3"),
         **_NVFP4_SHARED}},
 }
+NVFP4_FP4LOCAL_REPO = "nvidia/Qwen3.8-Flash-Next-FP4-Local"   # NVIDIA's QAD checkpoint (ModelOpt safetensors), prepared here
+# Not a ready-made pack: the safetensors (95 GiB) are downloaded as NVIDIA ships them and tools/nvfp4_local_pack.py prepare
+# turns them into the pack, the dense GGUF, the n-gram table and the draft layer on this PC (nothing of NVIDIA's weights is
+# redistributed).  Role "src" = a file of the checkpoint; the prepared files are in FP4LOCAL_PREPARED.
+NVFP4_REPOS[NVFP4_FP4LOCAL_REPO] = {"revision": "b9ce18a6887e18c089fdea8509a33e63429a3300", "files": {
+        "config.json": ("src", 75217, "b50dbc52a0c83b0cd2a44a372c1fb6b5e0e6827d22f2611c97d4d030f92f6b28"),
+        "generation_config.json": ("src", 202, "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"),
+        "chat_template.jinja": ("src", 8952, "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"),
+        "merges.txt": ("src", 3353259, "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"),
+        "tokenizer.json": ("src", 12809320, "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"),
+        "tokenizer_config.json": ("src", 17928, "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27"),
+        "vocab.json": ("src", 6722759, "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"),
+        "model.safetensors.index.json": ("src", 47280974, "5fa166bbb1cf25adda455117563efa72a2072272001f459eedece131ffc913e1"),
+        "tensors/model-00001-of-00021.safetensors": ("src", 5000643504, "ebf3648c5f4cd1f24e79789e7803498dc4e74cb52515cc515b2d22cf8161953b"),
+        "tensors/model-00002-of-00021.safetensors": ("src", 5002792096, "79a643fc5c024089cecd32ca27dc43e671cbec70ff3628b728909b7656ac43ec"),
+        "tensors/model-00003-of-00021.safetensors": ("src", 5002927400, "c45f942203db4c7f5a1071700b93b908495cc790271acddfff39091c2b953923"),
+        "tensors/model-00004-of-00021.safetensors": ("src", 5003194672, "071ab9cf963ca0f1a6a194b4cec485f5de18ef9804da915b2e6abd0eb0c707af"),
+        "tensors/model-00005-of-00021.safetensors": ("src", 5003151448, "f80d17870eb1d36917257494770984953476583c57737f61fdbd341c957b9715"),
+        "tensors/model-00006-of-00021.safetensors": ("src", 5002892148, "3e9183d4ebb267fa92429184d5132d302cb1a98fd049149e5d01dccd4ca65795"),
+        "tensors/model-00007-of-00021.safetensors": ("src", 5002907708, "aa1ad959c4d62e0bc4600fd0b57cc2939b463e9fb53dc01020e188552b52ce5a"),
+        "tensors/model-00008-of-00021.safetensors": ("src", 5003103756, "0b18844027be74b84b240f23bf3a744bc29b35de0bd384f41c40cd85e6339326"),
+        "tensors/model-00009-of-00021.safetensors": ("src", 5002976316, "2d0b6c66790c17f8b1fdcf442f541778c8f0a381aca26c11b9d7cfcf7c96f2f0"),
+        "tensors/model-00010-of-00021.safetensors": ("src", 5002834136, "3ed9bd73745aebf6dc136f437b67d6b9fc3d38d25ad84300b399164bc87a72b7"),
+        "tensors/model-00011-of-00021.safetensors": ("src", 5002685828, "4936ff28c6cc8b66653ddb9cae28bc284569a1a2f7116819a017dc1a0e517ed8"),
+        "tensors/model-00012-of-00021.safetensors": ("src", 5002912920, "dd7df5a6ff73e9960412243f744eab9ec35f4be40da5bb158dc4ba8796b33742"),
+        "tensors/model-00013-of-00021.safetensors": ("src", 5003237060, "28a455c8ea4ebaa847fb4cbed2bc1de9eff0b501dd3f848a3a3cfc38778e8500"),
+        "tensors/model-00014-of-00021.safetensors": ("src", 4845006312, "6941676e685abf9817d9c48a17fdeda20b2b72d16217555252aa4c602b7f98b8"),
+        "tensors/model-00015-of-00021.safetensors": ("src", 4860574920, "2a1129b5acfc24a45bf402aa63dcef08b531aedfdaf5233c65fd3d12dc303fdd"),
+        "tensors/model-00016-of-00021.safetensors": ("src", 4950031028, "635e97fbad78fa988647d407e2b58e55d551ef94d798c9b6fb5550de25e86429"),
+        "tensors/model-00017-of-00021.safetensors": ("src", 4950030896, "bf60d564d89a805b67f8be5f2847a1b1567a70dbc23d19754395c127568474ad"),
+        "tensors/model-00018-of-00021.safetensors": ("src", 4950030896, "c5bde22f9364e82eb25973456795592fdcb4b158bc2095898979a2566bf4c562"),
+        "tensors/model-00019-of-00021.safetensors": ("src", 4950030904, "da3dc3b4f428f5b9dd53362691043d0242f48d03adca9b7b553bd9f3a1e96350"),
+        "tensors/model-00020-of-00021.safetensors": ("src", 4950030904, "4978bb6b8480cfc02d3c8bc84ba86202889f5f10d090bb17c21fee663cea7683"),
+        "tensors/model-00021-of-00021.safetensors": ("src", 2700016864, "48203838f2c76921bddbf1cc51d20a23858c128821a21add55fa1778e5e25283"),
+}}
+FP4LOCAL_PREPARED = "prepared"                       # <models>/nvidia--Qwen3.8-Flash-Next-FP4-Local/prepared/
+
 # the first release engine with NVFP4 experts (a source build of this checkout has them whatever its number says)
 NVFP4_ENGINE = (0, 1, 44)
+# the first engine that reads NVIDIA's NVFP4 n-gram table (strata.ple.format = nvfp4x16); a source build of this checkout has it
+FP4LOCAL_ENGINE = (0, 1, 45)
 
 # agentionai's Gyro files (Qwen3.8-Flash-Next with trellis-coded, Hadamard-rotated experts, TQ2_T / TQK6 / TQK7): one
 # GGUF per size, the n-gram table inside it (hence the 58 / 92 GB downloads for 27.6 / 35 GB of memory).  The engine
@@ -336,8 +375,8 @@ MODELS = {
                         "about 20% slower than Q2_0 on 12 GB cards",
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "file": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": False},
-    "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
-                       "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
+    "NVFP4": {"about": "best quality of the NVFP4 versions (GPTQ, sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, "
+                       "other NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
               "engine": NVFP4_ENGINE,
               "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's): https://huggingface.co/Qwen/Qwen3.8-Flash-Next"},
@@ -348,6 +387,15 @@ MODELS = {
                      "license": "NVIDIA Open Model License (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
                                 "License) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
                                 "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4"},
+    "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local) - slightly faster on short prompts; "
+                           "a 102 GB download that this PC turns into a Strata pack once (about 20-40 minutes, 110 GB more disk); "
+                           "RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision. No images yet",
+                  "download_gb": 102.2, "prepare_gb": 110.0, "ram_gb": 80, "arena_gb": 68.0,
+                  "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_FP4LOCAL_REPO,
+                  "prepare": "fp4-local", "engine": FP4LOCAL_ENGINE,
+                  "license": "NVIDIA Open Model Agreement (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
+                             "Agreement) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
+                             "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local"},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -1904,8 +1952,23 @@ def ready_where(models_dir: Path, f) -> Path:
     return Path(models_dir) / f[1].replace("/", "--") / f[3]
 
 
+def prepared_dir(model: str, models_dir: Path) -> Path:
+    """Where a model that is prepared on this PC (MODELS[..]["prepare"]) keeps what it prepared."""
+    return Path(models_dir) / MODELS[model]["repo"].replace("/", "--") / FP4LOCAL_PREPARED
+
+
+def prepared_done(model: str, models_dir: Path) -> bool:
+    """Every step of tools/nvfp4_local_pack.py prepare is marked done (its marks, written when each step is whole)."""
+    d = prepared_dir(model, models_dir)
+    return all((d / m).is_file() for m in ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done"))
+
+
 def ready_paths(model: str, models_dir: Path) -> dict:
-    """What the engine is given: the pack folder and the dense, PLE and embedding GGUFs."""
+    """What the engine is given: the pack folder and the dense, PLE and embedding GGUFs (a prepared model also has its
+    own draft layer, "mtp", and no separate embedding: the token embedding is in its dense GGUF)."""
+    if MODELS[model].get("prepare"):
+        d = prepared_dir(model, models_dir)
+        return {"pack": d / "pack", "dense": d / "dense.gguf", "ple": d / "ple-nvfp4.gguf", "mtp": d / "mtp"}
     out = {}
     for f in ready_files(model):
         p = ready_where(models_dir, f)
@@ -6858,7 +6921,9 @@ def main() -> int:
     pack_bin = ready or ((pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists())   # ready: in the download
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    need = to_fetch + (2 if mtp_have else 8) + \
+    prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
+        not prepared_done(model, models_dir) else 0.0
+    need = to_fetch + prep_gb + (2 if mtp_have else 8) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
@@ -6950,6 +7015,15 @@ def main() -> int:
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    prepared = bool(ready and MODELS[model].get("prepare"))
+    if prepared and not prepared_done(model, models_dir):
+        say("  NVIDIA's checkpoint is turned into a Strata pack on this PC (once; 20-40 minutes, reads the 102 GB, writes about")
+        say(f"  {MODELS[model]['prepare_gb']:.0f} GB). Nothing of NVIDIA's weights leaves this PC.")
+        run([sys.executable, str(ROOT / "tools" / "nvfp4_local_pack.py"), "prepare",
+             "--model", str(ready_where(models_dir, ("src", MODELS[model]["repo"], "", "", 0, ""))),
+             "--out", str(prepared_dir(model, models_dir))], env=env)
+        ok("prepared; the downloaded checkpoint is no longer needed and can be deleted to get its 102 GB back: "
+           + str(ready_where(models_dir, ("src", MODELS[model]["repo"], "", "", 0, ""))))
     if ready:                                          # the downloaded pack folder is the pack, experts.bin included
         pack = ready_paths(model, models_dir)["pack"]
     elif model == "Q2_0" and avx512 and family == "qwen":
@@ -6972,9 +7046,10 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
-    mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
+    mtp = ready_paths(model, models_dir)["mtp"] if prepared else \
+        (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
-    corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
+    corrupt = (rt / "experts.bin").exists() and not prepared and mtp_corrupt(mtp, env)
     if corrupt:
         warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
              "fetching them again and rebuilding the draft layer")
@@ -7002,7 +7077,7 @@ def main() -> int:
         rp = ready_paths(model, models_dir)            # the FP8 n-gram table, the BF16 token embedding
         ple = rp["ple"]
         model_args = ["--pack", str(pack), "--native", str(rp["dense"]), "--native-dense-gguf", str(rp["dense"]),
-                      "--ple-gguf", str(ple), "--embd-gguf", str(rp["embd"])]
+                      "--ple-gguf", str(ple), *(["--embd-gguf", str(rp["embd"])] if "embd" in rp else [])]
     else:
         ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
         if ple is None:
