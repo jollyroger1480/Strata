@@ -2217,32 +2217,42 @@ signal, early cleanup and `--errors` error-propagation checks. Its `--synchronou
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
 
-## Decode on compute capability 12.0 cards: four bitwise switches on by default, interleaved matvec up to 8 tokens
+## Compute capability 12.0 cards: faster decode (bitwise) and fused prompt experts by default
 
 Measured on an RTX PRO 5000 Blackwell 72 GB (110 SMs, sm_120, Linux, CUDA 13.2), IQ3_S with every expert in VRAM, setup's
 flags (`--spec 4 --spec-min-p 0.5`), 6 interleaved pairs of fresh engines, 300-token greedy answers, medians:
 
-| | story | code | 8K document | 4K / 20K / 98K prompt |
+| | story | code | 8K document | 4K / 20K / 98K prompt (tok/s) |
 |---|---|---|---|---|
-| before (tok/s) | 168.8 | 224.5 | 186.8 | 3827 / 4607 / 4767 |
-| now | 189.0 (+11.9%, 6/6 pairs) | 256.2 (+14.0%, 6/6) | 211.2 (+13.1%, 6/6) | unchanged |
+| before (tok/s) | 168.8 | 224.6 | 186.6 | 3829 / 4613 / 4767 |
+| now | 192.0 (+13.8%, 6/6 pairs) | 260.0 (+15.8%, 6/6) | 211.9 (+13.6%, 6/6) | 4212 / 4870 / 4929 (+9.9% / +5.4% / +3.4%, 6/6 each) |
 
-The answers are the same tokens (every case and pair), and the identity gate passes (10 prompts plus the 4K and 20K prompt
-dumps, with the fixed small cache and with every expert resident). What changed:
+Decode is bitwise: with `STRATA_PF_FUSED=0` the answers are the same tokens as before and the identity gate passes (10 prompts
+plus the 4K and 20K prompt dumps, with the fixed small cache and with every expert resident). The prompts change at rounding
+level because of the fused prompt experts (below). What changed:
 
-- On a 12.0 card these existing switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
+- On a 12.0 card these bitwise switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
   branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=1` (the
-  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token). Each is bitwise equal
-  to the kernel it replaces. A fixed 4-token verify round went 13.70 -> 12.23 ms with the four together.
-  `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
+  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token),
+  `STRATA_GU_SWIGLU=1` (new: the routed experts' gate/up, SwiGLU and q8_1 in one launch). A fixed 4-token verify round went
+  13.70 -> 11.80 ms with them. `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
 - The interleaved small-batch matvec (`native_mmvq_il`, docs/MMVQ_IL_TABLE.md) also runs 5 to 8 tokens (it stopped at 4, and a
   5-token window cost 2 ms more than a 4-token one), with a 12.0 table for 5-8 tokens and, on 12.0 cards with 80+ SMs, its own
   2-4 token table. Bitwise (`mmvq_il_parity`, 1-8 tokens). `STRATA_MMVQ_IL_WIDE=0` / `STRATA_MMVQ_IL_120=0` turn them off.
+- The native packs' prompt experts run on the fused int8 kernels (`STRATA_PF_FUSED`, the rule gfx12 has) for IQ2_S, IQ3_XXS,
+  IQ3_S and IQ4_XS gate/up; IQ2_XXS / IQ2_XS keep MMQ until measured. Quality on IQ3_S: teacher-forced KL against MMQ 0.0002
+  (5998 positions; MMQ against itself 0.0000) and 0.0010 after ~6K-token documents (1760 positions); first-token KL against
+  the FP16 prompt path 0.01181 vs MMQ's 0.01236 (48 prompts of 1.5K-24K tokens); HumanEval 156/164, reasoning 26/30, agent
+  6/6, needles 6/6, CJK 8/8, tool calls 4/5, the same as MMQ. `STRATA_PF_FUSED=0` keeps MMQ.
 - With the cheaper rows, deeper speculation was measured again (3 pairs): `--spec 3` 1.145 / 1.020 / 1.123 of before,
   `--spec 4` 1.122 / 1.141 / 1.132, `--spec 5` 1.079 / 1.101 / 1.074, `--spec 6` 1.060 / 1.177 / 1.097, `--spec 8` 1.027 /
   1.105 / 1.069 (story / code / document). `--spec 4 --spec-min-p 0.5` stays the default.
+- Setup (Linux, not WSL): when the RAM covers the model's need + the n-gram table + 16 GB (Q2_0 93 GB, IQ3_S 107 GB), the
+  table is kept in RAM (`--ple-io ram`), so a new prompt does not wait for its rows from the SSD: on this card 4K -18%, 20K
+  -9%, 98K -2% with a fresh engine per prompt, the same bits. On an R9700 the read was already hidden; with RAM short (a 48 GB
+  cap) ram mode cost +20% prompt and +14 s of start-up, which is why smaller PCs keep the SSD reads.
 
-Not measured: other 12.0 cards (an RTX 5070 has not been run with these defaults), Windows, and partly-resident caches.
+Not measured: other 12.0 cards (RTX 5070), Windows, partly-resident caches, the IQ3_XXS and IQ2_XS packs.
 
 ## CUDA opt-in switches measured for 0.1.45 (RTX 3060 and RTX A4000, sm_86; all off unless you set them)
 
