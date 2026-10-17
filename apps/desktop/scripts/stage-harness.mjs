@@ -164,7 +164,7 @@ if (keepIgnore) writeFileSync(join(out, '.gitignore'), keepIgnore);
 // --- proof 1: nothing the Harness imports by name was pruned ------------------------------------------------------------
 // (2026-10-17: the other-OS rule once removed @deepseek-ai/dsh-win32-process, which every platform imports; Linux/Mac agent chats died.)
 const lost = missingHarnessImports(out);
-if (lost.length) { console.error('staged Harness is missing imported packages:' + String.fromCharCode(10) + lost.map(l => `  ${l.from} -> ${l.missing}`).join(String.fromCharCode(10))); process.exit(1); }
+if (lost.length) { console.error(['staged Harness is missing imported packages:', ...lost.map(l => `  ${l.from} -> ${l.missing}`)].join(String.fromCharCode(10))); process.exit(1); }
 console.log('import check: every @deepseek-ai package the Harness imports is staged');
 
 // --- proof 2: the staged copy answers --version and boots the web profile once ----------------------------------------
