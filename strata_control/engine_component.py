@@ -536,12 +536,14 @@ def cuda_archs_present(environ=None) -> list[str]:
     return found
 
 
-def hip_archs_present(kfd_root: str = "/sys/class/kfd/kfd/topology/nodes") -> list[str]:
+def hip_archs_present(kfd_root: str | None = None) -> list[str]:
     """``gfxNNNN`` for each AMD GPU the Linux kernel driver lists (``gfx_target_version`` is MMmmss: gfx1201 = 120001,
     gfx1103 = 110003, gfx90a = 90010); Windows: from the display adapters' PCI ids (integrated Radeons left out); empty when
     it cannot say (no amdgpu/kfd, no permission, an id not in the table)."""
-    if os.name == "nt":
-        return sorted({c["arch"] for c in windows_amd_cards() if c["arch"]})
+    if kfd_root is None:
+        if os.name == "nt":
+            return sorted({c["arch"] for c in windows_amd_cards() if c["arch"]})
+        kfd_root = "/sys/class/kfd/kfd/topology/nodes"
     found = []
     try:
         nodes = sorted(Path(kfd_root).iterdir())
