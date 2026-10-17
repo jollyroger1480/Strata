@@ -2231,8 +2231,8 @@ The answers are the same tokens (every case and pair), and the identity gate pas
 dumps, with the fixed small cache and with every expert resident). What changed:
 
 - On a 12.0 card these existing switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
-  branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=2` (the
-  hyper-connection read's up projection with its loads hoisted, and its down projection as token pairs). Each is bitwise equal
+  branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=1` (the
+  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token). Each is bitwise equal
   to the kernel it replaces. A fixed 4-token verify round went 13.70 -> 12.23 ms with the four together.
   `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
 - The interleaved small-batch matvec (`native_mmvq_il`, docs/MMVQ_IL_TABLE.md) also runs 5 to 8 tokens (it stopped at 4, and a

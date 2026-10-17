@@ -1209,7 +1209,7 @@ bool up75_on() {
     return per_dev[dev] == 2;
 #endif
 }
-// sm_75: the staged down kernel's tokens per block (gridDim.y = ct / tg), 0 = one block row for all of them.
+// sm_75 / a 12.0 card: the staged down kernel's tokens per block (gridDim.y = ct / tg), 0 = one block row for all of them.
 // STRATA_GR_DOWN_TG=n forces n where it divides the launch (0 = off).
 int down_tg(int ct) {
 #if defined(__HIPCC__)
@@ -1230,8 +1230,9 @@ int down_tg(int ct) {
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         per_dev[dev] = strata::sm75_default(major, minor) ? 2 : strata::sm120_default(major, minor) ? 3 : 1;   // Turing, STRATA_SM75_PERF=1
     }
-    // a 12.0 card (sm120_series.hpp): token pairs at every even launch (RTX PRO 5000, a 4-token round -2.4%)
-    if (per_dev[dev] == 3) return ct % 2 == 0 ? 2 : 0;
+    // a 12.0 card (sm120_series.hpp): one token a block row for every launch of 2+ tokens (RTX PRO 5000, fixed rounds against
+    // token pairs: 2 tokens -2.1%, 3 -2.3%, 4 -0.2%, 5 -2.5%; pairs against no split at 4 tokens -2.4%)
+    if (per_dev[dev] == 3) return ct >= 2 ? 1 : 0;
     return per_dev[dev] == 2 && (ct == 4 || ct == 6) ? 2 : 0;
 #endif
 }

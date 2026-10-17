@@ -7,7 +7,7 @@
 //   STRATA_SIDE_MIXER=2  the mixer's input-only work on branches of the verify graph
 //   STRATA_ATTN_DAILY=1  the Daily's decode attention (attn_chunk_kernel_pre75 + merge v2)
 //   STRATA_GR_UP75=1     the hyper-connection up projection with its rows' loads hoisted
-//   STRATA_GR_DOWN_TG=2  the hyper-connection down projection as two token groups (twice the blocks)
+//   STRATA_GR_DOWN_TG=1  the hyper-connection down projection with one token a block row (T times the blocks)
 //
 //   STRATA_SM120_PERF=0  turns the whole set off on a 12.0 card (the defaults every other card has).
 // Each switch's own variable still wins in both directions (=0 off, =1 / =2 on), on any card, as before.
