@@ -53,8 +53,8 @@ TDIR="$(cd "$(dirname "$TEMPLATE")" && pwd)"
 TMP="$(mktemp)"; trap 'rm -f "$TMP" "$TMP.2"' EXIT
 # includes first (one level), then the placeholders
 while IFS= read -r line || [ -n "$line" ]; do
-  if [[ "$line" =~ ^@INCLUDE:([^@]+)@$ ]]; then tr -d "" < "$TDIR/${BASH_REMATCH[1]}"; else printf '%s\n' "$line"; fi
-done < <(tr -d "" < "$TEMPLATE") | sed "s|@APPIMAGE@|$APPIMAGE|g" > "$TMP"
+  if [[ "$line" =~ ^@INCLUDE:([^@]+)@$ ]]; then tr -d '\r' < "$TDIR/${BASH_REMATCH[1]}"; else printf '%s\n' "$line"; fi
+done < <(tr -d '\r' < "$TEMPLATE") | sed "s|@APPIMAGE@|$APPIMAGE|g" > "$TMP"
 
 # @SHA256:name@ and @SIZE_GB:name@
 while IFS= read -r token; do
