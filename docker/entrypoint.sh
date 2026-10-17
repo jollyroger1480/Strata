@@ -80,6 +80,13 @@ MSG
   exit 3
 fi
 
+# the card is found through sysfs even when no device file was passed in: say so now instead of failing when the engine starts
+backend=$(printf '%s' "$engine_json" | sed -n 's/.*"backend": *"\([a-z0-9]*\)".*/\1/p' | head -1)
+case "$backend" in
+  hip)  [ -e /dev/kfd ] || { echo "[X] This is an AMD card, but /dev/kfd is not in the container. Add: --device /dev/kfd --device /dev/dri --group-add video --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+  sycl) ls /dev/dri/renderD* >/dev/null 2>&1 || { echo "[X] This is an Intel card, but /dev/dri is not in the container. Add: --device /dev/dri --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+esac
+
 # ---- the API key
 key="${API_KEY:-}"
 if [ -z "$key" ] && [ -n "${API_KEY_FILE:-}" ]; then
