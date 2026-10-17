@@ -321,6 +321,19 @@ class Runner:
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
         if s.gpus:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
+        if sys.platform == "darwin":
+            # a Mac's setup is metal/setup_mac.py, which takes fewer options (no --kv, --gpu, speed projection)
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir"}
+            out, i = [], 0
+            while i < len(args):
+                if args[i] in keep:
+                    out.append(args[i])
+                    if args[i] not in ("--yes", "--no-start") and i + 1 < len(args):
+                        out.append(args[i + 1])
+                    i += 2 if args[i] not in ("--yes", "--no-start") else 1
+                else:
+                    i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
+            args = out
         return args
 
     def installed_state(self) -> tuple[Path | None, dict | None]:

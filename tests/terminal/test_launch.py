@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -267,6 +269,30 @@ class RunConfig(unittest.TestCase):
         self.assertEqual(tune_words({"outcome": "base_failed", "message": "Not tuned: no memory"})[0], "failed")
         self.assertEqual(tune_words(None)[0], "failed")
         self.assertEqual(tune_words({"outcome": "cancelled"})[0], "stopped")
+
+
+class SetupArgs(unittest.TestCase):
+    def runner(self, **kw):
+        with Home():
+            cat = catalog(HW_12)
+            s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", **kw)
+            return Runner(s, catalog=cat).setup_args()
+
+    def test_the_apps_own_installer_arguments(self):
+        import tempfile
+        own = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, own, True)
+        a = self.runner(data_dir="/d", model_path=own, gpus=[1])
+        self.assertEqual(a[:8], ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768"])
+        for pair in (["--vision", "no"], ["--kv", "q4_0"], ["--experimental-speed-projection", "off"], ["--data-dir", "/d"], ["--gguf-dir", own],
+                     ["--gpu", "1"]):
+            self.assertIn(pair[0], a)
+            self.assertEqual(a[a.index(pair[0]) + 1], pair[1])
+
+    def test_a_mac_gets_only_the_options_its_setup_knows(self):
+        with mock.patch.object(sys, "platform", "darwin"):
+            a = self.runner(data_dir="/d", gpus=[0])
+        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d"])
 
 
 class AdoptRules(unittest.TestCase):
