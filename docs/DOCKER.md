@@ -115,7 +115,7 @@ screens; leave out what you do not care about.
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
 | `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
 | `GPU` / `GPUS` | card numbers, `0` or `0,1`; empty or `all` = the engine's choice | all that fit |
-| `TUNE` | `quick` (about 20 minutes, once), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
+| `TUNE` | `quick` (up to about 20 minutes, once), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
 | `API_KEY` / `API_KEY_FILE` | the key clients must send ([below](#the-api-key)); the file form is for Docker secrets | made for you |
 | `PORT` | the port inside the container | `8080` |
 | `PRESET` | the preset name in `/data` | `docker` |

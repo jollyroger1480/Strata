@@ -144,6 +144,28 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("API_KEY is short", err)
         self.assertIn("HOST is from the older image", err)
 
+    def test_a_changed_card_drops_the_saved_run_settings_of_the_old_card(self):
+        install = self.tmp / "data" / "install"
+        install.mkdir(parents=True)
+        (install / "strata-q2_0.json").write_text('{"gpu": 3, "args": []}')
+        (install / "strata-iq3_s.json").write_text('{"gpu": 1, "args": []}')
+        p = self.start(MODEL="Q2_0", GPU="1")
+        line = self.launch_line(self.wait_for("--show-key"))
+        self.assertIn("--gpu 1", line)
+        code, out, err = self.stop(p)
+        self.assertIn("making them again", out)
+        self.assertFalse((install / "strata-q2_0.json").exists())          # card 3 -> 1: made again from the files
+        self.assertTrue((install / "strata-iq3_s.json").exists())          # already card 1: kept
+
+    def test_all_cards_leaves_the_saved_run_settings_alone(self):
+        install = self.tmp / "data" / "install"
+        install.mkdir(parents=True)
+        (install / "strata-q2_0.json").write_text('{"gpu": 3, "args": []}')
+        p = self.start(MODEL="Q2_0", GPUS="all")
+        self.wait_for("--show-key")
+        self.stop(p)
+        self.assertTrue((install / "strata-q2_0.json").exists())
+
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,
                            text=True, timeout=30)

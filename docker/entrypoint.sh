@@ -25,6 +25,7 @@ set -u
 
 APP=/opt/strata
 STRATA="$APP/terminal/bin/strata"
+PYBIN="$APP/terminal/python/bin/python3"; [ -x "$PYBIN" ] || PYBIN=$(command -v python3 || echo python3)
 STATE_DIR="${XDG_STATE_HOME:-/data/state}/strata"
 KEY_FILE="${STRATA_KEY_FILE:-/data/state/api-key}"
 PHASE_FILE=/run/strata-phase
@@ -120,7 +121,20 @@ if [ -n "${VISION:-}" ]; then
   set -- "$@" --vision "$v"; have=1
 fi
 gpus="${GPUS:-${GPU:-}}"
-case "$gpus" in ""|all|ALL) ;; *) set -- "$@" --gpu "$gpus"; have=1 ;; esac
+case "$gpus" in ""|all|ALL) ;; *)
+  set -- "$@" --gpu "$gpus"; have=1
+  # `launch --gpu` is applied when a model is first set up; a model that is already set up keeps its card. So that GPU / GPUS take effect on
+  # a volume that already has the model, run settings that name another card are dropped: setup writes them again from the files that are there.
+  want=$(printf '%s' "$gpus" | tr -d ' ')
+  for c in /data/install/strata-*.json; do
+    [ -f "$c" ] || continue
+    cur=$("$PYBIN" -c 'import json, sys; g = json.load(open(sys.argv[1])).get("gpu"); print(",".join(map(str, g)) if isinstance(g, list) else ("" if g is None else g))' "$c" 2>/dev/null)
+    if [ "$cur" != "$want" ]; then
+      say "The saved run settings use graphics card '${cur:-default}', GPU/GPUS asks for '$want': making them again (model files are kept)."
+      rm -f "$c"
+    fi
+  done ;;
+esac
 [ -n "${STRATA_SET:-}" ] && { for kv in $STRATA_SET; do set -- "$@" --set "$kv"; done; have=1; }
 [ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }
 
@@ -133,7 +147,7 @@ if [ -n "$tune_mode" ] && [ "$tune_mode" != "skip" ]; then
     say "This preset is already tuned; keeping the tuned settings (set RETUNE=1 to tune again)."
   else
     set -- "$@" --tune "$tune_mode"; have=1
-    say "Tuning is on (TUNE=$tune_mode): the first start takes about $([ "$tune_mode" = quick ] && echo 20 || echo 120) minutes longer."
+    say "Tuning is on (TUNE=$tune_mode): the first start takes longer (up to about $([ "$tune_mode" = quick ] && echo 20 || echo 120) minutes), once."
   fi
 fi
 [ "${TUNE_ALLOW_SMALL:-0}" = "1" ] && set -- "$@" --tune-allow-small
@@ -167,7 +181,6 @@ trap on_term TERM INT
 
 # A command started with & by a non-interactive sh ignores SIGINT, so `kill -INT` would do nothing. The launch must see it (it is how it
 # stops a download or a load cleanly), so it is started through a one-line Python that puts SIGINT back before it runs the Terminal.
-PYBIN="$APP/terminal/python/bin/python3"; [ -x "$PYBIN" ] || PYBIN=$(command -v python3 || echo python3)
 RESET_INT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])'
 
 phase preparing

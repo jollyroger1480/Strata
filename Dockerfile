@@ -55,7 +55,7 @@ RUN set -e; \
     archs=""; for a in $(echo "$CUDA_ARCHITECTURES" | tr ';,' '  '); do archs="$archs --arch sm_$a"; done; \
     last=$(echo "$CUDA_ARCHITECTURES" | tr ';,' '  ' | awk '{print $NF}'); \
     python3 packaging/package_engine.py --src /stage --backend cuda --version "$ver" --out /engine $archs --arch "compute_$last" \
-        --min-driver nvidia=580.65 --variant cuda13 --platform linux-x86_64 --include SYSTEM-LIBS.txt --include 'libstrata_kq*' \
+        --min-driver nvidia=580.65 --variant cuda13 --platform linux-x86_64 --build-id "docker-source-${ver}-cuda13.0" --include SYSTEM-LIBS.txt --include 'libstrata_kq*' \
         --include strata-vision; \
     for d in /engine/*/; do python3 packaging/package_engine.py --verify "$d"; python3 packaging/binary_deps.py "$d"; done
 
