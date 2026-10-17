@@ -94,20 +94,9 @@ def read_config(path: Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def gpus_of(desc_gpu, largest: int | None) -> list[int] | None:
-    """The card numbers an installed config uses: a list, one number, or nothing written (setup then took the largest card)."""
-    if isinstance(desc_gpu, list):
-        return sorted(int(x) for x in desc_gpu)
-    if isinstance(desc_gpu, int):
-        return [desc_gpu]
-    return [largest] if largest is not None else None
-
-
-def desc_matches(desc: dict, s: S.LaunchSettings, gpus: list[int] | None = None, largest: int | None = None) -> bool:
-    """Does the installed model's config already carry the context, memory format, picture choice and graphics cards of these settings?
-    `gpus`: the cards these settings mean (None: this computer has one card that counts, nothing to compare)."""
-    if gpus is not None and gpus_of(desc.get("gpu"), largest) != sorted(gpus):
-        return False
+def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
+    """Does the installed model's config already carry the context, memory format and picture choice of these settings?
+    (The graphics cards are not part of it: they go into each launch's own config, see apply_cards.)"""
     if s.context and desc.get("context") != s.context:
         return False
     want_kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
@@ -137,8 +126,39 @@ def files_present(cfg: dict) -> list[str]:
     return missing
 
 
-def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None) -> dict:
-    """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, advanced)."""
+def apply_cards(cfg: dict, gpus: list[int] | None) -> None:
+    """The graphics cards of THIS launch go into its run config, whatever card the model was installed with (no reinstall): one card is a number,
+    several are a list with the automatic layer split. None: the installed config's own choice stays."""
+    if not gpus:
+        return
+    gpus = [int(g) for g in gpus]
+    cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
+    cfg["gpus_asked"] = True
+    if len(gpus) > 1:
+        cfg["layer_split"] = cfg.get("layer_split") or "auto"
+    else:
+        cfg.pop("layer_split", None)
+
+
+def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None) -> list[int] | None:
+    """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the recommended ones by the shared fit rule
+    (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None (one card: the installed config's own)."""
+    if s.gpus:
+        return [int(g) for g in s.gpus]
+    try:
+        from strata_control import gpu_fit
+        comp = catalog.computer()
+        if len(comp.usable_gpus) < 2:
+            return None
+        row = next((r for r in catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+        mem = float(row.memory_gb) if row is not None and row.memory_gb else 44.0
+        return gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus) or None
+    except Exception:                                        # noqa: BLE001 - never block a launch over the choice of cards
+        return None
+
+
+def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None, gpus: list[int] | None = None) -> dict:
+    """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
     from strata_control import tune_knobs
     cfg = json.loads(json.dumps(base))
     cfg["host"] = acc.host_for(s.access)
@@ -150,6 +170,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     cfg.setdefault("exe", "component:strata-engine")
     if log:
         cfg["log"] = log
+    apply_cards(cfg, gpus)
     if s.extra:
         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
@@ -382,24 +403,6 @@ class Runner:
         desc = self.catalog.strata.describe_config(path)
         return path, desc
 
-    def wanted_gpus(self) -> tuple[list[int] | None, int | None]:
-        """(the cards these settings mean, the largest card): the cards named, else the recommended ones by the shared fit rule
-        (strata_control/gpu_fit.py); (None, None) when this computer has one card that counts."""
-        try:
-            from strata_control import gpu_fit
-            comp = self.catalog.computer()
-            keep = comp.usable_gpus
-            if len(keep) < 2:
-                return None, None
-            largest = keep[0].get("index")
-            if self.s.gpus:
-                return sorted(int(g) for g in self.s.gpus), largest
-            row = next((r for r in self.catalog.rows() if (r.family, r.model) == (self.s.family, self.s.model)), None)
-            mem = float(row.memory_gb) if row is not None and row.memory_gb else 44.0
-            return sorted(gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus)), largest
-        except Exception:                                    # noqa: BLE001 - never block a launch over this comparison
-            return None, None
-
     def download_gb(self) -> float:
         """How much would be downloaded for this launch right now: 0 when the model is installed with these choices (or is the person's own files)."""
         s = self.s
@@ -411,7 +414,7 @@ class Runner:
             if lost and all("mmproj" in Path(x).name.lower() for x in lost):
                 return 0.9                                   # only the picture reader's file is gone
             if path is not None and desc is not None and not lost:
-                if desc_matches(desc, s, *self.wanted_gpus()):
+                if desc_matches(desc, s):
                     return 0.0
                 # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)
                 return 0.9 if (s.vision != "off" and (desc.get("images") or "off") == "off") else 0.0
@@ -427,7 +430,7 @@ class Runner:
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
         path, desc = self.installed_state()
-        if path is not None and desc is not None and desc_matches(desc, s, *self.wanted_gpus()) and not files_present(read_config(path)):
+        if path is not None and desc is not None and desc_matches(desc, s) and not files_present(read_config(path)):
             self.emit("model", f"{s.family} {s.model} is already installed with these choices.", 100)
             return path
         title = f"{s.family} {s.model}"
@@ -544,7 +547,7 @@ class Runner:
         from strata_control import tune_knobs
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
-                            log=str(launch_dir() / f"{self.name}.engine.log"))
+                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog))
         out = launch_dir() / f"{self.name}.json"
         write_private(out, cfg)
         self.config_path = out

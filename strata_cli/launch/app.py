@@ -141,11 +141,11 @@ class Ctx:
             return line + "   (the engine command is shown once the model is installed)"
         try:
             from strata_control import tune_knobs
-            from strata_cli.launch.runner import derive_config
+            from strata_cli.launch.runner import cards_for_launch, derive_config
             from serve.server import engine_args
             import contextlib
             import io
-            d = derive_config(cfg, s, bool_flags=tune_knobs.BOOL_FLAGS)
+            d = derive_config(cfg, s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog))
             if s.parallel:
                 d["parallel"] = s.parallel
             with contextlib.redirect_stdout(io.StringIO()):
