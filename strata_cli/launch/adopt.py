@@ -21,7 +21,8 @@ UNSUPPORTED = ("no nvidia gpu found", "no amd gpu", "nvidia gpu", "not supported
 
 def setup_cannot_handle_this_card(message: str) -> bool:
     low = (message or "").lower()
-    return "no nvidia gpu found" in low or "no amd gpu strata can use" in low or "nvidia-smi did not answer" in low
+    return ("no nvidia gpu found" in low or "no amd gpu strata can use" in low or "nvidia-smi did not answer" in low
+            or "no mac model installer" in low)
 
 
 def find_shards(folder: Path) -> list[Path]:
@@ -61,12 +62,19 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
     args = ["--pack", str(pack), "--native", str(shards[0])]
     if len(shards) > 1:
         args += ["--ple-gguf", str(shards[-1])]
-    args += ["--expert-profile", str(profile), "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5"]
-    if mtp.exists():
-        args += ["--mtp", str(mtp)]
-    args += ["--max-context", str(context), "--kv", kv or ("int8" if context > 8192 else "fp16")]
+    if backend == "metal":
+        # a Mac: the Metal defaults metal/setup_mac.py writes for a model that streams from the SSD (one token per step, no draft layer, the GGUF mapped in place)
+        args += ["--expert-profile", str(profile), "--expert-cache", "64", "--prefill", "auto", "--spec", "2", "--suffix-draft", "0",
+                 "--max-context", str(context), "--mmap-experts"]
+    else:
+        args += ["--expert-profile", str(profile), "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5"]
+        if mtp.exists():
+            args += ["--mtp", str(mtp)]
+        args += ["--max-context", str(context), "--kv", kv or ("int8" if context > 8192 else "fp16")]
     cfg = {"exe": "component:strata-engine", "args": args, "cwd": str(src), "tokenizer": str(tokenizer), "model_name": model_name,
            "log": str(log), "lib_dirs": [], "port": 8080}
+    if backend == "metal":
+        cfg["env"] = {"STRATA_METAL_STREAM": "1"}
     if backend:
         cfg["backend"] = backend
     return cfg, []

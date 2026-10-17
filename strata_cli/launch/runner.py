@@ -369,6 +369,11 @@ class Runner:
             self.emit("model", f"{s.family} {s.model} is already installed with these choices.", 100)
             return path
         title = f"{s.family} {s.model}"
+        if sys.platform == "darwin" and not (cat.src / "metal" / "setup_mac.py").is_file():
+            # this Terminal does not carry the Mac installer (it builds the engine from source): use model files prepared on this Mac
+            adopted = self.adopt_prepared_files("no Mac model installer in this Terminal")
+            if adopted is not None:
+                return adopted
         self.emit("model", f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
         env = self._env()
