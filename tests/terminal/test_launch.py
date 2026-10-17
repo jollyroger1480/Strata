@@ -58,6 +58,9 @@ class SettingsRules(unittest.TestCase):
         self.assertEqual(S.split_setting("--kv-grow"), ("--kv-grow", ""))
         self.assertEqual(S.split_setting("STRATA_PIN_BY_NEED=1"), ("STRATA_PIN_BY_NEED", "1"))
         self.assertEqual(S.split_setting("expert_cache=auto"), ("--expert-cache", "auto"))
+        self.assertEqual(S.split_setting("IGC_EnableDPEmulation=1"), ("IGC_EnableDPEmulation", "1"))        # environment names keep their case
+        self.assertEqual(S.split_setting("ONEAPI_DEVICE_SELECTOR=level_zero:gpu"), ("ONEAPI_DEVICE_SELECTOR", "level_zero:gpu"))
+        self.assertEqual(S.split_setting("--prefill=4096"), ("--prefill", "4096"))
         with self.assertRaises(ValueError):
             S.split_setting("no spaces allowed=1")
 

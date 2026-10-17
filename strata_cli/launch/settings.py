@@ -196,7 +196,7 @@ def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None) -> li
 
 # ----------------------------------------------------------------------------------------------------- advanced settings
 
-_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_ENV_NAME = re.compile(r"^(?=[A-Za-z0-9_]*[A-Z])[A-Za-z_][A-Za-z0-9_]*$")     # any name with a capital letter: STRATA_X, IGC_EnableDPEmulation, ZES_ENABLE_SYSMAN
 _FLAG_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
