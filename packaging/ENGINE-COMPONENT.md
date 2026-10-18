@@ -95,9 +95,9 @@ the manifest file (which holds every file's hash), used as the package's digest 
 |---|---|---|---|
 | `windows-x86_64` cuda, variant `cuda13` | the owner PC, the same cmake line as the release zips (CUDA 13.0, `75;86;89;120` real + `120` PTX, `STRATA_PORTABLE=ON`) | `strata.exe`, `strata_kq.dll`, `strata-vision.exe` (reused, unchanged since 0.1.44), `BUILD.json` | `min_driver` nvidia 580.65 |
 | `windows-x86_64` cuda, variant `cuda12` | the owner PC (CUDA 12.9, `60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same four files | experimental, `min_driver` nvidia 575.51; the CUDA 13 build wins when both fit |
-| `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | no Windows AMD test machine yet |
+| `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | no Windows AMD test machine yet; with `STRATA_NO_VISION` unset it also builds the two picture readers (`strata-vision.exe` on the CPU, `strata-vision-hip.exe` on the GPU) |
 | `linux-x86_64` cuda | a Linux box with the CUDA toolkit | `strata`, `libstrata_kq.so`, `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
-| `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs | |
+| `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs; `packaging/build_hip_linux.sh` builds it with both picture readers |
 | `linux-x86_64` hip, gfx1103 (Radeon 780M / Phoenix iGPU) | `packaging/build_hip_gfx1103.sh` on the mini PC (TheRock gfx110X-all SDK) | the same set as the gfx1200/1201 package, with `rocblas/library` and `hipblaslt/library` for gfx1103 (600 MiB) | experimental, unvalidated: the iGPU resets now and then (MES REMOVE_QUEUE, notes-minipc.md); never kill the engine mid-request; run configs set `STRATA_NO_ARENA_THP=1`. `engine_component.resolve` picks a HIP package only when its `archs` list a gfx target the Linux kfd topology reports |
 | `linux-x86_64` sycl | a box with oneAPI DPC++ | `strata` (JIT from SPIR-V), libsycl, the Unified Runtime adapters, MKL SYCL libraries | the Level Zero loader and compute runtime are the PC's driver |
 | `macos-arm64` metal | an Apple Silicon Mac | `strata`, `metal/kernels/*.metal`, `metal/engine-msl/*.metal`, `metal/ggml-common.h`, `metal/data/*.bin` | the Metal engine compiles its kernel sources when it starts; since S1 it finds them beside the executable (`metal/src/resource_path.h`: environment variable, then `<exe dir>/metal/`, then the compiled-in source path) |
@@ -105,3 +105,13 @@ the manifest file (which holds every file's hash), used as the package's digest 
 `packaging/collect_libs.py` gathers the Linux libraries (an `ldd` closure with the dlopen'd extras named, kernel data filtered by
 GPU architecture) into the folder `package_engine.py` packages; libraries the distribution provides are listed in
 `SYSTEM-LIBS.txt` inside the package so a missing one can be named on a target PC.
+
+## Picture readers in an AMD package
+
+A HIP package carries two programs for pictures next to `strata` (`vision` in its BUILD.json): `strata-vision` is the CPU reader, which
+needs nothing of the GPU runtime and starts on every PC, and `strata-vision-hip` is the same reader on the card (llama.cpp's HIP
+backend, built for the package's `archs`; BUILD.json `vision_archs`). Setup writes the run config with the GPU reader first and the CPU
+reader as `vision.cpu_exe`; when the GPU reader does not start (the card is not in its build, the HIP runtime does not load, the card is
+busy) the server starts the CPU reader by itself and prints one line. Both programs have RUNPATH `$ORIGIN` on Linux; on Windows the
+ROCm DLLs they import sit beside the programs or in `rocm/bin` (the engine's PATH entry, `lib_dirs`). `strata_control/vision_reader.py`
+holds the choice; `tools/test_vision_reader.py` the tests.
