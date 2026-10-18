@@ -1,7 +1,7 @@
 // Deliverable events and compact activity groups.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeliverableTracker, ActivityGroups, fileType, groupLine, lineDelta } from '../server/agent/deliverables.mjs';
@@ -40,6 +40,49 @@ test('a created file, a changed file and a script-made file are reported once ea
     assert.deepEqual(swept.map(d => d.path).sort(), ['out/data.csv', 'pic.png'], 'hidden and dependency folders are not deliverables');
     assert.equal(swept.find(d => d.path === 'pic.png').lines, null); assert.equal(swept.find(d => d.path === 'pic.png').kind, 'image');
     assert.equal(t.check('../outside.txt'), null); assert.equal(t.check('missing.txt'), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a snapshot cut short by its time budget never turns the rest of the folder into "new files" (QA report: Edited 308 files)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-dl3-'));
+  try {
+    // a big, old tree (the CUDA headers of the report) that was there long before the turn
+    const old = new Date(Date.now() - 3600_000);
+    for (const d of ['algorithm', 'atomic', 'barrier']) {
+      mkdirSync(join(dir, d));
+      for (let i = 0; i < 30; i++) { const p = join(dir, d, 'f' + i + '.h'); writeFileSync(p, 'line' + NL); utimesSync(p, old, old); }
+    }
+    // the first look runs out of time after a few files; the look at the end of the turn has all the time it wants
+    let calls = 0;
+    const t = new DeliverableTracker(dir, { now: () => (++calls > 12 ? 1e9 : 0) });
+    t.snapshot();
+    assert.equal(t.truncated, true, 'the setup: the snapshot was cut short');
+    t.now = () => 0;
+    assert.deepEqual(t.sweep(), [], 'nothing the turn did not touch is reported');
+    // a file the turn really makes is still found, and an old file the turn really changes
+    writeFileSync(join(dir, 'barrier', 'made.txt'), 'x' + NL);
+    assert.deepEqual(t.sweep().map(d => d.path), ['barrier/made.txt']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the tracker never looks inside the app, engine, component, AppData or temp folders, nor when the chat folder is the app itself', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-dl4-'));
+  try {
+    const ws = join(dir, 'work'), engine = join(ws, 'engine'), temp = join(ws, 'Temp'), appData = join(ws, 'AppData'), mine = join(ws, 'mine');
+    for (const d of [ws, engine, temp, appData, mine]) mkdirSync(d);
+    const t = new DeliverableTracker(ws, { forbid: [engine], exclude: [temp, appData, join(dir, 'elsewhere')] });
+    t.snapshot();
+    for (const d of [engine, temp, appData, mine]) writeFileSync(join(d, 'new.h'), 'a' + NL);
+    assert.deepEqual(t.sweep().map(d => d.path), ['mine/new.h']);
+    assert.equal(t.check('engine/new.h'), null); assert.equal(t.check('Temp/new.h'), null); assert.equal(t.check('AppData/new.h'), null);
+    // a chat whose folder IS the engine folder (or inside it) tracks nothing
+    const inside = new DeliverableTracker(engine, { forbid: [engine] }); inside.snapshot();
+    writeFileSync(join(engine, 'another.h'), 'b' + NL);
+    assert.deepEqual(inside.sweep(), []); assert.equal(inside.check('another.h'), null);
+    // the temp folder as the chat's own folder is fine (the exclusion is for folders inside the chat folder)
+    const own = new DeliverableTracker(temp, { exclude: [temp] }); own.snapshot();
+    writeFileSync(join(temp, 'ok.txt'), 'c' + NL);
+    assert.deepEqual(own.sweep().map(d => d.path), ['ok.txt']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
