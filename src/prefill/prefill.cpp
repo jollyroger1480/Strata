@@ -312,7 +312,7 @@ inline int ring_slots(size_t T) {
     // 4K prompts 718 -> 1,211 tok/s (16K 1,949 -> 2,032), R9700 4K 2,426 -> 2,483 (16K the same)
     static const bool wmma = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e != nullptr && e[0] == '1';
+        return e != nullptr && (e[0] == '1' || std::strcmp(e, "auto") == 0);
     }();
     if (!v && g_ring_override <= 0 && wmma) return (int64_t) T >= stream_all_min() ? 96 : STAGE;
 #endif
