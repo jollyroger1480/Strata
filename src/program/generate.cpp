@@ -7437,7 +7437,7 @@ int main(int argc, char** argv) {
         host.page_cache = src.unbuffered() ? 0 : (hm->available > slack ? hm->available - slack : 0);
         host.h2d_gbps = g_last_h2d_gbps > 0.0 ? g_last_h2d_gbps : 12.0;
         std::string why;
-        host.ssd_gbps = drive_read_gbps(o.pack, why);
+        host.ssd_gbps = drive_read_gbps(o.native_preset.empty() ? o.pack : o.native_preset, why);   // where the experts live
         if (const char* e = std::getenv("STRATA_PREFILL_PLAN_TOKS"); e != nullptr && std::atof(e) > 0.0)
             host.compute_tok_s = std::atof(e);
         const uint64_t ram_copy = src.complement_ready() ? src.resident_bytes() : 0;

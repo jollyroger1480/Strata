@@ -43,13 +43,29 @@ int main() {
                 c6.seconds, c4.file_set / kGiB, c4.miss, c4.read_bytes / 1e9, c4.seconds);
     CHECK(c8.read_bytes / 1e9 > 28 && c8.read_bytes / 1e9 < 46);
     CHECK(c4.read_bytes == 0 && c4.fits);
-    CHECK(c6.read_bytes / 1e9 < 8);
+    CHECK(c6.read_bytes / 1e9 < 15);   // measured 1.2-2.8 GB: the model is conservative here
     // the planner leaves 8192 for the one that fits
     const Pick p = choose(h, t, 28700, opts, 7);
     std::printf("%s\n", describe(p, h, 28700).c_str());
     CHECK(p.changed);
-    CHECK(p.best.opt.chunk >= 3072 && p.best.opt.chunk <= 4096);
+    CHECK(p.best.opt.chunk >= 3072 && p.best.opt.chunk <= 5120);
     CHECK(p.best.read_bytes < 3e9);
+
+    // P2003 (RTX 3060, IQ2_XS, cgroup 32G, NVMe): 8192 was the fastest of 2048/3328/4096/6144/8192 although it thrashes (measured 480 vs 391 tok/s at 4096).
+    // file sets 19.1 / 18.2 / 17.5 / 17.0 / 16.4 GiB against a 17.0 GiB cache; the fast drive makes the extra passes the dearer cost
+    Host nv;
+    nv.page_cache = gib(17.0);
+    nv.h2d_gbps = 25.6;
+    nv.ssd_gbps = 2.5;
+    Tier t2;
+    t2.experts_total = gib(33.0);
+    t2.gpu_cache = gib(6.0);
+    t2.file_tier = gib(15.0);
+    t2.extra_file = gib(0.35);
+    std::vector<Option> o4 = {{2048, 96, 96, gib(1.1), 0}, {3328, 96, 96, gib(1.63), 0}, {4096, 96, 96, gib(2.0), 0}, {6144, 96, 96, gib(2.9), 0}, {8192, 96, 96, gib(3.8), 0}};
+    const Pick n = choose(nv, t2, 28887, o4, 4);
+    std::puts(describe(n, nv, 28887).c_str());
+    CHECK(!n.changed);
 
     // a box where everything fits keeps today's choice
     Host big = h;

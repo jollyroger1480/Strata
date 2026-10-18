@@ -64,15 +64,18 @@ struct Cost {
     bool fits = false;           ///< the set sits in the page cache with room to spare
 };
 
-/// The share of a chunk's file set that comes from the drive, from r = file_set / page_cache.  Fitted to #2824:
-/// r 0.80 (4096 chunks) read ~1 GB per prompt, r 0.92 (6144) 1.2-2.8 GB, r 1.04 (8192) 28-45 GB over four chunks
-/// (a miss share of 0.47-0.75).  Below 0.80 the set stays cached; the ramp to 1.0 is the page cache's imperfect LRU on
-/// a cyclic scan (some pages survive); well past 1 nearly everything misses.
+/// The share of a chunk's file set that comes from the drive, from r = file_set / page_cache, with page_cache = the RAM
+/// available after the copy less a slack.  Fitted to two rigs that disagree below r = 1 and agree above it:
+///   #2824 (2x RTX 3060, 32 GB, SATA, 4 chunk sizes): r 0.80 read ~1 GB per prompt, r 0.92 1.2-2.8 GB, r 1.04 a miss share of 0.47-0.75;
+///   P2003 (RTX 3060, IQ2_XS, cgroup 32G, 5 chunk sizes, 29K prompt): r 0.96 0.38, 1.00 0.44, 1.03 0.49, 1.07 0.61, 1.12 0.74.
+/// Below 0.85 the set stays cached; from there the share climbs (the page cache is never exactly the size it looks: the
+/// PLE shard and the startup reads keep pages in it), and past ~1.3 nearly every page misses.
 inline double miss_share(double r) {
-    if (r <= 0.80) return 0.0;
-    if (r <= 1.00) return 0.15 * (r - 0.80) / 0.20;
-    if (r <= 1.05) return 0.15 + 0.50 * (r - 1.00) / 0.05;
-    return std::min(1.0, 0.65 + 0.35 * (r - 1.05) / 0.25);
+    if (r <= 0.85) return 0.0;
+    if (r <= 1.00) return 0.40 * (r - 0.85) / 0.15;
+    if (r <= 1.12) return 0.40 + 0.35 * (r - 1.00) / 0.12;
+    if (r <= 1.30) return 0.75 + 0.25 * (r - 1.12) / 0.18;
+    return 1.0;
 }
 
 inline Cost price(const Host& h, const Tier& t, int64_t tokens, const Option& o) {
@@ -83,7 +86,7 @@ inline Cost price(const Host& h, const Tier& t, int64_t tokens, const Option& o)
     c.file_set = (double) t.file_tier + (double) unbacked + (double) t.extra_file;
     const double r = h.page_cache > 0 ? c.file_set / (double) h.page_cache : 1e9;   // unbuffered: nothing is cached
     c.miss = h.page_cache > 0 ? miss_share(r) : 1.0;
-    c.fits = h.page_cache > 0 && r <= 0.80;
+    c.fits = h.page_cache > 0 && r <= 0.85;
     c.read_bytes = (double) c.chunks * c.file_set * c.miss;
     // a chunk streams every expert the GPU does not hold: the loan returns to that set for the length of the prompt
     const double stream = std::max(0.0, (double) t.experts_total - (double) t.gpu_cache + (double) o.lend_bytes);
