@@ -58,3 +58,10 @@ test('F08: the message box stops at 30% of the window height (44 to 180 px) and 
   assert.match(css, /\.composer \.st-composer textarea \{ max-height: clamp\(44px, 30dvh, 180px\); overflow-y: auto; \}/);
   assert.match(await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8'), /composerCap\(window\.innerHeight\)/);
 });
+
+test('O02: the screenshot Download button saves the picture and then says so', async () => {
+  const source = (await readFile(new URL('../src/components/SnapshotDialog.tsx', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  assert.match(source, /onClick=\{\(\) => saveSnapshotWithNotice\(data\)\}>\{tr\("Download"\)\}/);
+  assert.match(source, /downloadSnapshot\(data\);\n\s+pushToast\('success'/);
+  assert.match(source, /pushToast\('error', tr\('The screenshot was not saved'\)/);
+});
