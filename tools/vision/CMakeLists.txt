@@ -82,6 +82,12 @@ if(STRATA_VISION_HIP)
   string(REPLACE ";" "," _hip_archs "${STRATA_VISION_HIP_ARCHS}")
   target_compile_definitions(strata-vision PRIVATE STRATA_VISION_HIP STRATA_VISION_HIP_ARCHS="${_hip_archs}")
 endif()
+if(WIN32 AND STRATA_VISION_HIP)
+  # hipblas.dll (and rocblas.dll behind it) live in rocm\bin of the engine package: loaded on first use, after main() has put that folder on
+  # the DLL search path, so the reader starts from any PATH and says "no GPU" itself where there is none
+  target_link_libraries(strata-vision PRIVATE delayimp)
+  target_link_options(strata-vision PRIVATE -Wl,/delayload:hipblas.dll)
+endif()
 if(UNIX AND NOT APPLE)
   # the libraries it needs are the ones in its own folder (a component folder is relocatable): RUNPATH $ORIGIN
   set_target_properties(strata-vision PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")

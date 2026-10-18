@@ -26,6 +26,10 @@
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <unistd.h>
+#elif defined(STRATA_VISION_HIP)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #endif
 #include <chrono>
 #include <cstdio>
@@ -65,6 +69,22 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32) && defined(STRATA_VISION_HIP)
+    // hipblas.dll is delay-loaded (tools/vision/CMakeLists.txt): it and the ROCm DLLs behind it (rocblas.dll finds its kernel
+    // library and ../.kpack beside itself) stay in rocm\bin of the engine package, which is not on the DLL search path of a
+    // program started with nothing but System32 in PATH.  Put that folder on it before the first call.
+    {
+        wchar_t exe[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring dir(exe, n);
+        const size_t cut = dir.find_last_of(L"\\/");
+        if (cut != std::wstring::npos) {
+            dir.resize(cut);
+            const std::wstring rocm = dir + L"\\rocm\\bin";
+            if (GetFileAttributesW(rocm.c_str()) != INVALID_FILE_ATTRIBUTES) SetDllDirectoryW(rocm.c_str());
+        }
+    }
+#endif
     std::string mmproj, model;
     bool gpu = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
