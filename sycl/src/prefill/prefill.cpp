@@ -42,6 +42,8 @@
 #include "strata/prefill/kernels.hpp"
 
 #include <algorithm>
+#include <set>
+#include <tuple>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -3963,10 +3965,18 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
                         // held group of staged experts as above
                         const bool i8on = !xmx2_only && i8_mode() != 0 && !use_mmq && lay.native &&
-                                          lay.fmt[(size_t) l].gu_type == 21 && lay.fmt[(size_t) l].d_type == 20 &&
+                                          (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22) &&
+                                          (lay.fmt[(size_t) l].d_type == 20 || lay.fmt[(size_t) l].d_type == 42) &&
                                           lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
                                           strata::prefill::i8::available(m.cs);
                         const bool xmx2 = xmx2_only || i8on;
+                        if (i8_mode() != 0 && lay.native) {
+                            static std::set<std::tuple<int, int, int, int, int>> said_fmt;
+                            const auto& ff = lay.fmt[(size_t) l];
+                            if (said_fmt.insert({ff.gu_type, ff.d_type, (int) ff.n_ff, (int) ff.n_embd, (int) i8on}).second)
+                                std::fprintf(stderr, "strata: layer %lld experts gate/up type %d, down type %d, n_ff %d, n_embd %d -> int8 path %s\n",
+                                             (long long) l, ff.gu_type, ff.d_type, (int) ff.n_ff, (int) ff.n_embd, i8on ? "yes" : "no");
+                        }
                         if (strata::prefill::xmx::mode() == 2 && !xmx2) {
                             static bool said = false;
                             if (!said) {
