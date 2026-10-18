@@ -440,7 +440,16 @@ class PicturesParallelTuning(Base):
             self.assertIn("This model cannot read pictures yet", t)
             await press(pilot, "down", "enter")                      # the greyed row is skipped
             self.assertEqual(ctx.settings.vision, "off")
-        self.run_app(case)
+        # every catalog model reads pictures now: a row that does not stands in for a future one
+        import dataclasses
+        from strata_cli.launch.catalog import Catalog
+        real_rows = Catalog.rows
+
+        def rows(self, *args, **kwargs):
+            return [dataclasses.replace(r, images=False) if r.model == "Gyro-S" else r for r in real_rows(self, *args, **kwargs)]
+
+        with mock.patch.object(Catalog, "rows", rows):
+            self.run_app(case)
 
     def test_parallel_fit_to_card_and_warnings(self):
         async def case(app, pilot, ctx):
