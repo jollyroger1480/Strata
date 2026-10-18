@@ -67,19 +67,19 @@ st "gpu reader built rc=$?"
 [ -x "$OUT/bh/bin/strata-vision-hip" ] || { st "ABORT no strata-vision-hip"; tail -20 "$OUT/build-vision-hip.log" >> "$S"; exit 1; }
 [ -n "${VISION_ONLY:-}" ] && { st "VISION-DONE"; exit 0; }
 STAGE=$OUT/stage; rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp "$OUT/b/strata" "$OUT/bv/bin/strata-vision" "$OUT/bh/bin/strata-vision-hip" "$STAGE/"
 ARCHJSON=$(for a in $ARCHLIST; do printf '"%s", ' "$a"; done | sed 's/, $//')
 cat > "$STAGE/BUILD.json" <<EOJ
 {"version": "$PKGVER", "source": "f-amd-vision $COMMIT", "variant": "$V", "archs": [$ARCHJSON], "portable": true, "vision": "gpu", "vision_cpu": "strata-vision", "vision_gpu": "strata-vision-hip", "vision_archs": [$ARCHJSON]}
 EOJ
-# the libraries all three programs load (the readers add hipblas / rocblas only if the engine did not already)
-for b in strata strata-vision-hip; do
-  python3 packaging/collect_libs.py --binary "$STAGE/$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" --search "$CORE/lib/llvm/lib" \
+# the libraries the engine and the GPU reader load (the CPU reader needs only the system's), collected from the build outputs
+for b in "$OUT/b/strata" "$OUT/bh/bin/strata-vision-hip"; do
+  python3 packaging/collect_libs.py --binary "$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" --search "$CORE/lib/llvm/lib" \
     --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "$STAGE" \
     --data "$LIBW/lib/rocblas/library=rocblas/library" --data "$LIBW/lib/hipblaslt/library=hipblaslt/library" --data-arch "$DATAARCH" \
     >> "$OUT/collect.log" 2>&1
-  st "collected for $b rc=$?"
+  st "collected for $(basename "$b") rc=$?"
 done
+cp "$OUT/b/strata" "$OUT/bv/bin/strata-vision" "$OUT/bh/bin/strata-vision-hip" "$STAGE/"
 for f in "$STAGE"/*.so "$STAGE"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"; done
 for f in "$STAGE/strata" "$STAGE/strata-vision" "$STAGE/strata-vision-hip"; do
   st "RUNPATH $(basename "$f"): $(readelf -d "$f" | grep -E 'RPATH|RUNPATH' | cut -d'[' -f2 | tr -d ']' | paste -sd' ')"
