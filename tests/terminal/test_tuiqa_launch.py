@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import io
 import unittest
 from unittest import mock
@@ -107,3 +108,111 @@ class FlagsOpenTheRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoEngineFlow(unittest.TestCase):
+    """Owner decision 2026-10-18: no usable engine is a warning, not a refusal; the model downloads and the end message names the problem."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+
+    def served_nothing(self):
+        from strata_cli.launch.runner import Result, no_engine_final
+        text = no_engine_final("The feed has no engine package for this PC.")
+        return Result("launch-x", [], None, None, [text], "/x", serving=False, engine_problem="The feed has no engine package for this PC.",
+                      final_text=text)
+
+    def test_the_command_ends_with_exit_zero_and_the_engine_message(self):
+        from strata_cli.launch.runner import Runner
+        from tests.terminal.launch_support import run_cli
+        with mock.patch.object(Runner, "run", return_value=self.served_nothing()):
+            code, out, err = run_cli(["launch", "--no-tui", "--model", "q2_0", "--yes"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("The model is ready, but Strata can't start it yet", out)
+        self.assertIn("The feed has no engine package for this PC", out)
+        self.assertIn("Next step:", out)
+        self.assertNotIn("Strata is serving", out)
+
+    def test_json_says_not_serving(self):
+        from strata_cli.launch.runner import Runner
+        from tests.terminal.launch_support import run_cli
+        with mock.patch.object(Runner, "run", return_value=self.served_nothing()):
+            code, out, err = run_cli(["launch", "--no-tui", "--model", "q2_0", "--output", "json"])
+        data = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["serving"])
+        self.assertIn("engine", data["engine_problem"])
+
+    def test_yes_is_passed_to_the_runner_and_json_never_asks(self):
+        from strata_cli.launch.runner import Runner
+        from tests.terminal.launch_support import run_cli
+        seen = []
+        real = Runner.__init__
+
+        def spy(self, *a, **kw):
+            seen.append(kw.get("assume_yes"))
+            real(self, *a, **kw)
+
+        with mock.patch.object(Runner, "__init__", spy), mock.patch.object(Runner, "run", return_value=self.served_nothing()):
+            run_cli(["launch", "--no-tui", "--model", "q2_0", "--yes"])
+            run_cli(["launch", "--no-tui", "--model", "q2_0", "--output", "json"])
+            run_cli(["launch", "--no-tui", "--model", "q2_0"])
+        self.assertEqual(seen, [True, True, False])
+
+    def test_the_question_default_is_yes(self):
+        from strata_cli.launch import cmd
+        with mock.patch("builtins.input", return_value=""), mock.patch.object(cmd.sys, "stdin") as sin, \
+                mock.patch.object(cmd.sys, "stdout") as sout:
+            sin.isatty.return_value = True
+            sout.isatty.return_value = True
+            self.assertTrue(cmd._ask_yes("t", "text"))
+        with mock.patch("builtins.input", return_value="n"), mock.patch.object(cmd.sys, "stdin") as sin, \
+                mock.patch.object(cmd.sys, "stdout") as sout:
+            sin.isatty.return_value = True
+            sout.isatty.return_value = True
+            self.assertFalse(cmd._ask_yes("t", "text"))
+        self.assertTrue(cmd._ask_yes("t", "text"))               # no keyboard: the person already named the model
+
+    def test_the_screens_ask_with_a_dialog_and_enter_means_yes(self):
+        FakeRunner.instances.clear()
+        FakeRunner.behaviour = "ok"
+        FakeRunner.download = 0.0
+        answers = []
+
+        class Asking(FakeRunner):
+            def run(self, start=True):
+                answers.append(self.confirm("No engine", "Strata couldn't find an engine for this computer (x). Download?"))
+                return super().run(start)
+
+            def __init__(self, *a, confirm=None, **kw):
+                super().__init__(*a, **kw)
+                self.confirm = confirm
+
+        app = LaunchApp(make_ctx(settings=flags_settings()), auto_run=True)
+
+        async def go():
+            with mock.patch("strata_cli.launch.app.Runner", Asking):
+                async with app.run_test(size=SIZE) as pilot:
+                    await pilot.pause(0.4)
+                    self.assertIn("Strata couldn't find an engine for this computer", text_of(app))
+                    await pilot.press("enter")                  # Download anyway
+                    for _ in range(60):
+                        await pilot.pause(0.05)
+                        if app.result is not None:
+                            break
+                    return app.result
+
+        self.assertIsNotNone(asyncio.run(go()))
+        self.assertEqual(answers, [True])
+
+    def test_the_screens_show_the_end_message_and_exit_zero(self):
+        from strata_cli.launch.app import LaunchApp as LA
+        res = self.served_nothing()
+        with mock.patch.object(LA, "run", lambda self, **kw: res), mock.patch.object(launch_app, "run_monitor", side_effect=AssertionError("no monitor")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = launch_app.run_tui(flags_settings(), catalog=catalog(HW_12), auto_run=True)
+        self.assertEqual(code, 0)
+        self.assertIn("The model is ready, but Strata can't start it yet", out.getvalue())

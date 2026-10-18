@@ -259,7 +259,7 @@ class LaunchApp(App):
     def run_launch(self, confirmed: bool = False) -> None:
         s = self.ctx.settings
         self.cancel = threading.Event()
-        self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed)
+        self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed, confirm=self._ask_from_run)
         gb = getattr(self.runner, "download_gb", lambda: 0.0)() if not confirmed else 0.0
         if gb >= 1.0:
             free = self.ctx.catalog.disk_free(s.data_dir or self.ctx.catalog.data_dir())
@@ -282,6 +282,27 @@ class LaunchApp(App):
         self.show(screen)
         self.running = True
         threading.Thread(target=self._work, daemon=True).start()
+
+    def _ask_from_run(self, title: str, text: str) -> bool:
+        """A question from the run (a worker thread): show it on the screen and wait for the answer. Enter means yes."""
+        box: dict[str, bool] = {"go": True}
+        answered = threading.Event()
+
+        def done(choice: str | None) -> None:
+            box["go"] = choice == "go"
+            answered.set()
+
+        def show() -> None:
+            self.push_screen(ConfirmScreen(title, text, [("go", "Download anyway"), ("no", "Not now")]), done)
+
+        try:
+            self.call_from_thread(show)
+        except Exception:                                    # noqa: BLE001 - the app is closing
+            return False
+        while not answered.wait(0.2):
+            if self.cancel.is_set():
+                return False
+        return box["go"]
 
     def _emit(self, ev: Event) -> None:
         screen = self.run_screen
@@ -406,5 +427,8 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
         print(f"Saved the preset '{ctx.settings.name}'. Start it with: strata launch --preset \"{ctx.settings.name}\"")
         return 0
     if result is None:
+        return 0
+    if not result.serving:
+        print(result.final_text)
         return 0
     return run_monitor(_info_for(result, ctx.settings))

@@ -102,6 +102,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
+    o.add_argument("--yes", action="store_true", help="do not ask questions (for one: whether to download the model on a computer with no engine yet)")
     o.add_argument("--plan", action="store_true", help="show what would happen and exit; nothing is changed")
     o.add_argument("--feed", metavar="URL|DIR", help="where the signed update feed (engine downloads) is; default: STRATA_UPDATE_FEED or the project's")
     o.add_argument("--output", choices=("human", "json"), default="human")
@@ -307,6 +308,20 @@ def _stop_all(name: str | None) -> int:
     return 0
 
 
+def _ask_yes(title: str, text: str) -> bool:
+    """Ask a yes/no question on the terminal. Enter means yes. When nobody can answer (no keyboard), the answer is yes: the person already
+    named the model on the command line."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return True
+    _say("")
+    _say(f"[!] {text}")
+    try:
+        answer = input("Go on? [Y/n] ").strip().lower()
+    except EOFError:
+        return True
+    return answer in ("", "y", "yes")
+
+
 def _tui(run, *args, **kw) -> int:
     """Open the screens. An error of the screens themselves ends with a plain sentence and a non-zero exit code, never a traceback and exit 0
     (tester report T02)."""
@@ -460,7 +475,7 @@ def run_launch(a: argparse.Namespace) -> int:
             s.api_key = access.new_key()
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed)
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes)
         if a.plan:
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
@@ -496,6 +511,14 @@ def run_launch(a: argparse.Namespace) -> int:
             store.touch_used(saved.name)
         elif a.preset:
             store.touch_used(a.preset)                      # flags next to --preset change this start only
+        if not result.serving:
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, "serving": False, "name": s.name, "profile": result.profile,
+                                  "engine_problem": result.engine_problem, "message": result.final_text}))
+            else:
+                _say("")
+                _say(result.final_text)
+            return 0
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,

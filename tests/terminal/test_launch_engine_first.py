@@ -1,19 +1,19 @@
-"""`strata launch` settles the engine before it touches the model: with no usable engine and none to get, it refuses at once, with the
-plain sentence `strata update` gives and one next step, and no model byte is downloaded (the 0.1.45.x tester round downloaded 19 of
-37.6 GB first and then failed with the generic line)."""
+"""`strata launch` settles the engine before it touches the model. With no usable engine and none to get it does NOT refuse (owner decision,
+2026-10-18): it warns in plain words (the reason from `strata update`, and the next step), asks whether to download the model anyway (the
+answer is yes unless the person says no; --yes skips the question), downloads, and ends with a message that names the engine problem and the
+next step, exit code 0. Nothing is started without an engine."""
 
 from __future__ import annotations
 
 import io
 import json
 import os
-import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from strata_cli.launch import settings as S
-from strata_cli.launch.runner import LaunchError, NO_ENGINE_NEXT, Runner
+from strata_cli.launch.runner import LaunchError, NO_ENGINE_STEP, Runner, no_engine_final, no_engine_warning
 from strata_control import engine_component as ec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,20 +50,27 @@ def runner(spawned: list) -> Runner:
 class EngineBeforeModel(unittest.TestCase):
     def run_ensure(self, statuses: list[dict], events: list[dict], code: int = 0):
         """ensure_engine() with a fake `strata update` and a sequence of engine reports. Returns (spawn count, the error or None)."""
+        spawns, err, _r = self.run_ensure_runner(statuses, events, code)
+        return spawns, err
+
+    def run_ensure_runner(self, statuses: list[dict], events: list[dict], code: int = 0, confirm=None, gb: float = 0.0,
+                          assume_yes: bool = False):
+        """ensure_engine() like run_ensure, returning (spawns, error or None, the runner with .events)."""
         spawns: list = []
-        r = runner(spawns)
-
-        def spawn(argv, **kw):
-            spawns.append(argv)
-            return FakeProc(events, code)
-
+        seen: list = []
+        r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=mock.Mock(), emit=seen.append,
+                   confirm=confirm, assume_yes=assume_yes)
+        r.events = seen
+        r.check_cancel = lambda: None
         err = None
-        with mock.patch.object(ec, "status", side_effect=statuses), mock.patch.object(Runner, "_spawn", side_effect=lambda argv, **kw: spawn(argv, **kw)):
+        with mock.patch.object(ec, "status", side_effect=statuses), \
+                mock.patch.object(Runner, "_spawn", side_effect=lambda argv, **kw: spawns.append(argv) or FakeProc(events, code)), \
+                mock.patch.object(Runner, "download_gb", return_value=gb):
             try:
                 r.ensure_engine()
             except LaunchError as e:
                 err = e
-        return spawns, err
+        return spawns, err, r
 
     def test_engine_present_runs_nothing(self):
         spawns, err = self.run_ensure([USABLE], [])
@@ -76,38 +83,105 @@ class EngineBeforeModel(unittest.TestCase):
         self.assertEqual(len(spawns), 1)
         self.assertIn("update", spawns[0])
 
-    def test_no_engine_and_the_feed_has_none(self):
+    def test_no_engine_and_the_feed_has_none_is_a_warning_not_a_refusal(self):
         note = "The feed has no engine package for this PC."
-        spawns, err = self.run_ensure([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", note))
-        self.assertIsNotNone(err)
-        self.assertEqual(err.code, 5)
-        self.assertEqual(err.text, note)
-        self.assertEqual(err.next, NO_ENGINE_NEXT)
-        self.assertNotIn("The app never downloads", str(err))          # not the generic line
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", note))
+        self.assertIsNone(err)
+        self.assertEqual(r.engine_problem, note)
+        warning = no_engine_warning(note)
+        self.assertEqual(r.events[-1].text, warning)
+        self.assertEqual(r.events[-1].level, "warn")
+        self.assertIn("Strata couldn't find an engine for this computer (The feed has no engine package for this PC)", warning)
+        self.assertIn("The model will download, but it may not run until you install the right engine (next step:", warning)
+        self.assertIn(NO_ENGINE_STEP, warning)
+        self.assertNotIn("The app never downloads", warning)          # not the generic line
 
-    def test_wrong_family_says_the_plain_line(self):
-        spawns, err = self.run_ensure([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", WRONG_FAMILY))
-        self.assertIsNotNone(err)
-        self.assertEqual(err.code, 5)
-        self.assertEqual(err.text, WRONG_FAMILY)
-        self.assertIn("This build of Strata is for AMD RX 7000 cards. This computer has an AMD RX 9000 card (gfx1201).", err.text)
-        self.assertIn("Ask for the RX 9000 build.", err.text)
-        self.assertIn("Nothing was downloaded", err.next)
+    def test_wrong_family_names_the_plain_reason_in_the_warning(self):
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", WRONG_FAMILY))
+        self.assertIsNone(err)
+        self.assertEqual(r.engine_problem, WRONG_FAMILY)
+        text = r.events[-1].text
+        self.assertIn("This build of Strata is for AMD RX 7000 cards. This computer has an AMD RX 9000 card (gfx1201).", text)
+        self.assertIn("Ask for the RX 9000 build)", text)
 
     def test_installed_wrong_family_package_uses_its_plain_notice(self):
         report = {"usable": False, "engine": None, "notice": WRONG_FAMILY}
-        spawns, err = self.run_ensure([report, report], update_events("none-for-this-pc"))
-        self.assertEqual(err.text, WRONG_FAMILY)
+        spawns, err, r = self.run_ensure_runner([report, report], update_events("none-for-this-pc"))
+        self.assertEqual(r.engine_problem, WRONG_FAMILY)
 
-    def test_the_model_is_never_touched_when_the_engine_is_refused(self):
+    def test_the_question_is_asked_with_the_warning_and_no_stops_before_the_download(self):
+        asked = []
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", "No engine here."),
+                                                confirm=lambda title, text: asked.append((title, text)) or False, gb=66.0)
+        self.assertEqual(len(asked), 1)
+        self.assertIn("Strata couldn't find an engine for this computer (No engine here)", asked[0][1])
+        self.assertIn("Download the model now (about 66 GB)?", asked[0][1])
+        self.assertIsInstance(err, LaunchError)
+        self.assertEqual(err.code, 130)
+        self.assertIn("Nothing was downloaded", err.text)
+
+    def test_yes_goes_on_and_the_yes_flag_asks_nothing(self):
+        asked = []
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", "No engine here."),
+                                                confirm=lambda t, x: asked.append(1) or True, gb=66.0)
+        self.assertIsNone(err)
+        self.assertEqual(len(asked), 1)
+        asked.clear()
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", "No engine here."),
+                                                confirm=lambda t, x: asked.append(1) or False, gb=66.0, assume_yes=True)
+        self.assertIsNone(err)
+        self.assertEqual(asked, [])
+        self.assertEqual(r.engine_problem, "No engine here.")
+
+    def test_nothing_to_download_asks_nothing(self):
+        asked = []
+        spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", "No engine here."),
+                                                confirm=lambda t, x: asked.append(1) or False, gb=0.0)
+        self.assertIsNone(err)
+        self.assertEqual(asked, [])
+
+    def test_the_model_is_downloaded_and_nothing_is_started_without_an_engine(self):
         r = runner([])
+        started = []
         with mock.patch.object(ec, "status", return_value=UNUSABLE), \
                 mock.patch.object(Runner, "_spawn", return_value=FakeProc(update_events("none-for-this-pc", WRONG_FAMILY))), \
-                mock.patch.object(Runner, "ensure_model", side_effect=AssertionError("model step reached")) as model:
-            with self.assertRaises(LaunchError) as ctx:
-                r.run()
-        self.assertEqual(ctx.exception.text, WRONG_FAMILY)
-        model.assert_not_called()
+                mock.patch.object(Runner, "ensure_model", return_value=Path("/x/strata-q.json")) as model, \
+                mock.patch.object(Runner, "build_config", return_value=Path("/x/launch.json")), \
+                mock.patch.object(Runner, "ensure_profile"), mock.patch.object(Runner, "tune") as tune, \
+                mock.patch.object(Runner, "start", side_effect=lambda: started.append(1)):
+            result = r.run()
+        model.assert_called_once()
+        tune.assert_not_called()
+        self.assertEqual(started, [])
+        self.assertFalse(result.serving)
+        self.assertEqual(result.urls, [])
+        self.assertEqual(result.engine_problem, WRONG_FAMILY)
+        self.assertEqual(result.final_text, no_engine_final(WRONG_FAMILY))
+        self.assertIn("The model is ready, but Strata can't start it yet", result.final_text)
+        self.assertIn("Ask for the RX 9000 build)", result.final_text)
+        self.assertIn(NO_ENGINE_STEP, result.final_text)
+
+    def test_the_setup_child_is_told_to_go_on_without_an_engine(self):
+        r = runner([])
+        r.engine_problem = "No engine here."
+        seen = {}
+
+        class Boom(Exception):
+            pass
+
+        def spawn(self, argv, env=None, cwd=None):
+            seen["env"] = env
+            raise Boom()
+
+        cat = mock.MagicMock()
+        cat.src = ROOT
+        r._catalog = cat
+        r.s = S.LaunchSettings(family="qwen", model="Q2_0", context=32768)
+        with mock.patch.object(Runner, "installed_state", return_value=(None, None)), mock.patch.object(Runner, "_spawn", spawn):
+            with self.assertRaises(Boom):
+                r.ensure_model()
+        self.assertEqual(seen["env"].get("STRATA_ALLOW_NO_ENGINE"), "1")
+        self.assertNotIn("STRATA_NEED_ENGINE", seen["env"])
 
     def test_a_failed_update_still_reports_the_old_message(self):
         spawns, err = self.run_ensure([UNUSABLE], [{"event": "error", "error": {"message": "cannot reach the feed"}}], code=6)
@@ -140,14 +214,21 @@ class SetupControlStep(unittest.TestCase):
             except SystemExit as e:
                 return e, out.getvalue()
 
-    def test_wrong_family_stops_before_the_download(self):
+    def test_wrong_family_stops_before_the_download_when_nobody_said_go_on(self):
         exc = ec.EngineMissing("nothing matched", Path("/c"), notice=WRONG_FAMILY)
         res, out = self.step(exc, {})
         self.assertIsInstance(res, SystemExit)
         self.assertIn("Ask for the RX 9000 build.", out)
         self.assertIn("nothing was downloaded", out)
 
-    def test_no_engine_stops_before_the_download_for_launch(self):
+    def test_wrong_family_goes_on_with_a_warning_when_launch_said_go_on(self):
+        exc = ec.EngineMissing("nothing matched", Path("/c"), notice=WRONG_FAMILY)
+        res, out = self.step(exc, {"STRATA_ALLOW_NO_ENGINE": "1"})
+        self.assertNotIsInstance(res, SystemExit)
+        self.assertIn("no engine is installed for this PC yet", out)
+        self.assertIn("The model is downloaded and prepared now", out)
+
+    def test_no_engine_for_launch_still_stops_setup_when_run_on_its_own(self):
         res, out = self.step(ec.EngineMissing("the component folder holds no engine package", Path("/c")), {"STRATA_NEED_ENGINE": "1"})
         self.assertIsInstance(res, SystemExit)
 

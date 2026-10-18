@@ -5938,7 +5938,7 @@ def control_engine_step(gpu, vision):
         ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
     except EC.EngineMissing as e:
         plain = getattr(e, "plain_notice", None) or getattr(e, "driver_notice", None)
-        if plain or os.environ.get("STRATA_NEED_ENGINE") == "1":
+        if (plain or os.environ.get("STRATA_NEED_ENGINE") == "1") and os.environ.get("STRATA_ALLOW_NO_ENGINE") != "1":
             # The model is tens of GB: when the engine is a dead end for this PC (a build for another card family, a driver that is too
             # old) or the caller (strata launch) needs one now, stop before step 5 instead of after the download.
             fail(plain or "no engine is installed for this PC",

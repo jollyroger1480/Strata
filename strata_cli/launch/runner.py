@@ -64,12 +64,31 @@ class Result:
     notices: list[str]
     config: str
     tunnel: str | None = None
+    serving: bool = True                   # False: the model is ready but nothing was started (no engine yet)
+    engine_problem: str | None = None      # the plain reason there is no engine, when serving is False
+    final_text: str = ""                   # what to tell the person when serving is False
 
 
 NO_ENGINE_NEXT = ("Get the engine that matches this computer's graphics card (from whoever sent you Strata, or with `strata update --feed <address>`), "
                   "then run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
 
 STAGES = ("engine", "model", "config", "tune", "start", "access")
+
+NO_ENGINE_STEP = ("run `strata update --feed <address>` with the update source you were given, or ask whoever sent you Strata for the engine "
+                  "that matches this computer's graphics card, then run `strata launch` again")
+
+
+def no_engine_warning(reason: str) -> str:
+    """The plain warning shown before a model is downloaded on a computer with no engine to run it."""
+    reason = reason.strip().rstrip(".")
+    return (f"Strata couldn't find an engine for this computer ({reason}). The model will download, but it may not run until you install "
+            f"the right engine (next step: {NO_ENGINE_STEP}).")
+
+
+def no_engine_final(reason: str, name: str = "") -> str:
+    reason = reason.strip().rstrip(".")
+    return (f"The model is ready, but Strata can't start it yet: it couldn't find an engine for this computer ({reason}). "
+            f"Next step: {NO_ENGINE_STEP}. The model files stay on this computer.")
 
 
 def tune_words(result: dict | None, code: int | None = None) -> tuple[str, str]:
@@ -216,8 +235,12 @@ def launch_dir() -> Path:
 class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
-                 components_dir: str | None = None, hardware: dict | None = None):
+                 components_dir: str | None = None, hardware: dict | None = None,
+                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False):
         self.s = s
+        self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
+        self.assume_yes = assume_yes          # --yes: no questions
+        self.engine_problem: str | None = None
         self._catalog = catalog
         self.emit_cb = emit or (lambda e: None)
         self.cancel = cancel or threading.Event()
@@ -330,7 +353,8 @@ class Runner:
             # engine: refuse here, before the model (tens of GB) is touched.
             after = ec.status(root)
             if not after.get("usable"):
-                raise LaunchError(self._no_engine_words(last, after), NO_ENGINE_NEXT, 5)
+                self.no_engine(self._no_engine_words(last, after))
+                return
         if code != 0:
             why = ""
             if isinstance(last, dict):
@@ -344,6 +368,24 @@ class Runner:
             raise LaunchError("The engine could not be installed." + (f" {why}" if why else ""),
                               "Check your internet connection, or point Strata at an update source with --feed, then try again.", 6)
         self.emit("engine", "The engine is installed.", 100)
+
+    def no_engine(self, reason: str) -> None:
+        """There is no engine for this computer and none to get. This is a warning, not a refusal: the model may still be downloaded, because
+        the engine can be installed afterwards. Ask first (the answer is yes unless the person says no; --yes skips the question) when a
+        download is about to happen; otherwise just remember the problem for the final message."""
+        self.engine_problem = reason
+        warning = no_engine_warning(reason)
+        self.emit("engine", warning, 100, level="warn")
+        if self.assume_yes or self.confirm is None:
+            return
+        try:
+            gb = self.download_gb()
+        except Exception:                                    # noqa: BLE001
+            gb = 0.0
+        if gb < 0.05:
+            return                                           # nothing would be downloaded: no question, only the final message
+        if not self.confirm("No engine for this computer yet", warning + f" Download the model now (about {gb:.0f} GB)?"):
+            raise LaunchError("Stopped. Nothing was downloaded.", "Install the engine first, or run this again and answer yes.", 130)
 
     @staticmethod
     def _no_engine_words(last: object, report: dict) -> str:
@@ -495,7 +537,12 @@ class Runner:
         self.emit("model", f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
         env = self._env()
-        env.update(STRATA_CONTROL_INSTALL="1", STRATA_NEED_ENGINE="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
+        env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
+        env.pop("STRATA_NEED_ENGINE", None)
+        if self.engine_problem:
+            env["STRATA_ALLOW_NO_ENGINE"] = "1"              # the person said go on: setup warns about the engine instead of stopping
+        else:
+            env["STRATA_NEED_ENGINE"] = "1"
         for k in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
             env.pop(k, None)
         env["PYTHONPATH"] = str(cat.src)
@@ -772,6 +819,11 @@ class Runner:
             cfg = self.build_config(base)
             self.ensure_profile(cfg)
             self.emit("config", "Settings are saved.", 100)
+            if self.engine_problem:
+                text = no_engine_final(self.engine_problem, self.s.name or self.name)
+                self.emit("done", text, 100, level="warn")
+                return Result(self.profile, [], self.s.api_key, None, self.notices + [text], str(cfg), serving=False,
+                              engine_problem=self.engine_problem, final_text=text)
             self.tune()
             self.check_cancel()
             if not start:
