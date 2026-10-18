@@ -3221,5 +3221,13 @@
   "s3225": "Qué hizo",
   "s3226": "Archivos",
   "s3227": "Ayúdame a continuar desde aquí.",
-  "s3228": "…y {0} pasos más"
+  "s3228": "…y {0} pasos más",
+  "s3229": "Escribe un número.",
+  "s3230": "Escribe un número entero de {0} a {1}.",
+  "s3231": "Al añadir una habilidad se abre una ventana de carpetas en el ordenador donde se ejecuta Strata. Abre Strata en ese ordenador para añadirla.",
+  "s3232": "Captura guardada",
+  "s3233": "Está en tu carpeta de Descargas.",
+  "s3234": "No se guardó la captura",
+  "s3235": "Inténtalo de nuevo o haz una captura de esta ventana.",
+  "s3236": "La ventana de carpetas no se abrió. Escribe la ruta de la carpeta."
 }

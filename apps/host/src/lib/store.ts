@@ -4,6 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
+import { tidyAnswer } from './answer-text';
 import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
@@ -1435,7 +1436,7 @@ export function rewindTo(messageId: string): string | null {
 export function exportConversation() {
   const session = state.sessions.find(s => s.id === state.activeSession);
   if (!session) return;
-  const text = '# ' + session.title + '\n\n' + session.messages.map(m => '## ' + m.role + '\n\n' + m.content).join('\n\n');
+  const text = '# ' + session.title + '\n\n' + session.messages.map(m => '## ' + m.role + '\n\n' + (m.role === 'assistant' ? tidyAnswer(m.content) : m.content)).join('\n\n');
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
   const a = document.createElement('a'); a.href = url; a.download = session.title.replace(/[^a-z0-9 -]/gi, '').slice(0, 60) + '.md';
   document.body.append(a); a.click(); a.remove();
@@ -1665,7 +1666,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=m.content+String(frame.text??''); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          patchAssistant((m) => { const content=tidyAnswer(m.content+String(frame.text??'')); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));

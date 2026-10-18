@@ -23,6 +23,8 @@ export function windowsFolderScript(prompt) {
     '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
     `$dialog.Description = '${text}'`,
     '$dialog.ShowNewFolderButton = $true',
+    // READY tells the host the window is about to open; a host that never sees it gives up and asks for the path in words (QA F06).
+    '[Console]::Out.WriteLine("READY"); [Console]::Out.Flush()',
     'if ($dialog.ShowDialog($owner) -eq "OK") { [Console]::Out.Write($dialog.SelectedPath) }',
     '$owner.Close()',
   ].join('; ');
@@ -42,11 +44,33 @@ export function cleanChosenPath(value) {
 
 const missing = error => error?.code === 'ENOENT';
 
+/** What the script printed, without its READY line. */
+const answerOf = stdout => String(stdout ?? '').split(/\r?\n/).filter(line => line.trim() && line.trim() !== 'READY').join('\n');
+
+/**
+ * Runs the Windows dialog and watches it. Resolves { stdout } when it ends, { noDialog: true } when its window never got as far as
+ * opening (no READY within `readyMs`: PowerShell blocked, stuck or without a desktop), and rejects with { code } as exec does.
+ * The person's own time with the open dialog is not limited (a day at most).
+ */
+export function watchedWindowsDialog(shell, args, { readyMs = 30_000, openMs = 24 * 3600_000, spawnProcess = spawn } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawnProcess(shell, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '', ready = false, settled = false;
+    const end = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); try { child.kill(); } catch { /* gone */ } fn(value); };
+    const timer = setTimeout(() => end(resolve, ready ? { stdout: '' } : { noDialog: true }), readyMs);
+    const later = () => { clearTimeout(timer); ready = true; setTimeout(() => end(resolve, { stdout: '' }), openMs).unref?.(); };
+    child.stdout?.on('data', chunk => { stdout += chunk; if (!ready && /^READY\s*$/m.test(stdout)) { clearTimeout(timer); later(); } });
+    child.on('error', error => end(reject, error));
+    child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer); code === 0 ? resolve({ stdout }) : reject(Object.assign(new Error('exit ' + code), { code })); });
+  });
+}
+
 /**
  * Ask for a folder. Resolves { path } | { cancelled: true } | { unavailable: true, reason }.
  * `run` is injectable for tests: (command, args) => Promise<{ stdout }>.
  */
-export async function chooseFolder(prompt, { platform = process.platform, run = exec, portal = portalFolder } = {}) {
+export async function chooseFolder(prompt, options = {}) {
+  const { platform = process.platform, run = exec, portal = portalFolder, windowsDialog = options.run ? null : watchedWindowsDialog } = options;
   if (platform === 'darwin') {
     try {
       const { stdout } = await run('osascript', ['-e', MAC_SCRIPT(prompt)]);
@@ -58,8 +82,10 @@ export async function chooseFolder(prompt, { platform = process.platform, run = 
   if (platform === 'win32') {
     const shell = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
     try {
-      const { stdout } = await run(shell, windowsFolderArgs(prompt));
-      return stdout.trim() ? { path: cleanChosenPath(stdout) } : { cancelled: true };
+      const done = windowsDialog ? await windowsDialog(shell, windowsFolderArgs(prompt)) : await run(shell, windowsFolderArgs(prompt));
+      if (done.noDialog) return { unavailable: true, failed: true, reason: 'The folder window did not open. Type the folder path instead.' };
+      const answer = answerOf(done.stdout).trim();
+      return answer ? { path: cleanChosenPath(answer) } : { cancelled: true };
     } catch (error) {
       if (missing(error)) return { unavailable: true, reason: 'Windows PowerShell was not found.' };
       throw new Error('The folder chooser could not open.');

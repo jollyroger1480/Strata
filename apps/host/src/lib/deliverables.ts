@@ -1,5 +1,6 @@
 import { api } from './client';
 import type { PreviewArtifact } from './artifacts';
+import { tidyAnswer } from './answer-text';
 
 /**
  * Deliverables and grouped activity (notes-split-agent8.md, item 12). The host sends `deliverable` frames for every file the assistant wrote or
@@ -50,8 +51,8 @@ export function readSkills(raw: unknown): { name: string; description: string }[
 /** Add streamed text to the reply's ordered pieces: it continues the last text piece, or starts a new one after an activity line. */
 export function appendText(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
   const list = blocks ?? [], last = list.at(-1);
-  if (last?.kind === 'text') return [...list.slice(0, -1), { kind: 'text', text: last.text + text }];
-  return [...list, { kind: 'text', text }];
+  if (last?.kind === 'text') return [...list.slice(0, -1), { kind: 'text', text: tidyAnswer(last.text + text) }];
+  return [...list, { kind: 'text', text: tidyAnswer(text) }];
 }
 
 /** A group frame is re-sent while it grows: the same id replaces its line; a new id goes after what came before. */
