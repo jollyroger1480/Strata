@@ -49,3 +49,11 @@ test('F07: a page opened from another computer says why Add skill cannot work in
   assert.match(skills, /pageIsOnThisComputer\(window\.location\.hostname\)/);
   void pick;
 });
+
+test('F08: the message box stops at 30% of the window height (44 to 180 px) and scrolls inside', async () => {
+  const { composerCap } = await loadTs('../src/lib/responsive.ts');
+  assert.equal(composerCap(400), 120); assert.equal(composerCap(500), 150); assert.equal(composerCap(720), 180); assert.equal(composerCap(2000), 180); assert.equal(composerCap(100), 44);
+  const css = await readFile(new URL('../src/styles/annotation-fixes.css', import.meta.url), 'utf8');
+  assert.match(css, /\.composer \.st-composer textarea \{ max-height: clamp\(44px, 30dvh, 180px\); overflow-y: auto; \}/);
+  assert.match(await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8'), /composerCap\(window\.innerHeight\)/);
+});
