@@ -16,7 +16,7 @@ const listeners=new Set<()=>void>();
 function put(value:NativeState){if(state&&JSON.stringify(state)===JSON.stringify(value))return;state=value;listeners.forEach(fn=>fn());}
 /** The host pushes its whole native state (jobs included) at every progress step: the page shows it at once, without waiting for the next poll. */
 export function applyNativeEvent(value:unknown){if(value&&typeof value==='object'&&'available' in value&&'jobs' in value)put(value as NativeState);}
-const READ_LIMIT_MS=20000;
+const READ_LIMIT_MS=60000;
 function read(force:boolean):Promise<void>{
  const request=api.get<NativeState>(`/api/native${force?'?refresh=1':''}`);
  // A read that never answers must not freeze the page: after the limit the next poll starts a fresh one.
