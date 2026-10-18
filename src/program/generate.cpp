@@ -17,6 +17,7 @@
 
 #include "strata/platform/memory.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/nv_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
@@ -2644,6 +2645,24 @@ int main(int argc, char** argv) {
         cudaDeviceProp ad{};
         if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName);
         else (void) cudaGetLastError();
+    }
+#endif
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+    {   // CUDA sm_86 / sm_60: the switches that are exact AND faster there are on by default (strata/core/nv_defaults.hpp), when every
+        // visible card has that one compute capability; before any engine code reads its switches, the user's own settings are kept
+        int nd = 0;
+        if (cudaGetDeviceCount(&nd) == cudaSuccess && nd > 0) {
+            int m0 = 0, n0 = 0;
+            bool same = cudaDeviceGetAttribute(&m0, cudaDevAttrComputeCapabilityMajor, 0) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&n0, cudaDevAttrComputeCapabilityMinor, 0) == cudaSuccess;
+            for (int d = 1; same && d < nd; ++d) {
+                int m = 0, n = 0;
+                same = cudaDeviceGetAttribute(&m, cudaDevAttrComputeCapabilityMajor, d) == cudaSuccess &&
+                       cudaDeviceGetAttribute(&n, cudaDevAttrComputeCapabilityMinor, d) == cudaSuccess && m == m0 && n == n0;
+            }
+            if (same) strata::core::apply_nv_defaults(m0, n0);
+        }
+        (void) cudaGetLastError();
     }
 #endif
 #if defined(STRATA_USE_HIP) && !defined(_WIN32)

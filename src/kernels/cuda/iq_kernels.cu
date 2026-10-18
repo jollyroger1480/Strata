@@ -3479,7 +3479,9 @@ int env_int_or(const char* name, int dflt) {
     const char* v = std::getenv(name);
     return v != nullptr && v[0] != '\0' ? std::atoi(v) : dflt;
 }
-int g_expdec = env_on("STRATA_EXPDEC") ? 1 : 0;
+// read at first use (not at load), so a per-architecture default set at start (nv_defaults.hpp) is seen; native_expert_set_expdec overrides
+int g_expdec = -1;
+int expdec_mode() { if (g_expdec < 0) g_expdec = env_on("STRATA_EXPDEC") ? 1 : 0; return g_expdec; }
 int g_expdec_r = env_int_or("STRATA_EXPDEC_R", 1);          // gate/up rows per lane: 1, 2 (bench: R=1 wins on the 2080 Ti)
 int g_expdec_dr = env_int_or("STRATA_EXPDEC_DR", 4);        // down rows per lane: 1, 2, 4 (Q2_0: R=4 wins on both cards)
 int g_expdec_minb = env_int_or("STRATA_EXPDEC_MINB", STRATA_EXPDEC_MINB);   // gate/up __launch_bounds__ min blocks: 2 (<= 128 regs) or 4 (<= 64)
@@ -3572,7 +3574,7 @@ void expdec_note(const NativeExpertLayout& L, bool gu, bool taken, cudaStream_t 
 bool expdec_gu(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cudaStream_t s, const unsigned long long* grp_ptr,
                const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X, float* gate,
                float* up) {
-    if (!g_expdec || g_old_kernels) return false;
+    if (!expdec_mode() || g_old_kernels) return false;
     if (!expdec_gu_ok(L)) { expdec_note(L, true, false, s, gy, cap_groups); return false; }
     expdec_note(L, true, true, s, gy, cap_groups);
     switch (L.gu_type) {
@@ -3604,7 +3606,7 @@ void expdec_down_t(int64_t gy, int64_t cap_groups, cudaStream_t s, const unsigne
 }
 bool expdec_down(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cudaStream_t s, const unsigned long long* grp_ptr,
                  const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_dst, const block_q8_1* hq, float* out) {
-    if (!g_expdec || g_old_kernels) return false;
+    if (!expdec_mode() || g_old_kernels) return false;
     if (!expdec_down_ok(L)) { expdec_note(L, false, false, s, gy, cap_groups); return false; }
     expdec_note(L, false, true, s, gy, cap_groups);
     if (L.d_type == 20) expdec_down_t<20>(gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
@@ -4474,7 +4476,7 @@ bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
 
 void native_expert_set_expdec(int on) { g_expdec = on ? 1 : 0; }
-int native_expert_expdec() { return g_expdec; }
+int native_expert_expdec() { return expdec_mode(); }
 void native_expert_set_expdec_params(const NativeExpertExpdecParams& p) {
     if (p.gu_rows_per_lane > 0) g_expdec_r = p.gu_rows_per_lane;
     if (p.down_rows_per_lane > 0) g_expdec_dr = p.down_rows_per_lane;
@@ -4608,7 +4610,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     const bool gs_layout = true;
 #endif
-    if (gs_layout && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(g_expdec && !g_old_kernels && expdec_gu_ok(L))) {
+    if (gs_layout && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
         switch (L.gu_type) {
 #define STRATA_GS(T) case T: gs_done = launch_gu_swiglu<T>(L, gy, s, grp_ptr, grp_start, n_groups, ent_tok, X, hq); break;
             STRATA_GU_FMTS(STRATA_GS)
