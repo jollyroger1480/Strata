@@ -28,6 +28,7 @@ import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
 import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
+import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
@@ -90,7 +91,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -146,7 +147,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** The agent's profile now, plus where its shaped routes really lead (read by the forwarding endpoint). */
   let shapeTargets = {};
   function buildProfileNow() {
-    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir(), proxyBase });
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir(), proxyBase, searchMock });
     shapeTargets = profile.shapeTargets ?? {};
     return profile;
   }
@@ -311,6 +312,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
     const written = { all: '', step: '' };
+    // The turn guard (turn-guard.mjs): counts failing searches, searches, plan rewrites and a nearly full context. Set up once the route is known.
+    let guard = null;
     const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
     const tracker = new DeliverableTracker(workspacePath, trackerFolders());
@@ -319,7 +322,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const groups = new ActivityGroups({ emit: raw });
     const skills = new SkillsUsed({ emit: raw, info: skillInfoFrom(skillsDir()) });
     const emit = frame => {
-      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (hideDeltas) return; }
+      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (guard) trip(guard.text(frame.text)); if (hideDeltas) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
       if (frame.type === 'delta' && frame.text) groups.text();
       if (frame.type === 'agent-tool' && frame.tool) {
@@ -328,6 +331,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (frame.tool.state === 'done' && (frame.tool.name === 'write' || frame.tool.name === 'edit')) { try { made = tracker.check(frame.tool.args?.file_path ?? frame.tool.args?.path); } catch { made = null; } }
         raw(frame);
         if (made) raw(made);
+        if (guard) trip(guard.card(frame.tool));
         groups.card(frame.tool, made);
         skills.card(frame.tool);
         return;
@@ -370,6 +374,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     await applyMode(runtime, sessionId, appliedMode);
 
     const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval });
+    if (!goal) guard = new TurnGuard({ plan: !!planTask, contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
@@ -406,13 +411,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       clearInterval(turn.watchdog);
       turn.follow?.close();
       for (const child of turn.children.values()) child.follow?.close();
-      if (turn.stopping && !failure) projector.ended = { kind: 'aborted', reason: { kind: 'user' } };
+      if (turn.stopping && !failure) projector.ended = turn.guard ? { kind: 'completed' } : { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
       const extra = [];
       try { if (toolsRan) for (const d of tracker.sweep()) { emit(d); groups.addFile(d); } } catch { /* never blocks the end of a turn */ }
       groups.end();
       if (researchTopic && !failure && !turn.stopping) { const sources = parseSources(written.all); if (sources.length) extra.push({ type: 'research', topic: researchTopic, sources }); }
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
+      // The turn guard: a turn the app stopped, or one that ended with no words, always ends with one plain message (a plan card carries it itself).
+      let noteReason = turn.guard ?? null;
+      if (!noteReason && guard && !failure && !turn.stopping && !turn.goalRun) {
+        noteReason = guard.silent({ ended: projector.ended, wrote: projector.emittedAny === true, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
+      }
+      if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
       const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
       for (const f of frames.slice(0, -1)) emit(f);
@@ -425,6 +436,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       c.turn = null;
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
+      // A turn that filled the context, or that the guard stopped, leaves a long history behind: summarise the older part now so the next message has room.
+      if (noteReason === 'context' || noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites' || /context window|too long|exceeds/i.test(String(projector.ended?.error?.message ?? ''))) void compactSession(runtime, sessionId);
     }
 
     emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], ...(planTask ? { planning: true } : {}) });
@@ -442,6 +455,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       onError: e => finishTurn(`The agent lost the session stream: ${e.message}`),
     });
 
+    /** The guard says stop: end the turn the way Stop does, but as a normal end with a plain message (finishTurn). */
+    function trip(reason) {
+      if (!reason || turn.guard || turn.finished || turn.stopping) return;
+      turn.guard = reason;
+      log(`agent · turn guard: ${reason} (searches ${guard?.searches ?? 0}, failed in a row ${guard?.failedInARow ?? 0}, plan rewrites ${guard?.rewrites ?? 0})`);
+      void stop(chatId).catch(() => {});
+    }
+
     function handle(item) {
       if (turn.finished) return;
       turn.lastActivity = Date.now();
@@ -457,6 +478,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         }
       } else if (!turn.live) return;
       for (const f of projector.consume(item)) emit(f);
+      if (guard && projector.contextTokens != null) trip(guard.context(projector.contextTokens));
       if (item.type === 'event') watchParent(item.event);
     }
 
@@ -566,10 +588,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     /** What the end of the turn means for the plan: a plan turn makes one; a step run records where it stopped. */
     function settlePlan(failure) {
       if (planTask) {
-        if (failure || turn.stopping) return [];
+        if (failure || (turn.stopping && !turn.guard)) return [];
         const parsed = parsePlan(written.all, planTask);
         if (!parsed) return [];
-        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask });
+        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
         return [publishPlan('proposed', plan)];
       }
       const run = turn.plan;
@@ -1094,6 +1116,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
    * Stop one chat's turn. Resolves only once the turn has ended (or the wait times out), because the
    * Harness acknowledges a cancel as admitted, not as done.
    */
+  /** Summarise the older part of a session with the Harness's own /compact. Best effort: the next message compacts again by itself when it must. */
+  async function compactSession(runtime, sessionId) {
+    try {
+      const r = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: '/compact', submittedAttachments: [] });
+      log(`agent · compact after a stopped turn: ${r?.result?.kind ?? 'done'} ${String(r?.result?.text ?? '').slice(0, 120)}`);
+    } catch (e) { log(`agent · compact after a stopped turn failed: ${e.message}`); }
+  }
+
   async function stop(chatId, { waitMs = 20_000 } = {}) {
     const c = chats.get(chatId);
     const turn = c?.turn;

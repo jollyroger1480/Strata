@@ -163,7 +163,7 @@ export function outputBudget(context, maxOutput = null) {
 /** What a local model, or an OpenAI-style server on this network, takes for the thinking level (see the comment where a local route is built). */
 const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } };
 
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -271,7 +271,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   const webRows = !searchOn ? [] : keyed === 'deepseek'
     ? [{ id: 'web', config: { searchProvider: 'deepseek-official', fetchProvider: 'http' } }, { id: 'web-search-deepseek', config: { apiKeyEnv: 'STRATA_SEARCH_KEY' } }]
     : [{ id: 'web', config: { searchProvider: keyed ?? DDG_PROVIDER_ID, fetchProvider: 'http' } }, { id: 'web-search-deepseek', disabled: true },
-      { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY' } }] }];
+      { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY', ...(searchMock ? { mock: searchMock } : {}) } }] }];
   /** The models a helper agent may be started on: the table the model-choice plugin and the Harness's allow-list are written from. */
   const subagentRoutes = routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' }));
   const entries = [

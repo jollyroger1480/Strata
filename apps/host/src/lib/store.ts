@@ -1,7 +1,8 @@
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
-import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
+import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
+import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
 import { tidyAnswer } from './answer-text';
@@ -1445,9 +1446,8 @@ export function exportConversation() {
 }
 
 /* ---------------------------------------------------------------- /loop
-   The same message, again and again, while the chat is open. See lib/loop.ts. */
-interface LoopState { everyMs: number; prompt: string; runs: number; timer: ReturnType<typeof setTimeout> | null }
-const loops = new Map<string, LoopState>();
+   The same message, again and again, while the chat is open. The scheduler (count, time, "the answer says it is done") is
+   lib/loop-runner.ts; this is the part that talks to the chat. See lib/loop.ts. */
 
 /** A line from the app itself (not the model) in the transcript. It is never sent to the model. */
 function addNote(sessionId: string, content: string) {
@@ -1455,50 +1455,34 @@ function addNote(sessionId: string, content: string) {
   patchSession(sessionId, s => ({ ...s, updatedAt: at, messages: [...s.messages, { id: uid('m'), role: 'assistant', at, content, local: true }] }));
 }
 
-export function loopIsRunning(sessionId: string | null): boolean { return !!sessionId && loops.has(sessionId); }
+const lastAnswer = (sessionId: string) => [...(state.sessions.find(s => s.id === sessionId)?.messages ?? [])].reverse().find(m => m.role === 'assistant' && !m.local);
 
-function stopLoop(sessionId: string): boolean {
-  const loop = loops.get(sessionId);
-  if (!loop) return false;
-  if (loop.timer) clearTimeout(loop.timer);
-  loops.delete(sessionId);
-  return true;
-}
+const loopScheduler = new LoopScheduler({
+  async send(sessionId, { text, shown }) {
+    const before = lastAnswer(sessionId)?.id;
+    await sendMessage(text, { fromLoop: true, shown, title: shown.length > 48 ? shown.slice(0, 47).trimEnd() + '…' : shown });
+    const answer = lastAnswer(sessionId);
+    if (!answer || answer.id === before || answer.streaming) return { answered: false, text: '', failed: false };
+    return { answered: true, text: answer.content ?? '', failed: !!answer.error };
+  },
+  note: addNote,
+  exists: sessionId => state.sessions.some(s => s.id === sessionId),
+  ready: sessionId => state.activeSession === sessionId && !state.streaming,
+  now: () => Date.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+});
 
-function scheduleLoop(sessionId: string) {
-  const loop = loops.get(sessionId);
-  if (!loop) return;
-  loop.timer = setTimeout(() => void tickLoop(sessionId), loop.everyMs);
-}
-
-async function tickLoop(sessionId: string) {
-  const loop = loops.get(sessionId);
-  if (!loop) return;
-  if (!state.sessions.some(s => s.id === sessionId)) { stopLoop(sessionId); return; }
-  // Wait for a quiet moment: this chat is open and nothing is being answered.
-  if (state.activeSession !== sessionId || state.streaming) { loop.timer = setTimeout(() => void tickLoop(sessionId), 15_000); return; }
-  loop.runs += 1;
-  if (loop.runs > LOOP_MAX_RUNS) { stopLoop(sessionId); addNote(sessionId, tr('The loop stopped after {0} runs. Type /loop again to start it again.', [LOOP_MAX_RUNS])); return; }
-  await sendMessage(loop.prompt, { fromLoop: true });
-  scheduleLoop(sessionId);
-}
+export function loopIsRunning(sessionId: string | null): boolean { return loopScheduler.isRunning(sessionId); }
 
 async function runLoopCommand(command: LoopCommand) {
   const sessionId = state.activeSession ?? newSession().id;
   const say = (content: string) => { addNote(sessionId, content); go('chat', sessionId); };
   if (command.kind === 'help') { say(tr(command.problem) + '\n\n' + tr(LOOP_USAGE)); return; }
-  if (command.kind === 'status') {
-    const loop = loops.get(sessionId);
-    say(loop ? tr('A loop is running in this chat: it sends "{0}" {1}, while this chat is open. Type /loop stop to stop it.', [loop.prompt, loopEvery(loop.everyMs)]) : tr('No loop is running in this chat.') + '\n\n' + tr(LOOP_USAGE));
-    return;
-  }
-  if (command.kind === 'stop') { say(stopLoop(sessionId) ? tr('The loop is stopped.') : tr('No loop is running in this chat.')); return; }
-  if (loops.has(sessionId)) { say(tr('This chat already has a loop. Type /loop stop first, then start a new one.')); return; }
-  loops.set(sessionId, { everyMs: command.everyMs, prompt: command.prompt, runs: 1, timer: null });
-  addNote(sessionId, tr('Loop started: "{0}" {1}, while this chat is open. Type /loop stop to stop it. For work that must go on with Strata closed, use the Tasks screen.', [command.prompt, loopEvery(command.everyMs)]));
+  if (command.kind === 'status') { say(loopScheduler.describe(sessionId) ?? tr('No loop is running in this chat.') + '\n\n' + tr(LOOP_USAGE)); return; }
+  if (command.kind === 'stop') { say(loopScheduler.stop(sessionId) ? tr('The loop is stopped.') : tr('No loop is running in this chat.')); return; }
   go('chat', sessionId);
-  await sendMessage(command.prompt, { fromLoop: true });
-  scheduleLoop(sessionId);
+  await loopScheduler.start(sessionId, command);
 }
 
 /** Carry on a paused goal: the host runs its rounds again. No message is sent and no bubble is added. */
@@ -1620,6 +1604,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         workspaceId: state.activeWorkspace,
       },
       (frame) => {
+        // A line from the app itself carries `key` (the English sentence): shown in the person's language.
+        if (frame.type === 'delta' && typeof frame.key === 'string') frame = { ...frame, text: tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) };
         const type = frame.type as string;
         if (type === 'start' && frame.agent === true) { const turn = liveTurns.get(sessionId); if (turn) turn.agent = true; }
         if (type === 'queued') {

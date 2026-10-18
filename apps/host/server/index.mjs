@@ -68,6 +68,7 @@ import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
+import { apiPath } from './api-paths.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -925,7 +926,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path.startsWith('/v1/')) {
       if (storageChanging && method !== 'GET') return error(res, 409, 'Wait for the model folder check to finish.');
-      return await openai(req, res, path, method);
+      return await openai(req, res, apiPath(path), method);
     }
     return await staticFile(req, res, path);
   } catch (err) {

@@ -25,6 +25,8 @@ test('HTTP gateway lists all models, routes both protocols exactly, and isolates
   const list=(await call('/v1/models')).body.data;assert.equal(list.length,2);assert.deepEqual(new Set(list.map(i=>i.id)),new Set([a.body.instance.apiModelId,b.body.instance.apiModelId]));
   assert.equal((await call('/v1/chat/completions',{model:'missing',messages:[{role:'user',content:'hello'}]})).status,409);
   assert.equal((await call('/v1/messages',{messages:[{role:'user',content:'hello'}]})).status,409);
+  assert.equal((await call('/v1/v1/messages',{messages:[{role:'user',content:'hello'}]})).status,409,'an Anthropic client given the /v1 base reaches the same route');
+  assert.notEqual((await call('/v1/v1/chat/completions',{model:'missing',messages:[{role:'user',content:'hello'}]})).status,409,'only the messages path is aliased');
   const controllers=[new AbortController(),new AbortController()];
   const responseA=await fetch(base+'/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({stream:true,model:a.body.instance.apiModelId,messages:[{role:'user',content:'hello'}]}),signal:controllers[0].signal});
   const responseB=await fetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({stream:true,model:b.body.instance.apiModelId,messages:[{role:'user',content:'hello'}]}),signal:controllers[1].signal});

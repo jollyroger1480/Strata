@@ -193,9 +193,9 @@ export class PlanStore {
     } catch { /* the plan still lives in memory */ }
   }
   get(chatId) { return this.plans.get(chatId) ?? null; }
-  create(chatId, { title, steps, request = '', source = 'plan', state = 'proposed' }) {
+  create(chatId, { title, steps, request = '', source = 'plan', state = 'proposed', caution = null }) {
     const now = new Date().toISOString();
-    const plan = { id: randomUUID(), chatId, title, request, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false };
+    const plan = { id: randomUUID(), chatId, title, request, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false, ...(caution ? { caution } : {}) };
     this.plans.set(chatId, plan); this.#save();
     return plan;
   }

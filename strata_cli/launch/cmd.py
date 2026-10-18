@@ -494,6 +494,8 @@ def run_launch(a: argparse.Namespace) -> int:
             label = ("This computer" if "127.0.0.1" in u else "Cloudflare" if "trycloudflare" in u else
                      "Tailscale" if ("ts.net" in u or u.split("//")[1].startswith("100.")) else "Network")
             _say(f"  {label:<14} {u}/v1")
+        if result.urls:
+            _say(f"  {'Anthropic apps':<14} {result.urls[0]}   (Claude Code: ANTHROPIC_BASE_URL, no /v1 at the end)")
         if result.key:
             from strata_cli.launch import access
             _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key --preset \"{s.name}\")")
