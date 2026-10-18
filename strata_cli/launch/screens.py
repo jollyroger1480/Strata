@@ -430,6 +430,9 @@ class ModelScreen(Base):
                 if r.spill_gb:
                     out.append(f"About {r.spill_gb:.0f} GB would be read from the SSD while it answers. ", style=MUTE)
         out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
+        note = self.ctx.computer.other_vendor_note
+        if note:
+            out.append(" " + note, style=WARN)
         return out
 
     def on_cursor(self) -> None:
@@ -527,7 +530,7 @@ class CardsScreen(Base):
 
     def choices(self) -> dict:
         from strata_control import gpu_fit
-        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus)
+        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus, self.ctx.computer.engine_vendor)
 
     def on_mount(self) -> None:
         self.res = self.choices()

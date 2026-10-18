@@ -253,10 +253,37 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         s.api_key = access.new_key()
         notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
                                 "It is saved with the preset; show it with: strata launch --show-key"))
+    notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
     notices += S.check_parallel(s, vram_gb=vram)
     return s, notices
+
+
+def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
+    """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
+    make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
+    from strata_control import gpu_fit
+    out: list[S.Notice] = []
+    vendor = comp.engine_vendor
+    if s.gpus and vendor:
+        mine = {int(g.get("index", -1)) for g in comp.usable_gpus}
+        others = [g for g in gpu_fit.for_vendor(comp.gpus, vendor)[1] if gpu_fit.usable_cards([g])[0]]
+        for idx in s.gpus:
+            if int(idx) in mine:
+                continue
+            other = next((g for g in others if int(g.get("index", -2)) == int(idx)), None)
+            make = gpu_fit.VENDOR_NAME.get(vendor, vendor)
+            if other is not None:
+                omake = gpu_fit.VENDOR_NAME.get(str(other.get("vendor")), str(other.get("vendor")))
+                out.append(S.Notice("error", f"Card {idx} is an {omake} card ({other.get('name')}), and this build of Strata drives {make} cards only. "
+                                    f"A model cannot be split across {make} and {omake} cards. {gpu_fit.SECOND_MODEL_SENTENCE}",
+                                    f"Name a {make} card (" + ", ".join(str(g.get("index")) for g in comp.usable_gpus) + f"), or install the {omake} "
+                                    "build of Strata to use that card."))
+    note = comp.other_vendor_note
+    if note:
+        out.append(S.Notice("warn", note, ""))
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ plain-text run

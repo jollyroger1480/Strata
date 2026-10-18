@@ -6756,6 +6756,13 @@ def main() -> int:
                                for g in amd_ok)
             + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
+        say("  One engine drives the cards of one make: a model is never split across NVIDIA and AMD cards, and two models at the same")
+        say("  time, one on each, is not supported yet.")
+        from strata_control import gpu_fit
+        bigger = gpu_fit.other_vendor_note([{**g, "vendor": "nvidia", "usable": gpu_problem(g) is None} for g in found] +
+                                           [{**g, "vendor": "amd", "usable": True} for g in amd_ok], "nvidia")
+        if bigger:
+            say("  " + bigger)
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")

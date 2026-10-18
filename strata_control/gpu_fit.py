@@ -35,6 +35,75 @@ def _round1(x: float) -> float:
     return round(float(x) * 10) / 10
 
 
+# ---- one engine, one vendor -----------------------------------------------------------------------------------------------
+# Every Strata engine package drives the cards of ONE vendor (CUDA: NVIDIA, HIP: AMD, SYCL: Intel, Metal: Apple). A model is never split
+# across vendors, and two models at once, one per vendor, is not supported yet. So the cards offered for running and splitting are the
+# ones the engine can drive; a better card of the other vendor is mentioned in one plain line (recommend, never force).
+BACKEND_VENDOR = {"cuda": "nvidia", "hip": "amd", "sycl": "intel", "metal": "apple"}
+VENDOR_NAME = {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "apple": "Apple"}
+SECOND_MODEL_SENTENCE = ("Running two models at the same time, one on each make of graphics card, is not supported yet. "
+                         "Strata runs one model at a time on the cards of one make.")
+
+
+def vendor_of_backend(backend: str | None) -> str | None:
+    return BACKEND_VENDOR.get(str(backend or "").lower())
+
+
+def _vendor(card: dict) -> str | None:
+    v = card.get("vendor")
+    return str(v).lower() if v else None
+
+
+def pick_vendor(cards: list[dict], backend: str | None = None) -> str | None:
+    """The make of card the engine drives: the installed (or detected) engine's, else the only make among the cards that count; with more
+    than one make, NVIDIA (the engine setup picks first), else the make of the card with the most memory. None: no card names a make."""
+    named = vendor_of_backend(backend)
+    if named:
+        return named
+    keep, _ = usable_cards(cards)
+    makes = {_vendor(c) for c in keep if _vendor(c)}
+    if len(makes) <= 1:
+        return next(iter(makes), None)
+    if "nvidia" in makes:
+        return "nvidia"
+    return _vendor(keep[0])
+
+
+def for_vendor(cards: list[dict], vendor: str | None) -> tuple[list[dict], list[dict]]:
+    """(the cards the engine of that make can drive, the cards of other makes). A card that names no make goes with the engine's."""
+    if not vendor:
+        return list(cards or []), []
+    mine = [c for c in cards or [] if _vendor(c) in (None, vendor)]
+    return mine, [c for c in cards or [] if _vendor(c) not in (None, vendor)]
+
+
+def _short_name(c: dict, vendor: str) -> str:
+    n = str(c.get("name") or "graphics card")
+    for junk in ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD ", "Intel "):
+        if n.startswith(junk):
+            n = n[len(junk):]
+            break
+    return f"{VENDOR_NAME.get(vendor, vendor.title())} {n}".strip()
+
+
+def other_vendor_note(cards: list[dict], vendor: str | None) -> str | None:
+    """One plain line when the other make's best card is bigger than the best card the engine can use, else None:
+    "This computer also has an AMD R9700 (32 GB). The AMD build of Strata can use it - it fits bigger models." """
+    if not vendor:
+        return None
+    mine, others = for_vendor(usable_cards(cards)[0], vendor)
+    others = [c for c in others if _vendor(c) and not _shares_memory(c)]
+    if not others:
+        return None
+    best = max(others, key=lambda c: float(c.get("vram_gb") or 0))
+    mine_best = max((float(c.get("vram_gb") or 0) for c in mine), default=0.0)
+    if float(best.get("vram_gb") or 0) <= mine_best:
+        return None
+    other = _vendor(best)
+    return (f"This computer also has an {_short_name(best, other)} ({float(best.get('vram_gb') or 0):.0f} GB). "
+            f"The {VENDOR_NAME.get(other, other.title())} build of Strata can use it — it fits bigger models.")
+
+
 def memory_needed(variant: dict) -> float:
     """RAM + VRAM the model asks for (native-fit.ts memoryNeeded)."""
     if isinstance(variant.get("memory_gb"), (int, float)):
@@ -137,15 +206,20 @@ def _option(key: str, cards: list[dict], memory_gb: float, ram_gb: float | None)
 _RANK = {"fits": 0, "tight": 1, "unknown": 2, "spills": 3}
 
 
-def options(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> dict[str, Any]:
+def options(memory_gb: float, ram_gb: float | None, cards: list[dict], vendor: str | None = None) -> dict[str, Any]:
     """The choices for this model on this computer: {"options": [...], "recommended": key, "ignored": [...], "cards": n counted}.
 
     Options (best known first): the largest card alone; with two or more cards that can share a model, the two largest as a layer split
     (and all of them when there are more than two); then every other card alone. Exactly one option is recommended:
     the single largest card when the model fits it (with RAM); otherwise the split if it fits better (a smaller verdict or less SSD use);
     otherwise the single largest card again (nothing better to offer)."""
-    keep, ignored = usable_cards(cards)
-    out: dict[str, Any] = {"options": [], "recommended": None, "ignored": ignored, "cards": len(keep)}
+    vendor = vendor or pick_vendor(cards)
+    mine, others = for_vendor(cards, vendor)
+    keep, ignored = usable_cards(mine)
+    ignored = ignored + [{**c, "why_ignored": f"it needs the {VENDOR_NAME.get(_vendor(c), _vendor(c))} build of Strata, and this engine drives "
+                                              f"{VENDOR_NAME.get(vendor, vendor)} cards"} for c in others]
+    out: dict[str, Any] = {"options": [], "recommended": None, "ignored": ignored, "cards": len(keep), "vendor": vendor,
+                           "other_vendor_note": other_vendor_note(cards, vendor)}
     if not keep:
         return out
     names = [str(c.get("name")) for c in keep]
@@ -169,7 +243,7 @@ def options(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> dict[s
     return out
 
 
-def recommended_cards(memory_gb: float, ram_gb: float | None, cards: list[dict]) -> list[int]:
+def recommended_cards(memory_gb: float, ram_gb: float | None, cards: list[dict], vendor: str | None = None) -> list[int]:
     """The card numbers of the recommended option (empty: no usable card)."""
-    res = options(memory_gb, ram_gb, cards)
+    res = options(memory_gb, ram_gb, cards, vendor)
     return next((o["cards"] for o in res["options"] if o["recommended"]), [])

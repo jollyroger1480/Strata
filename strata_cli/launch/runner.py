@@ -176,7 +176,7 @@ def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None) 
             return None
         row = next((r for r in catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
         mem = float(row.memory_gb) if row is not None and row.memory_gb else 44.0
-        return gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus) or None
+        return gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus, comp.engine_vendor) or None
     except Exception:                                        # noqa: BLE001 - never block a launch over the choice of cards
         return None
 

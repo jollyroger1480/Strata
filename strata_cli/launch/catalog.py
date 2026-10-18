@@ -117,17 +117,26 @@ class Computer:
     os: str = ""
     avx2: bool | None = None
     raw: dict = field(default_factory=dict)
+    engine_vendor: str | None = None           # the make of card the engine drives (nvidia, amd, intel, apple); None: the cards name none
 
     @property
     def usable_gpus(self) -> list[dict]:
-        """The cards that count (strata_control/gpu_fit.py: an integrated chip or a tiny card is ignored), the largest first."""
+        """The cards that count and the engine can drive (strata_control/gpu_fit.py: an integrated chip, a tiny card or a card of another
+        make is left out), the largest first. One engine drives one make, so a model is never split across makes."""
         from strata_control import gpu_fit
-        return gpu_fit.usable_cards(self.gpus)[0]
+        return gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]
 
     @property
     def ignored_gpus(self) -> list[dict]:
         from strata_control import gpu_fit
-        return gpu_fit.usable_cards(self.gpus)[1]
+        mine, others = gpu_fit.for_vendor(self.gpus, self.engine_vendor)
+        return gpu_fit.usable_cards(mine)[1] + [{**c, "why_ignored": "another make of card than this engine drives"} for c in others]
+
+    @property
+    def other_vendor_note(self) -> str | None:
+        """One plain line when a card of another make is the bigger one (None otherwise)."""
+        from strata_control import gpu_fit
+        return gpu_fit.other_vendor_note(self.gpus, self.engine_vendor)
 
     @property
     def main_vram_gb(self) -> float:
@@ -265,7 +274,26 @@ class Catalog:
     def computer(self, fresh: bool = False) -> Computer:
         hw = self.hardware(fresh)
         return Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []), disk_free_gb=hw.get("disk_free_gb"),
-                        os=str(hw.get("os") or ""), avx2=(hw.get("cpu") or {}).get("avx2"), raw=hw)
+                        os=str(hw.get("os") or ""), avx2=(hw.get("cpu") or {}).get("avx2"), raw=hw,
+                        engine_vendor=self.engine_vendor(hw))
+
+    def installed_backend(self) -> str | None:
+        """The installed engine's backend (cuda, hip, sycl, cpu, metal), None when there is no usable engine yet."""
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            if rep.get("usable"):
+                return (rep.get("engine") or {}).get("backend")
+        except Exception:                                    # noqa: BLE001
+            pass
+        return None
+
+    def engine_vendor(self, hw: dict | None = None) -> str | None:
+        """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
+        computer has several makes)."""
+        from strata_control import gpu_fit
+        hw = hw if hw is not None else self.hardware()
+        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
 
     # ---- the tables
     def tables(self):
@@ -280,7 +308,7 @@ class Catalog:
 
     def rows(self, hw: dict | None = None) -> list[ModelRow]:
         hw = hw or self.hardware()
-        comp = Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []))
+        comp = Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []), engine_vendor=self.engine_vendor(hw))
         vram = comp.main_vram_gb
         rec = self.recommendation(hw)
         out: list[ModelRow] = []
@@ -361,13 +389,9 @@ class Catalog:
     # ---- pictures
     def engine_backend(self) -> str | None:
         """The installed engine's backend (cuda, hip, sycl, cpu, metal), else the one this computer's graphics card needs, else None."""
-        try:
-            from strata_control import engine_component as ec
-            rep = ec.status()
-            if rep.get("usable"):
-                return (rep.get("engine") or {}).get("backend")
-        except Exception:                                    # noqa: BLE001
-            pass
+        installed = self.installed_backend()
+        if installed:
+            return installed
         for g in self.computer().usable_gpus:
             v = str(g.get("vendor") or "").lower()
             if g.get("unified_gb") or v == "apple":

@@ -59,6 +59,25 @@ class SetupFitRule(unittest.TestCase):
         code, out, cfg, _ = run(62.0, found, "IQ3_XXS", extra=("--gpu", "1"))
         self.assertEqual(cfg["gpu"], 1)
 
+    def test_a_bigger_amd_card_beside_the_nvidia_one_is_said_in_one_line_and_never_mixed(self):
+        """RTX 5060 Ti (16 GB) + AMD R9700 (32 GB): the question offers the two makes apart, says one engine drives one make and that two
+        models at once are not supported, and names the bigger AMD card; the NVIDIA answer runs on the NVIDIA card alone."""
+        from unittest import mock
+        found = [card(0, "NVIDIA GeForce RTX 5060 Ti", 16.0, "120")]
+        amd = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "arch": "gfx1201", "vendor": "amd"}]
+        patches = [mock.patch.object(setup, "amd_gpus", lambda *a, **k: [dict(g) for g in amd]),
+                   mock.patch.object(setup, "amd_problem", lambda g: None)]
+        argv = ["--family", "qwen", "--no-start", "--model", "IQ3_XXS", "--context", "32768"]
+        code, out, cfg, asked = install(62.0, found, argv, answers={"Which cards?": "1"}, extra=patches)
+        self.assertEqual(code, 0, out)
+        self.assertIn("This PC has NVIDIA and AMD cards Strata can use", out)
+        self.assertIn("never split across NVIDIA and AMD cards", out)
+        self.assertIn("two models at the same", out)
+        self.assertIn("not supported yet", out)
+        self.assertIn("This computer also has an AMD AI PRO R9700 (32 GB). The AMD build of Strata can use it", out)
+        self.assertNotIn("Which GPUs?", " ".join(asked))              # one NVIDIA card: no split question
+        self.assertEqual(cfg.get("gpu", 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

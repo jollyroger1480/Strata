@@ -72,6 +72,8 @@ class Ctx:
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":
             out.append(f"{r.title}: {r.words}.")
+        if self.computer.other_vendor_note:
+            out.append(self.computer.other_vendor_note)
         missing = acc.missing_helper(s.access)
         if missing:
             out.append(missing)
