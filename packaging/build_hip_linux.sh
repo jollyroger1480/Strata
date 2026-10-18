@@ -12,6 +12,7 @@
 #   OUT=<work folder>  PKGVER=0.1.45.3  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   NO_PACKAGE=1                     stop after the stage folder
+#   VISION_HIP_DEFS="-DGGML_CUDA_FA=OFF"   extra cmake definitions for the GPU reader only
 #
 # Both readers get RUNPATH $ORIGIN (tools/vision/CMakeLists.txt), and every bundled library is patched to $ORIGIN, so the
 # component folder runs from anywhere with nothing from the environment (packaging/binary_deps.py checks it).
@@ -60,7 +61,7 @@ st "cpu reader built rc=$?"
 [ -x "$OUT/bv/bin/strata-vision" ] || { st "ABORT no strata-vision"; exit 1; }
 # the GPU reader: ggml-hip for the same archs; the CPU kernels in it are portable too
 cmake -G Ninja -S tools/vision -B "$OUT/bh" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$LLAMA" -DSTRATA_VISION_HIP=ON \
-  "-DSTRATA_VISION_HIP_ARCHS=$ARCHS" -DSTRATA_PORTABLE=ON "${HIPDEFS[@]}" > "$OUT/cfg-vision-hip.log" 2>&1
+  "-DSTRATA_VISION_HIP_ARCHS=$ARCHS" -DSTRATA_PORTABLE=ON "${HIPDEFS[@]}" ${VISION_HIP_DEFS:-} > "$OUT/cfg-vision-hip.log" 2>&1
 st "gpu reader configured rc=$?"
 nice -n 10 cmake --build "$OUT/bh" --target strata-vision -j "$JOBS" > "$OUT/build-vision-hip.log" 2>&1
 st "gpu reader built rc=$?"
