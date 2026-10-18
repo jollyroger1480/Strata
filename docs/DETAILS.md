@@ -2226,6 +2226,27 @@ signal, early cleanup and `--errors` error-propagation checks. Its `--synchronou
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
 
+## RTX 30 series (sm_86) and Tesla P100 (sm_60): bitwise decode switches on by default
+
+The 0.1.45 switch set that is bit-exact on every card was measured switch by switch on a 12 GB RTX 3060, a 16 GB RTX A4000 (one card)
+and a 16 GB Tesla P100, IQ3_XXS, default flags (adaptive tier on), fresh engine per run, 8 interleaved pairs, equal expert-cache slots,
+with a noise arm: the whole 16-switch set gave +9.6% (3060), +14.6% (A4000) and +17.8% (P100) decode, 8/8 pairs each, and the identity
+gate (10 prompts + exact_pp 4K/20K, fixed flags) is IDENTICAL with it on. Removing one switch at a time (4 rounds each) kept the ones that
+paid on their architecture. They are on by default now, per architecture (`include/strata/core/nv_defaults.hpp`, set before the
+engine reads its switches; a switch you set yourself, to anything, is kept):
+
+- sm_86 (RTX 3050-3090, RTX A2000-A6000): `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_CPU_IQ_ALL_EXACT1=1`,
+  `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GU_SWIGLU=1`, `STRATA_QSA_ROWS=1`, `STRATA_B6_MMVQ_ROWS=1`.
+  `STRATA_SM86_PERF=0` turns the set off.
+- sm_60 (Tesla P100): `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_SIDE_MIXER=2`, `STRATA_FUSE_WAIT=2`, `STRATA_B6_MMVQ_ROWS=1`,
+  `STRATA_FUSE_DECODE=1`, `STRATA_GR_UP75=1`. `STRATA_SM60_PERF=0` turns the set off.
+
+The table is used when every visible card has that one compute capability. `STRATA_ADAPT_OVERLAP=1` (opt-in) does not run beside
+`STRATA_ADAPT_LAG` / `STRATA_ADAPT_NOWAIT`: set `STRATA_ADAPT_LAG=1 STRATA_ADAPT_NOWAIT=0` with it. Left out because they did not pay or
+were mixed: `STRATA_EXPDEC`, `STRATA_GR_NORM_FAST`, `STRATA_RAM_ADAPT`, `STRATA_KV_HOST_REGISTER`, `STRATA_HOST_CORE`,
+`STRATA_GR_DOWN_TG`, `STRATA_DEQUANT_WIDE`; `STRATA_EXCHANGE_ROTATE` never reaches READY on the 3060 and `STRATA_PCIE_BALANCE` is slower on a
+single card. Measured numbers: phaseA-tests/notes-148-nv.md.
+
 ## Compute capability 12.0 cards: faster decode (bitwise) and fused prompt experts by default
 
 Measured on an RTX PRO 5000 Blackwell 72 GB (110 SMs, sm_120, Linux, CUDA 13.2), IQ3_S with every expert in VRAM, setup's
