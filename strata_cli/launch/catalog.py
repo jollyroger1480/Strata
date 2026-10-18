@@ -272,7 +272,10 @@ class Catalog:
         vram = comp.main_vram_gb
         rec = self.recommendation(hw)
         out: list[ModelRow] = []
+        own = self.strata.own_families()                # Qwen3.6 is listed for the app; the Terminal's launch list is Flash-Next's
         for fam in self.strata.model_table(hw):
+            if fam["family"] in own:
+                continue
             for size in fam["sizes"]:
                 f = fit_on(size, hw.get("ram_gb"), vram)
                 cat, words = verdict(size.get("on_this_pc"))
