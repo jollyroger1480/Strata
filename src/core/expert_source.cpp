@@ -1637,6 +1637,9 @@ void FileExpertSource::claim_todo(int64_t layer, const int64_t* experts, int64_t
         for (int64_t i = 0; i < n; ++i) {
             const int64_t e = experts[i];
             if (e < 0 || e >= n_expert_) continue;
+            const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) e;
+            if (complement_ready_ && resident_blob(index) != nullptr) continue;   // in the RAM copy: no residency query
+            if (!override_.empty() && override_[index] != nullptr) continue;
             uint64_t total = 0;
             const uint64_t c = cached_bytes(layer, e, total, true);
             zc_ok[(size_t) i] = total > 0 && c >= total ? 1 : 0;   // no residency query (not Linux): never
