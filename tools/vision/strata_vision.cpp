@@ -13,9 +13,11 @@
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+#include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
 #include "gguf_meta.h"
+#include "gpu_arch.h"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -37,7 +39,14 @@
 
 namespace {
 
+// the GPU architectures ggml-hip printed while it started ("  Device 0: ..., gfx1201:sramecc-:xnack- (0x1201), ...")
+std::vector<std::string> g_gfx;
+
 void quiet_log(ggml_log_level level, const char* text, void*) {
+    if (level == GGML_LOG_LEVEL_INFO && std::strstr(text, "Device ") != nullptr) {
+        const std::string gfx = strata_gfx_in(text);
+        if (!gfx.empty()) g_gfx.push_back(gfx);
+    }
     if (level >= GGML_LOG_LEVEL_WARN) std::fputs(text, stderr);
 }
 
@@ -70,6 +79,16 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--version") {
+#ifdef STRATA_VISION_HIP
+            std::printf("strata-vision hip (GPU architectures: %s)
+", STRATA_VISION_HIP_ARCHS);
+#else
+            std::printf("strata-vision
+");
+#endif
+            return 0;
+        }
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
         else if (a == "--min-tokens") min_tokens = std::atoi(next().c_str());   // mtmd image_min_tokens (#767)
@@ -91,13 +110,48 @@ int main(int argc, char** argv) {
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+    if (gpu) {
+        // Starting the backends prints the GPU line; with --gpu and no GPU, mtmd would quietly use the CPU, and a card
+        // the HIP build has no code for would abort at its first kernel.  Both end here with a line the server reads
+        // (it then starts the CPU reader).
+        bool have_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        }
+        if (!have_gpu) {
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)
+",
+#ifdef STRATA_VISION_HIP
+                        STRATA_VISION_HIP_ARCHS
+#else
+                        "none"
+#endif
+            );
+            std::fflush(stdout);
+            return 3;
+        }
+#ifdef STRATA_VISION_HIP
+        const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
+        if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
+            !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
+            std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)
+", g_gfx.front().c_str(),
+                        STRATA_VISION_HIP_ARCHS);
+            std::fflush(stdout);
+            return 3;
+        }
+#endif
+    }
 
     const auto load_t0 = std::chrono::steady_clock::now();
 #if !defined(_WIN32) && !defined(__APPLE__)   // macOS has no posix_fadvise
