@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::desktoplog::{self, say, Log, Ring};
+
 pub const BROWSER_NOTICE: &str = "Strata opened in your browser because the app window couldn't start on this computer.";
 
 /// What the command line asked for.
@@ -33,6 +35,8 @@ pub struct Options {
     pub quit: bool,
     /// `--window-child`: the window process (started by the shell, not by a person).
     pub window_child: bool,
+    /// `--save-logs`: collect the logs into one file in Downloads and leave.
+    pub save_logs: bool,
     pub help: bool,
 }
 
@@ -43,6 +47,7 @@ pub fn parse_args(args: &[String], ui_env: Option<&str>) -> Options {
             "--browser" => o.browser = true,
             "--quit" => o.quit = true,
             "--window-child" => o.window_child = true,
+            "--save-logs" => o.save_logs = true,
             "--help" | "-h" => o.help = true,
             _ => {}
         }
@@ -54,6 +59,7 @@ pub const HELP: &str = "Strata\n\
   (no option)  open the Strata app window\n\
   --browser    open Strata in your default browser instead of the app window (same as STRATA_UI=browser)\n\
   --quit       stop a running Strata (its engine too) and leave\n\
+  --save-logs  put the logs (including the log of an app window crash) into one file in your Downloads folder, to send to us\n\
 Closing the browser tab does not stop Strata in browser mode: use Quit Strata in the menu, or --quit.\n";
 
 /// The command a person types to run this app again, for the messages ("run: Strata.AppImage --quit").
@@ -211,6 +217,8 @@ pub fn describe_exit(status: &ExitStatus) -> String {
         }
     }
     match status.code() {
+        Some(127) => "exit code 127: a program file it needs is missing".into(),
+        Some(126) => "exit code 126: a program file it needs could not be run".into(),
         Some(c) => format!("exit code {c}"),
         None => "ended without a code".into(),
     }
@@ -279,11 +287,49 @@ fn join_running(s: &Session, browser: bool) -> i32 {
     }
 }
 
+/// Start a child with its output copied to the terminal, the log and a ring (for the crash log).
+fn spawn_logged(cmd: &mut Command, who: &'static str, ring: &Ring, log: &Log) -> std::io::Result<Child> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    if let Some(out) = child.stdout.take() {
+        desktoplog::tee(out, who, false, ring.clone(), log.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        desktoplog::tee(err, who, true, ring.clone(), log.clone());
+    }
+    Ok(child)
+}
+
+/// The window process died without being closed: say so in plain words, write the crash log, move everyone to the browser.
+fn window_failed(why: &str, window_pid: u32, window_ring: &Ring, host_ring: &Ring, log: &Log, port: u16, token: &str) {
+    say(log, &format!("The app window crashed ({why})."));
+    // let the copy threads read the last lines the dead process wrote
+    std::thread::sleep(Duration::from_millis(300));
+    match desktoplog::write_crash_log(why, window_pid, window_ring, host_ring, log) {
+        Some(path) => say(log, &format!("The crash log is {}. To collect the logs for us: {} --save-logs", path.display(), command_name())),
+        None => say(log, &format!("The crash log could not be written. To collect the logs for us: {} --save-logs", command_name())),
+    }
+    say(log, BROWSER_NOTICE);
+    switch_host_to_browser(port, token, "window-failed", BROWSER_NOTICE);
+}
+
 /// The shell. Returns the process exit code.
 pub fn run(opts: &Options) -> i32 {
     if opts.help {
         print!("{HELP}");
         return 0;
+    }
+    if opts.save_logs {
+        return match desktoplog::save_logs(&desktoplog::downloads_dir()) {
+            Ok(path) => {
+                println!("Saved to {}. Please send this file to us.", path.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("[strata] could not save the logs: {e}");
+                1
+            }
+        };
     }
     if opts.quit {
         return quit_running();
@@ -292,12 +338,14 @@ pub fn run(opts: &Options) -> i32 {
         return join_running(&s, opts.browser);
     }
 
+    let log = Log::open();
+    let (host_ring, window_ring) = (Ring::default(), Ring::default());
     let exe = std::env::current_exe().unwrap_or_default();
     let res = crate::packaged_resource_dir(&exe).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     let port = match crate::pick_stable_port() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[strata] {e}");
+            say(&log, &e);
             return 1;
         }
     };
@@ -306,7 +354,7 @@ pub fn run(opts: &Options) -> i32 {
     let mut cmd = match crate::host_command(&res, port, &token) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[strata] {e}");
+            say(&log, &e);
             return 1;
         }
     };
@@ -314,10 +362,10 @@ pub fn run(opts: &Options) -> i32 {
     if opts.browser {
         cmd.env("STRATA_UI_REASON", "chosen");
     }
-    let mut host = match cmd.spawn() {
+    let mut host = match spawn_logged(&mut cmd, "host", &host_ring, &log) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[strata] could not start the App Host: {e}");
+            say(&log, &format!("could not start the App Host: {e}"));
             return 1;
         }
     };
@@ -326,7 +374,7 @@ pub fn run(opts: &Options) -> i32 {
         _ => None,
     });
     if let Err(e) = health {
-        eprintln!("[strata] {e}");
+        say(&log, &e);
         let _ = host.kill();
         let _ = host.wait();
         return 1;
@@ -334,19 +382,20 @@ pub fn run(opts: &Options) -> i32 {
     let me = std::process::id();
     write_session(&Session { pid: me, port, token: token.clone(), mode: mode.into() });
 
-    let mut in_browser = opts.browser;
     let mut window: Option<Child> = None;
-    if in_browser {
-        eprintln!("[strata] {}", browser_chosen_line(port));
+    if opts.browser {
+        say(&log, &browser_chosen_line(port));
         switch_host_to_browser(port, &token, "chosen", "");
     } else {
-        match spawn_window(port, &token) {
+        let started = std::env::current_exe().and_then(|exe| {
+            let mut c = Command::new(exe);
+            c.arg("--window-child").env("STRATA_WINDOW_PORT", port.to_string()).env("STRATA_SHUTDOWN_TOKEN", &token).stdin(Stdio::null());
+            spawn_logged(&mut c, "window", &window_ring, &log)
+        });
+        match started {
             Ok(c) => window = Some(c),
             Err(e) => {
-                eprintln!("[strata] could not start the app window ({e}).");
-                eprintln!("[strata] {BROWSER_NOTICE}");
-                in_browser = true;
-                switch_host_to_browser(port, &token, "window-failed", BROWSER_NOTICE);
+                window_failed(&format!("it could not be started: {e}"), 0, &window_ring, &host_ring, &log, port, &token);
                 write_session(&Session { pid: me, port, token: token.clone(), mode: "browser".into() });
             }
         }
@@ -360,24 +409,27 @@ pub fn run(opts: &Options) -> i32 {
                 let _ = w.kill();
                 let _ = w.wait();
             }
-            break if status.success() { 0 } else { eprintln!("[strata] The App Host stopped ({}).", describe_exit(&status)); 1 };
+            if status.success() {
+                log.line("shell", "the host stopped (Quit Strata or the window was closed)");
+                break 0;
+            }
+            say(&log, &format!("The App Host stopped ({}). The last lines it printed are in {}.", describe_exit(&status), log.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
+            break 1;
         }
         let Some(w) = window.as_mut() else { continue };
+        let window_pid = w.id();
         let Ok(Some(status)) = w.try_wait() else { continue };
         window = None;
         if status.success() {
             // the person closed the window: stop the host and the engines this app started, as before
+            log.line("shell", "the window was closed: stopping the host");
             crate::stop_host_child(&mut host, Some(port), Some(&token));
             break 0;
         }
         // The window stopped without being closed: keep Strata running and move to the browser.
-        eprintln!("[strata] The app window stopped unexpectedly ({}).", describe_exit(&status));
-        eprintln!("[strata] {BROWSER_NOTICE}");
-        in_browser = true;
-        switch_host_to_browser(port, &token, "window-failed", BROWSER_NOTICE);
+        window_failed(&describe_exit(&status), window_pid, &window_ring, &host_ring, &log, port, &token);
         write_session(&Session { pid: me, port, token: token.clone(), mode: "browser".into() });
     };
-    let _ = in_browser;
     remove_session(me);
     code
 }
@@ -399,6 +451,7 @@ mod tests {
         assert!(!parse_args(&args(&[]), Some("window")).browser);
         assert!(parse_args(&args(&["--quit"]), None).quit);
         assert!(parse_args(&args(&["--window-child"]), None).window_child);
+        assert!(parse_args(&args(&["--save-logs"]), None).save_logs);
         assert!(parse_args(&args(&["-h"]), None).help);
         // anything else (a file the desktop hands over, an AppImage option) is ignored
         assert_eq!(parse_args(&args(&["--appimage-extract-and-run", "x.gguf"]), None), Options::default());

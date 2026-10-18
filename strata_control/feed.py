@@ -60,6 +60,15 @@ def version_key(value: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (4 - len(parts)))
 
 
+def app_version_key(value: str) -> tuple[int, ...]:
+    """Compare the INSTALLED app's version: like `version_key`, but a pre-release (0.2.0-beta) is allowed and sorts below the same number without
+    the suffix. The feed's own versions stay strict (`version_key`)."""
+    base, dash, pre = str(value).partition("-")
+    if dash and not re.fullmatch(r"[0-9A-Za-z.]+", pre):
+        raise FeedError(f"{value!r} is not a version number (expected like 0.2.0 or 0.2.0-beta)")
+    return version_key(base) + (0 if dash else 1,)
+
+
 def _need(obj: dict, key: str, kind, where: str):
     value = obj.get(key)
     if not isinstance(value, kind) or isinstance(value, bool) and kind is int:

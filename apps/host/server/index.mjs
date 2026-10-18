@@ -58,6 +58,7 @@ import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, cre
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
+import { appVersionFrom } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
@@ -113,6 +114,8 @@ const control = createControl({ control: CONTROL });
 if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
 /* Which window shows the page (the app window or, when that cannot run, a browser tab) and what only the app window can do: app-ui.mjs. */
 const appUi = createAppUi({ shutdown: () => shutdown() });
+/* The app's version has one source: the desktop shell passes it (STRATA_APP_VERSION, from apps/desktop/src-tauri/Cargo.toml). Outside the app it is read from the same file in a checkout, else 'dev'. */
+function appVersion() { return appVersionFrom({ env: process.env, here: HERE }); }
 const appUpdater = appUi.updater;
 /* The engine that ships inside the installer is put in the components folder when this PC has none (or an older one); no network, hashes checked. The model list waits for it. */
 const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
@@ -214,7 +217,7 @@ const backend = await detectBackend({ force: true });
 
 console.log(`strata host  ·  http://${HOST}:${PORT}`);
 console.log(`hardware     ·  ${boot.accelerator.label} / ${boot.accelerator.backend} / ${boot.cpu.cores} cores / ${Math.round(boot.memory.totalGb)} GB`);
-console.log(`inference    ·  ${models.REAL ? backend.name : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
+console.log(`inference    ·  ${models.REAL ? (bundledEngineSettled ? backend.name : 'unpacking the bundled engine… (about a minute the first time)') : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
 console.log(`models dir   ·  ${store.MODELS_DIR}`);
 console.log(`workspace    ·  ${WORKSPACE}`);
 
@@ -230,7 +233,7 @@ function setupState() {
     flowVersion: 2,
     completedAt: s.setup.completedAt,
     history: s.setup.history ?? [],
-    app: { version: '0.1.0', modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
+    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
   };
 }
 
@@ -929,6 +932,7 @@ async function api(req, res, path, method, url) {
    const lines=[`Strata diagnostics ${new Date().toISOString()}`,`Version ${native.state().version??'unknown'}`,'','== Engine messages =='];
    for(const l of native.logs())lines.push(`${l.at} ${l.instanceId}: ${l.line}`);
    lines.push('','== Operations ==');for(const j of native.state().jobs)lines.push(`${j.startedAt} ${j.kind} ${j.state}${j.error?`: ${j.error}`:''}${j.details?`${NL}  ${j.details}`:''}`);
+   try{const logs=join(dirname(componentsDirectory()),'logs');const names=readdirSync(logs).filter(n=>/^desktop-.*\.log$/.test(n)).sort();const crash=names.filter(n=>n.startsWith('desktop-crash-')).slice(-3).reverse();const runs=names.filter(n=>!n.startsWith('desktop-crash-')).slice(-2).reverse();lines.push('',`== Desktop shell: window crash logs (${crash.length} newest) ==`);for(const n of crash)lines.push('',`-- ${n}`,readFileSync(join(logs,n),'utf8'));lines.push('',`== Desktop shell: last lines of the newest ${runs.length} run logs ==`);for(const n of runs)lines.push('',`-- ${n}`,...readFileSync(join(logs,n),'utf8').split(NL).slice(-300));}catch{/* no desktop logs (not the Linux app, or no crash) */}
    try{const runtime=process.env.STRATA_RUNTIME_DIR??join(dirname(componentsDirectory()),'runtime');for(const name of readdirSync(runtime).filter(n=>n.endsWith('.server.log'))){lines.push('',`== ${name} (last lines) ==`,...readFileSync(join(runtime,name),'utf8').split(NL).slice(-200));}}catch{/* no server logs yet */}
    const folder=join(process.env.USERPROFILE??process.env.HOME??homedir(),'Downloads');mkdirSync(folder,{recursive:true});
    const file=join(folder,`strata-diagnostics-${new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)}.txt`);writeFileSync(file,lines.join(NL),'utf8');

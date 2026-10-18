@@ -15,7 +15,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP="$(cd "$HERE/.." && pwd)"
 BUNDLE="$DESKTOP/src-tauri/target/release/bundle"
 APP="$BUNDLE/macos/Strata.app"
-OUT="${1:-$BUNDLE/dmg/Strata_0.1.0_aarch64.dmg}"
+VERSION="$(grep -m1 '^version = ' "$DESKTOP/src-tauri/Cargo.toml" | cut -d'"' -f2)"   # the one place the app version is written
+OUT="${1:-$BUNDLE/dmg/Strata_${VERSION}_aarch64.dmg}"
 
 if [ ! -d "$APP" ]; then
   echo "error: $APP does not exist; run 'cargo tauri build --bundles app' first" >&2
@@ -45,7 +46,7 @@ rm -f "$OUT"
 
 # --skip-jenkins: no Finder AppleScript. Everything else is the same code path Tauri uses.
 "$SCRIPT" \
-  --volname "Strata 0.1.0" \
+  --volname "Strata $VERSION" \
   --volicon "$BUNDLE/macos/Strata.app/Contents/Resources/Strata.icns" \
   --app-drop-link 400 200 \
   --skip-jenkins \

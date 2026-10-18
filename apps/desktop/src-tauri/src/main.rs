@@ -39,6 +39,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
 #[cfg(target_os = "linux")]
+mod desktoplog;
+#[cfg(target_os = "linux")]
 mod supervisor;
 
 /// The kill-on-close Job Object that holds everything this app starts (Windows). Its only handle is this process's,
@@ -874,11 +876,16 @@ fn run_embedded() {
 fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-        .title("Strata")
-        .inner_size(1440.0, 920.0)
-        .min_inner_size(900.0, 600.0)
-        .build()?;
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    // WebKitGTK (2.50 to 2.52 at least) dereferences a null pointer in AcceleratedBackingStore::update in its UI process when a page calls
+    // document.startViewTransition (the web process asks the UI process to enter accelerated compositing, and the backing store is not
+    // there). The page itself does not call it on that engine (apps/host/src/lib/router.ts), and this line keeps any other script from doing
+    // it either: the API is simply absent, as in older WebKit versions.
+    #[cfg(target_os = "linux")]
+    let builder = builder.initialization_script(
+        "try { Object.defineProperty(Document.prototype, 'startViewTransition', { value: undefined, configurable: true, writable: true }); } catch (e) {}",
+    );
+    builder.build()?;
     Ok(())
 }
 

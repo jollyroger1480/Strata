@@ -957,7 +957,7 @@ def decide_app(feed: feedmod.Feed, ctx: Context) -> dict:
     if not ctx.app_version:
         report["status"] = "unknown-installed"
     else:
-        report["status"] = "available" if feedmod.version_key(feed.app.version) > feedmod.version_key(ctx.app_version) else "current"
+        report["status"] = "available" if feedmod.app_version_key(feed.app.version) > feedmod.app_version_key(ctx.app_version) else "current"
     return report
 
 
