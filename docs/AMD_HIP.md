@@ -434,7 +434,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     1,990 at 4,210 (+17.1%), medians 1,571 -> 2,064 and a 1.27x geometric mean over those three. decode
     89.8 -> 86.9 tok/s, unchanged. `STRATA_SELECT_WMMA=1` on top changed nothing at those lengths (2,026 tok/s);
     its +1.5% is a 16K/262K-ctx number. `hip_prompt_attn_wmma` passes on that card.
-    **Default on gfx12 (148-amd).** Quality on an R9700 (Q2_0, int8 KV, fixed expert cache so that the default against itself is bit-identical):
+    **Default on gfx12 on Linux (148-amd).** Windows: opt-in until tested on Windows (`STRATA_HIP_WMMA=1` turns it on; the engine says so in its log at the first prompt). Quality on an R9700 (Q2_0, int8 KV, fixed expert cache so that the default against itself is bit-identical):
     teacher-forced KL against the old kernel through the real serve decode path (STRATA_FOLLOW, 28 prompts, 6,024 positions) 0.0003 (p99 0.006, top-1
     99.8%, perplexity of the forced text x1.0003), and 0.0014 over 1,760 positions of eight 6K-token documents (top-1 98.9%, x1.0009); HumanEval 157/164
     (default 156 and 156), reasoning 25/30 (24 and 26), agent 6/6, needles at 32K and 125K x three depths 6/6, CJK 8/8, tool calls 5/5. Prompt speed,
@@ -478,7 +478,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     prompt's top token was the same one, so that check says little); 4 of 4 long-context retrieval checks passed.
     0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
     gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
-    **Q2_0 gate/up (148-amd).** The native Q2_0 pack's gate/up (64-value blocks) take the same kernels and are in the gfx12 default set with IQ3_S and
+    **Q2_0 gate/up (148-amd).** Windows: opt-in until tested on Windows (`STRATA_PF_FUSED=1`); the default below is Linux only. The native Q2_0 pack's gate/up (64-value blocks) take the same kernels and are in the gfx12 default set with IQ3_S and
     IQ3_XXS (`STRATA_PF_FUSED=0` keeps MMQ). One layer, 2,048 tokens x top 10 over 512 experts: MMQ 24.5 ms, fused 4.4 ms; 8,192 tokens 31.7 vs 13.2 ms
     (`hip_prefill_fused_iq`, fused against MMQ rel. RMS 1.6e-5). Engine, R9700 Q2_0 32 GB, 5 interleaved pairs: prompt 4K +16.7%, 20K +19.0% (noise arm 1.001 / 0.999).
     Quality: teacher-forced KL against MMQ 0.0004 (6,022 positions, top-1 99.5%) and 0.0016 (1,760 long-document positions, top-1 98.2%), the same tasks as

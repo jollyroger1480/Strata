@@ -23,6 +23,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm120_series.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 
 #if defined(__HIPCC__)
 #include "moe_f16_common.cuh"
@@ -1417,7 +1418,8 @@ bool native_supported(int gu_type, int d_type) {
         return d.ok && d.s120 && d.sms >= 80 && !d.t75 && d_covered_on(d_type, d);
     }
 #endif
-    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && gu_type != T_Q2_0) return false;   // default: only these three
+    // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there
+    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && !(gu_type == T_Q2_0 && strata::core::kGfx12PromptDefaultsOn)) return false;
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;

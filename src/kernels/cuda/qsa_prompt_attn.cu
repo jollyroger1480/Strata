@@ -2,6 +2,7 @@
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -2176,7 +2177,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #endif
 }
 
-// gfx12 (RDNA4): on by default (148-amd; STRATA_HIP_WMMA=0 turns it off).  gfx11 (RDNA3 / RDNA3.5): only on request
+// gfx12 (RDNA4): on by default on Linux (148-amd; STRATA_HIP_WMMA=0 turns it off; Windows: opt-in with =1 until tested there).  gfx11 (RDNA3 / RDNA3.5): only on request
 // (STRATA_HIP_WMMA=1).  STRATA_HIP_WMMA=auto (151-amd) takes the matrix-core kernel on a gfx12 card for a batch of
 // STRATA_HIP_WMMA_MIN_Q (64) or more queries and keeps the FP32 kernel for smaller calls.  The output differs from the
 // old kernel's in its last bits (FP32-level accuracy, another summation order): teacher-forced KL against the old kernel
@@ -2206,10 +2207,14 @@ int hip_wmma_arch(int dev) {
         static bool told = false;
         if (!told && (mode >= 1 || arch[dev] == 2)) {
             told = true;
-            const bool on = arch[dev] == 2 || (arch[dev] == 1 && mode >= 1);
-            std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", mode >= 1 ? "STRATA_HIP_WMMA: " : "",
-                         !on ? "unavailable" : (mode == 2 ? "chosen per call" : "on"), prop.gcnArchName,
-                         mode >= 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
+            const bool on = (arch[dev] == 2 && (mode >= 1 || strata::core::kGfx12PromptDefaultsOn)) || (arch[dev] == 1 && mode >= 1);
+            if (mode >= 1 || on)
+                std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", mode >= 1 ? "STRATA_HIP_WMMA: " : "",
+                             !on ? "unavailable" : (mode == 2 ? "chosen per call" : "on"), prop.gcnArchName,
+                             mode >= 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
+            else
+                std::fprintf(stderr, "strata: the prompt attention on matrix cores is off by default on Windows (opt-in until tested on Windows); "
+                                     "STRATA_HIP_WMMA=1 turns it on (%s)\n", prop.gcnArchName);
         }
     }
     return arch[dev];
@@ -2231,7 +2236,7 @@ bool hip_wmma_usable(int64_t n_q, int64_t cap) {
     if (arch == 3) return false;
     if (mode == 1) return true;
     if (mode == 2) return hip_wmma_auto_pick(arch, n_q, cap);
-    return arch == 2;   // unset: the gfx12 default
+    return arch == 2 && strata::core::kGfx12PromptDefaultsOn;   // unset: the gfx12 default (Linux; Windows is opt-in until tested there)
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
@@ -2322,7 +2327,7 @@ bool qsa_prompt_attn_matrix_cores_requested() {
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
     const int mode = hip_wmma_mode_env(), arch = hip_wmma_arch(dev);
-    return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || arch == 2);
+    return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || (arch == 2 && strata::core::kGfx12PromptDefaultsOn));
 #else
     return false;
 #endif
