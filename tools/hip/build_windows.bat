@@ -97,6 +97,7 @@ if not "%STRATA_NO_VISION%"=="1" (
   if not exist "%SRC%\build-vision-hip-win\build.ninja" (
     cmake -G Ninja -S "%SRC%\tools\vision" -B "%SRC%\build-vision-hip-win" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="!LLAMA!" ^
       -DSTRATA_VISION_HIP=ON "-DSTRATA_VISION_HIP_ARCHS=%STRATA_HIP_ARCHS%" -DSTRATA_PORTABLE=ON ^
+      "-DCMAKE_CXX_FLAGS=--rocm-path=%ROCM_F% --rocm-device-lib-path=%BITCODE%" ^
       "-DCMAKE_C_COMPILER=%ROCM_F%/lib/llvm/bin/clang.exe" "-DCMAKE_CXX_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" ^
       "-DCMAKE_HIP_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" "-DCMAKE_HIP_COMPILER_ROCM_ROOT=%ROCM_F%" ^
       "-DCMAKE_PREFIX_PATH=%ROCM_F%" "-DCMAKE_HIP_FLAGS=--rocm-path=%ROCM_F% --rocm-device-lib-path=%BITCODE%" || exit /b 1
