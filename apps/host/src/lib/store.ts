@@ -1527,7 +1527,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     return;
   }
   const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
-  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',pictureCheck.message);return;}
+  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
   if(!body&&!resume&&!planStart)return;

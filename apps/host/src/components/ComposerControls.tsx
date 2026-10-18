@@ -94,7 +94,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                 if (!directory && (photoTypes.test(file.name) || /\.pdf$/i.test(file.name))) {
                     await openFile(file);
                     if (photoTypes.test(file.name))
-                        onError(`${pictures.ok ? '' : pictures.message} It is open in preview.`);
+                        onError(`${pictures.ok ? '' : tr(pictures.message)} ${tr('It is open in preview.')}`);
                     continue;
                 }
                 if (!textTypes.test(file.name) || bytes + file.size > 256 * 1024) {

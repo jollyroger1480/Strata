@@ -3151,5 +3151,16 @@
   "s3155": "Strata se ha detenido. Puedes cerrar esta pestaña. Para volver a usarlo, inicia Strata desde su icono.",
   "s3156": "No se pudo detener Strata desde aquí. Ejecuta la app con --quit en una terminal o inténtalo de nuevo.",
   "s3157": "Saliendo…",
-  "s3158": "Se está descomprimiendo el motor incluido con la app. La primera vez tarda aproximadamente un minuto."
+  "s3158": "Se está descomprimiendo el motor incluido con la app. La primera vez tarda aproximadamente un minuto.",
+  "s3159": "Activado por defecto",
+  "s3160": "Entiende fotos, capturas de pantalla y gráficos. Los archivos de imágenes se descargan solos. Desactívalo para ahorrar memoria.",
+  "s3161": "Leer imágenes con este modelo",
+  "s3162": "(su servidor dice que no puede)",
+  "s3163": "(activado por defecto)",
+  "s3164": "Las imágenes solo se pueden enviar a APIs de modelos con el estilo de chat de OpenAI. Elige otro modelo o quita la imagen.",
+  "s3165": "La lectura de imágenes está desactivada para este modelo. Abre Ajustes, Modelos, edita la conexión y activa «Leer imágenes con este modelo», o elige otro modelo.",
+  "s3166": "Primero carga un modelo que lea imágenes y luego añade la imagen.",
+  "s3167": "Este modelo se inició sin lectura de imágenes. Abre Modelos, activa «Leer imágenes» y cárgalo de nuevo.",
+  "s3168": "Este modelo no puede leer imágenes. Elige un modelo que lea imágenes o quita la imagen.",
+  "s3169": "Está abierta en la vista previa."
 }

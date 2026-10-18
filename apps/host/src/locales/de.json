@@ -3151,5 +3151,16 @@
   "s3155": "Strata wurde beendet. Du kannst diesen Tab schließen. Um es wieder zu nutzen, starte Strata über sein Symbol.",
   "s3156": "Strata konnte von hier aus nicht beendet werden. Starte die App im Terminal mit --quit oder versuche es erneut.",
   "s3157": "Wird beendet …",
-  "s3158": "Die mit der App gelieferte Engine wird entpackt. Beim ersten Start dauert das etwa eine Minute."
+  "s3158": "Die mit der App gelieferte Engine wird entpackt. Beim ersten Start dauert das etwa eine Minute.",
+  "s3159": "Standardmäßig an",
+  "s3160": "Versteht Fotos, Screenshots und Diagramme. Die Bilddateien werden automatisch geladen. Schalte es aus, um Speicher zu sparen.",
+  "s3161": "Bilder mit diesem Modell lesen",
+  "s3162": "(sein Server sagt, dass es das nicht kann)",
+  "s3163": "(standardmäßig an)",
+  "s3164": "Bilder lassen sich nur an Modell-APIs im OpenAI-Chat-Stil senden. Wähle ein anderes Modell oder entferne das Bild.",
+  "s3165": "Das Lesen von Bildern ist für dieses Modell ausgeschaltet. Öffne Einstellungen, Modelle, bearbeite die Verbindung und schalte „Bilder mit diesem Modell lesen“ ein, oder wähle ein anderes Modell.",
+  "s3166": "Lade zuerst ein Modell, das Bilder lesen kann, und füge dann das Bild hinzu.",
+  "s3167": "Dieses Modell wurde ohne Bilderkennung gestartet. Öffne Modelle, schalte „Bilder lesen“ ein und lade es erneut.",
+  "s3168": "Dieses Modell kann keine Bilder lesen. Wähle ein Modell, das Bilder lesen kann, oder entferne das Bild.",
+  "s3169": "Es ist in der Vorschau geöffnet."
 }

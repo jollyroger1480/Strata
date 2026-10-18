@@ -15,7 +15,7 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
-  { kind: 'picture-reading', match: /vision files|picture reading/i, message: 'Picture reading isn’t available for this model.', next: 'Turn off picture reading and try again.' },
+  { kind: 'picture-reading', match: /vision files|enabling picture reading/i, message: 'Picture reading isn’t available for this model.', next: 'Turn off picture reading and try again.' },
   { kind: 'access', match: /PermissionError|access is denied|can.t open its settings file/i, message: 'Strata can’t open its settings file.', next: 'Run Strata once as yourself (not as administrator) or press Repair.' },
   // A start that died: the exit code or the engine's own last line says why. Say "low on memory" only when that evidence is there
   // (2026-10-17: a missing DLL, 0xC0000135, was reported as "ran low on memory" and told the tester to free RAM).

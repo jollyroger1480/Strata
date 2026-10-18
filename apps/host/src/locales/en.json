@@ -3151,5 +3151,16 @@
   "s3155": "Strata has stopped. You can close this tab. To use it again, start Strata from its icon.",
   "s3156": "Strata could not be stopped from here. Run the app with --quit in a terminal, or try again.",
   "s3157": "Quitting…",
-  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time."
+  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time.",
+  "s3159": "On by default",
+  "s3160": "Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.",
+  "s3161": "Read pictures with this model",
+  "s3162": "(its server says it cannot)",
+  "s3163": "(on by default)",
+  "s3164": "Pictures can only be sent to model APIs that use the OpenAI chat style. Choose another model, or remove the picture.",
+  "s3165": "Picture reading is turned off for this model. Open Settings, Models, edit the connection and turn on Read pictures with this model, or choose another model.",
+  "s3166": "Load a model that reads pictures first, then add the picture.",
+  "s3167": "This model was started without picture reading. Open Models, turn on Read pictures and load it again.",
+  "s3168": "This model cannot read pictures. Choose a model that reads pictures, or remove the picture.",
+  "s3169": "It is open in preview."
 }
