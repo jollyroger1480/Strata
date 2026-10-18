@@ -6,7 +6,7 @@ import { ensureMock, open, api } from './ui-drive.mjs';
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const OUT = process.env.PICS_OUT ?? join(tmpdir(), 'pics-ui').replaceAll('\', '/');
+const OUT = process.env.PICS_OUT ?? join(tmpdir(), 'pics-ui').split(String.fromCharCode(92)).join('/');
 mkdirSync(OUT, { recursive: true });
 const crc = (() => { const t = new Int32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c; }); return b => { let c = -1; for (const x of b) c = t[(c ^ x) & 255] ^ (c >>> 8); return (c ^ -1) >>> 0; }; })();
 function png(w, h, rgb) {
