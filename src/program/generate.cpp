@@ -10759,6 +10759,7 @@ int main(int argc, char** argv) {
         int64_t ba_window = 0, bt_adapt_rounds = 0, bt_adapt_swaps = 0;
         double bt_adapt_wait = 0;
         bool in_prompt_read = false;   // batch_step runs between a prompt's chunks: the adaptive tier stands still then
+        double serve_adapt_drain_ms = 0.0;   // 149: the request's wait for the adaptive round in flight
         int64_t bt_a_rounds0 = 0, bt_a_swapped0 = 0;   // the asynchronous tier's counters when the timed windows began
         Clock::time_point bt_start = Clock::now();
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
@@ -13278,7 +13279,11 @@ int main(int argc, char** argv) {
                 return true;
             };
             apply_pending(true);
-            if (!adapt_tick(true)) {   // --adapt-async: the round in flight lands before the prompt lends any slot
+            const auto drain_t0 = Clock::now();
+            const bool drained_ok = adapt_tick(true);
+            // 149: how long the request waited for the adaptive round still in flight (in the prompt's time)
+            serve_adapt_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - drain_t0).count();
+            if (!drained_ok) {   // --adapt-async: the round in flight lands before the prompt lends any slot
                 std::printf("ERR an adaptive refill failed\n");
                 return 1;
             }
@@ -14845,6 +14850,9 @@ int main(int argc, char** argv) {
                          prompt_ms > 0 ? 1000.0 * read_n / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
+            if (serve_adapt_drain_ms >= 1.0)
+                std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
+                             serve_adapt_drain_ms);
             // the VRAM share of the experts the pool looked up while decoding; experts it sent over PCIe for the GPU
             // to read (--pcie-frac) are in neither count - #588: so that share is said beside it (raising --pcie-frac
             // raises the hit rate while the PCIe reads may make the decode slower)
@@ -14925,6 +14933,12 @@ int main(int argc, char** argv) {
                                      (unsigned long long) (ic.pf_dropped - ic_prev.pf_dropped),
                                      (double) (ic.crit_us - ic_prev.crit_us) / 1e3,
                                      (unsigned long long) (ic.crit_n - ic_prev.crit_n));
+                    if (src.io_prefetch() && src.gate_on())   // 149 STRATA_IO_PF_GATE: the decode's held share, the gate
+                        std::fprintf(stderr, "; decode gate: cache room %.2f of the experts, read-ahead used %.0f%%, page cache "
+                                             "held %.0f%% of the decode's reads (EWMA), %s, closed in %lld windows so far, %lld flips",
+                                     src.gate_ratio(), 100.0 * src.gate_useful(), 100.0 * std::max(0.0, src.gate_held()),
+                                     src.gate_open() ? "open" : "closed", (long long) src.gate_closed_windows(),
+                                     (long long) src.gate_flips());
                     if (src.io_prefetch())   // 149-prefetch: bytes read ahead, of them used before their demand; the scheduler's drops
                         std::fprintf(stderr, "; read ahead %.1f MB, %.1f MB of it used; %llu late, %llu not admitted (confidence), "
                                              "%llu (budget %.0f MB/window)",
