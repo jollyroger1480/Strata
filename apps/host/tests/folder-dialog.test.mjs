@@ -119,3 +119,39 @@ test('the host accepts a typed folder path for the picker and for adding a skill
     await rm(home, { recursive: true, force: true }).catch(() => {});
   }
 });
+
+// QA report F06: a Windows folder window that never opens must not leave the button disabled forever.
+import { EventEmitter } from 'node:events';
+import { watchedWindowsDialog } from '../server/folder-dialog.mjs';
+function fakeShell() {
+  const child = new EventEmitter(); child.stdout = new EventEmitter(); child.killed = false; child.kill = () => { child.killed = true; };
+  return { child, spawnProcess: () => child };
+}
+test('Windows: no READY from the dialog script means the host gives up and the app asks for the path', async () => {
+  const f = fakeShell();
+  const result = await watchedWindowsDialog('powershell.exe', [], { readyMs: 30, spawnProcess: f.spawnProcess });
+  assert.deepEqual(result, { noDialog: true }); assert.equal(f.child.killed, true, 'the stuck PowerShell is ended');
+  const answer = await chooseFolder('Pick', { platform: 'win32', windowsDialog: async () => ({ noDialog: true }) });
+  assert.equal(answer.unavailable, true); assert.match(answer.reason, /Type the folder path/);
+});
+test('Windows: once READY has come the person may take their time, and the answer is read without the READY line', async () => {
+  const f = fakeShell();
+  const pending = watchedWindowsDialog('powershell.exe', [], { readyMs: 30, spawnProcess: f.spawnProcess });
+  f.child.stdout.emit('data', 'READY\r\n');
+  await new Promise(r => setTimeout(r, 80));   // longer than readyMs: still waiting, not given up
+  assert.equal(f.child.killed, false);
+  f.child.stdout.emit('data', 'C:\Users\me\Skills'); f.child.emit('close', 0);
+  const done = await pending;
+  const answer = await chooseFolder('Pick', { platform: 'win32', windowsDialog: async () => done });
+  assert.deepEqual(answer, { path: 'C:\Users\me\Skills' });
+  const cancelled = await chooseFolder('Pick', { platform: 'win32', windowsDialog: async () => ({ stdout: 'READY\r\n' }) });
+  assert.deepEqual(cancelled, { cancelled: true });
+});
+test('Windows: a PowerShell that is missing or fails is reported as before', async () => {
+  const f = fakeShell();
+  const missing = watchedWindowsDialog('powershell.exe', [], { spawnProcess: f.spawnProcess });
+  f.child.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }));
+  await assert.rejects(missing, e => e.code === 'ENOENT');
+  const g = fakeShell(); const failed = watchedWindowsDialog('powershell.exe', [], { spawnProcess: g.spawnProcess });
+  g.child.emit('close', 1); await assert.rejects(failed, e => e.code === 1);
+});

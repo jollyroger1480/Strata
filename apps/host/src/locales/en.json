@@ -3238,5 +3238,13 @@
   "s3225": "What it did",
   "s3226": "Files",
   "s3227": "Please help me take it from here.",
-  "s3228": "…and {0} more steps"
+  "s3228": "…and {0} more steps",
+  "s3229": "Enter a number.",
+  "s3230": "Enter a whole number from {0} to {1}.",
+  "s3231": "Adding a skill opens a folder window on the computer that runs Strata. Open Strata on that computer to add one.",
+  "s3232": "Screenshot saved",
+  "s3233": "It is in your Downloads folder.",
+  "s3234": "The screenshot was not saved",
+  "s3235": "Try again, or take a screenshot of this window instead.",
+  "s3236": "The folder window did not open. Type the folder path instead."
 }

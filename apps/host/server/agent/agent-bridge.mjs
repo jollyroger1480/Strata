@@ -16,6 +16,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
@@ -74,6 +76,9 @@ export function imageParts(images) {
 
 /** A timer that never keeps the process alive by itself. */
 const after = (ms, fn) => { const t = setTimeout(fn, ms); t.unref?.(); return t; };
+/** The app's own host folder: never a place an answer's files can be (this file lives in <host>/server/agent). */
+const HOST_DIR = fileURLToPath(new URL('../..', import.meta.url));
+
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 /**
@@ -91,6 +96,18 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
+
+  /**
+   * Where the turn's file tracker must never look (deliverables.mjs): the app, the engine and its components, Strata's own data, AppData
+   * and temp. `forbid` ones also switch tracking off when the chat's folder is one of them or inside one.
+   */
+  function trackerFolders() {
+    const user = env.USERPROFILE ?? env.HOME ?? homedir();
+    const forbid = [HOST_DIR, componentsDir, bundledDir].filter(Boolean);
+    const exclude = [dataDir, tmpdir(), env.LOCALAPPDATA, env.APPDATA, env.ProgramData, env.ProgramFiles, env['ProgramFiles(x86)'], env.TEMP, env.TMP,
+      join(user, 'AppData'), join(user, '.cache'), join(user, '.config'), join(user, '.local'), join(user, 'Library')].filter(Boolean);
+    return { forbid, exclude };
+  }
 
   /** chatId -> { sessionId, cwd, createdAt } */
   let sessionMap = {};
@@ -299,7 +316,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     let guard = null;
     const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
-    const tracker = new DeliverableTracker(workspacePath);
+    const tracker = new DeliverableTracker(workspacePath, trackerFolders());
+    let toolsRan = false;   // a turn that ran no tool wrote nothing, so there is nothing to look for at its end
     try { tracker.snapshot(); } catch { /* a folder that cannot be read has no deliverables */ }
     const groups = new ActivityGroups({ emit: raw });
     const skills = new SkillsUsed({ emit: raw, info: skillInfoFrom(skillsDir()) });
@@ -308,6 +326,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
       if (frame.type === 'delta' && frame.text) groups.text();
       if (frame.type === 'agent-tool' && frame.tool) {
+        if (['done', 'error'].includes(frame.tool.state) && !['read', 'read_image', 'glob', 'grep', 'web_fetch', 'web_search'].includes(frame.tool.name)) toolsRan = true;
         let made = null;
         if (frame.tool.state === 'done' && (frame.tool.name === 'write' || frame.tool.name === 'edit')) { try { made = tracker.check(frame.tool.args?.file_path ?? frame.tool.args?.path); } catch { made = null; } }
         raw(frame);
@@ -395,7 +414,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.stopping && !failure) projector.ended = turn.guard ? { kind: 'completed' } : { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
       const extra = [];
-      try { for (const d of tracker.sweep()) { emit(d); groups.addFile(d); } } catch { /* never blocks the end of a turn */ }
+      try { if (toolsRan) for (const d of tracker.sweep()) { emit(d); groups.addFile(d); } } catch { /* never blocks the end of a turn */ }
       groups.end();
       if (researchTopic && !failure && !turn.stopping) { const sources = parseSources(written.all); if (sources.length) extra.push({ type: 'research', topic: researchTopic, sources }); }
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
