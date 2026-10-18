@@ -75,10 +75,12 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
     bytes = 0;
     if (!stat.valid) return false;
 
-    // memory.stat's inactive_file can race memory.current, so bound it to charged usage first.
-    uint64_t reclaimable = std::min(stat.inactive_file, stat.current);
+    // memory.stat's counters can race memory.current, so bound them to charged usage first.  The whole clean page
+    // cache is reclaimable (149: MemAvailable counts active file pages too); the kernel keeps a low-watermark share.
+    uint64_t reclaimable = std::min(std::max(stat.file, stat.inactive_file), stat.current);
     reclaimable = stat.file_dirty >= reclaimable ? 0 : reclaimable - stat.file_dirty;
     reclaimable = stat.file_writeback >= reclaimable ? 0 : reclaimable - stat.file_writeback;
+    reclaimable -= std::min(reclaimable / 2, limit / 64);
 
     // Reclaiming clean file pages reduces usage; saturating subtraction also handles a transient over-limit read.
     const uint64_t usage_after_reclaim = stat.current - reclaimable;
@@ -291,7 +293,7 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
     std::ifstream input(path / "memory.stat");
     if (!input) return false;
 
-    bool inactive_file = false, file_dirty = false, file_writeback = false;
+    bool inactive_file = false, file_dirty = false, file_writeback = false, file = false;
     std::string line;
     while (std::getline(input, line)) {
         std::istringstream fields(line);
@@ -313,6 +315,10 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
             if (file_writeback) return false;
             file_writeback = true;
             stat.file_writeback = value;
+        } else if (key == "file") {   // 149: optional (every v2 kernel has it); 0 = inactive_file alone
+            if (file) return false;
+            file = true;
+            stat.file = value;
         }
     }
     if (!input.eof() || !inactive_file || !file_dirty || !file_writeback) return false;
@@ -771,7 +777,8 @@ void FileExpertSource::set_io_prefetch(bool on, int threads) {
         if (const char* m = std::getenv("STRATA_IO_PF_BUDGET_MB")) io_budget_fixed_ = (uint64_t) std::max(0.0, std::atof(m) * 1048576.0);
         if (const char* m = std::getenv("STRATA_IO_PF_BUDGET_FRAC")) io_budget_frac_ = std::clamp(std::atof(m), 0.01, 4.0);
         if (const char* m = std::getenv("STRATA_IO_PF_TARGET")) io_target_ = std::clamp(std::atof(m), 0.0, 1.0);
-        if (const char* m = std::getenv("STRATA_IO_PF_GATE")) gate_on_ = std::atoi(m) != 0;
+        gate_on_ = true;   // 0.2.0: the decode gate comes with io prefetch; STRATA_IO_PF_GATE=0 turns it off
+        if (const char* m = std::getenv("STRATA_IO_PF_GATE"); m != nullptr && m[0] != '\0') gate_on_ = std::atoi(m) != 0;
         if (const char* m = std::getenv("STRATA_IO_PF_GATE_LO")) gate_lo_ = std::clamp(std::atof(m), 0.0, 1.0);
         if (const char* m = std::getenv("STRATA_IO_PF_GATE_HI")) gate_hi_ = std::clamp(std::atof(m), gate_lo_, 1.0);
         if (const char* m = std::getenv("STRATA_IO_PF_GATE_USEFUL")) gate_min_useful_ = std::clamp(std::atof(m), 0.0, 1.0);
@@ -1815,7 +1822,14 @@ int64_t FileExpertSource::prefetch_begin(int64_t layer, const int64_t* experts, 
     prefetch_end();
     async_todo_.clear();
     async_fill_us_ = 0;
-    static const int mode = [] { const char* v = std::getenv("STRATA_COLD_OVERLAP"); return v != nullptr ? std::atoi(v) : 0; }();
+    static const int mode = [] {   // as the dispatch reads it (0.2.0: 4 by default on Linux)
+        const char* v = std::getenv("STRATA_COLD_OVERLAP");
+#if defined(__linux__)
+        return v == nullptr || v[0] == '\0' ? 4 : std::atoi(v);
+#else
+        return v == nullptr || v[0] == '\0' ? 0 : std::atoi(v);
+#endif
+    }();
     claim_todo(layer, experts, n, async_todo_, pending, mode >= 3);
     if (mode == 4) {   // zero-copy only: the blobs that must be read are read here, as `prefetch` reads them
         const auto t0 = std::chrono::steady_clock::now();
@@ -4370,9 +4384,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const auto c0 = std::chrono::steady_clock::now();
     const FileExpertSource::DecodeScope decode_scope;   // 149 STRATA_IO_PF_GATE: this thread reads for the decode
     // 149-cold STRATA_COLD_OVERLAP: 0 off (default), 1 overlap, 2 measure only, 3 overlap + zero-copy, 4 zero-copy only
+    // 0.2.0: 4 by default on Linux (zero-copy needs the page cache's residency query); elsewhere 0
     static const int cold_env = [] {
         const char* v = std::getenv("STRATA_COLD_OVERLAP");
-        return v == nullptr ? 0 : std::clamp(std::atoi(v), 0, 4);
+#if defined(__linux__)
+        return v == nullptr || v[0] == '\0' ? 4 : std::clamp(std::atoi(v), 0, 4);
+#else
+        return v == nullptr || v[0] == '\0' ? 0 : std::clamp(std::atoi(v), 0, 4);
+#endif
     }();
     d.cold_mode = cold_env;
     pt("begin");

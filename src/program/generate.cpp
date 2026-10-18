@@ -5445,19 +5445,35 @@ int main(int argc, char** argv) {
                                      "(%s)\n", why.c_str());
         }
 #endif
-        // Linux I/O path (opt in): whole-blob preads instead of page faults, and the predicted experts of the next
-        // layers read ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch)
-        if (const char* v = std::getenv("STRATA_IO_PREFETCH"); v != nullptr && std::atoi(v) != 0) {
+        // Linux I/O path: whole-blob preads instead of page faults, and the predicted experts of the next layers read
+        // ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch).  0.2.0: on by
+        // default on Linux, with the decode gate (STRATA_IO_PF_GATE) and zero-copy page-cached experts
+        // (STRATA_COLD_OVERLAP=4); STRATA_IO_PREFETCH=0 / STRATA_IO_PF_GATE=0 / STRATA_COLD_OVERLAP=0 turn them off.
+        const char* io_pf_env = std::getenv("STRATA_IO_PREFETCH");
+#if defined(__linux__)
+        const bool io_pf_default = io_pf_env == nullptr || io_pf_env[0] == '\0';
+#else
+        const bool io_pf_default = false;
+#endif
+        if (io_pf_default || (io_pf_env != nullptr && std::atoi(io_pf_env) != 0)) {
             const char* th = std::getenv("STRATA_IO_PF_THREADS");
             src.set_io_prefetch(true, th != nullptr ? std::atoi(th) : 0);
-            if (src.io_prefetch())
+            if (src.io_prefetch() && io_pf_default) {
+                const char* cv = std::getenv("STRATA_COLD_OVERLAP");
+                std::fprintf(stderr, "strata generate: file tier (Linux defaults): page-cached experts computed from the "
+                                     "mapping (STRATA_COLD_OVERLAP=%s), io prefetch with whole-blob preads on %s I/O threads, "
+                                     "the decode's read-ahead %s; off: STRATA_COLD_OVERLAP=0, STRATA_IO_PREFETCH=0, "
+                                     "STRATA_IO_PF_GATE=0\n", cv != nullptr && cv[0] != '\0' ? cv : "4", th != nullptr ? th : "8",
+                             src.gate_on() ? "only while the page cache has room for it and it pays (STRATA_IO_PF_GATE=1)"
+                                           : "always (STRATA_IO_PF_GATE=0)");
+            } else if (src.io_prefetch())
                 std::fprintf(stderr, "strata generate: file tier io prefetch ON (STRATA_IO_PREFETCH=1): whole-blob preads, "
-                                     "the layer's uncached experts and the predicted ones read by %s I/O threads (STRATA_IO_PF_THREADS, default 8)\n",
-                             th != nullptr ? th : "8");
+                                     "the layer's uncached experts and the predicted ones read by %s I/O threads (STRATA_IO_PF_THREADS, default 8)%s\n",
+                             th != nullptr ? th : "8", src.gate_on() ? "; the decode's read-ahead gated (STRATA_IO_PF_GATE=0: always)" : "");
             if (src.io_prefetch() && src.io_sched())
                 std::fprintf(stderr, "strata generate: io prefetch scheduling ON (STRATA_IO_PF_SCHED=1): a deadline per read, "
                                      "confidence admission (STRATA_IO_PF_MINCONF), a per-window byte budget (STRATA_IO_PF_BUDGET_MB / _FRAC)\n");
-            if (!src.io_prefetch())
+            if (!src.io_prefetch() && !io_pf_default)
                 std::fprintf(stderr, "strata generate: STRATA_IO_PREFETCH=1 is not available here (Linux mapped file tier "
                                      "only, not with unbuffered reads); the file tier reads as before\n");
             if (src.io_prefetch()) {   // recommend, never force: the engine runs as asked
@@ -14954,7 +14970,8 @@ int main(int argc, char** argv) {
                     fb_prev = fb;
                 }
             }
-            if (drive.d.cold_mode != 0) {   // 149-cold STRATA_COLD_OVERLAP: this request's layers that had a blob to read
+            static const bool cold_log = std::getenv("STRATA_COLD_OVERLAP") != nullptr || std::getenv("STRATA_IO_STATS") != nullptr;
+            if (drive.d.cold_mode != 0 && cold_log) {   // 149-cold STRATA_COLD_OVERLAP: this request's layers that had a blob to read
                 static strata::core::ExpertDispatch cp;
                 const strata::core::ExpertDispatch& c = drive.d;
                 const double nl = (double) std::max<int64_t>(1, c.cold_layers - cp.cold_layers);

@@ -65,9 +65,14 @@ struct CgroupMemoryStat {
     uint64_t file_dirty = 0;
     uint64_t file_writeback = 0;
     bool valid = false;
+    uint64_t file = 0;   ///< 149: memory.stat "file" (active + inactive page cache); 0 when not reported
 };
 
-/// Calculate additional bytes under a finite cgroup limit after reclaiming only clean inactive file cache.
+/// Calculate additional bytes under a finite cgroup limit after reclaiming the group's clean page cache, as
+/// MemAvailable counts it on a bare host: every clean file page (active and inactive: memory.stat "file", else
+/// inactive_file), less a low-watermark share the kernel keeps (min(half the clean cache, limit / 64)).  A process
+/// whose own reads (a GPU cache fill, a read-ahead) left gigabytes of active cache in its group was judged short of
+/// RAM before (149: 1.2 GiB "available" of a 32 GiB group, the file tier then switched to unbuffered reads).
 /// Returns false when the required memory.stat counters were unavailable.
 bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes);
 

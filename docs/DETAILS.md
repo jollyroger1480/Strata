@@ -261,7 +261,28 @@ from the GGUF gave identical tokens and logits. An expert read from the GGUF is 
 engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) with one batched page request
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
-**Linux file-tier I/O path (opt in, `STRATA_IO_PREFETCH=1`; 0.1.40.2):** the mapped file tier reads experts through
+**Linux file tier, 0.2.0 defaults (zero-copy page-cached experts, io prefetch, the decode gate):** when experts are read
+from the files (a GGUF read in place, `--mmap-experts`, or an `experts.bin` file tier), Linux now runs three things by default.
+(1) **Zero-copy** (`STRATA_COLD_OVERLAP=4`): an expert of a GGUF read in place whose three tensors' pages are all in the page
+cache (mincore) is computed straight from the mapping; before, every such expert was first assembled into a staging buffer
+(a copy of ~1.5 MB per Q2_0 expert, on the decode's critical path). Same bytes, same rows, same output (identity gates
+IDENTICAL). (2) **io prefetch** (`STRATA_IO_PREFETCH=1`, the path described below): whole-blob `pread`s and the router-
+predicted experts of the next layers read ahead. (3) **the decode gate** (`STRATA_IO_PF_GATE=1`): every 16 decode windows the
+decode's read-ahead is judged - it runs only while the page cache has room for the experts (the memory available, the
+tightest cgroup limit included, over the experts' bytes: off below 0.55, on above 0.65, `STRATA_IO_PF_GATE_LO` / `_HI`) and
+while it pays (at least 128 MB read ahead in 16 windows and 10% of it used, `STRATA_IO_PF_GATE_USEFUL`; a probe every 256
+windows when it closed for that). Closed, the decode reads as it did without io prefetch (the look-ahead predicts one layer
+and warms with an madvise hint); the prompt path keeps its preads either way. Measured on an RTX PRO 5000 emulating a 12 GB
+card (`--expert-cache 4448`, Q2_0 GGUF in place, page cache dropped before each engine, RAM limited by a cgroup), 5 pairs,
+story / code / doc8k decode, 4K / 20K prompts, against the 0.1.4x defaults: 32 GB of RAM 1.8 / 2.8 / 3.1x decode, 1.5 / 2.0x
+prompts; 16 GB 1.2 / 1.4 / 1.4x decode, 1.6 / 1.8x prompts (the gate stays closed there); an 18 GiB RAM tier B32_RESULT. On a real RTX 3060 12 GB (32 GB cgroup, 3 pairs) zero-copy alone gave 1.14 / 1.44 / 1.47x decode, 1.06 / 1.02x
+prompts. With it the container RAM check counts a cgroup's clean page cache (active and inactive) as available, as
+MemAvailable does on a bare host (before, a 32 GiB container whose own reads left 26 GiB of cache was judged short of RAM
+and its file tier switched to unbuffered reads). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
+`STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged. Measured detail:
+phaseA-tests/notes-149-l620.md.
+
+**Linux file-tier I/O path (`STRATA_IO_PREFETCH=1`; 0.1.40.2, on by default on Linux since 0.2.0 - see above):** the mapped file tier reads experts through
 page faults. With this on, the layer's uncached experts and the router-predicted ones of the next layer (`STRATA_LOOKAHEAD_K`,
 `STRATA_IO_PREFETCH_DEPTH`, default 2 when on) are read by I/O threads (`STRATA_IO_PF_THREADS`, default 8) with whole-blob
 `pread`s into the page cache, and the CPU kernels read the mapping as before. The bytes are the same, so the output is the
