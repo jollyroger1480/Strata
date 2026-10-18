@@ -20,9 +20,21 @@ namespace strata::core {
 /// "gfx1151:sramecc-:xnack-"): empty for every other architecture.
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
-/// Sets `arch_default_env(gcn_arch)` in this process's environment where the user has not set the variable, prints one
-/// line to stderr when it set anything, and returns the names it set.  Call once, before any engine code reads its
-/// switches (they are read lazily, at first use).
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch);
+/// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose
+/// matrix-core prompt set is on by default (153-igpu).  Pure architecture-name test; the caller adds the UMA test.
+bool igpu_prompt_defaults_arch(const char* gcn_arch);
+
+/// The matrix-core prompt set an integrated GPU takes by default: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
+/// STRATA_SELECT_WMMA, STRATA_HC_UPMIX, all "1".  Empty unless `integrated` (hipDeviceProp_t::integrated: the device
+/// shares the host's memory) AND the architecture is one of `igpu_prompt_defaults_arch`: a discrete card of the same
+/// architecture family (RX 7900 XTX gfx1100, R9700 gfx1201, ...) and every CUDA / SYCL build get nothing.  These change
+/// bits (KL-gated, notes-153-igpu.md); every switch keeps =0 as its off switch and STRATA_IGPU_DEFAULTS=0 turns the set off.
+std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated);
+
+/// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
+/// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
+/// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any
+/// engine code reads its switches (they are read lazily, at first use).
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false);
 
 }  // namespace strata::core

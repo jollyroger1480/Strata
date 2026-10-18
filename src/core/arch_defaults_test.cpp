@@ -79,6 +79,66 @@ int main() {
 #else
     CHECK(kGfx12PromptDefaultsOn);
 #endif
+    // 153-igpu: the matrix-core prompt set of the integrated Radeons, chosen by the UMA flag AND the architecture.
+    // Mock device properties: {gcnArchName, integrated}.
+    struct Mock { const char* name; const char* gcn; bool integrated; bool expect_on; };
+    const Mock mocks[] = {
+        {"Radeon 780M (Phoenix, UMA)",          "gfx1103",                 true,  true},
+        {"Radeon 780M with feature suffix",     "gfx1103:sramecc-:xnack-", true,  true},
+        {"Radeon 890M (Strix Point, UMA)",      "gfx1150",                 true,  true},
+        {"Radeon 8060S (Strix Halo, UMA)",      "gfx1151",                 true,  true},
+        {"RX 7900 XTX (dGPU)",                  "gfx1100",                 false, false},
+        {"RX 7800 XT (dGPU)",                   "gfx1101",                 false, false},
+        {"R9700 (dGPU)",                        "gfx1201",                 false, false},
+        {"RX 9060 (dGPU)",                      "gfx1200",                 false, false},
+        {"RX 6800 (dGPU)",                      "gfx1030",                 false, false},
+        {"a gfx1103 reported as a discrete card", "gfx1103",               false, false},
+        {"a gfx1151 reported as a discrete card", "gfx1151",               false, false},
+        {"Radeon 860M (Krackan, no kernels)",   "gfx1152",                 true,  false},
+        {"older iGPU (gfx1036, no kernels)",    "gfx1036",                 true,  false},
+        {"an integrated gfx1201 would not get it", "gfx1201",              true,  false},
+        {"CUDA (no gcn name)",                  "",                        true,  false},
+    };
+    unset("STRATA_IGPU_DEFAULTS");
+    for (const Mock& m : mocks) {
+        const auto t = igpu_default_env(m.gcn, m.integrated);
+        CHECK(t.empty() == !m.expect_on);
+        if (m.expect_on) {
+            CHECK(t.size() == 5);
+            const char* want[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
+            for (const char* w : want) {
+                bool found = false;
+                for (const auto& kv : t) found = found || (kv.first == w && kv.second == "1");
+                CHECK(found);
+            }
+            for (const auto& kv : t) CHECK(kv.first != "STRATA_PF_FUSED" && kv.first != "STRATA_HC_Q8" && kv.first != "STRATA_PF_HCDOWN");
+        }
+        if (!m.expect_on) std::printf("  (not on) %s\n", m.name);
+    }
+    CHECK(igpu_default_env(nullptr, true).empty());
+    CHECK(igpu_prompt_defaults_arch("gfx1103") && igpu_prompt_defaults_arch("gfx1150") && igpu_prompt_defaults_arch("gfx1151"));
+    CHECK(!igpu_prompt_defaults_arch("gfx11030") && !igpu_prompt_defaults_arch("gfx1100") && !igpu_prompt_defaults_arch("gfx1201"));
+    // the exact tables are untouched: gfx1103 / gfx1150 stay out of arch_default_env, gfx1151 keeps no bit-changing switch
+    CHECK(arch_default_env("gfx1103").empty());
+    // the opt-out of the whole set
+    put("STRATA_IGPU_DEFAULTS", "0");
+    CHECK(igpu_default_env("gfx1103", true).empty());
+    unset("STRATA_IGPU_DEFAULTS");
+    // apply: a discrete card sets nothing, an iGPU sets the five, a switch the user set (even to 0) is kept
+    const char* five[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
+    for (const char* k : five) unset(k);
+    CHECK(apply_arch_defaults("gfx1100", false).empty());
+    CHECK(apply_arch_defaults("gfx1201", false).empty());
+    CHECK(apply_arch_defaults("gfx1103", false).empty());   // integrated == false: a mixed box (iGPU + dGPU) keeps the old defaults
+    for (const char* k : five) CHECK(std::getenv(k) == nullptr);
+    put("STRATA_HC_UPMIX", "0");
+    const auto on = apply_arch_defaults("gfx1103", true);
+    CHECK(on.size() == 4);
+    for (const char* k : {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA"})
+        CHECK(std::getenv(k) != nullptr && std::string(std::getenv(k)) == "1");
+    CHECK(std::getenv("STRATA_HC_UPMIX") != nullptr && std::string(std::getenv("STRATA_HC_UPMIX")) == "0");
+    for (const char* k : five) unset(k);
+    // both platforms: no Windows guard on the iGPU set (the owner wants it there too; untested on Windows is only said in the log)
     std::printf(fails ? "arch_defaults_test: %d FAILED\n" : "arch_defaults_test: OK\n", fails);
     return fails ? 1 : 0;
 }
