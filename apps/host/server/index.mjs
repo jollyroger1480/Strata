@@ -48,7 +48,7 @@ import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
-import { createVisionProbe, effectiveVision } from './vision-probe.mjs';
+import { createVisionProbe, effectiveVision, readsPicturesByDefault } from './vision-probe.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
@@ -136,8 +136,9 @@ function withPictureAnswers(list) {
   const secrets = new Map(modelProviders.withSecrets().map(c => [c.id, c]));
   const connections = (list.connections ?? []).map(c => ({ ...c, models: c.models.map(m => {
     const asked = visionProbe.known(c, m.id);
-    if (m.vision == null && asked === undefined && c.protocol === 'openai-chat' && secrets.has(c.id)) void visionProbe.check(secrets.get(c.id), m.id).catch(() => {});
-    return { ...m, reads: effectiveVision(m, asked) ?? null };
+    if ((m.vision == null || m.reasoning == null) && asked === undefined && c.protocol === 'openai-chat' && secrets.has(c.id)) void visionProbe.check(secrets.get(c.id), m.id).catch(() => {});
+    // Pictures are on unless the person or the server says no; a model that thinks says so too (OpenRouter's supported_parameters).
+    return { ...m, reads: readsPicturesByDefault(m, asked), thinks: m.reasoning ?? visionProbe.knownThinks(c, m.id) ?? null };
   }) }));
   return { ...list, connections };
 }
@@ -145,12 +146,10 @@ function withPictureAnswers(list) {
 async function pictureRefusal(connection, model) {
   if (!connection || !model) return 'This API model is no longer available. Choose another model in the chat picker.';
   if (connection.protocol !== 'openai-chat') return `Pictures can only be sent to model APIs that use the OpenAI chat style. "${connection.name}" uses a different style, so the picture stays in the preview. Add the model through an OpenAI-compatible address (a /v1 address) to send pictures.`;
-  const answer = effectiveVision(model, await visionProbe.check(connection, model.id));
-  if (answer === true) return null;
-  const fix = `open Settings → Models, edit "${connection.name}" and tick "This model reads pictures"`;
-  return answer === false
-    ? `"${model.name}" does not read pictures, as far as its server says (a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`
-    : `Strata cannot tell that "${model.name}" reads pictures. If it does, ${fix}. Otherwise choose a model that reads pictures.`;
+  // Pictures are on by default: only an explicit no (the person's switch, or the server's own list) stops one.
+  if (readsPicturesByDefault(model, await visionProbe.check(connection, model.id))) return null;
+  const fix = `open Settings → Models, edit "${connection.name}" and turn on "Read pictures with this model"`;
+  return `"${model.name}" is set not to read pictures (or its server says it cannot: a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`;
 }
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
@@ -173,7 +172,7 @@ const agent = createAgentBridge({
     // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
     mcpServers: i.mcpServers,
   })),
-  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: effectiveVision(m, visionProbe.known(c, m.id)) })) })),
+  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: readsPicturesByDefault(m, visionProbe.known(c, m.id)), reasoning: m.reasoning ?? visionProbe.knownThinks(c, m.id) ?? null })) })),
   log: line => console.log(line),
 });
 let storageChanging = false;

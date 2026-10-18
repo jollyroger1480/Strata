@@ -128,7 +128,7 @@ test('a turn uses the response-settings route only when a setting is changed: th
   assert.equal(last().temperature, undefined, 'back to defaults: straight to the model again');
 });
 
-test('a model server on this network gets picture input only when its own model list says it reads pictures', async () => {
+test('a model server on this network gets picture input unless its own model list or the person says it does not read pictures', async () => {
   const lists = { yes: { data: [{ id: 'm', architecture: { input_modalities: ['text', 'image'] } }] }, no: { data: [{ id: 'm', architecture: { input_modalities: ['text'] } }] } };
   let which = 'yes';
   const probe = createVisionProbe({ fetcher: async () => ({ ok: true, json: async () => lists[which] }) });
@@ -136,7 +136,7 @@ test('a model server on this network gets picture input only when its own model 
   assert.equal(probe.known(conn, 'm'), undefined);
   assert.equal(await probe.check(conn, 'm'), true); assert.equal(probe.known(conn, 'm'), true);
   which = 'no'; assert.equal(await probe.check(conn, 'm'), true, 'cached for a few minutes');
-  assert.equal(await createVisionProbe({ fetcher: async () => { throw new Error('down'); } }).check(conn, 'm'), false, 'unreachable counts as no');
+  assert.equal(await createVisionProbe({ fetcher: async () => { throw new Error('down'); } }).check(conn, 'm'), null, 'unreachable is unknown: pictures stay on by default');
   const build = vision => JSON.parse(buildProfile({ local: [], connections: [{ id: 'own', name: 'Own', baseUrl: 'http://127.0.0.1:18798/v1', protocol: 'openai-chat', apiKey: '', models: [{ id: 'm', contextMax: 32768, vision }] }] }).patch.slice(buildProfile({ local: [], connections: [] }).patch.indexOf('['))).find(e => e.id === 'llm-pi-ai').config.providers['api-own'].models[0].input;
-  assert.deepEqual(build(true), ['text', 'image']); assert.deepEqual(build(false), ['text']); assert.deepEqual(build(undefined), ['text']);
+  assert.deepEqual(build(true), ['text', 'image']); assert.deepEqual(build(false), ['text']); assert.deepEqual(build(undefined), ['text', 'image'], 'pictures are on by default');
 });

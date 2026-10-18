@@ -130,6 +130,13 @@ export function compactionHeadroom(context, outputBudget) {
 export const LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'medium', high: 'high', max: 'high' });
 /** The menu's words to the Harness's level names. */
 export const EFFORT_LEVEL = Object.freeze({ off: 'off', low: 'low', medium: 'medium', high: 'high', max: 'max' });
+/**
+ * The thinking levels for a model on OpenRouter: its `reasoning.effort` words (none, low, medium, high, xhigh). A model takes them when its entry in
+ * OpenRouter's model list names `reasoning` among its supported parameters; the Harness (pi-ai) writes `reasoning: { effort }` into the request.
+ */
+export const OPENROUTER_EFFORTS = Object.freeze({ off: 'none', low: 'low', medium: 'medium', high: 'high', max: 'xhigh' });
+/** Whether a connection is OpenRouter (the catalog entry, or its address), whatever address it is reached at. */
+export const isOpenRouter = conn => conn?.provider === 'openrouter' || (() => { try { return /(^|.)openrouter.ai$/i.test(new URL(conn.baseUrl).hostname); } catch { return false; } })();
 export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()] ?? null;
 
 /**
@@ -221,7 +228,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     if (protocol === 'anthropic-messages') baseURL = baseURL.replace(/\/v1\/?$/, '');
     // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
     // without it the Reasoning menu did nothing for a connection to another Strata machine.
-    const ownServer = protocol === 'openai-completions' && isPrivateHost(baseURL);
+    const openRouter = protocol === 'openai-completions' && isOpenRouter(conn);
+    const ownServer = protocol === 'openai-completions' && !openRouter && isPrivateHost(baseURL);
     // A model server on this computer or network has a window of its own size like a local model: the reply keeps half of it, so the Harness can compact the conversation
     // before the window is full (with nearly all of it reserved for the reply a long task ended with "the prompt leaves no room to answer").
     const reply = m => (ownServer && Number.isFinite(m.contextMax) && m.contextMax > 0 && !m.maxOutput ? localOutputBudget(m.contextMax) : outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput));
@@ -230,14 +238,14 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       api: protocol,
       baseURL,
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
-      ...(ownServer ? { compat: THINKING_COMPAT } : {}),
+      ...(ownServer ? { compat: THINKING_COMPAT } : openRouter ? { compat: { thinkingFormat: 'openrouter' } } : {}),
       models: conn.models.map(m => ({
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
-        // Pictures only when the server itself says it reads them (the host asks its model list): a server started without a vision encoder refuses the whole request when a picture is in it.
+        // Pictures are on by default (owner rule): only an explicit no (the person's switch, or the server's own model list or /props) leaves them out.
         // (any OpenAI-style API: a cloud model the person marked, or whose model list says it reads pictures, takes image_url the same way)
-        input: protocol === 'openai-completions' && m.vision === true ? ['text', 'image'] : ['text'],
-        ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
+        input: protocol === 'openai-completions' && m.vision !== false ? ['text', 'image'] : ['text'],
+        ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : openRouter && m.reasoning === true ? { reasoning: true, reasoningEfforts: OPENROUTER_EFFORTS } : {}),
       })),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
