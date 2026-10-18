@@ -15,6 +15,7 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
+  { kind: 'tunnel-own-running', match: /Strata’s tunnel for this address is already running \(PID/i, message: 'Strata’s tunnel for this address is already running.', next: 'Stop it first, or use it as it is, then connect again here.' },
   { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
   { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
   { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },

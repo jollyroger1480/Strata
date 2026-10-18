@@ -96,30 +96,50 @@ class Places(unittest.TestCase):
         self.assertTrue(access._cf_new_enough(""))
 
 
-class NoSecondConnector(unittest.TestCase):
-    def test_a_running_connector_is_reported_and_not_doubled(self):
-        with mock.patch.object(access, "find_cloudflared", return_value="/usr/bin/cloudflared"), \
-                mock.patch.object(access, "tunnel_info", return_value=None), \
-                mock.patch.object(access, "cloudflared_running", return_value="service"), \
+class OtherTunnels(unittest.TestCase):
+    PS = ("  4242 cloudflared /usr/bin/cloudflared --no-autoupdate tunnel run --token SECRETSECRETSECRETSECRET\n"
+          "    77 cloudflared cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080\n"
+          "    90 bash bash -c cloudflared\n   100 sshd sshd\n")
+
+    def test_every_cloudflared_is_listed_with_its_pid_and_our_own_pid_is_left_out(self):
+        with mock.patch.object(access, "WINDOWS", False), mock.patch.object(access.subprocess, "run", return_value=mock.Mock(stdout=self.PS)):
+            self.assertEqual([p for p, _ in access.cloudflared_procs()], [4242, 77])
+            self.assertEqual([p for p, _ in access.cloudflared_procs(exclude=(4242,))], [77])
+
+    def test_only_a_tunnel_pointing_at_this_servers_port_is_its_own(self):
+        procs = [(4242, "cloudflared tunnel run --token X"), (77, "cloudflared tunnel --url http://127.0.0.1:8080"), (5, "cloudflared tunnel --url http://127.0.0.1:18080")]
+        self.assertEqual(access.own_tunnel_pids(procs, 8080), [77])
+        self.assertEqual(access.own_tunnel_pids(procs, 9999), [])
+        self.assertEqual(access.other_tunnel_note([4242]), "cloudflared is already running for another tunnel (PID 4242).")
+        self.assertEqual(access.other_tunnel_note([1, 2]), "cloudflared is already running for other tunnels (PIDs 1, 2).")
+
+    def test_the_servers_own_tunnel_already_running_is_not_doubled(self):
+        with mock.patch.object(access, "find_cloudflared", return_value="/usr/bin/cloudflared"), mock.patch.object(access, "tunnel_info", return_value=None), \
+                mock.patch.object(access, "cloudflared_procs", return_value=[(31, "cloudflared tunnel --url http://127.0.0.1:8080")]), \
                 mock.patch.object(access.subprocess, "Popen") as popen:
             url, message = access.start_tunnel("demo", 8080)
         self.assertIsNone(url)
         popen.assert_not_called()
-        self.assertIn("already running on this computer as a system service", message)
+        self.assertIn("already running (PID 31)", message)
         self.assertIn("did not start a second one", message)
 
-    def test_running_detection_ignores_strata_own_pid_and_names_a_service(self):
-        def fake_run(argv, **kw):
-            out = {"pgrep": "4242\n", "systemctl": "active\n"}[argv[0]]
-            return mock.Mock(stdout=out, returncode=0)
-        with mock.patch.object(access, "WINDOWS", False), mock.patch.object(access.sys, "platform", "linux"), \
-                mock.patch.object(access.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(access.cloudflared_running(), "service")
-            self.assertIsNone(access.cloudflared_running(exclude=(4242,)))
+    def test_another_tunnel_running_does_not_stop_a_quick_tunnel(self):
+        proc = mock.Mock(pid=55)
+        proc.poll.return_value = None
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(access, "find_cloudflared", return_value="/usr/bin/cloudflared"), \
+                mock.patch.object(access, "tunnel_info", return_value=None), mock.patch.object(access, "stop_tunnel"), \
+                mock.patch.object(access, "_state_dir", return_value=Path(tmp)), \
+                mock.patch.object(access, "cloudflared_procs", return_value=[(4242, "cloudflared tunnel run --token X")]), \
+                mock.patch.object(access.subprocess, "Popen", side_effect=lambda *a, **k: (k["stdout"].write(b"https://abc-def.trycloudflare.com"), k["stdout"].flush(), proc)[2]) as popen, \
+                mock.patch("strata_control.procs.start_token", return_value="t"), mock.patch("strata_control.procs.command_line", return_value=["x"]):
+            url, message = access.start_tunnel("demo", 8080, wait=2)
+        popen.assert_called_once()
+        self.assertEqual(url, "https://abc-def.trycloudflare.com")
+        self.assertIn("cloudflared is already running for another tunnel (PID 4242).", message)
 
-    def test_a_missing_pgrep_is_never_a_block(self):
+    def test_a_missing_ps_is_never_a_block(self):
         with mock.patch.object(access, "WINDOWS", False), mock.patch.object(access.subprocess, "run", side_effect=FileNotFoundError):
-            self.assertIsNone(access.cloudflared_running())
+            self.assertEqual(access.cloudflared_procs(), [])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 /** A supervised Cloudflare connector with a private, inference-only origin. */
 import { spawn } from 'node:child_process';
 import { probe, which } from './util.mjs';
-import { describeConnector, runningMessage } from './cloudflared-find.mjs';
+import { classifyRunning, describeConnector, otherTunnelMessage, ownTunnelMessage } from './cloudflared-find.mjs';
 
 export function tunnelHostname(value) {
   const hostname = String(value ?? '').trim().toLowerCase();
@@ -13,9 +13,13 @@ export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}
   let value = { status: 'idle', mode: null, url: null, error: null };
   const state = () => {
     const info = binary ? connectorInfo() : null;
-    return { ...value, installed: !!binary, originUrl, connector: info ? { path: info.path, version: info.version, source: info.source, label: info.label, summary: describeConnector(info) } : null, external: other?.running ? { kind: other.kind, message: runningMessage(other) } : null };
+    return { ...value, installed: !!binary, originUrl, connector: info ? { path: info.path, version: info.version, source: info.source, label: info.label, summary: describeConnector(info) } : null, external: other?.running ? externalState() : null };
   };
   const update = patch => { value = { ...value, ...patch }; changed(state()); };
+  function externalState(token = '') {
+    const { own, others } = classifyRunning(other, { originUrl, token });
+    return { kind: other.kind, others, own, message: own.length ? ownTunnelMessage(own) : otherTunnelMessage(others) };
+  }
   async function lookForOther() { try { other = await findRunning({ exclude: [child?.pid] }); } catch { other = null; } return other; }
   async function inspect() { binary = await locate(); await lookForOther(); changed(state()); return state(); }
   async function prepare() {
@@ -59,8 +63,8 @@ export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}
       binary = await locate();
       if (!binary && prepareConnector) binary = await prepareConnector();
       if (!binary) throw new Error('The connector could not be prepared automatically. Retry connector setup.');
-      // A cloudflared that is already running here (a system service, or one the person started) is never doubled up.
-      if ((await lookForOther())?.running) throw new Error(runningMessage(other));
+      // Strata's own tunnel (same port or same token) is never doubled up. Other cloudflared processes serve other tunnels and are left alone.
+      if ((await lookForOther())?.running) { const { own } = classifyRunning(other, { originUrl, token }); if (own.length) throw new Error(ownTunnelMessage(own)); }
       await origin.start();
       // Tokens never appear in command arguments, logs, saved settings, or API responses.
       const env = { ...process.env };

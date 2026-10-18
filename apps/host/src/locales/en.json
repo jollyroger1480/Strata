@@ -3192,5 +3192,10 @@
   "s3196": "Already used by {0}",
   "s3197": "Stop or answer the chat that is still using this model, then try again.",
   "s3198": "Another model on the same graphics card left no room for this one.",
-  "s3199": "Load it on a different GPU, or unload the other model first."
+  "s3199": "Load it on a different GPU, or unload the other model first.",
+  "s3200": "cloudflared is already running for another tunnel (PID {0}).",
+  "s3201": "cloudflared is already running for other tunnels (PIDs {0}).",
+  "s3202": "Strata’s tunnel for this address is already running (PID {0}).",
+  "s3203": "Strata’s tunnel for this address is already running.",
+  "s3204": "Stop it first, or use it as it is, then connect again here."
 }

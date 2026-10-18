@@ -125,22 +125,27 @@ export function skippedMessage(skipped) {
 }
 
 /**
- * Is another cloudflared already running on this computer (a system service, or one the person started)?
- * `exclude` is the list of pids that belong to Strata itself. Resolves to { running, kind: 'service' | 'process' | null, pids }.
- * Failing to look is "not running": a missing pgrep must never block the tunnel.
+ * Which cloudflared processes run on this computer (a system service, one the person started, another program's tunnel)?
+ * `exclude` is the list of pids that belong to Strata itself. Resolves to { running, kind: 'service' | 'process' | null, pids, procs }
+ * where procs is [{ pid, command }] (the command line is for matching only: it can hold a tunnel token and is never shown).
+ * Failing to look is "not running": a missing ps must never block the tunnel.
  */
 export async function findRunningConnector({ platform = process.platform, exclude = [], run = defaultProbe } = {}) {
   const skip = new Set(exclude.filter(Number.isInteger));
-  let pids = [];
+  let procs = [];
   if (platform === 'win32') {
-    const out = await run('tasklist', ['/FI', 'IMAGENAME eq cloudflared.exe', '/NH', '/FO', 'CSV']);
-    pids = [...out.matchAll(/"cloudflared\.exe","(\d+)"/gi)].map(m => Number(m[1]));
+    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"]);
+    procs = out.split(/\r?\n/).map(l => /^(\d+)\t(.*)$/.exec(l)).filter(Boolean).map(m => ({ pid: Number(m[1]), command: m[2] }));
+    if (!procs.length) {   // no PowerShell answer: at least the pids
+      const list = await run('tasklist', ['/FI', 'IMAGENAME eq cloudflared.exe', '/NH', '/FO', 'CSV']);
+      procs = [...list.matchAll(/"cloudflared\.exe","(\d+)"/gi)].map(m => ({ pid: Number(m[1]), command: '' }));
+    }
   } else {
-    const out = await run('pgrep', ['-x', 'cloudflared']);
-    pids = out.split(/\s+/).filter(Boolean).map(Number).filter(Number.isInteger);
+    const out = await run('ps', ['-axo', 'pid=,comm=,args=']);
+    procs = out.split('\n').map(l => /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(l)).filter(m => m && /(^|\/)cloudflared$/.test(m[2])).map(m => ({ pid: Number(m[1]), command: m[3] }));
   }
-  pids = pids.filter(pid => !skip.has(pid));
-  if (!pids.length) return { running: false, kind: null, pids: [] };
+  procs = procs.filter(p => !skip.has(p.pid));
+  if (!procs.length) return { running: false, kind: null, pids: [], procs: [] };
   let kind = 'process';
   if (platform === 'linux') {
     const active = (await run('systemctl', ['is-active', 'cloudflared'])).trim();
@@ -149,19 +154,39 @@ export async function findRunningConnector({ platform = process.platform, exclud
     const service = await run('sc.exe', ['query', 'Cloudflared']);
     if (/RUNNING/.test(service)) kind = 'service';
   }
-  return { running: true, kind, pids };
+  return { running: true, kind, pids: procs.map(p => p.pid), procs };
+}
+
+/**
+ * Split the running connectors into Strata's own tunnel (same port: its command line has --url pointing at `originUrl`'s port; same tunnel:
+ * its command line holds the same token) and tunnels of something else, which are none of Strata's business.
+ */
+export function classifyRunning(running, { originUrl = '', token = '' } = {}) {
+  const port = /:(\d+)\/?$/.exec(String(originUrl))?.[1] ?? null;
+  const own = [], others = [];
+  for (const p of running?.procs ?? []) {
+    const cmd = p.command ?? '';
+    const samePort = !!port && new RegExp(`--url[= ]\\S*:${port}(?:/|\\s|$)`).test(cmd);
+    const sameToken = token.length >= 20 && cmd.includes(token);
+    (samePort || sameToken ? own : others).push(p.pid);
+  }
+  return { own, others };
+}
+
+const pidList = pids => pids.join(', ');
+/** Plain sentence about tunnels that are none of Strata's business (information only, never a refusal). */
+export function otherTunnelMessage(pids) {
+  if (!pids?.length) return null;
+  return pids.length === 1 ? `cloudflared is already running for another tunnel (PID ${pids[0]}).` : `cloudflared is already running for other tunnels (PIDs ${pidList(pids)}).`;
+}
+/** The refusal for Strata's own tunnel already running. */
+export function ownTunnelMessage(pids) {
+  if (!pids?.length) return null;
+  return `Strata’s tunnel for this address is already running (PID ${pidList(pids)}), so Strata did not start a second one. Stop it first (or use it as it is), then connect again here.`;
 }
 
 function defaultProbe(cmd, args) {
   return new Promise(resolve => {
     execFile(cmd, args, { timeout: 4000, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? '' : String(stdout)));
   });
-}
-
-/** The plain sentence for a connector that is already running, with the one next step. */
-export function runningMessage(running) {
-  if (!running?.running) return null;
-  return running.kind === 'service'
-    ? 'Cloudflare’s connector is already running on this computer as a system service, so Strata did not start a second one. Stop that service first (or use its tunnel as it is), then connect again here.'
-    : 'Cloudflare’s connector (cloudflared) is already running on this computer, so Strata did not start a second one. Close it first (or use its tunnel as it is), then connect again here.';
 }

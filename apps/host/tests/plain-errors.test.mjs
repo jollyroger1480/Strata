@@ -9,6 +9,7 @@ const built = await build({ stdin: { contents: "export * from './src/lib/plain-e
 const { plainFailure, plainFailureText, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 
 const cases = [
+  ['Strata’s tunnel for this address is already running (PID 31), so Strata did not start a second one. Stop it first (or use it as it is), then connect again here.', 'tunnel-own-running', /tunnel for this address is already running/],
   ['GPU 2 is already used by qwen3.8-flash-next-q2_0, so this model did not fit there. Load it on another GPU, or unload qwen3.8-flash-next-q2_0 first.', 'gpu-shared', /no room for this one/],
   ['This model needs a newer engine: Gyro-S needs engine 0.1.45.1 or newer, and this one is 0.1.45. Update the engine in Settings, then try again.', 'engine-too-old', /needs a newer engine/],
   ['The settings file for this model has a mistake, so the model was not started. Line 4: The settings file is not valid JSON; look near line 4.', 'settings-file', /settings file has a mistake/],

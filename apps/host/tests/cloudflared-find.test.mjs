@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connectorCandidates, describeConnector, findConnector, findRunningConnector, MIN_VERSION, parseVersion, runningMessage, skippedMessage, versionAtLeast } from '../server/cloudflared-find.mjs';
+import { connectorCandidates, describeConnector, findConnector, classifyRunning, findRunningConnector, MIN_VERSION, otherTunnelMessage, ownTunnelMessage, parseVersion, skippedMessage, versionAtLeast } from '../server/cloudflared-find.mjs';
 import { createConnectorInstaller } from '../server/cloudflared-install.mjs';
 import { createCloudflare } from '../server/cloudflare.mjs';
 
@@ -81,45 +81,77 @@ test('a real executable on PATH is found and run (a user-local copy, never a sys
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('running detection: our own pid is ignored; a system service is called a service; failing to look is not a block', async () => {
-  const run = async (cmd, args) => cmd === 'pgrep' ? '4242\n77\n' : cmd === 'systemctl' ? 'active\n' : '';
-  assert.deepEqual(await findRunningConnector({ platform: 'linux', run }), { running: true, kind: 'service', pids: [4242, 77] });
-  assert.deepEqual(await findRunningConnector({ platform: 'linux', run, exclude: [4242, 77] }), { running: false, kind: null, pids: [] });
-  const user = async cmd => cmd === 'pgrep' ? '9\n' : 'inactive\n';
-  assert.equal((await findRunningConnector({ platform: 'linux', run: user })).kind, 'process');
-  assert.equal((await findRunningConnector({ platform: 'darwin', run: user })).kind, 'process');
+const ps = lines => async (cmd) => cmd === 'ps' ? lines.join('\n') + '\n' : cmd === 'systemctl' ? 'active\n' : '';
+
+test('running detection lists every cloudflared with its pid; our own child is ignored; a missing ps is not a block', async () => {
+  const run = ps(['  4242 cloudflared /usr/bin/cloudflared --no-autoupdate tunnel run --token SECRETSECRETSECRETSECRET', '    77 cloudflared cloudflared tunnel --url http://127.0.0.1:9000', '    90 bash bash -c cloudflared', '  100 sshd sshd']);
+  const r = await findRunningConnector({ platform: 'linux', run });
+  assert.deepEqual([r.running, r.kind, r.pids], [true, 'service', [4242, 77]]);
+  assert.equal((await findRunningConnector({ platform: 'linux', run, exclude: [4242, 77] })).running, false);
+  assert.equal((await findRunningConnector({ platform: 'darwin', run: async () => '  9 cloudflared cloudflared tunnel --url http://127.0.0.1:1\n' })).kind, 'process');
   assert.equal((await findRunningConnector({ platform: 'linux', run: async () => '' })).running, false);
-  const win = async cmd => cmd === 'tasklist' ? '"cloudflared.exe","8864","Console","1","28,756 K"\r\n' : 'STATE : 4 RUNNING';
-  assert.deepEqual(await findRunningConnector({ platform: 'win32', run: win }), { running: true, kind: 'service', pids: [8864] });
-  assert.match(runningMessage({ running: true, kind: 'service' }), /already running on this computer as a system service, so Strata did not start a second one/);
-  assert.equal(runningMessage({ running: false }), null);
+  const win = async cmd => cmd === 'powershell.exe' ? '8864\tC:\\x\\cloudflared.exe tunnel run --token ABCDEFGHIJKLMNOPQRSTUV\r\n' : 'STATE : 4 RUNNING';
+  const w = await findRunningConnector({ platform: 'win32', run: win });
+  assert.deepEqual([w.running, w.kind, w.pids], [true, 'service', [8864]]);
+});
+
+test('only a tunnel that is clearly Strata’s own (same port, or same token) counts as Strata’s; the rest are other people’s', () => {
+  const running = { running: true, procs: [
+    { pid: 1, command: 'cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8793' },
+    { pid: 2, command: 'cloudflared tunnel --url http://127.0.0.1:18793' },
+    { pid: 3, command: 'cloudflared tunnel run --token TOKENTOKENTOKENTOKENTOKEN' },
+    { pid: 4, command: 'cloudflared tunnel --url=http://localhost:8793/' },
+    { pid: 5, command: '' }] };
+  assert.deepEqual(classifyRunning(running, { originUrl: 'http://127.0.0.1:8793' }), { own: [1, 4], others: [2, 3, 5] });
+  assert.deepEqual(classifyRunning(running, { originUrl: 'http://127.0.0.1:8793', token: 'TOKENTOKENTOKENTOKENTOKEN' }), { own: [1, 3, 4], others: [2, 5] });
+  assert.deepEqual(classifyRunning(running, { originUrl: 'http://127.0.0.1:8793', token: 'short' }), { own: [1, 4], others: [2, 3, 5] }, 'a short string is not a token');
+  assert.equal(otherTunnelMessage([4242]), 'cloudflared is already running for another tunnel (PID 4242).');
+  assert.equal(otherTunnelMessage([1, 2]), 'cloudflared is already running for other tunnels (PIDs 1, 2).');
+  assert.equal(otherTunnelMessage([]), null);
+  assert.match(ownTunnelMessage([7]), /Strata’s tunnel for this address is already running \(PID 7\), so Strata did not start a second one/);
 });
 
 function fakeOrigin() { return { started: 0, async start() { this.started++; }, async stop() {} }; }
+const info = () => ({ path: '/usr/bin/cloudflared', version: '2026.5.0', source: 'path', label: 'found on your PATH' });
+const fake = () => ({ stdout: { on() {} }, stderr: { on() {} }, once() {}, kill() {}, pid: 55 });
+const mk = (originUrl, procs, launch, origin = fakeOrigin()) => createCloudflare({ origin, originUrl, hasKey: () => true, locate: async () => '/usr/bin/cloudflared', connectorInfo: info,
+  findRunning: async () => procs.length ? { running: true, kind: 'process', pids: procs.map(p => p.pid), procs } : { running: false, kind: null, pids: [], procs: [] }, launch, timeoutMs: 50 });
 
-test('the tunnel does not start a second connector next to a running one, and says so plainly', async () => {
-  const origin = fakeOrigin(); let launched = 0;
-  const cf = createCloudflare({ origin, originUrl: 'http://127.0.0.1:1', hasKey: () => true, locate: async () => '/usr/bin/cloudflared',
-    connectorInfo: () => ({ path: '/usr/bin/cloudflared', version: '2026.5.0', source: 'path', label: 'found on your PATH' }),
-    findRunning: async () => ({ running: true, kind: 'service', pids: [12] }), launch: () => { launched++; throw new Error('must not launch'); } });
+test('another tunnel running (a service for something else) is listed in plain words and a quick tunnel still starts', async () => {
+  const origin = fakeOrigin(); const spawned = [];
+  const cf = mk('http://127.0.0.1:8793', [{ pid: 12, command: 'cloudflared tunnel run --token SECRETSECRETSECRETSECRET' }], (bin, args) => { spawned.push([bin, args]); return fake(); }, origin);
   const seen = await cf.inspect();
-  assert.equal(seen.installed, true);
   assert.equal(seen.connector.version, '2026.5.0');
-  assert.match(seen.connector.summary, /cloudflared 2026\.5\.0 · \/usr\/bin\/cloudflared/);
-  assert.equal(seen.external.kind, 'service');
-  await assert.rejects(cf.start({ mode: 'quick' }), /already running on this computer as a system service/);
+  assert.deepEqual([seen.external.others, seen.external.own], [[12], []]);
+  assert.equal(seen.external.message, 'cloudflared is already running for another tunnel (PID 12).');
+  assert.ok(!JSON.stringify(seen).includes('SECRETSECRET'), 'a token in another connector’s command line is never in the state');
+  await cf.start({ mode: 'quick' });
+  assert.equal(spawned.length, 1);
+  assert.equal(origin.started, 1);
+  await cf.stop();
+});
+
+test('Strata’s own tunnel (same port) already running is not doubled; the same token is the same tunnel; another token is not', async () => {
+  const origin = fakeOrigin(); let launched = 0;
+  const same = mk('http://127.0.0.1:8793', [{ pid: 31, command: 'cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8793' }], () => { launched++; return fake(); }, origin);
+  assert.deepEqual((await same.inspect()).external.own, [31]);
+  await assert.rejects(same.start({ mode: 'quick' }), /Strata’s tunnel for this address is already running \(PID 31\), so Strata did not start a second one/);
   assert.equal(launched, 0);
   assert.equal(origin.started, 0, 'the private origin is not opened either');
-  assert.equal(cf.state().status, 'error');
+  const token = 'A'.repeat(30);
+  const sameToken = mk('http://127.0.0.1:8793', [{ pid: 32, command: `cloudflared tunnel run --token ${token}` }], () => { launched++; return fake(); }, origin);
+  await assert.rejects(sameToken.start({ mode: 'domain', hostname: 'ai.example.com', token }), /already running \(PID 32\)/);
+  assert.equal(launched, 0);
+  const spawned = [];
+  const other = mk('http://127.0.0.1:8793', [{ pid: 33, command: 'cloudflared tunnel run --token ' + 'B'.repeat(30) }], () => { spawned.push(1); return fake(); }, origin);
+  await other.start({ mode: 'domain', hostname: 'ai.example.com', token });
+  assert.equal(spawned.length, 1, 'a different tunnel token is somebody else’s tunnel');
+  await other.stop();
 });
 
 test('with nothing else running the tunnel starts as before and the state names the connector in use', async () => {
-  const origin = fakeOrigin(); const spawned = [];
-  const fake = { stdout: { on() {} }, stderr: { on() {} }, once() {}, kill() {}, pid: 55 };
-  const cf = createCloudflare({ origin, originUrl: 'http://127.0.0.1:1', hasKey: () => true, locate: async () => '/usr/bin/cloudflared',
-    connectorInfo: () => ({ path: '/usr/bin/cloudflared', version: '2026.5.0', source: 'path', label: 'found on your PATH' }),
-    findRunning: async ({ exclude }) => { assert.ok(Array.isArray(exclude)); return { running: false, kind: null, pids: [] }; },
-    launch: (bin, args) => { spawned.push([bin, args]); return fake; }, timeoutMs: 50 });
+  const spawned = [];
+  const cf = mk('http://127.0.0.1:1', [], (bin, args) => { spawned.push([bin, args]); return fake(); });
   await cf.start({ mode: 'quick' });
   assert.equal(spawned[0][0], '/usr/bin/cloudflared');
   assert.equal(cf.state().external, null);

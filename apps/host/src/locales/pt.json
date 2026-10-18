@@ -3192,5 +3192,10 @@
   "s3196": "Já em uso por {0}",
   "s3197": "Pare o chat que ainda usa este modelo, ou responda à pergunta pendente dele, e tente novamente.",
   "s3198": "Outro modelo na mesma placa de vídeo não deixou espaço para este.",
-  "s3199": "Carregue-o em outra GPU ou descarregue primeiro o outro modelo."
+  "s3199": "Carregue-o em outra GPU ou descarregue primeiro o outro modelo.",
+  "s3200": "O cloudflared já está em execução para outro túnel (PID {0}).",
+  "s3201": "O cloudflared já está em execução para outros túneis (PIDs {0}).",
+  "s3202": "O túnel do Strata para este endereço já está em execução (PID {0}).",
+  "s3203": "O túnel do Strata para este endereço já está em execução.",
+  "s3204": "Pare-o primeiro, ou use-o como está, e conecte novamente aqui."
 }

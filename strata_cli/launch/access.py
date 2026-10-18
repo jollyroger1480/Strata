@@ -137,28 +137,39 @@ def find_cloudflared() -> str | None:
     return info["path"] if info else None
 
 
-def cloudflared_running(exclude: tuple[int, ...] = ()) -> str | None:
-    """'service' or 'process' when a cloudflared that is not in `exclude` already runs on this computer, else None."""
+def cloudflared_procs(exclude: tuple[int, ...] = ()) -> list[tuple[int, str]]:
+    """Every cloudflared running on this computer as (pid, command line), without the pids in `exclude`. The command line is for
+    matching only (it can hold a tunnel token) and is never shown. A failed look is an empty list: it never blocks a tunnel."""
+    out: list[tuple[int, str]] = []
     try:
         if WINDOWS:
-            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared.exe", "/NH", "/FO", "CSV"], capture_output=True,
-                                 text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW).stdout
-            pids = [int(p) for p in re.findall(r'"cloudflared\.exe","(\d+)"', out, re.I)]
+            text = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                   "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
+                                  capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            for line in text.splitlines():
+                m = re.match(r"(\d+)\t(.*)$", line)
+                if m:
+                    out.append((int(m.group(1)), m.group(2)))
         else:
-            out = subprocess.run(["pgrep", "-x", "cloudflared"], capture_output=True, text=True, timeout=5).stdout
-            pids = [int(p) for p in out.split() if p.isdigit()]
+            text = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True, timeout=5).stdout
+            for line in text.splitlines():
+                m = re.match(r"\s*(\d+)\s+(\S+)\s*(.*)$", line)
+                if m and re.search(r"(^|/)cloudflared$", m.group(2)):
+                    out.append((int(m.group(1)), m.group(3)))
     except (OSError, subprocess.SubprocessError):
-        return None
-    if not [p for p in pids if p not in exclude]:
-        return None
-    try:
-        if sys.platform.startswith("linux"):
-            active = subprocess.run(["systemctl", "is-active", "cloudflared"], capture_output=True, text=True, timeout=5).stdout.strip()
-            if active == "active":
-                return "service"
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "process"
+        return []
+    return [(pid, cmd) for pid, cmd in out if pid not in exclude]
+
+
+def own_tunnel_pids(procs: list[tuple[int, str]], port: int) -> list[int]:
+    """The processes that are clearly this server's own tunnel: their --url points at its port. The others serve other tunnels."""
+    pat = re.compile(rf"--url[= ]\S*:{int(port)}(?:/|\s|$)")
+    return [pid for pid, cmd in procs if pat.search(cmd)]
+
+
+def other_tunnel_note(pids: list[int]) -> str:
+    return (f"cloudflared is already running for another tunnel (PID {pids[0]})." if len(pids) == 1
+            else f"cloudflared is already running for other tunnels (PIDs {', '.join(map(str, pids))}).")
 
 
 def find_tailscale() -> str | None:
@@ -329,10 +340,12 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
     existing = tunnel_info(name)
     if existing and existing.get("url") and existing.get("port") == port:
         return existing["url"], "The tunnel was already running."
-    other = cloudflared_running(exclude=(int(existing["pid"]),) if existing else ())
-    if other:
-        return None, ("Cloudflare’s connector is already running on this computer" + (" as a system service" if other == "service" else "") +
-                      ", so Strata did not start a second one. Stop it first (or use its tunnel as it is), then connect again here.")
+    running = cloudflared_procs(exclude=(int(existing["pid"]),) if existing else ())
+    own = own_tunnel_pids(running, port)
+    if own:
+        return None, (f"Strata’s tunnel for this address is already running (PID {', '.join(map(str, own))}), so Strata did not start a "
+                      "second one. Stop it first (or use it as it is), then connect again here.")
+    note = other_tunnel_note([pid for pid, _ in running]) if running else ""
     stop_tunnel(name)
     log = _state_dir() / f"{Path(name).name}.tunnel.log"
     argv = [exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"]
@@ -363,7 +376,7 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
         stop_tunnel(name)
         return None, ("The Cloudflare tunnel did not come up in time. Check your internet connection and try again; "
                       "the server itself is running and still works on this computer.")
-    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server, so keep the API key on."
+    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server, so keep the API key on." + (" " + note if note else "")
 
 
 def tunnel_info(name: str) -> dict | None:
