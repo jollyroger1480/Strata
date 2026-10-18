@@ -6,17 +6,58 @@ export interface GpuChoice {options:GpuChoiceOption[];recommended:string|null;ig
 export interface NativeSize {/** The first engine that reads this size's files (the catalog), and whether the installed engine is older: the screen then says "needs a newer engine" and offers the update. */engine_min?:string|null;needsNewerEngine?:boolean;id:string;model:string;about:string;download_gb:number;ram_needed_gb:number;experts_gb:number;on_this_pc:string|null;installed:boolean;gpu_options?:GpuChoice|null;images?:boolean;imagesCapable?:boolean}
 export interface NativeFamily {family:string;title:string;about:string;experimental:boolean;images:boolean;sizes:NativeSize[]}
 export interface NativeField {id:string;label:string;group:string;type:'number'|'boolean'|'string'|'enum'|'array';min?:number;max?:number;choices?:string[];hint?:string;supported?:boolean}
-export interface NativeJob {id:string;kind:string;guided?:boolean;model?:string;state:'running'|'done'|'error'|'cancelled';startedAt:string;summary:string;error:string|null;details?:string;result:Record<string,any>|null;progress?:Record<string,any>|null}
+export interface NativeJob {id:string;kind:string;guided?:boolean;model?:string;family?:string;state:'running'|'done'|'error'|'cancelled';startedAt:string;summary:string;error:string|null;details?:string;result:Record<string,any>|null;progress?:Record<string,any>|null}
 export interface NativeInstance {id:string;apiModelId:string;model:string;label:string;aliases?:string[];vision?:boolean;resourceProfile?:'work'|'performance'|null;context?:number;port:number;gpus:number[];status:'loading'|'ready'|'unloading'|'error';phase:string;loadedAt:string;error:string|null;metrics:Record<string,any>|null}
 export interface NativeState {
   /** The picture reader (strata-vision) is installed with the engine, so models marked for pictures can read them here. */
   visionReader?: boolean;available:boolean;repo:string;downloadDirectory?:string;version?:string|null;summary:string;error:string|null;catalog:{families:NativeFamily[];contexts:number[];recommendation:{family:string|null;model:string|null;context?:number;why?:string};context_note:string}|null;installed:{models:{model:string;config:string;model_name:string;ready:boolean;/** The picture-reading files are on this computer (notes-split-agent8.md, item 8). */visionPrepared?:boolean;context?:number;kv?:string;images?:string;visionEnabled?:boolean;visionDevice?:string;lowRamMode?:string;resourceProfile?:'work'|'performance';dataFolder?:string;diskGb?:number;diskBytes?:number;missing_files?:string[]}[];data_folder:string;engine:{version:string|null}}|null;hardware:{ram_gb:number;gpus:{index:number;name:string;vram_gb:number;usable:boolean}[]}|null;fields:NativeField[];instances:NativeInstance[];defaultId:string|null;jobs:NativeJob[];capabilities:{responses?:boolean;updates:boolean;rollback:boolean;calibration:boolean;componentUpdates?:boolean}}
-let state:NativeState|null=null,timer:ReturnType<typeof setInterval>|null=null,reading:Promise<void>|null=null;
+let state:NativeState|null=null;
 const listeners=new Set<()=>void>();
-let again=false;
+function put(value:NativeState){if(state&&JSON.stringify(state)===JSON.stringify(value))return;state=value;listeners.forEach(fn=>fn());}
+/** The host pushes its whole native state (jobs included) at every progress step: the page shows it at once, without waiting for the next poll. */
+export function applyNativeEvent(value:unknown){if(value&&typeof value==='object'&&'available' in value&&'jobs' in value)put(value as NativeState);}
+const READ_LIMIT_MS=20000;
+function read(force:boolean):Promise<void>{
+ const request=api.get<NativeState>(`/api/native${force?'?refresh=1':''}`);
+ // A read that never answers must not freeze the page: after the limit the next poll starts a fresh one.
+ let stop:ReturnType<typeof setTimeout>|undefined;
+ const limit=new Promise<never>((_,reject)=>{stop=setTimeout(()=>reject(new Error('The host did not answer in time.')),READ_LIMIT_MS);});
+ return Promise.race([request,limit]).then(put).catch(error=>{if(state){state={...state,error:error.message,instances:state.instances.map(i=>({...i,metrics:null,phase:'unavailable'}))};listeners.forEach(fn=>fn());}}).finally(()=>clearTimeout(stop));
+}
+/* Two kinds of read that never wait for each other: the light poll (the host answers at once with the jobs it holds) and the forced read after an action (the host
+   re-reads the installation, which can take many seconds while a download is writing). A slow forced read used to hold every later poll, so a running download looked stuck. */
+let light:Promise<void>|null=null,forced:Promise<void>|null=null,again=false;
 /** A forced refresh (after an action) never joins a read that began before the action: that read cannot know about the new job. It waits for it, then reads again. */
-export function refreshNative(force=false):Promise<void>{if(reading){if(!force)return reading;if(again)return reading;again=true;return reading.then(()=>{again=false;return refreshNative(true);});}reading=api.get<NativeState>(`/api/native${force?'?refresh=1':''}`).then(value=>{if(state&&JSON.stringify(state)===JSON.stringify(value))return;state=value;listeners.forEach(fn=>fn());}).catch(error=>{if(state){state={...state,error:error.message,instances:state.instances.map(i=>({...i,metrics:null,phase:'unavailable'}))};listeners.forEach(fn=>fn());}}).finally(()=>{reading=null;});return reading;}
-export function useNative(){const value=useSyncExternalStore(fn=>{listeners.add(fn);return()=>listeners.delete(fn);},()=>state);useEffect(()=>{void refreshNative();if(!timer)timer=setInterval(()=>void refreshNative(),2500);return()=>{if(!listeners.size&&timer){clearInterval(timer);timer=null;}};},[]);return value;}
+export function refreshNative(force=false):Promise<void>{
+ if(!force){if(light)return light;light=read(false).finally(()=>{light=null;});return light;}
+ if(forced){if(again)return forced;again=true;return forced.then(()=>{again=false;return refreshNative(true);});}
+ forced=read(true).finally(()=>{forced=null;});return forced;
+}
+const POLL_MS=2500,RUNNING_POLL_MS=1000;
+let users=0,timeout:ReturnType<typeof setTimeout>|null=null,watching=false;
+const hidden=()=>typeof document!=='undefined'&&document.visibilityState==='hidden';
+/** How long until the next poll: quicker while a download or load is running, none while the window is hidden (it reads again the moment it is shown). */
+export const nativePollDelay=(value:NativeState|null,isHidden=false):number|null=>isHidden?null:value?.jobs?.some(j=>j.state==='running')?RUNNING_POLL_MS:POLL_MS;
+function schedule(){
+ if(timeout){clearTimeout(timeout);timeout=null;}
+ if(!users)return;
+ const wait=nativePollDelay(state,hidden());
+ if(wait===null)return;
+ timeout=setTimeout(()=>{timeout=null;void refreshNative().finally(schedule);},wait);
+}
+const shown=()=>{if(!hidden()&&users){void refreshNative();schedule();}};
+export function useNative(){
+ const value=useSyncExternalStore(fn=>{listeners.add(fn);return()=>listeners.delete(fn);},()=>state);
+ useEffect(()=>{
+  users++;void refreshNative().finally(schedule);
+  if(!watching&&typeof document!=='undefined'){watching=true;document.addEventListener('visibilitychange',shown);window.addEventListener('focus',shown);}
+  return()=>{users--;if(!users){if(timeout){clearTimeout(timeout);timeout=null;}if(watching&&typeof document!=='undefined'){watching=false;document.removeEventListener('visibilitychange',shown);window.removeEventListener('focus',shown);}}};
+ },[]);
+ // a new job (or its end) changes how fast the next poll should come
+ const running=value?.jobs?.some(j=>j.state==='running')??false;
+ useEffect(()=>{schedule();},[running]);
+ return value;
+}
 export const nativeState=()=>state;
 /** Connection-list projection only; memory reservations are not inferred. */
 export function nativeRouting(native:NativeState|null,hardware:Hardware|null):RuntimeModels|null{

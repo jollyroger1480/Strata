@@ -6,7 +6,9 @@ import { FamilySwitch } from './FamilySwitch';
 import { PcFitCard } from './PcFitCard';
 import { fitOn } from '../lib/native-fit';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
-import { installProgress, useDownloadEta } from '../lib/download-eta';
+import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
+import { useKept } from '../lib/kept-state';
+import { DownloadParts } from './DownloadParts';
 import { sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
@@ -31,12 +33,14 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     onReady?: () => void;
 }) {
     const native = useNative(), imageLibrary = useStore(s => s.imageModels), hardware = useStore(s => s.hardware);
-    const [family, setFamily] = useState(''), [size, setSize] = useState(''), [context, setContext] = useState(32768), [vision, setVision] = useState('yes');
+    // The choices are kept while the page is closed (Models -> Monitor -> Models used to start them over and a person lost track of what was downloading).
+    const [family, setFamily] = useKept('models.family', ''), [size, setSize] = useKept('models.size', ''), [context, setContext] = useKept('models.context', 32768), [vision, setVision] = useKept('models.vision', 'yes');
     const manual = useStore(s => s.setup?.choices?.onboarding?.manual ?? false);
-    const [expert, setExpert] = useState(manual), [multiple, setMultiple] = useState(false), [gpus, setGpus] = useState<number[]>([]), [kv, setKv] = useState('int8'), [lowRam, setLowRam] = useState('auto'), [split, setSplit] = useState('auto'), [deviceChoice, setDeviceChoice] = useState('auto');
-    const [cardsKey, setCardsKey] = useState<string | null>(null);
-    const [resourceProfile, setResourceProfile] = useState<'work' | 'performance'>('work');
-    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [loadedError, setLoadedError] = useState(''), [tuneOpen, setTuneOpen] = useState(false), [jobId, setJobId] = useState(''), [manage, setManage] = useState(false);
+    const [expert, setExpert] = useKept('models.expert', manual), [multiple, setMultiple] = useKept('models.multiple', false), [gpus, setGpus] = useKept<number[]>('models.gpus', []), [kv, setKv] = useKept('models.kv', 'int8'), [lowRam, setLowRam] = useKept('models.lowRam', 'auto'), [split, setSplit] = useKept('models.split', 'auto'), [deviceChoice, setDeviceChoice] = useKept('models.device', 'auto');
+    const [cardsKey, setCardsKey] = useKept<string | null>('models.cards', null);
+    const [resourceProfile, setResourceProfile] = useKept<'work' | 'performance'>('models.profile', 'work');
+    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [loadedError, setLoadedError] = useState(''), [tuneOpen, setTuneOpen] = useState(false), [jobId, setJobId] = useKept('models.job', ''), [manage, setManage] = useState(false);
+    const [toastedJob, setToastedJob] = useKept('models.toasted', ''), [appliedSig, setAppliedSig] = useKept('models.applied', '');
     const presetPending = useRef(false);
     const [deleting, setDeleting] = useState<string | null>(null);
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
@@ -56,15 +60,11 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const keptUse = keptModels.map(i => { const s = sizeOf(i.model); const card = pcGpus.find(g => g.index === i.gpus[0]); const f = s && pcRam ? fitOn(s, { ram_gb: pcRam, vram_gb: card?.vram_gb ?? pcVram }) : null; return { gpus: i.gpus, ram: f?.ramUseGb ?? 0, vram: f?.vramUseGb ?? 0 }; });
     const keptRam = keptUse.reduce((n, u) => n + u.ram, 0);
     const keptVramOn = (cards: number[]) => keptUse.filter(u => u.gpus.some(g => cards.includes(g))).reduce((n, u) => n + u.vram, 0);
+    // The versions that are really on this computer: a config whose files are all there (every part of a model in parts).
+    const readyIds = useMemo(() => new Set(downloaded.filter(m => m.ready).map(m => m.model)), [downloaded]);
+    // What a running job works on, by its name in the list: "Qwen3.8-Flash-Next · Gyro · Smallest".
+    const jobLabel = (j: NativeJob) => { const v = allSizes.find(s => s.id === j.model || (s.model === j.model && (!j.family || s.sourceFamily === j.family))); const f = v && families.find(x => x.sizes.includes(v)); return v ? [f?.title, catalogVersionLabel(v)].filter(Boolean).join(' · ') : ''; };
     const loadedSelected = native?.instances.find(i => i.model === selectedSize?.id && i.status === 'ready');
-    // A model that is already on this PC loads as it was prepared: the page shows its settings, so loading it never asks to download.
-    useEffect(() => { if (installed?.ready) {
-        if (installed.context)
-            setContext(installed.context);
-        if (installed.kv)
-            setKv(installed.kv as typeof kv);
-        setLowRam((installed.lowRamMode ?? 'auto') as typeof lowRam);
-    } }, [installed?.model, installed?.ready, installed?.context, installed?.kv, installed?.lowRamMode]);
     // What the running model was really started with is what the page shows: after Load the highlight must still be the profile that was applied.
     useEffect(() => { if (loadedSelected?.resourceProfile)
         setResourceProfile(loadedSelected.resourceProfile); }, [loadedSelected?.id, loadedSelected?.resourceProfile]);
@@ -93,7 +93,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const gpuNumbers = (text: string) => text.replace(/\(card (\d+)\)/g, (_m, n) => `(GPU ${Number(n) + 1})`);
     // The fit sentence for a card choice, less what the kept models take of RAM and of that card's memory.
     const lessKept = (words: string, cards: number[]) => { const gone = Math.round(keptRam + keptVramOn(cards)); return gone > 0 ? words.replace(/of the (\d+) GB available/, (_m, n) => `of the ${Math.max(0, Number(n) - gone)} GB available`) : words; };
-    useEffect(() => { setCardsKey(null); }, [selectedSize?.id]);
+    const shownSize = useRef(selectedSize?.id);
+    useEffect(() => { if (shownSize.current !== selectedSize?.id) { shownSize.current = selectedSize?.id; setCardsKey(null); } }, [selectedSize?.id]);
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(expert && gpus.length ? { gpus: gpus.join(',') } : cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, gpus.join(','), cardsGpus.join(','), expert, multiple]);
     const downloadValues = { ...values, vision: selectedSize?.images ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
     useEffect(() => { if (!native?.catalog || family)
@@ -102,19 +103,35 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         setSize(f.sizes.find(s => s.id === current?.model)?.id ?? f.sizes.find(s => have.has(s.id))?.id ?? f.sizes.find(s => s.model === rec.model)?.id ?? f.sizes[0]?.id ?? '');
         setContext(('context' in rec ? rec.context : undefined) ?? 32768);
     } }, [native?.catalog]);
-    useEffect(() => { if (presetPending.current) {
-        presetPending.current = false;
-        return;
-    } if (installed) {
-        setContext(installed.context ?? 32768);
-        setVision(installed.visionEnabled === false || installed.images === 'off' ? 'no' : installed.visionDevice ?? installed.images ?? 'yes');
-        setKv(installed.kv ?? 'int8');
-        setLowRam(installed.lowRamMode ?? 'auto');
-        // A model never tuned has no saved choice: keep the page's own (Leave 20%) rather than flipping to Full performance.
-        if (installed.resourceProfile && !loadedSelected?.resourceProfile)
-            setResourceProfile(installed.resourceProfile);
-    } }, [installed?.model, installed?.context, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
-    useEffect(() => { if (jobId && job?.state === 'done' && (job.kind === 'load' || job.kind === 'install')) {
+    // The version that is selected: a model already on this PC shows the settings it was prepared with (so loading it never asks to download);
+    // a model that is not yet downloaded starts with Read pictures ON (owner rule: pictures on by default). This runs when the SELECTION or the
+    // installed settings change, not when the page opens again: coming back from another tab keeps what was chosen.
+    useEffect(() => {
+        if (presetPending.current) {
+            presetPending.current = false;
+            return;
+        }
+        if (!selectedSize)
+            return;
+        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
+        if (sig === appliedSig)
+            return;
+        setAppliedSig(sig);
+        if (installed) {
+            if (installed.context)
+                setContext(installed.context);
+            setVision(installed.visionEnabled === false || installed.images === 'off' ? 'no' : installed.visionDevice ?? installed.images ?? 'yes');
+            setKv(installed.kv ?? 'int8');
+            setLowRam(installed.lowRamMode ?? 'auto');
+            // A model never tuned has no saved choice: keep the page's own (Leave 20%) rather than flipping to Full performance.
+            if (installed.resourceProfile && !loadedSelected?.resourceProfile)
+                setResourceProfile(installed.resourceProfile);
+        }
+        else
+            setVision('yes');
+    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
+    useEffect(() => { if (jobId && job?.state === 'done' && job.id !== toastedJob && (job.kind === 'load' || job.kind === 'install')) {
+        setToastedJob(job.id);
         selectRemoteModel(null);
         pushToast('success', 'Model ready', 'Start a new chat when you’re ready.');
     } }, [job?.state]);
@@ -153,7 +170,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      {tr(selectedSize ? <>
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
-      <div className="native-version"><VersionPicker versions={allSizes} selectedId={selectedSize.id} hardware={fitHardware} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
+      <div className="native-version"><VersionPicker versions={allSizes} selectedId={selectedSize.id} hardware={fitHardware} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
       {tr(noFit ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("May run slower \u00B7 Model data can be read from SSD.")}</p> : null)}
       <div className="native-choice__row">
        <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={(native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={n => setContext(Number(n))}/></div>
@@ -163,7 +180,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
       {tr(selectedSize?.imagesCapable && !selectedSize.images ? <p className="small muted native-spill-note">{tr("This model can read pictures, but the engine installed here does not include the picture reader yet, so Read pictures is off. Update the engine in Settings → About to turn it on.")}</p> : null)}
       {tr(selectedSize?.images ? <><div className="native-image-reading"><label><input type="checkbox" checked={vision !== 'no'} disabled={!selectedSize?.images || !!active} onChange={e => setVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures ")}<small>{tr("On by default")}</small></strong><small>{tr("Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.")}</small></span></label>{tr(expert && vision !== 'no' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={setVision}/> : null)}</div>{tr(vision !== 'no' && installed?.ready && installed.visionPrepared === false ? <div className="native-vision-missing" role="status"><span>{tr("Picture reading needs a few more files that are not on this computer yet.")}</span><Btn size="sm" disabled={pending || !!active} onClick={() => void download()}>{tr("Download picture-reading files")}</Btn></div> : null)}</> : null)}
      </> : null)}
-     {tr(active ? <NativeProgress job={active}/> : null)}
+     {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}
      {selectedSize && installed?.ready ? <NativeTuneBadge model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
@@ -195,8 +212,9 @@ function installStepLabel(step?: string): string {
         return step ? 'Getting things ready…' : 'Downloading and preparing model files…';
     return n <= 2 ? 'Checking your computer…' : n <= 4 ? 'Getting things ready…' : n === 5 ? 'Downloading your model…' : n === 6 ? 'Preparing your model for Strata…' : 'Finishing up…';
 }
-export function NativeProgress({ job }: {
+export function NativeProgress({ job, label }: {
     job: NativeJob;
+    label?: string;
 }) { const download = installProgress(job.result?.install); const detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n'); const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
     await nativeAction(`operations/${job.id}/cancel`);
 }
@@ -205,4 +223,4 @@ catch (e) {
 }
 finally {
     setStopping(false);
-} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? 'Preparing your model' : job.kind === 'load' ? 'Loading model' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' || job.kind === 'autotune' || job.kind === 'recheck' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? installStepLabel(job.result?.install?.step) : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}{tr(detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }
+} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? (label ? tr('Preparing {0}', [label]) : 'Preparing your model') : job.kind === 'load' ? 'Loading model' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' || job.kind === 'autotune' || job.kind === 'recheck' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (download && /^5\//.test(job.result?.install?.step ?? '') ? stageText(installStage(job.result?.install)) : installStepLabel(job.result?.install?.step)) : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file === 'picture reader' ? 'Picture reader' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<DownloadParts parts={job.result?.install?.parts}/>{tr(detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }

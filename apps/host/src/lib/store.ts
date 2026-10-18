@@ -11,7 +11,7 @@ import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
-import { nativeState } from './native';
+import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
 import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
@@ -640,6 +640,9 @@ function applyEvent(e: StreamEvent) {
       break;
     case 'runtime':
       set({runtime:data as unknown as RuntimeModels});
+      break;
+    case 'native':
+      applyNativeEvent(data);
       break;
     case 'image-models':
       if (Array.isArray(data.variants)) set({ imageModels: data as unknown as ImageModelLibrary });

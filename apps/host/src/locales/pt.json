@@ -3221,5 +3221,19 @@
   "s3225": "O que fez",
   "s3226": "Arquivos",
   "s3227": "Por favor, ajude-me a continuar daqui.",
-  "s3228": "…e mais {0} etapas"
+  "s3228": "…e mais {0} etapas",
+  "s3229": "NVFP4 (versão da Strata)",
+  "s3230": "NVFP4 (versão da NVIDIA)",
+  "s3231": "NVFP4 (NVIDIA, treinada para FP4)",
+  "s3232": "Conversão própria da Strata. A melhor qualidade entre as versões NVFP4.",
+  "s3233": "O checkpoint NVFP4 da própria NVIDIA, convertido para a Strata. Mesmo tamanho e velocidade.",
+  "s3234": "O checkpoint da NVIDIA treinado para FP4. Um pouco mais rápido com mensagens curtas.",
+  "s3235": "Todas as outras versões",
+  "s3236": "Mais versões",
+  "s3237": "Baixando arquivos do modelo · parte {0} de {1}",
+  "s3238": "Baixando o leitor de imagens…",
+  "s3239": "Baixando o mecanismo para este PC…",
+  "s3240": "Preparando {0}",
+  "s3241": "Partes do download",
+  "s3242": "Leitor de imagens"
 }

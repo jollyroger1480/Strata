@@ -61,3 +61,8 @@ export const RECOMMENDED: { family: string; model: string; note: string }[] = [
 /** Is a group of the version list open? What the person chose wins; until they touch it, only the group holding the selected version is open
  *  (the running version's group used to stay open whatever was clicked). */
 export const groupOpen = (opened: Record<string, boolean>, id: string, containsSelected: boolean): boolean => opened[id] ?? containsSelected;
+
+/** The recommended four, found in a version list (a version the catalog does not offer is skipped). */
+export function recommendedVersions<V extends { sourceFamily: string; model: string }>(versions: V[]): { r: typeof RECOMMENDED[number]; v: V }[] {
+  return RECOMMENDED.map(r => ({ r, v: versions.find(v => v.sourceFamily === r.family && v.model === r.model) })).filter((x): x is { r: typeof RECOMMENDED[number]; v: V } => !!x.v);
+}

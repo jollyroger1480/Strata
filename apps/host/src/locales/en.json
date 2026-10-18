@@ -3221,5 +3221,19 @@
   "s3225": "What it did",
   "s3226": "Files",
   "s3227": "Please help me take it from here.",
-  "s3228": "…and {0} more steps"
+  "s3228": "…and {0} more steps",
+  "s3229": "NVFP4 (Strata’s version)",
+  "s3230": "NVFP4 (NVIDIA’s version)",
+  "s3231": "NVFP4 (NVIDIA, trained for FP4)",
+  "s3232": "Strata’s own conversion. The best quality of the NVFP4 versions.",
+  "s3233": "NVIDIA’s own NVFP4 checkpoint, converted for Strata. Same size and speed.",
+  "s3234": "NVIDIA’s FP4 checkpoint, trained for FP4. Slightly faster on short prompts.",
+  "s3235": "All other versions",
+  "s3236": "More versions",
+  "s3237": "Downloading model files · part {0} of {1}",
+  "s3238": "Downloading the picture reader…",
+  "s3239": "Downloading the engine for this PC…",
+  "s3240": "Preparing {0}",
+  "s3241": "Download parts",
+  "s3242": "Picture reader"
 }

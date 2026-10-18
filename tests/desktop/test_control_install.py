@@ -249,6 +249,71 @@ class InstallerServerTests(unittest.TestCase):
         # a resumed install counts what is already on disk
         self.assertGreater(self.mcp.combined_progress(dict(step5), job)["download"]["done_gb"], 0)
 
+    def test_a_model_in_parts_counts_every_part_and_the_picture_reader(self):
+        """QA 2026-10-18 (6): the bar stopped at 99 % while the picture reader downloaded, and a first whole part looked like a finished
+        model. Every part is counted, the picture reader is a part of its own, and 'done' needs all of them."""
+        S = self.mcp.Strata(self.root, ROOT).setup_module()
+        models = self.root / "Strata-data" / "models"
+        files = self.mcp.expected_files(S, "qwen", "IQ3_S", models, True)
+        self.assertEqual([f["role"] for f in files], ["model", "model", "vision"])
+        self.assertEqual(Path(files[2]["path"]).parent, models, "the picture reader sits beside the model folders")
+        folder = Path(files[0]["path"]).parent
+        folder.mkdir(parents=True)
+        job = {"folder": str(folder), "total_gb": 0.004, "files": files}
+        step5 = {"step": "5/7: downloading Qwen3.8-Flash-Next IQ3_S"}
+        # the first part is whole, the second not started: the model is NOT downloaded
+        Path(files[0]["path"]).write_bytes(b"x" * 2_000_000)
+        one = self.mcp.combined_progress(dict(step5), job)
+        model = next(x for x in one["parts"] if x["kind"] == "model")
+        self.assertEqual((model["files_done"], model["files_total"], model["state"]), (1, 2, "downloading"))
+        self.assertLess(one["download"]["percent"], 99)
+        # both parts whole, the picture reader under way: still counted, and the bar is not at its end
+        Path(files[1]["path"]).write_bytes(b"x" * 2_000_000)
+        Path(files[2]["path"]).with_name(Path(files[2]["path"]).name + ".part").write_bytes(b"x" * 400_000)
+        two = self.mcp.combined_progress(dict(step5), job)
+        vision = next(x for x in two["parts"] if x["kind"] == "vision")
+        self.assertEqual(vision["state"], "downloading")
+        self.assertEqual(two["download"]["file"], "picture reader")
+        self.assertGreater(two["download"]["done_gb"], one["download"]["done_gb"])
+        self.assertGreater(two["download"]["total_gb"], 0.004, "the picture reader is part of the total")
+        self.assertLessEqual(two["download"]["percent"], 99)
+        # all whole
+        Path(files[2]["path"]).with_name(Path(files[2]["path"]).name + ".part").unlink()
+        Path(files[2]["path"]).write_bytes(b"x" * 907_543_008)
+        three = self.mcp.combined_progress(dict(step5), job)
+        self.assertTrue(all(x["state"] == "done" for x in three["parts"]))
+        self.assertEqual(three["download"]["done_gb"], three["download"]["total_gb"])
+        # not a download once setup prepares the files
+        self.assertNotIn("download", self.mcp.combined_progress({"step": "6/7: preparing the model for Strata", "download": {"x": 1}}, job))
+
+    def test_a_pack_with_many_files_reports_the_whole_pack(self):
+        S = self.mcp.Strata(self.root, ROOT).setup_module()
+        files = self.mcp.expected_files(S, "nvfp4", "NVFP4", self.root / "models", False)
+        self.assertGreater(len(files), 5)
+        self.assertTrue(all(f["bytes"] for f in files), "a ready-made pack pins every file's size")
+        big = next(f for f in files if f["path"].endswith("experts.bin"))
+        Path(big["path"]).parent.mkdir(parents=True)
+        Path(big["path"] + ".part").write_bytes(b"x" * 1000)
+        prog = self.mcp.combined_progress({"step": "5/7: downloading"}, {"files": files, "total_gb": 128.0})
+        model = prog["parts"][0]
+        self.assertEqual((model["kind"], model["state"], model["files_done"], model["files_total"]), ("model", "downloading", 0, len(files)))
+        self.assertAlmostEqual(model["total_gb"], sum(f["bytes"] for f in files) / 1e9, places=2)
+
+    def test_a_config_with_only_some_parts_is_not_ready(self):
+        """The config names the first part only; 'ready' used to mean that part exists."""
+        data = self.root / "models" / "x"
+        data.mkdir(parents=True)
+        first = data / "Model-00001-of-00003.gguf"
+        first.write_bytes(b"x")
+        self.assertEqual(len(self.mcp.shard_gaps([str(first)])), 2)
+        (data / "Model-00002-of-00003.gguf").write_bytes(b"x")
+        (data / "Model-00003-of-00003.gguf.part").write_bytes(b"x")
+        self.assertEqual([Path(g).name for g in self.mcp.shard_gaps([str(first)])], ["Model-00003-of-00003.gguf"])
+        (data / "Model-00003-of-00003.gguf.part").unlink()
+        (data / "Model-00003-of-00003.gguf").write_bytes(b"x")
+        self.assertEqual(self.mcp.shard_gaps([str(first)]), [])
+        self.assertEqual(self.mcp.shard_gaps([str(data / "single.gguf")]), [])
+
     @unittest.skipUnless(os.name == "nt" or sys.platform.startswith("linux"), "a PC with a GPU probe")
     def test_a_real_install_reaches_the_model_download_with_nothing_else_acquired(self):
         """setup.py in the app's mode, as the install job runs it: steps 1-4 pass (PC check, packages bundled, engine component
