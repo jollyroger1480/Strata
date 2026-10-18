@@ -419,7 +419,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     nightly); a user's repeated A/B/A/B with setup's TheRock 7.10 wheels and an i5-12600K measured +1-4%, inside a
     12-20% run-to-run spread (#432) - how much it gains depends on how much of decode the router is on that setup.
     `STRATA_HIP_ROUTER_OLD=1` runs the portable kernel.
-  - `STRATA_HIP_WMMA=1` (opt-in, gfx12 only, int8 KV): the prompt path's QSA attention on RDNA4 matrix cores (the engine prints a one-line hint about it at start on gfx12 with `--kv int8`; it never enables it, because the output bits change; setting the variable to anything, 0 included, silences the hint)
+  - `STRATA_HIP_WMMA` (on by default on gfx12 with an int8 KV since 148-amd, `STRATA_HIP_WMMA=0` turns it off; gfx11: opt-in with `=1`): the prompt path's QSA attention on RDNA4 matrix cores (the engine says so once, at the first prompt)
     (`v_wmma_f32_16x16x16_f16`, FP16 hi + lo halves like the CUDA tensor-core kernel; `hip_prompt_attn_wmma` bounds it
     against the FP32 kernel and FP64). 7.2-7.5x the portable kernel; R9700 prompts 4K 1,784 -> 2,427 tok/s, 16K
     1,797 -> 2,700 (a user with TheRock 7.10: +29-34%, #432). Not bitwise: greedy text differs from token ~50 on, as with the CUDA tensor-core attention. With it
@@ -434,6 +434,12 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     1,990 at 4,210 (+17.1%), medians 1,571 -> 2,064 and a 1.27x geometric mean over those three. decode
     89.8 -> 86.9 tok/s, unchanged. `STRATA_SELECT_WMMA=1` on top changed nothing at those lengths (2,026 tok/s);
     its +1.5% is a 16K/262K-ctx number. `hip_prompt_attn_wmma` passes on that card.
+    **Default on gfx12 (148-amd).** Quality on an R9700 (Q2_0, int8 KV, fixed expert cache so that the default against itself is bit-identical):
+    teacher-forced KL against the old kernel through the real serve decode path (STRATA_FOLLOW, 28 prompts, 6,024 positions) 0.0003 (p99 0.006, top-1
+    99.8%, perplexity of the forced text x1.0003), and 0.0014 over 1,760 positions of eight 6K-token documents (top-1 98.9%, x1.0009); HumanEval 157/164
+    (default 156 and 156), reasoning 25/30 (24 and 26), agent 6/6, needles at 32K and 125K x three depths 6/6, CJK 8/8, tool calls 5/5. Prompt speed,
+    interleaved pairs on a quiet R9700, Q2_0 32 GB: see the 148-amd table below. The first-token KL against the FP16 prompt path cannot rank it (0.0296 against 0.0280 for the old
+    kernel, a paired difference of +0.0016 +- 0.0026): on a 2-bit pack any change of the prompt numerics, even `--prefill 4096`, moves the first token by about 0.025.
   - The prompt path's QSA top-k picks its kernel by the blocks a query actually has, not the cache's capacity (#337,
     bsorensen110): the same ids, on by default with AMD (NVIDIA keeps its capacity rule: there the 64K prompts read
     1-3% slower with it). `STRATA_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
@@ -452,6 +458,17 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     prompt's top token was the same one, so that check says little); 4 of 4 long-context retrieval checks passed.
     0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
     gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
+    **Q2_0 gate/up (148-amd).** The native Q2_0 pack's gate/up (64-value blocks) take the same kernels and are in the gfx12 default set with IQ3_S and
+    IQ3_XXS (`STRATA_PF_FUSED=0` keeps MMQ). One layer, 2,048 tokens x top 10 over 512 experts: MMQ 24.5 ms, fused 4.4 ms; 8,192 tokens 31.7 vs 13.2 ms
+    (`hip_prefill_fused_iq`, fused against MMQ rel. RMS 1.6e-5). Engine, R9700 Q2_0 32 GB, 5 interleaved pairs: prompt 4K +16.7%, 20K +19.0% (noise arm 1.001 / 0.999).
+    Quality: teacher-forced KL against MMQ 0.0004 (6,022 positions, top-1 99.5%) and 0.0016 (1,760 long-document positions, top-1 98.2%), the same tasks as
+    above unchanged (156/164, 24/30, 6/6, 6/6, 8/8, 5/5). IQ2_XXS / IQ2_XS / IQ2_S gate/up stay opt-in on gfx12.
+    **Both defaults together (148-amd), R9700, interleaved starts of one engine, prompt tok/s** (base = the build before them; the new paths change
+    bits, so decode texts differ from the first differing token on and decode is compared with both switched off instead: 95.23 vs 95.28, same ids):
+    Q2_0 32 GB, 5 pairs: 4K 1,151 -> 2,286 (a slower start mode gives 1,988), 20K 1,384 -> 2,751 (2,481); with one lever each (3 pairs): WMMA 4K x1.35 / 20K x1.46,
+    Q2_0 fused experts x1.28 / x1.19, both x1.73 / x1.79. IQ3_XXS 32 GB, 5 pairs (only the attention is new): 4K 1,369 -> 1,436 (the base starts in a 1,170 or a
+    1,370 mode), 20K 1,576 -> 1,997 (x1.27). The identity gate with both switched off (STRATA_HIP_WMMA=0, STRATA_PF_FUSED=0): 10 of 10 prompts and the
+    4K / 20K residual dumps identical on both packs.
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.

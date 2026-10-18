@@ -2175,30 +2175,33 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #endif
 }
 
-// gfx12 (RDNA4) and gfx11 (RDNA3 / RDNA3.5), only on request: the output differs from the default kernel's in its
-// last bits
+// gfx12 (RDNA4): on by default (148-amd; STRATA_HIP_WMMA=0 turns it off).  gfx11 (RDNA3 / RDNA3.5): only on request
+// (STRATA_HIP_WMMA=1).  The output differs from the old kernel's in its last bits (FP32-level accuracy, another summation
+// order): teacher-forced KL against the old kernel 0.0003 (28 prompts) / 0.0014 (8 long documents) on an R9700.
 bool hip_wmma_usable() {
-    static const bool want = [] {
+    static const int env = [] {   // -1 unset, 0 off, 1 on
         const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e != nullptr && e[0] == '1';
+        return e == nullptr || e[0] == '\0' ? -1 : (e[0] == '1' ? 1 : 0);
     }();
-    if (!want) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx11 / gfx12, 2 other
+    if (env == 0) return false;
+    static int arch[64] = {};   // 0 unknown, 1 gfx12, 2 other, 3 gfx11 matrix cores
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
         if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 || strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName)
-                        ? 1 : 2;
+        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 1
+                    : strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ? 3 : 2;
         static bool told = false;
-        if (!told) {
+        if (!told && (env == 1 || arch[dev] == 1)) {
             told = true;
-            std::fprintf(stderr, "strata: STRATA_HIP_WMMA: the prompt attention on matrix cores %s (%s)\n",
-                         arch[dev] == 1 ? "on" : "unavailable", prop.gcnArchName);
+            const bool on = arch[dev] == 1 || (arch[dev] == 3 && env == 1);
+            std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", env == 1 ? "STRATA_HIP_WMMA: " : "",
+                         on ? "on" : "unavailable", prop.gcnArchName,
+                         env == 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
         }
     }
-    return arch[dev] == 1;
+    return arch[dev] == 1 || (arch[dev] == 3 && env == 1);
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
@@ -2283,6 +2286,14 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
 #endif
 }
 void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
+
+bool qsa_hip_wmma_active() {
+#if defined(__HIPCC__)
+    return hip_wmma_usable();
+#else
+    return false;
+#endif
+}
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
