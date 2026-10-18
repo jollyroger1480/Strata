@@ -7,6 +7,9 @@
 tools/hip/build_windows.bat runs it after the build.  The zip holds:
 
     strata.exe, strata-device.exe, BUILD.json      (backend "hip", the archs, the ROCm and hipBLASLt versions)
+    strata-vision.exe, strata-vision-hip.exe       the picture readers when --vision-cpu / --vision-hip are given: the CPU reader
+                                                   (the fallback; starts on any PC) and the GPU reader (tools/vision,
+                                                   STRATA_VISION_HIP; imports the same ROCm DLLs as strata.exe)
     amdhip64_7.dll, amd_comgr.dll + what they import   the HIP runtime beside the exes too (#468 #461: before System32)
     rocm/bin/*.dll                                 the ROCm DLLs the two programs load (their import tables, followed
                                                    through the ROCm DLLs, + amd_comgr.dll, which the HIP runtime loads
@@ -73,6 +76,8 @@ def main() -> int:
     ap.add_argument("--archs", required=True, help="the archs the engine was compiled for, ';'-separated")
     ap.add_argument("--rocm-version", required=True)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--vision-cpu", type=Path, help="strata-vision.exe built for the CPU (tools/vision, STRATA_PORTABLE=ON)")
+    ap.add_argument("--vision-hip", type=Path, help="strata-vision-hip.exe built for the same archs (STRATA_VISION_HIP=ON)")
     a = ap.parse_args()
     archs = [x for x in re.split(r"[;, ]+", a.archs) if x]
     rbin = a.rocm / "bin"
@@ -83,10 +88,13 @@ def main() -> int:
 
     for p in PROGRAMS:
         shutil.copy2(a.build / p, stage / p)
+    readers = [(src, src.name) for src in (a.vision_cpu, a.vision_hip) if src is not None]
+    for src, name in readers:
+        shutil.copy2(src, stage / name)
 
     # the ROCm DLLs: the programs' imports, followed through the ROCm DLLs themselves
     rocm_dlls = {p.name.lower(): p for p in rbin.glob("*.dll")}
-    need, todo, crt = [], [stage / p for p in PROGRAMS] + [rbin / d for d in DYNAMIC], set()
+    need, todo, crt = [], [stage / p for p in PROGRAMS] + [stage / n for _, n in readers] + [rbin / d for d in DYNAMIC], set()
     while todo:
         f = todo.pop()
         for name in imports(objdump, f):
@@ -157,6 +165,10 @@ def main() -> int:
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,
             "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2], "vision": "none",
             "lib_dirs": ["rocm/bin"]}
+    if a.vision_cpu is not None:
+        meta.update({"vision": "cpu", "vision_cpu": a.vision_cpu.name})
+    if a.vision_hip is not None:
+        meta.update({"vision": "gpu", "vision_gpu": a.vision_hip.name, "vision_archs": archs})
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
     z = a.out / ASSET
