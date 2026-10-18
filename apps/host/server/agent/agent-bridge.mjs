@@ -501,6 +501,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           turn.parentOpen = false;
           armSettle();
           break;
+        // The first turn of a prompt may have started before this follow stream attached (no turn/start seen): any step of the parent is proof that it is
+        // still working. Without this a helper that finished while the parent was still answering ended the run early ("The agent turn was interrupted").
+        case 'step/start':
+          if (!turn.parentOpen) { turn.parentOpen = true; clearTimeout(turn.settleTimer); }
+          break;
         case 'tool/call':
           if (d.name === 'subagent' || d.name === 'subagent_fork') turn.subagentCalls.set(d.callId, parseArgs(d.arguments));
           break;

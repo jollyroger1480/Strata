@@ -110,3 +110,19 @@ test('the real Harness: naming the local model, and naming no model, both work',
   assert.ok(r.local.requests.length > before);
   assert.equal(r.remote.requests.length, 0);
 });
+
+test('the real Harness: a helper that finishes while the chat model is still answering does not end the run early ("interrupted before it finished")', { skip }, async (t) => {
+  // The chat model answers slowly, the helper's model (a second server) answers at once: the helper reports back while the parent is mid-answer.
+  const slow = await startScriptedWorker({ chunkDelayMs: 900 });
+  const fast = await startScriptedWorker({ model: 'deepseek/deepseek-v3.2', chunkDelayMs: 5 });
+  const dir = mkdtempSync(join(tmpdir(), 'strata-race-')); const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const bridge = createAgentBridge({ dataDir: dir, env: process.env, startTimeoutMs: 90_000,
+    localInstances: () => [{ id: 'inst-1', label: 'Slow chat model', baseUrl: slow.url, modelId: 'scripted-model', context: 32768, slots: 2 }],
+    connections: () => [{ id: 'conn-1', name: 'OpenRouter', baseUrl: fast.url, protocol: 'openai-chat', apiKey: 'k', models: [{ id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', contextMax: 32768 }] }] });
+  t.after(async () => { await bridge.close(); await slow.close(); await fast.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
+  const frames = [];
+  await bridge.runTurn({ chatId: 'race', message: `SCRIPT:call subagent ${JSON.stringify({ description: 'Quick', prompt: 'SCRIPT:echo hi', model: 'DeepSeek V3.2' })}`, workspacePath: ws, mode: 'bypass', onFrame: f => frames.push(f) });
+  assert.ok(!frames.some(f => f.type === 'error'), `no error: ${JSON.stringify(frames.filter(f => f.type === 'error'))}`);
+  assert.equal(frames.at(-1).type, 'done');
+  assert.match(frames.filter(f => f.type === 'delta').map(f => f.text).join(''), /Tool finished/, 'the chat model got to answer');
+});
