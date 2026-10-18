@@ -748,7 +748,7 @@ ISSUE_WORDS = {
     "multiple_model_groups": "the folder holds more than one model",
     "incomplete_or_invalid_shard_set": "some shards are missing",
     "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
-    "unsupported_or_missing_architecture": "this is not a model Strata can run",
+    "unsupported_or_missing_architecture": "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)",
     "unsupported_or_incomplete_tokenizer_metadata": "the file has no usable tokenizer",
     "missing_or_unexpected_expert_quantization": "its quantization is not one Strata knows",
 }
@@ -764,7 +764,7 @@ def plain_issue(code: str) -> str:
     if "does not begin with a gguf header" in low or "header version" in low:
         return "a file is not a GGUF model file"
     if "unsupported_architecture" in low:
-        return "this is not a model Strata can run"
+        return "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"
     if "symlink" in low:
         return "a file is a shortcut (symbolic link); point at the real file"
     return code.replace("_", " ")

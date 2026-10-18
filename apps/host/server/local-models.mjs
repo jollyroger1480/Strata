@@ -14,7 +14,8 @@ export function browseLocalModels(input){
  return {directory,parent:dirname(directory)===directory?null:dirname(directory),entries:entries.slice(0,1000),truncated:entries.length>1000};
 }
 export function inspectLocalModel(input){
- let file=fullPath(input);if(extname(file).toLowerCase()!=='.gguf')throw new Error('Select a .gguf model file. Folders, adapters, and projectors cannot be loaded as a chat model.');
+ let file=fullPath(input);if(extname(file).toLowerCase()!=='.gguf')throw new Error('Select a .gguf model file. Folders and adapters cannot be loaded as a chat model.');
+ if(/^mmproj/i.test(basename(file)))throw new Error('This is a picture reader (mmproj), not a model. Choose the model’s own .gguf file; a model that reads pictures needs its reader in the same folder.');
  if(!statSync(file).isFile())throw new Error('Select the model’s .gguf file, rather than its folder.');
  accessSync(file,constants.R_OK);
  let selected=readGGUF(file);const split=basename(file).match(/^(.*)-(\d{5})-of-(\d{5})\.gguf$/i);
@@ -25,9 +26,9 @@ export function inspectLocalModel(input){
   try{selected=readGGUF(file);}catch{throw new Error('The first shard is missing or invalid. Keep all model shards in the same folder.');}
  }
  const m=selected.metadata,arch=m['general.architecture'];
- if(!ARCHITECTURES.has(arch))throw new Error(`The declared architecture ${clean(arch)||'(missing)'} is not supported by this text-model importer. Choose a complete text GGUF model.`);
+ if(!ARCHITECTURES.has(arch))throw new Error(`The declared architecture ${clean(arch)||'(missing)'} is not supported by this importer. This model type isn’t supported by the Strata engine; add it as a Custom model API (llama-server) instead.`);
  if(m['general.type']&&m['general.type']!=='model')throw new Error('This is an adapter or auxiliary file. Choose the full model GGUF.');
- if(!m['tokenizer.ggml.model']||!m['tokenizer.ggml.tokens']?.count)throw new Error('This GGUF does not include its tokenizer. Choose the full model, not a projector or adapter.');
+ if(!m['tokenizer.ggml.model']||!m['tokenizer.ggml.tokens']?.count)throw new Error('This GGUF does not include its tokenizer. Choose the full model, not an adapter. A picture reader (mmproj) goes next to its model, not in its place.');
  const integer=(key,min,max)=>{const value=m[key];if(!Number.isInteger(value)||value<min||value>max)throw new Error(`Missing or invalid ${key} metadata. This model cannot be configured safely.`);return value;};
  const context=integer(`${arch}.context_length`,4096,100_000_000),layers=integer(`${arch}.block_count`,1,4096),embedding=integer(`${arch}.embedding_length`,1,1_000_000),heads=integer(`${arch}.attention.head_count`,1,8192);
  const kvHeads=m[`${arch}.attention.head_count_kv`]??heads,keyLength=m[`${arch}.attention.key_length`]??embedding/heads,valueLength=m[`${arch}.attention.value_length`]??keyLength,experts=m[`${arch}.expert_count`]??0;

@@ -22,7 +22,7 @@ MAX_ARRAY_ITEMS = 500_000
 MAX_TENSORS = 100_000
 SCALAR_BYTES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
                 10: 8, 11: 8, 12: 8}
-CAPTURE_STRINGS = {"general.architecture", "tokenizer.ggml.model"}
+CAPTURE_STRINGS = {"general.architecture", "tokenizer.ggml.model", "clip.projector_type"}
 PRESENCE_KEYS = {"tokenizer.ggml.tokens", "tokenizer.ggml.merges"}
 
 
@@ -164,6 +164,7 @@ def inspect_metadata(path: Path) -> dict:
             if tensors == 1 and details.st_size - (data_start + required_payload_bytes) >= 64:
                 raise ProfileError("single-tensor GGUF shard has unexplained trailing bytes", 5)
             return {"architecture": found.get("general.architecture"),
+                    "projector_type": found.get("clip.projector_type"),
                     "tokenizer_model": found.get("tokenizer.ggml.model"),
                     "tokenizer_tokens_present": found.get("tokenizer.ggml.tokens") is True,
                     "tokenizer_merges_present": found.get("tokenizer.ggml.merges") is True,

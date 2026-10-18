@@ -8,14 +8,16 @@ import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog'
 import { sizeGb } from '../lib/format';
 import { NativeProgress } from './NativeModels';
 
-interface Preview { path: string; preview: { file_count: number; total_bytes: number; file_set_status: string; issues: string[]; candidate_selection: { family: string; model: string } | null } }
+interface Preview { path: string; preview: { file_count: number; total_bytes: number; file_set_status: string; issues: string[]; messages?: string[]; projectors?: { name: string; status: string; pinned: boolean; plain: string }[]; reads_pictures?: boolean; candidate_selection: { family: string; model: string } | null } }
 
 /** The words for why a folder of GGUF files cannot be used: a sentence and what to do, the checker's own codes under Details. */
 function problem(issues: string[]): { message: string; next: string } {
     const has = (re: RegExp) => issues.some(i => re.test(i));
     if (has(/incomplete_or_invalid_shard_set|multiple_model_groups/))
         return { message: 'Some parts of this model are missing, or the folder holds more than one model.', next: 'Put every part of one model in one folder, then check again.' };
-    if (has(/unrecognized_or_unsupported_model_variant|unsupported_architecture|unsupported_or_missing_architecture|expert_quantization|tokenizer/))
+    if (has(/unsupported_architecture|unsupported_or_missing_architecture/))
+        return { message: 'This model type isn’t supported by the Strata engine.', next: 'Add it as a Custom model API instead: start it with llama-server, then open Settings > Models > Add model provider > Custom model API.' };
+    if (has(/unrecognized_or_unsupported_model_variant|expert_quantization|tokenizer/))
         return { message: 'Strata can’t run these files yet.', next: 'Strata runs the Qwen3.8-Flash-Next models. Download one from Models, or choose a folder with its files.' };
     return { message: 'These files could not be checked.', next: 'Check that the folder holds complete GGUF files, then try again.' };
 }
@@ -51,7 +53,7 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
         setPending(true);
         setError('');
         try {
-            const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: checked.path, context: native?.catalog?.recommendation?.context ?? 32768, vision: 'no', kv: 'int8', loadAfter: true } });
+            const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: checked.path, context: native?.catalog?.recommendation?.context ?? 32768, vision: checked.preview.projectors?.some(p => p.status === 'ok' && p.pinned) && native?.visionReader ? 'yes' : 'no', kv: 'int8', loadAfter: true } });
             setJobId(result.id);
         }
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -70,6 +72,7 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
       <h2 className="h3">{tr(family ? family.title : 'Model found')}</h2>
       <p><strong>{tr(version ? catalogVersionLabel(version) : selection?.model ?? '')}</strong> · {tr(selection?.model ?? '')}</p>
       <p className="small muted">{tr("{0} files · {1}", [checked.preview.file_count, sizeGb(checked.preview.total_bytes / 1024 ** 3)])}</p>
+      {tr(checked.preview.messages?.map(m => <p className="small muted" key={m}>{tr(m)}</p>))}
       <div className="native-model-actions"><Btn variant="primary" icon="models" disabled={pending || !!active} onClick={() => void prepare()}>{tr(pending ? 'Checking…' : 'Prepare and load')}</Btn></div>
      </> : <>
       <h2 className="h3">{tr(found!.message)}</h2>

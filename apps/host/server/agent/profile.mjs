@@ -234,7 +234,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
         id: m.id, name: m.name || m.id,
         contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
         // Pictures only when the server itself says it reads them (the host asks its model list): a server started without a vision encoder refuses the whole request when a picture is in it.
-        input: ownServer && m.vision === true ? ['text', 'image'] : ['text'],
+        // (any OpenAI-style API: a cloud model the person marked, or whose model list says it reads pictures, takes image_url the same way)
+        input: protocol === 'openai-completions' && m.vision === true ? ['text', 'image'] : ['text'],
         ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : {}),
       })),
     };

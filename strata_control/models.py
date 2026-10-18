@@ -250,6 +250,46 @@ def _candidate_selection(shards: list[Path]) -> dict | None:
     return None
 
 
+UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
+                          "Add it as a Custom model API (llama-server) instead.")
+# The picture readers Strata ships a pinned copy of (setup downloads and checks one of these next to the model).
+# (name, size in bytes) as setup.py pins them: setup would delete a file of that name with another size, so only an exact
+# match is called "the official one".
+PINNED_PROJECTORS = {"mmproj-qwen3.8-flash-next-bf16.gguf": 907543008, "mmproj-f16.gguf": 899283584}
+OUR_PROJECTOR_TYPES = {"qwen3vl_merger"}
+
+
+def _assess_projector(path: Path) -> dict:
+    """What a picture-reader file (mmproj*.gguf) next to a model is, in words; never blocks the import."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = -1
+    row = {"name": path.name, "status": "unreadable", "pinned": PINNED_PROJECTORS.get(path.name.lower()) == size}
+    try:
+        info = inspect_metadata(path)
+    except ProfileError:
+        row["plain"] = f"{path.name} could not be read as a picture reader, so it is not used."
+        return row
+    row["architecture"], row["projector_type"] = info["architecture"], info.get("projector_type")
+    if info["architecture"] != "clip":
+        row["status"] = "not_a_projector"
+        row["plain"] = f"{path.name} is not a picture reader (mmproj) file, so it is not used."
+    elif info.get("projector_type") not in OUR_PROJECTOR_TYPES:
+        row["status"] = "unsupported"
+        row["plain"] = (f"{path.name} reads pictures for a different kind of model. "
+                        "Strata cannot use it; add that model as a Custom model API (llama-server) instead.")
+    elif row["pinned"]:
+        row["status"] = "ok"
+        row["plain"] = f"{path.name} is the picture reader Strata uses for this model family; pictures will work."
+    else:
+        row["status"] = "other_name"
+        row["plain"] = (f"{path.name} is a picture reader of the right kind but not the file Strata checks; "
+                        "Strata uses the official one (mmproj-Qwen3.8-Flash-Next-BF16.gguf) and "
+                        "downloads it when it is not in the folder.")
+    return row
+
+
 def plan_import(raw_path: str) -> dict:
     """Inspect a local candidate without copying, parsing tensors or adopting it."""
     path = Path(raw_path).expanduser()
@@ -277,6 +317,14 @@ def plan_import(raw_path: str) -> dict:
             raise ProfileError("cannot inspect GGUF directory", 5) from None
     elif stat.S_ISREG(details.st_mode) and path.name.lower().endswith(".gguf"):
         ignored_auxiliary = []
+        try:                       # the picture reader that sits next to a chosen model file
+            ignored_auxiliary = [c.name for c in path.parent.iterdir()
+                                 if c.name.lower().startswith("mmproj") and c.name.lower().endswith(".gguf")][:8]
+        except OSError:
+            pass
+        if path.name.lower().startswith("mmproj"):
+            raise ProfileError("this is a picture reader (mmproj), not a model. Choose the model's own "
+                               ".gguf file; Strata finds the reader next to it", 5)
         match = SHARD.fullmatch(path.name)
         if match:
             total = int(match.group(3))
@@ -334,6 +382,13 @@ def plan_import(raw_path: str) -> dict:
         if metadata["tokenizer_model"] != "gpt2" or not metadata["tokenizer_tokens_present"] or \
                 not metadata["tokenizer_merges_present"]:
             issues.append("unsupported_or_incomplete_tokenizer_metadata")
+    projectors = [_assess_projector(path.parent / n if path.is_file() else path / n)
+                  for n in sorted(ignored_auxiliary)[:8]]
+    messages = []
+    if any(i.endswith("unsupported_architecture") or i == "unsupported_or_missing_architecture" for i in issues):
+        messages.append(UNSUPPORTED_MODEL_TYPE)
+    elif projectors:
+        messages.extend(p["plain"] for p in projectors)
     candidate = _candidate_selection(shards)
     if candidate is None:
         issues.append("unrecognized_or_unsupported_model_variant")
@@ -347,6 +402,9 @@ def plan_import(raw_path: str) -> dict:
             "observed_expert_types": sorted(observed_experts),
             "observed_tensor_count": observed_tensor_count,
             "ignored_auxiliary_files": sorted(ignored_auxiliary),
+            "projectors": projectors, "messages": messages,
+            "reads_pictures": any(p["status"] in ("ok", "other_name") for p in projectors) and
+            not any(i.endswith("unsupported_architecture") for i in issues),
             "file_set_status": "plausible" if not issues else "invalid_or_incomplete",
             "issues": issues, "adoption_status": "requires_architecture_quantization_tokenizer_and_engine_checks",
             "execution_compatibility": "unverified", "would_write": False,
