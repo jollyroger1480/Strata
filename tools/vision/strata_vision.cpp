@@ -15,6 +15,7 @@
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include "gguf_meta.h"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -112,10 +113,11 @@ int main(int argc, char** argv) {
         }
     }
 #endif
-    llama_model_params mp = llama_model_default_params();
-    mp.vocab_only = true;
-    llama_model* text = llama_model_load_from_file(model.c_str(), mp);
-    if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
+    // the vocabulary and header only: the weights (and their tensor types, which can be Strata-private ones such as
+    // Gyro's TQK6 / TQK7) are never touched - see gguf_meta.h
+    std::string how;
+    llama_model* text = strata_open_text_model(model, &how);
+    if (!text) { std::printf("ERR cannot open the text model %s (%s)\n", model.c_str(), how.c_str()); std::fflush(stdout); return 1; }
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;

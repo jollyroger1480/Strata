@@ -28,7 +28,7 @@ class GyroCatalog(unittest.TestCase):
             self.assertAlmostEqual(size / 1e9, download, delta=0.05)
             self.assertEqual(len(sha), 64)
             self.assertEqual(setup.model_shards(setup.FAMILIES["gyro"], model), 1)
-            self.assertIs(d.get("vision"), False)
+            self.assertIs(d.get("vision"), True)
             self.assertTrue(d["mem_total"])
             self.assertEqual(d["families"], ("gyro",))
 
@@ -73,7 +73,7 @@ class GyroCatalog(unittest.TestCase):
         by = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual(by["Gyro-S"]["on_this_pc"], "fits")
         self.assertEqual(by["Gyro-M"]["on_this_pc"], "tight")
-        self.assertFalse(by["Gyro-S"]["images"])
+        self.assertTrue(by["Gyro-S"]["images"])
 
     def test_mcp_table_gives_ram_plus_vram_without_the_ngram_table(self):
         """The Models page shows what a version needs of RAM + VRAM together, the n-gram table (on the SSD) not counted."""

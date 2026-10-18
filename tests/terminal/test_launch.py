@@ -681,7 +681,7 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("Did you mean 'Office'", err)
 
     def test_vision_is_turned_off_for_a_model_without_pictures(self):
-        p = self.plan("--model", "gyro-s", "--vision", "on")
+        p = self.plan("--model", "nvfp4-qad", "--vision", "on")
         self.assertEqual(p["settings"]["vision"], "off")
         self.assertTrue(any("cannot read pictures" in w for w in p["warnings"]))
 
