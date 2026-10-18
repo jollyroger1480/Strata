@@ -88,6 +88,7 @@ class InstallOwnPath(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.calls = []
         self.families = {"qwen4exp", "qwen35moe"}
+        self.hip_reader = True
         eng = self.root / "engine"
         self.cfg = {}
 
@@ -96,6 +97,8 @@ class InstallOwnPath(unittest.TestCase):
             if vision != "none":                                   # the image encoder beside the engine
                 eng.mkdir(parents=True, exist_ok=True)
                 (eng / setup.VEXE).write_text("x")
+                if hip and self.hip_reader:                        # an AMD engine package carries the GPU reader too
+                    (eng / setup.HVEXE).write_text("x")
             return self.root / "llama", eng, {"version": "0.1.44"}, ["/libs"], gpu, vision
 
         def write_cfg(path, cfg, source=None):
@@ -219,16 +222,36 @@ class InstallOwnPath(unittest.TestCase):
         self.assertTrue(self.cfg["vision"]["gpu"])
         self.assertIn("kept as you chose", out)
 
-    def test_amd_reads_pictures_on_the_cpu(self):
-        with mock.patch.object(setup, "WIN", False):
+    def test_amd_reads_pictures_on_the_gpu_with_the_cpu_reader_behind_it(self):
+        for win, suffix in ((False, ""), (True, ".exe")):
+            with mock.patch.object(setup, "WIN", win), mock.patch.object(setup, "VEXE", "strata-vision" + suffix),                     mock.patch.object(setup, "HVEXE", "strata-vision-hip" + suffix):
+                rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="yes")
+                self.assertEqual(rc, 0, out)
+                v = self.cfg["vision"]
+                self.assertTrue(v["gpu"])
+                self.assertEqual(Path(v["exe"]).name, "strata-vision-hip" + suffix)
+                self.assertEqual(Path(v["cpu_exe"]).name, "strata-vision" + suffix)
+                self.assertIn("--vision", self.cfg["args"])
+                rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="cpu")
+                v = self.cfg["vision"]
+                self.assertFalse(v["gpu"])
+                self.assertEqual(Path(v["exe"]).name, "strata-vision" + suffix)
+                self.assertNotIn("cpu_exe", v)
+
+    def test_amd_engine_without_the_gpu_reader_reads_pictures_on_the_cpu(self):
+        self.hip_reader = False
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"):
             rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="yes")
         self.assertEqual(rc, 0, out)
         self.assertFalse(self.cfg["vision"]["gpu"])
+        self.assertNotIn("cpu_exe", self.cfg["vision"])
         self.assertIn("--vision", self.cfg["args"])
-        with mock.patch.object(setup, "WIN", True):
-            rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="cpu")
-        self.assertNotIn("vision", self.cfg)
-        self.assertIn("Linux-only", out)
+
+    def test_amd_pictures_are_on_when_nothing_is_asked(self):
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"),                 mock.patch.object(setup, "HVEXE", "strata-vision-hip"):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.cfg["vision"]["gpu"])
 
     def test_parallel_is_opt_in_and_recommended_where_the_experts_fit(self):
         fam = setup.OWN_PATH_FAMILIES["qwen36"]
