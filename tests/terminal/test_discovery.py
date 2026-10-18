@@ -185,6 +185,23 @@ class GuiLayout(unittest.TestCase):
         self.assertEqual(plan["issues"], [])
         self.assertEqual(plan["candidate_selection"]["model"], "Gyro-M")
 
+    def test_a_folder_with_two_models_says_which_and_asks_for_one_file(self):
+        folder = self.base / "both"
+        folder.mkdir()
+        (folder / GYRO_S).write_bytes(gyro_s_bytes())
+        (folder / GYRO_M).write_bytes(gyro_m_bytes())
+        plan = models.plan_import(str(folder))
+        self.assertIn("multiple_model_groups", plan["issues"])
+        self.assertEqual(sorted((h["family"], h["model"]) for h in plan["folder_holds"]), [("gyro", "Gyro-M"), ("gyro", "Gyro-S")])
+        from strata_cli.cli import _import_problem
+        text = _import_problem(plan)
+        self.assertIn("more than one model", text)
+        self.assertIn("holds 2 models", text)
+        self.assertIn("gyro Gyro-S", text)
+        self.assertIn("Point at the .gguf file of the one you want", text)
+        self.assertNotIn("multiple_model_groups", text)
+        self.assertNotIn("not a model size", text)
+
     def test_import_still_refuses_gyro_s_with_the_wrong_expert_format(self):
         folder = self.base / "wrong"
         folder.mkdir()

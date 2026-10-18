@@ -512,7 +512,7 @@ def _models(a: argparse.Namespace) -> int:
                 print(json.dumps({"schema_version": 1, "ok": False, "plan": result},
                                  ensure_ascii=False, allow_nan=False))
             else:
-                print(f"GGUF file set is incomplete or invalid: {', '.join(result['issues'])}", file=sys.stderr)
+                print(_import_problem(result), file=sys.stderr)
             return 5
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
     if a.models_command == "list":
@@ -555,6 +555,23 @@ def _models(a: argparse.Namespace) -> int:
                     f"Config: {item['source_config']}\n"
                     f"Components: {len(result['components']['components'])}, "
                     f"issues: {len(result['components']['issues'])}")
+
+
+def _import_problem(plan: dict) -> str:
+    """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
+    from strata_cli.launch.runner import plain_issue
+    issues = [str(x) for x in plan.get("issues") or []]
+    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
+        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
+    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    text = f"These files cannot be used as they are: {words}."
+    holds = plan.get("folder_holds") or []
+    if holds:
+        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
+        other = [h["file"] for h in holds if not h.get("model")]
+        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
+            ". Point at the .gguf file of the one you want."
+    return text
 
 
 def _import_words(plan: dict) -> str:

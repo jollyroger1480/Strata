@@ -391,8 +391,19 @@ def plan_import(raw_path: str) -> dict:
         else:
             groups.setdefault((item.name, 1), set()).add(1)
     issues = []
+    folder_holds = []
     if len(groups) != 1:
         issues.append("multiple_model_groups")
+        # a folder with several models: say which ones Strata knows, so the person can point at one of them
+        for key in sorted(groups):
+            members = [item for item in shards if (SHARD.fullmatch(item.name) and (SHARD.fullmatch(item.name).group(1),
+                       int(SHARD.fullmatch(item.name).group(3))) == key) or (not SHARD.fullmatch(item.name) and (item.name, 1) == key)]
+            try:
+                known = _candidate_selection(members)
+            except ProfileError:
+                known = None
+            folder_holds.append({"file": members[0].name if members else key[0], "files": len(members),
+                                 "family": known["family"] if known else None, "model": known["model"] if known else None})
     if len(groups) == 1:
         (_, total), indices = next(iter(groups.items()))
         if total > MAX_IMPORT_SHARDS or indices != set(range(1, total + 1)):
@@ -452,6 +463,7 @@ def plan_import(raw_path: str) -> dict:
             "projectors": projectors, "messages": messages, "already_set_up": _already_set_up(shards, candidate),
             "reads_pictures": any(p["status"] in ("ok", "other_name") for p in projectors) and
             not any(i.endswith("unsupported_architecture") for i in issues),
+            "folder_holds": folder_holds,
             "file_set_status": "plausible" if not issues else "invalid_or_incomplete",
             "issues": issues, "adoption_status": "requires_architecture_quantization_tokenizer_and_engine_checks",
             "execution_compatibility": "unverified", "would_write": False,
