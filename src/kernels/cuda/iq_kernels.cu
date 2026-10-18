@@ -3859,8 +3859,10 @@ bool launch_gu_swiglu(const NativeExpertLayout& L, int64_t gy, cudaStream_t s, c
         return false;
     } else {
         if (g_old_kernels || split_off<TG>() || g_no_sub16_gu || L.n_embd != 2560 || L.n_ff % 32 != 0 || L.n_ff <= 0) return false;
-        // the 16-lane rows assume 80 dots a row (as launch_gu): the 256-value K-quants have 160
-        if (kq_type<TG> && (L.n_embd / Fmt<TG>::qk) * Fmt<TG>::ipb != 80) return false;
+        // the 16-lane rows assume 80 dots a row (as launch_gu): the 256-value K-quants and the APR trellis types (TQ2_T /
+        // TQK6 gate/up: qk 128, ipb 8) have 160 at n_embd 2560 and take launch_gu's full-warp multi kernel.  Gyro-S (TQK6
+        // gate/up) went through here on every 12.0 card from 147-verify on: half of each gate/up row, looping answers.
+        if ((L.n_embd / Fmt<TG>::qk) * Fmt<TG>::ipb != 80) return false;
         const dim3 grid((unsigned) (L.n_ff / 32), (unsigned) gy);
         bool stage = false;
         if constexpr (kStageIqGrid<TG>) stage = g_stage_grid && !((TG == 18 || TG == 21) && !stage_tables_on());
