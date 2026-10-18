@@ -104,10 +104,6 @@ impl Log {
         log.line("shell", &format!("Strata desktop {} starting (pid {})", env!("CARGO_PKG_VERSION"), std::process::id()));
         log
     }
-    /// A log that writes nowhere (tests).
-    pub fn none() -> Log {
-        Log { file: Arc::new(Mutex::new(None)), path: None }
-    }
     pub fn line(&self, who: &str, text: &str) {
         if let Some(f) = self.file.lock().unwrap().as_mut() {
             let _ = writeln!(f, "[{who}] {text}");
