@@ -17,9 +17,9 @@ import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith('--') ? [...acc, [a.slice(2), all[i + 1]?.startsWith('--') || all[i + 1] === undefined ? true : all[i + 1]]] : acc), []));
-for (const need of ['install', 'components', 'work', 'image', 'vlm']) if (!args[need]) { console.error('missing --' + need); process.exit(2); }
+for (const need of ['install', 'components', 'work', 'image']) if (!args[need]) { console.error('missing --' + need); process.exit(2); }
 const install = resolve(args.install), work = resolve(args.work), components = resolve(args.components);
-const skipLocal = args['skip-local'] === true, device = String(args.device ?? 'cpu'), family = String(args.family ?? 'qwen'), modelId = String(args.model ?? 'IQ3_XXS');
+const want = String(args.match ?? args.model ?? 'IQ3_XXS').toLowerCase(), contextSize = Number(args.context ?? 32768), skipLocal = args['skip-local'] === true, device = String(args.device ?? 'cpu'), family = String(args.family ?? 'qwen'), modelId = String(args.model ?? 'IQ3_XXS');
 const node = join(install, 'node', 'node'), hostEntry = join(install, 'host', 'server', 'index.mjs');
 const dirs = { models: join(work, 'models'), profiles: join(work, 'profiles'), runtime: join(work, 'runtime'), home: join(work, 'home'), xdg: join(work, 'xdg'), appdata: join(work, 'appdata') };
 for (const d of [dirs.models, dirs.home, dirs.xdg, dirs.appdata]) mkdirSync(d, { recursive: true });
@@ -105,6 +105,7 @@ async function main() {
   record('the Qwen3.8-Flash-Next models are marked images: true', flash.length > 0 && flash.every(r => r.images === true), flash.map(r => r.size + '=' + r.images).join(' '));
 
   // ---- 2. API models
+  if (args.vlm) {
   const smol = args['vlm-model'] ?? 'smolvlm';
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM' }]);
   const found = await readsAfter('Small picture model', smol, true);
@@ -140,18 +141,19 @@ async function main() {
   console.log(`    other style: ${JSON.stringify(style.message)}`);
   record('an API of another style says plainly why pictures stay in the preview', style.status === 409 && /OpenAI/.test(style.message ?? ''), `${style.status}`);
 
+  }
   if (skipLocal) return;
 
   // ---- 3. a local model
-  const values = { family, model: modelId, context: 32768, vision: 'yes', loadVision: device, ...(args.data ? { data_dir: resolve(args.data) } : {}) };
+  const values = { family, model: modelId, context: contextSize, vision: 'yes', loadVision: device, ...(args.data ? { data_dir: resolve(args.data) } : {}) };
   const started = await call('/api/native/operations', 'POST', { kind: 'install', args: values });
   record('the install operation starts', started.status === 200 || started.status === 202, JSON.stringify(started.body).slice(0, 200));
   const done = await waitJob(started.body.id, 3600);
   record('Download and prepare finishes', done.job.state === 'done', `${done.job.state} ${done.job.error ?? done.job.summary}`);
   const refreshed = (await call('/api/native?refresh=1')).body;
-  const model = refreshed.installed?.models?.find(m => [m.id, m.model, m.tag].some(x => String(x ?? '').toLowerCase() === modelId.toLowerCase()));
+  const model = refreshed.installed?.models?.find(m => [m.id, m.model, m.tag].some(x => String(x ?? '').toLowerCase() === want));
   record('the model is prepared with its picture reader', !!model?.visionPrepared, JSON.stringify({ ready: model?.ready, visionPrepared: model?.visionPrepared }));
-  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? modelId.toLowerCase(), vision: device } });
+  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? want, vision: device } });
   const loaded = await waitJob(load.body.id, 900);
   const instance = loaded.state.instances[0];
   record('the model loads with the picture reader', loaded.job.state === 'done' && instance?.status === 'ready' && instance?.vision === true, `${loaded.job.state} ${loaded.job.error ?? ''} vision=${instance?.vision}`);
