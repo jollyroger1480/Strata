@@ -1,5 +1,6 @@
 {
   "s0001": "% PCIe",
+  "s7311": "Anthropic 系のアプリは /v1/messages を自分で付け足すため、このアドレスの末尾に /v1 はありません。Claude Code では ANTHROPIC_BASE_URL にこのアドレスを設定します。",
   "s0002": "（任意）",
   "s0003": "、コンテキストキャッシュが収まりません",
   "s0004": "-y @modelcontextprotocol/server-filesystem /your/folder",

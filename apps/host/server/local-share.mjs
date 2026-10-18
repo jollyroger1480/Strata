@@ -1,6 +1,7 @@
 /** A separate, key-protected listener for inference only. Never serves the UI or host APIs. */
 import http from 'node:http';
 import os from 'node:os';
+import { apiPath } from './api-paths.mjs';
 export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
   let listener = null, active = false;
   const address = () => Object.values(os.networkInterfaces()).flat().find(n => n?.family === 'IPv4' && !n.internal)?.address ?? '127.0.0.1';
@@ -10,7 +11,7 @@ export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0
     if (listener) throw new Error('Sharing is already starting.');
     if (!hasKey()) throw new Error('Set an API key before sharing with other devices.');
     listener = http.createServer(async (req, res) => {
-      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const path = apiPath(new URL(req.url ?? '/', 'http://localhost').pathname);
       if (!['/v1/models','/v1/chat/completions','/v1/messages'].includes(path)) { res.writeHead(404); res.end('Not found'); return; }
       try { await handle(req, res, path, req.method ?? 'GET'); }
       catch { if (!res.headersSent) res.writeHead(500); res.end('Request failed'); }

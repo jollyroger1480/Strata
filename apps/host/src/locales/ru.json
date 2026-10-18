@@ -1,5 +1,6 @@
 {
   "s0001": "% PCIe",
+  "s7311": "Приложения Anthropic сами добавляют /v1/messages, поэтому в конце этого адреса нет /v1. В Claude Code укажите его в ANTHROPIC_BASE_URL.",
   "s0002": "(необязательно)",
   "s0003": ", кеш контекста не помещается",
   "s0004": "-y @modelcontextprotocol/server-filesystem /your/folder",

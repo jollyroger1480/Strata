@@ -1,5 +1,6 @@
 {
   "s0001": "% PCIe",
+  "s7311": "Anthropic 앱은 /v1/messages를 스스로 붙이므로 이 주소 끝에는 /v1이 없습니다. Claude Code에서는 ANTHROPIC_BASE_URL에 이 주소를 넣으세요.",
   "s0002": "(선택 사항)",
   "s0003": ", 컨텍스트 캐시를 저장할 공간이 부족함",
   "s0004": "-y @modelcontextprotocol/server-filesystem /your/folder",

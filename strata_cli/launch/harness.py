@@ -164,7 +164,8 @@ def _limits_codex(t: Target) -> list[str]:
 
 
 def _limits_claude(t: Target) -> list[str]:
-    out = ["Set CLAUDE_CODE_MAX_CONTEXT_TOKENS to the served context (%d here) and CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096: without them Claude Code "
+    out = ["ANTHROPIC_BASE_URL is the server address %s without /v1: Claude Code adds /v1/messages itself (with /v1 in it the requests go to /v1/v1/messages)." % t.url,
+           "Set CLAUDE_CODE_MAX_CONTEXT_TOKENS to the served context (%d here) and CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096: without them Claude Code "
            "assumes a 100K window and never compacts, or compacts on every turn." % t.context,
            "No Anthropic login or credential is used; the token is only checked by your own server.",
            "The notice [claude-code:unrecognized_model] on stderr is harmless."]
@@ -249,8 +250,14 @@ def closest_name(name: str) -> str | None:
 
 # ------------------------------------------------------------------------------------------------ rendering
 
+def server_root(url: str) -> str:
+    """The server root: the address without a trailing /v1 (people paste the OpenAI-style base). Anthropic apps add /v1/messages themselves."""
+    root = url.strip().rstrip("/")
+    return root[:-3].rstrip("/") if root.lower().endswith("/v1") else root
+
+
 def target(url: str, key: str | None, model: str, context: int | None = None) -> Target:
-    return Target(url=url.rstrip("/"), key=key or PLACEHOLDER_KEY, model=model or "strata", context=int(context or 32768))
+    return Target(url=server_root(url), key=key or PLACEHOLDER_KEY, model=model or "strata", context=int(context or 32768))
 
 
 def render(h: Harness, t: Target) -> dict:
