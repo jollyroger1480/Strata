@@ -59,6 +59,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifndef STRATA_PREFILL_MMQ
@@ -105,6 +106,32 @@ namespace strata::prefill {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// 0.1.48, A750 deadlock: SYCL has no cudaHostRegister, so the expert arena is ordinary pageable memory even where the engine
+// calls it "pinned" (pinned.dp.cpp registers nothing).  A DMA straight from it, `copy->memcpy(stage, arena_ptr, 2.3 MB)`, makes the
+// Level Zero driver copy through its own staging buffers on the calling thread, and on some prompts that wait never ends (the
+// thread spins in sched_yield inside libze_intel_gpu with the GPU idle; tools: /data/148-intel notes).  Only a USM host
+// allocation (the --stream-experts pinned mirror, the B70's) is DMA'd directly; every other expert is copied into one of the
+// stager's pinned buffers by its threads first, the path unpinned experts already take.  STRATA_PF_DMA_PAGEABLE=1 restores the
+// direct copy from pageable memory.
+inline bool dma_direct(const core::ExpertSource* src, int64_t layer, int64_t expert, const void* blob) {
+    if (!src->pinned(layer, expert)) return false;
+    static const bool pageable_ok = [] { const char* v = std::getenv("STRATA_PF_DMA_PAGEABLE"); return v && v[0] == '1'; }();
+    if (pageable_ok) return true;
+    if (blob == nullptr) return false;
+    // the answer per 2 MiB bucket (a query costs ~2 us, 10k+ experts a chunk): "host USM" only when both ends of the bucket are, so a bucket
+    // that straddles two allocations is never taken for USM
+    static thread_local std::unordered_map<uintptr_t, bool> usm_bucket;
+    const uintptr_t key = (uintptr_t) blob >> 21;
+    const auto it = usm_bucket.find(key);
+    if (it != usm_bucket.end()) return it->second;
+    const auto ctx = dpct::get_in_order_queue().get_context();
+    const bool usm = sycl::get_pointer_type((const void*) (key << 21), ctx) == sycl::usm::alloc::host &&
+                     sycl::get_pointer_type((const void*) (((key + 1) << 21) - 1), ctx) == sycl::usm::alloc::host &&
+                     sycl::get_pointer_type(blob, ctx) == sycl::usm::alloc::host;
+    usm_bucket.emplace(key, usm);
+    return usm;
+}
 constexpr float EPS = 1e-6f;
 constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
@@ -2772,7 +2799,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 continue;
                             }
                         }
-                        if (!m.src->pinned(l, e)) {
+                        if (!dma_direct(m.src, l, e, b)) {
                             job = (int) js.size();
                             js.push_back({b, (size_t) lay0.blob_bytes(l)});
                         }
@@ -4031,7 +4058,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                                if (m.src->pinned(l, e)) continue;
+                                { const uint8_t* pb = m.src->pinned(l, e) ? m.src->blob(l, e) : nullptr; if (dma_direct(m.src, l, e, pb)) continue; }
                                 job_of[j] = (int) js.size();
                                 if (gsrc != nullptr) {   // SYCL port: --stream-experts - the stager's thread reads it from the GGUF
                                 js.push_back({nullptr, (size_t) lay.blob_bytes(l), nullptr, (int32_t) l, e, gsrc});
@@ -4056,7 +4083,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             const int sl = stage_next;
                             stage_next = (stage_next + 1) % stage_slots();
                             const auto th = Clock::now();
-                            const bool pinned = m.src->pinned(l, e);   // pinned: never transient
+                            const uint8_t* pb0 = m.src->pinned(l, e) ? m.src->blob(l, e) : nullptr;
+                            const bool pinned = dma_direct(m.src, l, e, pb0);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
                             if (pinned) {
