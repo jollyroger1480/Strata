@@ -55,6 +55,7 @@ export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEF
 /** The approval gate plugin (plain ESM, loaded by absolute path). */
 export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', import.meta.url));
 /** The app's web search (DuckDuckGo, or the person's own Exa / Perplexity key), registered with the Harness's web seam. */
+export const MODELS_PLUGIN = fileURLToPath(new URL('./plugins/strata-models.mjs', import.meta.url));
 export const SEARCH_PLUGIN = fileURLToPath(new URL('./plugins/strata-search.mjs', import.meta.url));
 /** The app's own tool server for the tools a person writes (instructions, commands). */
 export const CUSTOM_TOOLS_SCRIPT = fileURLToPath(new URL('./custom-tools-mcp.mjs', import.meta.url));
@@ -203,7 +204,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     const shaped = addShaped(route, providers[route], inst.baseUrl);
-    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
+    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
   });
 
   connections.forEach(conn => {
@@ -242,7 +243,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
     const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;
     for (const m of conn.models) { const ctx = m.contextMax ?? ASSUMED_API_CONTEXT; compaction.push({ provider: route, model: m.id, headroomTokens: compactionHeadroom(ctx, reply(m)) }); }
-    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
+    for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, connectionName: conn.name, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 
   const defaultRoute = routes.find(r => r.kind === 'local') ?? null;
@@ -263,6 +264,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ? [{ id: 'web', config: { searchProvider: 'deepseek-official', fetchProvider: 'http' } }, { id: 'web-search-deepseek', config: { apiKeyEnv: 'STRATA_SEARCH_KEY' } }]
     : [{ id: 'web', config: { searchProvider: keyed ?? DDG_PROVIDER_ID, fetchProvider: 'http' } }, { id: 'web-search-deepseek', disabled: true },
       { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY' } }] }];
+  /** The models a helper agent may be started on: the table the model-choice plugin and the Harness's allow-list are written from. */
+  const subagentRoutes = routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' }));
   const entries = [
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
@@ -271,6 +274,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? Math.max(slots, MIN_LOCAL_HELPERS) : DEFAULT_API_HELPERS } },
     // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN }] }] : []),
+    // Helper agents on a model the person names: every model the app can reach is allowed, and the plugin makes the choice forgiving (plugins/strata-models.mjs).
+    ...(subagentRoutes.length ? [{ id: 'subagent-model-selection-settings', config: { enabled: true, allowedModels: subagentRoutes.map(r => ({ provider: r.provider, model: r.model })) } }] : []),
+    ...(subagentRoutes.length ? [{ insert: [{ id: 'strata-models', name: MODELS_PLUGIN, config: { routes: subagentRoutes } }] }] : []),
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
