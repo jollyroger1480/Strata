@@ -759,7 +759,7 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
-### Prompt speed on Alchemist: the grouped XMX expert launch is the default (0.1.48, `STRATA_PF_XMX`)
+### Prompt speed on Alchemist: the grouped XMX expert launch is the default (0.1.48, `STRATA_PF_XMX`; owner approved 2026-10-18)
 
 The A750's prompt path decodes and multiplies a group of experts in one fused launch on the XMX units (`STRATA_PF_XMX=2`, `sycl/src/prefill/xmx_moe.dp.cpp`)
 instead of dequantizing each expert to FP16 and calling oneMKL. It is the default on Alchemist cards; `STRATA_PF_XMX=0` turns it off and `=1` is the
