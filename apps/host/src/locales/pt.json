@@ -3248,5 +3248,7 @@
   "s3252": "Usados por mais de um modelo",
   "s3253": "Esses arquivos estão na sua própria pasta e continuam lá. Só a entrada no Strata é removida.",
   "s3254": "O modelo em execução será descarregado.",
-  "s3255": "Local"
+  "s3255": "Local",
+  "s3256": "A Strata não reconheceu um mecanismo para este computador. O modelo será baixado, mas pode não funcionar até que o mecanismo certo seja instalado (Configurações → Mecanismo).",
+  "s3257": "A Strata não reconheceu um mecanismo para este computador. O modelo foi baixado, mas não vai funcionar até que o mecanismo certo seja instalado. Abra Configurações → Mecanismo."
 }

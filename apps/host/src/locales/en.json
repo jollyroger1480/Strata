@@ -3248,5 +3248,7 @@
   "s3252": "Used by more than one model",
   "s3253": "These files are in your own folder, so they stay there. Only the entry in Strata is removed.",
   "s3254": "The running model will be unloaded.",
-  "s3255": "Local"
+  "s3255": "Local",
+  "s3256": "Strata didn’t recognise an engine for this computer. The model will download, but it may not run until the right engine is installed (Settings → Engine).",
+  "s3257": "Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine."
 }

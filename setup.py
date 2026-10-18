@@ -5938,16 +5938,16 @@ def control_engine_step(gpu, vision):
         ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
     except EC.EngineMissing as e:
         plain = getattr(e, "plain_notice", None) or getattr(e, "driver_notice", None)
-        if plain or os.environ.get("STRATA_NEED_ENGINE") == "1":
-            # The model is tens of GB: when the engine is a dead end for this PC (a build for another card family, a driver that is too
-            # old) or the caller (strata launch) needs one now, stop before step 5 instead of after the download.
+        if os.environ.get("STRATA_NEED_ENGINE") == "1":
+            # strata launch needs an engine now: stop before step 5 instead of after the download.  The app does not stop (owner
+            # decision 2026-10-18): it says so in its download card and still downloads the model.
             fail(plain or "no engine is installed for this PC",
                  "get the engine that matches this graphics card (`strata update`, or the app's Settings), then run this again; "
                  "nothing was downloaded and files already downloaded are kept")
         eng = home() / "engine"
         meta = {"version": "99.0.0", "source": "local", "component": "missing"}   # its version is checked when it loads
-        warn(f"no engine is installed for this PC yet ({e}). The model is downloaded and prepared now; install the engine "
-             "component for your GPU (a later step of the app, or the Terminal) before loading it")
+        warn(f"{plain + ' ' if plain else ''}no engine is installed for this PC yet ({e}). The model is downloaded and prepared now; "
+             "install the engine component for your GPU (the app's Settings, or the Terminal) before loading it")
     if vision != "none":
         if (eng / VEXE).is_file():
             ok(f"image encoder: {eng / VEXE} (carried by the engine component)")

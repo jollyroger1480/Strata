@@ -251,3 +251,7 @@
 .native-parts li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--st-line-soft); }
 .native-parts li[data-state="done"] > span::before { content: "\2713\00a0"; color: var(--st-accent-text); }
 .native-parts li[data-state="downloading"] > span { font-weight: 700; }
+.engine-warning { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; padding: 12px 14px; border-radius: var(--st-r-md); background: var(--st-warn-tint); color: var(--st-warn-text); font-size: var(--st-fs-sm); }
+.engine-warning p { margin: 0; }
+.engine-warning svg { flex: none; margin-top: 1px; }
+.engine-warning small { display: block; margin-top: 4px; }

@@ -25,6 +25,8 @@ const safeId=value=>typeof value==='string'&&/^[a-z0-9_-]{1,80}$/i.test(value);
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
+/** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
+export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine.';
 export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
@@ -204,7 +206,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return {cfg,resources,visionPreferences,parallelChoice,parallelNote};
  }
  async function loadEngine(job,args){
-  await refresh(true);if(job.state!=='running')return;const {config,entry,path:configFile}=record(args.model);assertSettingsFile(configFile);if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}if(!entry.ready)throw new Error('Some model files are missing. Use Download / repair to restore them.');
+  await refresh(true);if(job.state!=='running')return;const {config,entry,path:configFile}=record(args.model);assertSettingsFile(configFile);if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready)throw new Error('Some model files are missing. Use Download / repair to restore them.');
   if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
   if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
   const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote}=buildConfig(args,config);
@@ -345,7 +347,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  async function tuneOff(args){await refresh();const {path}=tuneConfig(args);return autotuner.off(path);}
  async function autotune(job,args){
   await refresh(true);if(job.state!=='running')return;
-  if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(engine.notice??'No engine for this PC was found.');}
+  if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}
   const {path}=tuneConfig(args);
   if(externalRunning().length)throw new Error('Stop the native server running outside this UI before tuning.');
   if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish requests before tuning.');

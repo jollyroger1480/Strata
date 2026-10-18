@@ -3248,5 +3248,7 @@
   "s3252": "Von mehr als einem Modell genutzt",
   "s3253": "Diese Dateien liegen in deinem eigenen Ordner und bleiben dort. Nur der Eintrag in Strata wird entfernt.",
   "s3254": "Das laufende Modell wird entladen.",
-  "s3255": "Lokal"
+  "s3255": "Lokal",
+  "s3256": "Strata hat für diesen Computer keine passende Engine erkannt. Das Modell wird trotzdem heruntergeladen, läuft aber möglicherweise erst, wenn die richtige Engine installiert ist (Einstellungen → Engine).",
+  "s3257": "Strata hat für diesen Computer keine passende Engine erkannt. Das Modell ist heruntergeladen, läuft aber erst, wenn die richtige Engine installiert ist. Öffne Einstellungen → Engine."
 }

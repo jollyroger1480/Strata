@@ -3248,5 +3248,7 @@
   "s3252": "Los usa más de un modelo",
   "s3253": "Estos archivos están en tu propia carpeta y se quedan allí. Solo se quita la entrada en Strata.",
   "s3254": "El modelo en ejecución se descargará de la memoria.",
-  "s3255": "Local"
+  "s3255": "Local",
+  "s3256": "Strata no reconoció un motor para este equipo. El modelo se descargará, pero puede que no funcione hasta que se instale el motor adecuado (Ajustes → Motor).",
+  "s3257": "Strata no reconoció un motor para este equipo. El modelo está descargado, pero no podrá funcionar hasta que se instale el motor adecuado. Abre Ajustes → Motor."
 }
