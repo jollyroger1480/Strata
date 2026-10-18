@@ -86,9 +86,13 @@ def add_installer(folder: Path) -> dict:
 
 #: What the other names of the interpreter become: Tauri copies a symlink as a full copy of its target, so `python`, `python3` and
 #: `python3.12` in a bundle would be three real files (68 MB each on Linux). Only `python3.12` stays the real one.
+#: The launcher runs inside the AppImage's environment (LD_LIBRARY_PATH holds the bundled libraries), where an external program such as
+#: `dirname` can fail to start (Ubuntu 26.04's coreutils: "libsystemd.so.0: version LIBSYSTEMD_254 not found"), so it uses shell built-ins
+#: only. The first version called `dirname`; that left the folder empty and "Control stopped" on such a computer.
 LAUNCHER = """#!/bin/sh
-# Strata: this name only starts the real interpreter beside it (the bundle keeps one copy, not one per name).
-here=$(cd "$(dirname "$0")" && pwd)
+# Strata: this name only starts the real interpreter beside it (the bundle keeps one copy, not one per name). Built-ins only: no dirname.
+case "$0" in */*) dir=${0%%/*} ;; *) dir=. ;; esac
+here=$(cd "$dir" && pwd)
 exec "$here/%s" "$@"
 """
 
