@@ -1525,8 +1525,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     else startTimeSkipDemo(demoPrompt);
     return;
   }
-  const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const canSendPictures=!state.remoteModel&&imageTarget?.status==='ready'&&imageTarget.vision;
-  if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','Choose an image-reading model','Switch to a local model with Read pictures enabled, or remove the attachments.');return;}
+  const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const remoteApi=state.remoteModel?state.providers?.connections.find(c=>c.id===state.remoteModel!.connectionId)?.models.find(m=>m.id===state.remoteModel!.modelId):null;const canSendPictures=state.remoteModel?remoteApi?.reads===true:imageTarget?.status==='ready'&&imageTarget.vision;
+  if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','This model cannot read pictures',state.remoteModel?'Open Settings > Models, edit this connection and tick "This model reads pictures" if it does, or choose another model. You can also remove the attachments.':'Switch to a model that reads pictures (turn on Read pictures in Models), or remove the attachments.');return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
   if(!body&&!resume&&!planStart)return;

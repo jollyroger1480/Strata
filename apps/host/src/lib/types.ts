@@ -125,7 +125,7 @@ export interface ImageModelLibrary {
 }
 
 export type ModelProtocol = 'openai-chat' | 'openai-responses' | 'anthropic';
-export interface ApiModel { id: string; name: string; contextMax?: number | null }
+export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null }
 export interface ModelProviderPreset { id: string; name: string; baseUrl: string; protocol: ModelProtocol; baseUrlHint?: string }
 export interface ModelConnection {
   id: string; kind: 'provider' | 'custom'; provider: string | null; name: string;

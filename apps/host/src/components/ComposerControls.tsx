@@ -83,14 +83,14 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                     skipped++;
                     continue;
                 }
-                if (!directory && photoTypes.test(file.name) && nativeModel?.vision && !remoteModel) {
+                if (!directory && photoTypes.test(file.name) && (remoteModel ? apiModel?.reads === true : nativeModel?.vision)) {
                     await attachChatPhoto(file, session?.id);
                     continue;
                 }
                 if (!directory && (photoTypes.test(file.name) || /\.pdf$/i.test(file.name))) {
                     await openFile(file);
                     if (photoTypes.test(file.name))
-                        onError(remoteModel ? 'Pictures are open in preview. Choose a local model with Read pictures enabled to send them.' : 'Enable Read pictures in Models to send this image to the model. It is open in preview.');
+                        onError(remoteModel ? `Strata cannot tell that "${apiModel?.name ?? 'this model'}" reads pictures, so the picture is only open in preview. If it does, open Settings > Models, edit its connection and tick "This model reads pictures". Otherwise choose a model that reads pictures.` : 'Enable Read pictures in Models to send this image to the model. It is open in preview.');
                     continue;
                 }
                 if (!textTypes.test(file.name) || bytes + file.size > 256 * 1024) {

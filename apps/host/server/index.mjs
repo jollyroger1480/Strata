@@ -48,8 +48,7 @@ import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
-import { createVisionProbe } from './vision-probe.mjs';
-import { isPrivateHost } from './agent/llm-shape.mjs';
+import { createVisionProbe, effectiveVision } from './vision-probe.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
@@ -105,7 +104,7 @@ const WORKSPACE_NAME = process.env.STRATA_WORKSPACE ? basename(WORKSPACE) : 'Str
 const insideApp = path => { const rel = relative(ROOT, resolve(path)); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
 
 const hub = new EventHub();
-const modelProviders = createModelProviders({ directory: store.DATA_DIR, changed: value => hub.send('providers', value) });
+const modelProviders = createModelProviders({ directory: store.DATA_DIR, changed: value => hub.send('providers', withPictureAnswers(value)) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
 /* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
 const CONTROL = findControl();
@@ -132,6 +131,27 @@ const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplin
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 agentTools.ensureFile();
 const visionProbe = createVisionProbe();
+/** The model APIs as the chat picker sees them: each model says whether it reads pictures (what the person ticked, else what the server answered). Unanswered models are asked in the background. */
+function withPictureAnswers(list) {
+  const secrets = new Map(modelProviders.withSecrets().map(c => [c.id, c]));
+  const connections = (list.connections ?? []).map(c => ({ ...c, models: c.models.map(m => {
+    const asked = visionProbe.known(c, m.id);
+    if (m.vision == null && asked === undefined && c.protocol === 'openai-chat' && secrets.has(c.id)) void visionProbe.check(secrets.get(c.id), m.id).catch(() => {});
+    return { ...m, reads: effectiveVision(m, asked) ?? null };
+  }) }));
+  return { ...list, connections };
+}
+/** Why a picture cannot go to this API model, in plain words and with the way to fix it; null when it can. */
+async function pictureRefusal(connection, model) {
+  if (!connection || !model) return 'This API model is no longer available. Choose another model in the chat picker.';
+  if (connection.protocol !== 'openai-chat') return `Pictures can only be sent to model APIs that use the OpenAI chat style. "${connection.name}" uses a different style, so the picture stays in the preview. Add the model through an OpenAI-compatible address (a /v1 address) to send pictures.`;
+  const answer = effectiveVision(model, await visionProbe.check(connection, model.id));
+  if (answer === true) return null;
+  const fix = `open Settings → Models, edit "${connection.name}" and tick "This model reads pictures"`;
+  return answer === false
+    ? `"${model.name}" does not read pictures, as far as its server says (a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`
+    : `Strata cannot tell that "${model.name}" reads pictures. If it does, ${fix}. Otherwise choose a model that reads pictures.`;
+}
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
@@ -153,7 +173,7 @@ const agent = createAgentBridge({
     // The tool servers set up for this model (Settings, Tools): the agent connects to the same ones.
     mcpServers: i.mcpServers,
   })),
-  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: visionProbe.known(c, m.id) })) })),
+  connections: () => modelProviders.withSecrets().map(c => ({ ...c, models: c.models.map(m => ({ ...m, vision: effectiveVision(m, visionProbe.known(c, m.id)) })) })),
   log: line => console.log(line),
 });
 let storageChanging = false;
@@ -525,7 +545,8 @@ async function runRemoteTurn({ selection, message, history, images = [], onFrame
     serving.finish(entry.id, { tokensOut: result.tokensOut, durationMs: Date.now() - started });
     return result;
   } catch (err) {
-    const message = requestSignal.aborted ? 'Request cancelled. Partial output is preserved.' : err.name === 'TimeoutError' ? 'The model API timed out. Try again.' : err.message;
+    const refusedPicture = images.length && /HTTP [45]\d\d/.test(String(err.message)) ? ' If this model does not read pictures, untick "This model reads pictures" in Settings → Models (edit this connection), or choose a model that does.' : '';
+    const message = requestSignal.aborted ? 'Request cancelled. Partial output is preserved.' : err.name === 'TimeoutError' ? 'The model API timed out. Try again.' : err.message + refusedPicture;
     if (entry) serving.finish(entry.id, { durationMs: Date.now() - started, error: message });
     onFrame({ type: 'error', message, requestId: entry?.id });
     return { error: message };
@@ -541,7 +562,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
     // Does this server read pictures? Asked before the agent is built, so a picture is never sent to one that cannot.
     const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId);
-    if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId);
+    if (own && own.protocol === 'openai-chat') await visionProbe.check(own, choice.modelId);
   }
   else {
     try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
@@ -965,7 +986,7 @@ async function api(req, res, path, method, url) {
   // Credentials are handled only on the host. Responses and events expose a key-set flag.
   return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message);}}
 
-  if (path === '/api/model-providers' && method === 'GET') return json(res, 200, modelProviders.list());
+  if (path === '/api/model-providers' && method === 'GET') return json(res, 200, withPictureAnswers(modelProviders.list()));
   if (path === '/api/model-providers/discover' && method === 'POST') {
     const body = await readBody(req);
     const controller = new AbortController();
@@ -974,11 +995,11 @@ async function api(req, res, path, method, url) {
     catch (err) { return error(res, 400, err.name === 'TimeoutError' ? 'The model API timed out. Check the address and try again.' : err.message); }
   }
   if (path === '/api/model-providers' && method === 'POST') {
-    try { return json(res, 200, modelProviders.save(await readBody(req))); }
+    try { return json(res, 200, withPictureAnswers(modelProviders.save(await readBody(req)))); }
     catch (err) { return error(res, 400, err.message); }
   }
   const providerMatch = /^\/api\/model-providers\/([a-zA-Z0-9-]+)$/.exec(path);
-  if (providerMatch && method === 'DELETE') return json(res, 200, modelProviders.remove(providerMatch[1]));
+  if (providerMatch && method === 'DELETE') return json(res, 200, withPictureAnswers(modelProviders.remove(providerMatch[1])));
 
   if(path === '/api/artifacts/open' && method === 'POST') {
     const body=await readBody(req, 30*1024*1024);
@@ -1053,7 +1074,7 @@ async function api(req, res, path, method, url) {
       if (measureFolder(cwd).tooBig) return error(res, 400, 'This folder is too big to try a change on a copy. Open a smaller folder for this chat, then try again.');
       let choice, slots = 1;
       if (body.remoteModel?.connectionId && body.remoteModel?.modelId) { choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
-        { const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId); if (own && own.protocol === 'openai-chat' && isPrivateHost(own.baseUrl)) await visionProbe.check(own, choice.modelId); } slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
+        { const own = modelProviders.withSecrets().find(c => c.id === choice.connectionId); if (own && own.protocol === 'openai-chat') await visionProbe.check(own, choice.modelId); } slots = Number(body.slots) >= 1 ? Math.floor(Number(body.slots)) : 1; }
       else { try { const inst = native.resolveInstance(native.state().defaultId); choice = { instanceId: inst.id }; slots = inst.metrics?.live?.slots?.length || inst.parallel || 1; } catch { return error(res, 503, 'Load a model first, then try Time-skip again.'); } }
       const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
       if (chatId && forkTs.byChat(chatId)) return error(res, 409, 'A Time-skip is already running in this chat.');
@@ -1822,7 +1843,7 @@ async function api(req, res, path, method, url) {
     const body = await readBody(req,12*1024*1024);
     if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
     let images;try{const named=Array.isArray(body.imageIds)&&body.imageIds.length?uploads.dataUrls(typeof body.sessionId==='string'?body.sessionId:'',body.imageIds):[];images=validateChatImages([...(Array.isArray(body.images)?body.images:[]),...named]);}catch(e){return error(res,400,e.message);}
-    if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);if(!(own&&own.protocol==='openai-chat'&&isPrivateHost(own.baseUrl)))return error(res,409,'Choose a local image-reading model before sending attached pictures.');}
+    if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);const row=own?.models.find(m=>m.id===body.remoteModel.modelId);const refused=await pictureRefusal(own,row);if(refused)return error(res,409,refused);}
     else if(images.length){let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'Enable Read pictures for this model before sending images.');}
     // The goal bar's Resume has no words of its own: it is the same turn as "/goal resume".
     const message = body.goalAction === 'resume' ? '/goal resume' : String(body.message ?? '').trim();
