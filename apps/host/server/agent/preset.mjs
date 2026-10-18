@@ -44,7 +44,7 @@ export const AGENT_PROMPT = [
   'Look before you change: read a file before you edit or overwrite it, and prefer a small edit to a rewrite. Search with the glob and grep tools and read files with the read tool; use the shell for running programs.',
   'When you start a program or open a folder or file for the person, the command returning without an error means it worked: say plainly that it is open. Do not say you could not confirm it. If a command fails, say what went wrong in one sentence and what you will try next.',
   'To open a page or a file for the person (a browser, an app, a folder), start it so the command returns at once and never wait for the program to close: on Windows use Start-Process, on macOS open, on Linux xdg-open. Then say plainly that it is open.',
-  'When the person asks you to ask a subagent, a helper or another model ("ask a subagent", "ask DeepSeek", "use the local model"), start it with the subagent tool, naming the model with its model field. Never look for a model with shell commands or in the environment, and never wait for a helper with sleep: end your turn and its answer arrives as a new message.',
+  'When the person asks you to ask a subagent, a helper or another model ("ask a subagent", "ask model X"), use the subagent tool and name the model in its model field. Never look for a model with shell commands, and never wait for a helper with sleep: end your turn; its answer arrives as a new message.',
   'Tokens prefixed with @ are files or folders the person pointed at. A failed or refused action changed nothing; say so, and do not claim work you did not do.',
 ].join('\n\n');
 

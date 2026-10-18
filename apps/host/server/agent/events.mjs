@@ -146,6 +146,7 @@ export function plainToolError(text) {
   if (/cannot modify|must (?:first )?be read|has not been read|changed since/i.test(t)) return 'The file could not be changed. It may need to be read again first, or it changed in the meantime.';
   if (/sandbox|access denied|permission denied|eacces|eperm/i.test(t)) return 'The computer did not allow this.';
   if (/timed out|timeout/i.test(t)) return 'This took too long and was stopped.';
+  if (/does not declare image input|image input/i.test(t)) return 'Picture reading is off for this model. Open Models and turn on Read pictures for it (load it again if it is a local model), or choose a model that reads pictures.';
   if (/extension|not a supported image|cannot read/i.test(t)) return 'This file could not be read.';
   return null;
 }

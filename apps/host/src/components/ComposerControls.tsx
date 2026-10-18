@@ -10,6 +10,7 @@ import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import type { ChatMode, Session } from '../lib/types';
 import { attachChatPhoto } from '../lib/chat-photos';
 import { useNative } from '../lib/native';
+import { pictureStatus } from '../lib/pictures';
 const modes: {
     value: ChatMode;
     label: string;
@@ -51,6 +52,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const addFilesLatest = useRef<(files: File[]) => Promise<void>>(async () => { });
     // A model on an API takes a reasoning effort when its provider says it can think (OpenRouter's model list); otherwise the provider decides.
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
+    const pictures = pictureStatus(native, remoteModel, providers);
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
@@ -85,14 +87,14 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                     skipped++;
                     continue;
                 }
-                if (!directory && photoTypes.test(file.name) && (remoteModel ? apiModel?.reads === true : nativeModel?.vision)) {
+                if (!directory && photoTypes.test(file.name) && pictures.ok) {
                     await attachChatPhoto(file, session?.id);
                     continue;
                 }
                 if (!directory && (photoTypes.test(file.name) || /\.pdf$/i.test(file.name))) {
                     await openFile(file);
                     if (photoTypes.test(file.name))
-                        onError(remoteModel ? `Strata cannot tell that "${apiModel?.name ?? 'this model'}" reads pictures, so the picture is only open in preview. If it does, open Settings > Models, edit its connection and tick "This model reads pictures". Otherwise choose a model that reads pictures.` : 'Enable Read pictures in Models to send this image to the model. It is open in preview.');
+                        onError(`${pictures.ok ? '' : pictures.message} It is open in preview.`);
                     continue;
                 }
                 if (!textTypes.test(file.name) || bytes + file.size > 256 * 1024) {

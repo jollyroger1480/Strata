@@ -12,6 +12,7 @@ import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
+import { pictureStatus } from './pictures';
 import { postWithFolderFallback } from './folder-pick';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
@@ -1525,8 +1526,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     else startTimeSkipDemo(demoPrompt);
     return;
   }
-  const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const remoteApi=state.remoteModel?state.providers?.connections.find(c=>c.id===state.remoteModel!.connectionId)?.models.find(m=>m.id===state.remoteModel!.modelId):null;const canSendPictures=state.remoteModel?remoteApi?.reads===true:imageTarget?.status==='ready'&&imageTarget.vision;
-  if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','This model cannot read pictures',state.remoteModel?'Open Settings > Models, edit this connection and tick "This model reads pictures" if it does, or choose another model. You can also remove the attachments.':'Switch to a model that reads pictures (turn on Read pictures in Models), or remove the attachments.');return;}
+  const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
+  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',pictureCheck.message);return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
   if(!body&&!resume&&!planStart)return;
@@ -1593,7 +1594,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         sessionId,
         ...(planStart ? { planId: planStart } : {}),
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
-        history:await Promise.all(prior.map(async(m,index)=>{const included=canSendPictures?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
+        history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
