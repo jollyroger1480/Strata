@@ -274,12 +274,15 @@ tightest cgroup limit included, over the experts' bytes: off below 0.55, on abov
 while it pays (at least 128 MB read ahead in 16 windows and 10% of it used, `STRATA_IO_PF_GATE_USEFUL`; a probe every 256
 windows when it closed for that). Closed, the decode reads as it did without io prefetch (the look-ahead predicts one layer
 and warms with an madvise hint); the prompt path keeps its preads either way. Measured on an RTX PRO 5000 emulating a 12 GB
-card (`--expert-cache 4448`, Q2_0 GGUF in place, page cache dropped before each engine, RAM limited by a cgroup), 5 pairs,
-story / code / doc8k decode, 4K / 20K prompts, against the 0.1.4x defaults: 32 GB of RAM 1.8 / 2.8 / 3.1x decode, 1.5 / 2.0x
-prompts; 16 GB 1.2 / 1.4 / 1.4x decode, 1.6 / 1.8x prompts (the gate stays closed there); an 18 GiB RAM tier B32_RESULT. On a real RTX 3060 12 GB (32 GB cgroup, 3 pairs) zero-copy alone gave 1.14 / 1.44 / 1.47x decode, 1.06 / 1.02x
-prompts. With it the container RAM check counts a cgroup's clean page cache (active and inactive) as available, as
-MemAvailable does on a bare host (before, a 32 GiB container whose own reads left 26 GiB of cache was judged short of RAM
-and its file tier switched to unbuffered reads). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
+card (`--expert-cache 4448`, Q2_0 GGUF in place, page cache dropped before each engine, RAM limited by a cgroup), the 0.2.0
+defaults against the 0.1.4x ones, 3 interleaved pairs, story / code / doc8k decode and 4K / 20K prompts: 32 GB of RAM
+1.70 / 2.56 / 2.88x decode (34.0 / 28.0 / 21.7 -> 57.6 / 71.7 / 62.6 tok/s), 1.54 / 1.91x prompts; 16 GB 1.16 / 1.25 / 1.25x
+decode, 1.63 / 1.68x prompts (the gate stays closed there); `--resident-budget-gib 18` in 32 GB 1.16 / 1.10 / 1.30x decode,
+1.55 / 1.91x prompts; greedy token ids equal on story and code (doc8k varies run to run with the adaptive tier in both). On a
+real RTX 3060 12 GB (32 GB cgroup, 3 pairs) zero-copy alone gave 1.14 / 1.44 / 1.47x decode, 1.06 / 1.02x prompts. With them,
+the container RAM check counts a cgroup's clean page cache (active and inactive) as available, as MemAvailable does on a bare
+host: before, the 18 GiB RAM tier in a 32 GiB cgroup re-checked "1.2 GiB available" once io prefetch's startup reads had left
+their cache in the group, and its file tier switched to unbuffered reads (which also left zero-copy off). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
 `STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged. Measured detail:
 phaseA-tests/notes-149-l620.md.
 
