@@ -43,3 +43,8 @@ export async function postWithFolderFallback<T>(url: string): Promise<T | { canc
     }
   }
 }
+
+/** Is this page open on the computer that runs Strata? A folder window opens on that computer's screen, so a page opened from another one cannot use it. */
+export function pageIsOnThisComputer(hostname: string): boolean {
+  return /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i.test(hostname);
+}
