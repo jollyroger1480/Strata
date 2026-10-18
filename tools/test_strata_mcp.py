@@ -597,6 +597,39 @@ class Helpers(unittest.TestCase):
         self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "fits (all of its experts in RAM)")
         self.assertIn("read from the SSD", by["Q8_0"]["on_this_pc"])
 
+    def test_qwen36_is_listed_with_its_three_sizes(self):
+        """QA 2026-10-18: the Qwen3.6-35B-A3B page of the first-run setup showed no versions, because setup.py keeps the family
+        in OWN_PATH_FAMILIES (not FAMILIES) and the model list only walked FAMILIES."""
+        s = M.Strata(HERE.parent)
+        self.assertIn("qwen36", s.tables()[1])
+        fam = next(f for f in s.model_table({"ram_gb": 63.7, "gpus": [{"index": 0, "name": "x", "vram_gb": 12.0, "usable": True}]})
+                   if f["family"] == "qwen36")
+        by = {x["model"]: x for x in fam["sizes"]}
+        self.assertEqual(list(by), ["UD-Q4_K_XL", "UD-Q6_K_XL", "Q8_0"])
+        self.assertEqual(by["UD-Q4_K_XL"]["id"], "qwen36-ud-q4_k_xl")          # the tag the install writes its config under
+        self.assertEqual(by["UD-Q4_K_XL"]["download_gb"], 22.9)
+        self.assertTrue(all(x["images"] and x["engine_min"] == "0.1.45" and x["gpu_options"] is None for x in by.values()))
+        self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
+        small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
+        self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"does not fit"})
+        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[-1], "Q8_0")      # the Unsloth Flash-Next sizes are untouched
+
+    def test_qwen36_install_plan(self):
+        s = M.Strata(HERE.parent)
+        s.hardware = lambda fresh=False: {"ram_gb": 64.0, "gpus": [{"index": 0, "name": "x", "vram_gb": 12.0, "usable": True, "vendor": "nvidia"}],
+                                          "cpu": {"avx2": True}}
+        s.disk_free = lambda p: 1000.0
+        plan, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", 32768, "yes", "int8", None, None, None, "auto", None, None)
+        self.assertEqual((plan["title"], plan["download_gb"], plan["family"]), ("Qwen3.6-35B-A3B UD-Q4_K_XL", 22.9, "qwen36"))
+        self.assertEqual(args[:10], ["--yes", "--no-start", "--family", "qwen36", "--model", "UD-Q4_K_XL", "--context", "32768",
+                                     "--vision", "yes"])
+        for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):      # Flash-Next settings: setup would only warn
+            self.assertNotIn(flag, args)
+        plan, _a = M.Tools(s).install_plan("qwen36", None, 32768, "no", None, None, None, None, None, None, None)
+        self.assertEqual(plan["model"], "UD-Q4_K_XL")
+        with self.assertRaises(M.ToolError):
+            M.Tools(s).install_plan("qwen36", "IQ3_S", 32768, "no", None, None, None, None, None, None, None)
+
     def test_recommendation_follows_ram(self):
         s = M.Strata(HERE.parent)
         gpu = [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}]

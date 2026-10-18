@@ -116,6 +116,7 @@ FALLBACK_FAMILIES = {
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
 }
+OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
 GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -474,12 +475,37 @@ class Strata:
     def tables(self):
         s = self.setup_module()
         if s is not None:
-            return s.MODELS, s.FAMILIES, list(s.CONTEXTS), "setup.py"
+            return s.MODELS, {**s.FAMILIES, **self.own_families()}, list(s.CONTEXTS), "setup.py"
         return FALLBACK_MODELS, FALLBACK_FAMILIES, FALLBACK_CONTEXTS, "built-in table (setup.py not importable)"
 
-    @staticmethod
-    def sizes_of(models, family) -> list:
+    def own_families(self) -> dict:
+        """setup.py's OWN_PATH_FAMILIES (Qwen3.6-35B-A3B): families with an engine path of their own.  They are not in FAMILIES
+        (whose entries are Flash-Next files with packs), so the model list used to leave them out and the app's Qwen3.6 page
+        showed no versions at all.  Each is returned as a family entry (title, about, tag, license) of this server's table."""
+        s = self.setup_module()
+        out = {}
+        for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
+            out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
+                      "vision": bool(d.get("vision", True)), "own_path": True}
+        return out
+
+    def own_size(self, family, model) -> dict | None:
+        """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
+        The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
+        d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if not d or model not in d["models"]:
+            return None
+        size_gb = d["sha256"][d["file"].format(q=model)][0] / 1e9
+        return {"about": d["models"][model]["about"], "download_gb": round(size_gb, 1), "ram_gb": d["models"][model]["ram_gb"],
+                # the routed experts are ~93% of the file (setup.own_path_parallel_fits_all); the dense part and buffers ~1 GB more
+                "arena_gb": round(size_gb * 0.93, 1), "vision": bool(d.get("vision", True)),
+                "engine": OWN_PATH_ENGINE, "families": (family,)}
+
+    def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
+        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if own:
+            return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
                       key=lambda m: bool(models[m].get("experimental")))
 
@@ -934,14 +960,17 @@ class Strata:
         for f, fd in families.items():
             sizes = []
             for m in self.sizes_of(models, f):
-                d = models[m]
+                own = self.own_size(f, m)
+                d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
                 verdict = None
                 if ram is not None:
                     have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
                     verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
-                        if d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
+                        if own:                         # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
+                            pass
+                        elif d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
                             verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
                         elif d.get("budget"):
                             verdict = (("experimental: " if d.get("experimental") else "")
@@ -967,7 +996,7 @@ class Strata:
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
                               # only with two or more cards that count; "recommended" names the pre-selected option
-                              "gpu_options": self.gpu_options(d, ram, hw)})
+                              "gpu_options": None if own else self.gpu_options(d, ram, hw)})   # Qwen3.6 runs on one card so far
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
@@ -1554,9 +1583,12 @@ class Tools:
         elif family is None:
             fams = [f for f in families if model in s.sizes_of(models, f)]
             family = "qwen" if "qwen" in fams else fams[0]
+        if family not in families:
+            raise ToolError(f"unknown family {family}; the families: {', '.join(families)}")
         sizes = s.sizes_of(models, family)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
+        md = s.own_size(family, model) or models[model]   # Qwen3.6-35B-A3B: its sizes are not in setup's MODELS
         mac = bool(hw.get("mac"))
         if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
             if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
@@ -1567,10 +1599,10 @@ class Tools:
             usable = [g for g in hw.get("gpus", []) if g.get("usable")]
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-            if models[model].get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
+            if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
                                                 s.setup_module().unsloth_budget(model, hw.get("ram_gb") or 0.0)):
                 context = 8192 if vram < 14 else 32768
-        if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
+        if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is not None and backend == "hip" and vision != "no":
             # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
@@ -1586,7 +1618,7 @@ class Tools:
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
-        need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
@@ -1596,8 +1628,11 @@ class Tools:
                 "--vision", vision or "no"]
         if family in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
+        own = bool(s.own_families().get(family))
         for flag, v in (("--kv", kv), ("--gpu", gpu), ("--gpus", gpus), ("--low-ram", low_ram), ("--port", port),
                         ("--data-dir", str(target) if data_dir else None)):
+            if own and flag in ("--kv", "--low-ram"):      # Flash-Next settings: Qwen3.6's engine path does not use them (setup would warn)
+                continue
             if v is not None:
                 args += [flag, str(v)]
         if gguf_dir:
@@ -1610,11 +1645,11 @@ class Tools:
         fit = None
         ram = hw.get("ram_gb")
         if ram is not None:
-            need_ram = models[model]["ram_gb"]
+            need_ram = md["ram_gb"]
             fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
-                "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
+                "context": context, "images": vision or "no", "download_gb": md["download_gb"],
                 "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "model_folder": str(have_dir),
                 "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
@@ -1626,7 +1661,7 @@ class Tools:
                             "the options (finished steps are skipped)")
         if families[family].get("license"):
             plan["license"] = families[family]["license"]
-        if families[family].get("experimental") or models[model].get("experimental"):
+        if families[family].get("experimental") or md.get("experimental"):
             plan["experimental"] = True
         return plan, args
 
