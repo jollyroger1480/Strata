@@ -32,9 +32,9 @@ sha_of() { sha256sum "$1" | awk '{print $1}'; }
 size_gb() { awk -v b="$(stat -c %s "$1" 2>/dev/null || stat -f %z "$1")" 'BEGIN{printf "%.1f", b/1000000000}'; }
 
 if [ -n "$VERIFY" ]; then
-  # every checksum in the README must be the checksum of a file that is here, and every file here that the README names must have its checksum in it
+  # every checksum in the README must be the checksum of a file that is here, and a line that names a file and carries a checksum must carry that file's checksum
   hashes=""; bad=0; seen=0
-  for d in "${DIRS[@]}"; do for f in "$d"/*; do [ -f "$f" ] && hashes="$hashes $(sha_of "$f")"; done; done
+  for d in "${DIRS[@]}"; do for f in "$d"/*; do [ -f "$f" ] && grep -qF "$(basename "$f")" "$VERIFY" && hashes="$hashes $(sha_of "$f")"; done; done   # only files the README names are hashed (a folder may hold big unrelated files)
   readme_hashes="$(grep -Eo '[0-9a-f]{64}' "$VERIFY" | sort -u || true)"
   for h in $readme_hashes; do
     seen=$((seen + 1))
@@ -42,8 +42,11 @@ if [ -n "$VERIFY" ]; then
   done
   for d in "${DIRS[@]}"; do for f in "$d"/*; do
     [ -f "$f" ] || continue
-    if grep -qF "$(basename "$f")" "$VERIFY" && ! grep -qF "$(sha_of "$f")" "$VERIFY"; then
-      echo "STALE: $(basename "$f") is $(sha_of "$f"), which the README does not list" >&2; bad=$((bad + 1))
+    grep -qF "$(basename "$f")" "$VERIFY" || continue
+    # a line that names this file AND carries a checksum must carry this file's checksum (a sentence that merely mentions the file is fine)
+    line_hash="$(grep -F "$(basename "$f")" "$VERIFY" | grep -Eo '[0-9a-f]{64}' | head -1 || true)"
+    if [ -n "$line_hash" ] && [ "$line_hash" != "$(sha_of "$f")" ]; then
+      echo "STALE: $(basename "$f") is $(sha_of "$f"), the README says $line_hash" >&2; bad=$((bad + 1))
     fi
   done; done
   echo "$seen checksum(s) in the README checked, $bad stale"
