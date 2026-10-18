@@ -127,7 +127,7 @@ async function main() {
     const after = (await call('/api/model-providers')).body.connections.find(x => x.name === 'Text only server');
     record('ticking "Read pictures with this model" is saved and makes the model read pictures', after?.models[0]?.vision === true && after?.models[0]?.reads === true, JSON.stringify(after?.models[0]));
     const through = await chat({ remoteModel: { connectionId: after.id, modelId: 'plain' } });
-    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200 && (through.error ?? '') !== '' ? /untick/.test(through.error) : through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
+    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200 && (through.error ?? '') !== '' ? /turn off/.test(through.error) : through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
   }
 
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: false }]);
