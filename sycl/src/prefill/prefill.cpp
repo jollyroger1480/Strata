@@ -43,6 +43,11 @@
 
 #include <algorithm>
 #include <set>
+#include <map>
+#include <cmath>
+#include <chrono>
+#include <stdexcept>
+#include <sys/stat.h>
 #include <tuple>
 #include <chrono>
 #include <cmath>
@@ -797,6 +802,191 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 }
 }  // namespace
 
+
+// ------------------------------------------------------------------------------------------------ 151-b70: int8 or FP16 experts
+// STRATA_PREFILL_MMQ=auto picks per group of experts from the measured cost on THIS GPU: at the first layer of a given expert
+// format the int8 chain (quantize, gate/up, SwiGLU + quantize, down) and the FP16 chain (dequantize, two GEMMs, SwiGLU) are timed on
+// synthetic experts (random blobs of the layer's format and shape) at 16, 32, 64, 128 and 256 rows per expert, and the crossover
+// (the mean rows per expert where the FP16 chain becomes the faster one, interpolated on the cost ratio) is kept, with a flag for
+// how clear the measurement was.  It is cached in a small text file (STRATA_CACHE_DIR, else ~/.cache/strata/i8-crossover.txt) keyed by
+// device name, driver, formats and shape, and read back instead of measured when the key matches.
+namespace {
+struct I8Cross { double rows = 0; bool confident = false; bool measured = false; };
+
+std::string i8_cache_file() {
+    const char* d = std::getenv("STRATA_CACHE_DIR");
+    std::string dir;
+    if (d && d[0]) dir = d;
+    else if (const char* h = std::getenv("HOME")) dir = std::string(h) + "/.cache/strata";
+    else if (const char* a = std::getenv("LOCALAPPDATA")) dir = std::string(a) + "/strata";
+    else return "";
+    return dir + "/i8-crossover.txt";
+}
+bool i8_cache_read(const std::string& key, I8Cross& out) {
+    const std::string path = i8_cache_file();
+    if (path.empty()) return false;
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return false;
+    char line[700];
+    bool ok = false;
+    while (std::fgets(line, sizeof line, f)) {
+        char k[600]; double rows; int conf;
+        if (std::sscanf(line, "%599[^\t]\t%lf\t%d", k, &rows, &conf) == 3 && key == k) { out.rows = rows; out.confident = conf != 0; ok = true; }
+    }
+    std::fclose(f);
+    return ok;
+}
+void i8_cache_write(const std::string& key, const I8Cross& c) {
+    const std::string path = i8_cache_file();
+    if (path.empty()) return;
+    const std::string dir = path.substr(0, path.rfind('/'));
+    std::vector<std::string> keep;   // the other keys' lines
+    if (std::FILE* f = std::fopen(path.c_str(), "r")) {
+        char line[700];
+        while (std::fgets(line, sizeof line, f)) {
+            std::string s(line);
+            if (s.compare(0, key.size() + 1, key + "\t") != 0) keep.push_back(s);
+        }
+        std::fclose(f);
+    }
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) {
+        ::mkdir(dir.c_str(), 0755);
+        f = std::fopen(path.c_str(), "w");
+        if (!f) return;
+    }
+    for (auto& s : keep) std::fputs(s.c_str(), f);
+    std::fprintf(f, "%s\t%.1f\t%d\n", key.c_str(), c.rows, c.confident ? 1 : 0);
+    std::fclose(f);
+}
+
+template <class M>
+I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
+    namespace i8 = strata::prefill::i8;
+    sycl::queue& q = *m.cs;
+    const std::string dev = q.get_device().template get_info<sycl::info::device::name>() + "|" +
+                            q.get_device().template get_info<sycl::info::device::driver_version>();
+    char keyb[600];
+    std::snprintf(keyb, sizeof keyb, "%s|%d|%d|%lldx%lld", dev.c_str(), f.gu_type, f.d_type, (long long) f.n_ff, (long long) f.n_embd);
+    const std::string key = keyb;
+    I8Cross res;
+    if (i8_cache_read(key, res)) {
+        std::fprintf(stderr, "strata: int8 experts: crossover %.0f rows per expert (%s) from the cache for %s\n", res.rows,
+                     res.confident ? "clear" : "not clear", key.c_str());
+        return res;
+    }
+    constexpr int E = 8;
+    const int rows_list[5] = {16, 32, 64, 128, 256};
+    const int N = (int) f.n_embd, NF = (int) f.n_ff;
+    double t8[5] = {}, t16[5] = {};
+    const double facs[E] = {0.15, 0.35, 0.6, 0.85, 1.1, 1.4, 1.8, 2.45};
+    double fac[E];
+    std::vector<uint8_t*> blobs(E, nullptr);
+    uint16_t *X = nullptr, *Hh = nullptr;
+    float *GU = nullptr, *Dm = nullptr;
+    bool ok = true;
+    try {
+        // rows per expert are uneven like a real group (a few big experts and many small ones): factors of the mean, mean 1
+        for (int i = 0; i < E; ++i) { fac[i] = facs[i] / 1.0875; }
+        size_t rmax = 0;
+        for (int i = 0; i < E; ++i) rmax += (size_t) std::max(1.0, 256.0 * fac[i] + 0.5) + 8;   // rows of the largest sample (plus padding)
+        for (int i = 0; i < E; ++i) blobs[i] = sycl::malloc_device<uint8_t>(f.bytes + 256, q);
+        X = sycl::malloc_device<uint16_t>(rmax * N, q);
+        Hh = sycl::malloc_device<uint16_t>(rmax * NF, q);
+        GU = sycl::malloc_device<float>(rmax * 2 * NF, q);
+        Dm = sycl::malloc_device<float>(rmax * N, q);
+        for (int i = 0; i < E; ++i) ok = ok && blobs[i];
+        ok = ok && X && Hh && GU && Dm;
+        if (!ok) throw std::runtime_error("no VRAM for the measurement");
+        // synthetic experts: random bytes with a sane fp16 scale at every block start (the cost does not depend on the values)
+        std::vector<uint8_t> hb(f.bytes + 256);
+        uint32_t s = 12345;
+        auto rnd = [&] { s = s * 1664525u + 1013904223u; return s >> 8; };
+        for (size_t i = 0; i < hb.size(); ++i) hb[i] = (uint8_t) rnd();
+        const int gb = f.gu_type == 21 ? 110 : f.gu_type == 18 ? 98 : 82;
+        for (size_t o = 0; o + 2 <= f.up_off * 2 && o < hb.size(); o += gb) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
+        for (size_t o = f.down_off; o + 2 <= f.bytes; o += 18) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
+        for (int i = 0; i < E; ++i) q.memcpy(blobs[i], hb.data(), f.bytes);
+        std::vector<uint16_t> hx(rmax * N);
+        for (auto& x : hx) x = (uint16_t) (0x3400 + (rnd() & 0x3ff));   // ~0.25..0.5, no zeros
+        q.memcpy(X, hx.data(), hx.size() * 2);
+        q.wait();
+        auto timeit = [&](auto&& fn) {
+            fn(); q.wait();
+            const auto w0 = std::chrono::steady_clock::now();
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count() < 0.02) { fn(); q.wait(); }
+            double best = 1e30;
+            for (int r = 0; r < 4; ++r) {
+                const auto t0 = std::chrono::steady_clock::now();
+                fn(); q.wait();
+                best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+            }
+            return best;
+        };
+        for (int ri = 0; ri < 5; ++ri) {
+            const int R = rows_list[ri];
+            int32_t cnt[i8::kMaxGroup];
+            for (int i = 0; i < E; ++i) cnt[i] = std::max(1, (int) (R * fac[i] + 0.5));
+            i8::Layout lo;
+            i8::make_layout(lo, cnt, E);
+            i8::Workspace ws;
+            if (!i8::workspace(lo, N, NF, ws, &q)) throw std::runtime_error("workspace");
+            std::vector<const uint8_t*> pb(E);
+            for (int i = 0; i < E; ++i) pb[i] = blobs[i];
+            bool refused = false;
+            t8[ri] = timeit([&] {
+                i8::quantize_rows(X, lo, N, ws.xq, ws.dx, &q);
+                if (!i8::gate_up(f.gu_type, pb.data(), f.up_off, NF, lo, N, ws.xq, ws.dx, GU, &q)) refused = true;
+                i8::swiglu_quantize(GU, lo, NF, ws.hq, ws.dh, &q);
+                if (!i8::down(f.d_type, pb.data(), f.down_off, N, lo, NF, ws.hq, ws.dh, Dm, &q)) refused = true;
+            }) / E;
+            if (refused) throw std::runtime_error("the int8 kernels refused this format");
+            t16[ri] = timeit([&] {
+                int64_t o = 0;
+                for (int i = 0; i < E; ++i) {
+                    const int qd = i % DQ;
+                    strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, blobs[i], blobs[i] + f.up_off, blobs[i] + f.down_off, NF, N,
+                                                           m.dq_gu[qd], m.dq_d[qd], &q);
+                    m.gemm.f16(X + o * N, m.dq_gu[qd], GU + o * 2 * NF, cnt[i], 2 * NF, N);
+                    strata::prefill::swiglu_interleaved(GU + o * 2 * NF, Hh + o * NF, cnt[i], &q);
+                    m.gemm.f16(Hh + o * NF, m.dq_d[qd], Dm + o * N, cnt[i], N, NF);
+                    o += cnt[i];
+                }
+            }) / E;
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "strata: int8 experts: the crossover measurement failed (%s): the int8 path is used below 64 rows per expert\n", e.what());
+        ok = false;
+    }
+    for (auto* b : blobs) if (b) sycl::free(b, q);
+    if (X) sycl::free(X, q);
+    if (Hh) sycl::free(Hh, q);
+    if (GU) sycl::free(GU, q);
+    if (Dm) sycl::free(Dm, q);
+    if (!ok) { res.rows = 64; res.confident = false; return res; }
+    // crossover: the first R where the FP16 chain is the faster one, interpolated in log(ratio) between the two bracketing sizes
+    double ratio[5];
+    for (int i = 0; i < 5; ++i) ratio[i] = t16[i] / t8[i];   // > 1: int8 faster
+    int first = -1;
+    for (int i = 0; i < 5; ++i) if (ratio[i] < 1.0) { first = i; break; }
+    if (first < 0) res.rows = 512;                    // int8 wins everywhere measured
+    else if (first == 0) res.rows = 0;                // FP16 wins even at 16 rows
+    else {
+        const double a = std::log(ratio[first - 1]), b = std::log(ratio[first]);
+        const double t = a / (a - b);
+        res.rows = std::exp(std::log((double) rows_list[first - 1]) + t * (std::log((double) rows_list[first]) - std::log((double) rows_list[first - 1])));
+    }
+    // clear: the ratio falls with the rows (within 5%) and the samples bracketing the crossover are at least 5% away from 1
+    bool mono = true;
+    for (int i = 1; i < 5; ++i) if (ratio[i] > ratio[i - 1] * 1.05) mono = false;
+    res.confident = mono && (first < 0 ? ratio[4] > 1.05 : first == 0 ? ratio[0] < 0.95 : (ratio[first - 1] > 1.05 && ratio[first] < 0.95));
+    res.measured = true;
+    std::fprintf(stderr, "strata: int8 experts, measured here (%s): us per expert at 16/32/64/128/256 rows, int8 %.1f/%.1f/%.1f/%.1f/%.1f, FP16 %.1f/%.1f/%.1f/%.1f/%.1f -> crossover %.0f rows per expert (%s)\n",
+                 key.c_str(), t8[0], t8[1], t8[2], t8[3], t8[4], t16[0], t16[1], t16[2], t16[3], t16[4], res.rows, res.confident ? "clear" : "not clear");
+    i8_cache_write(key, res);
+    return res;
+}
+}  // namespace
 Prefill::Prefill() : impl_(new Impl) {}
 Prefill::~Prefill() { release(); }
 
@@ -4000,28 +4190,62 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             int64_t nr = 0;
                             for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
                             if (i8on) {
-                                if (static bool said = false; !said) {
-                                    said = true;
-                                    std::fprintf(stderr, "strata: prompt experts on the fused int8 DPAS products (STRATA_PREFILL_MMQ=1)\n");
+                                // STRATA_PREFILL_MMQ=1: always; =auto: while the group's mean rows per expert are under the crossover
+                                // measured on this GPU (i8_calibrate); a group above it takes the FP16 chain below
+                                bool use_i8 = true;
+                                if (i8_mode() == 2) {
+                                    static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
+                                    auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
+                                    if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
+                                    use_i8 = (double) nr / xg_n < it->second.rows;
+                                    static long groups_i8 = 0, groups_fp = 0;
+                                    (use_i8 ? groups_i8 : groups_fp) += 1;
+                                    if (static bool said_n = false; !said_n && groups_i8 + groups_fp >= 500) {
+                                        said_n = true;
+                                        std::fprintf(stderr, "strata: int8 experts (auto): %ld groups took the int8 chain, %ld the FP16 chain\n", groups_i8, groups_fp);
+                                    }
                                 }
-                                namespace i8 = strata::prefill::i8;
-                                i8::Layout lo8;
-                                i8::make_layout(lo8, xg_c, xg_n);
-                                i8::Workspace ws8;
-                                const bool ws_ok = i8::workspace(lo8, (int) N, f.n_ff, ws8, m.cs);
-                                pt.mark(kPfGemmGU, cs);
-                                if (ws_ok &&
-                                    (i8::quantize_rows(m.Xs + xg_r0 * N, lo8, (int) N, ws8.xq, ws8.dx, m.cs), true) &&
-                                    i8::gate_up(f.gu_type, xg_g, f.up_off, f.n_ff, lo8, (int) N, ws8.xq, ws8.dx,
-                                                m.GU + xg_r0 * 1280, m.cs)) {
-                                    i8::swiglu_quantize(m.GU + xg_r0 * 1280, lo8, f.n_ff, ws8.hq, ws8.dh, m.cs);
-                                    pt.mark(kPfGemmD, cs);
-                                    i8::down(f.d_type, xg_g, f.down_off, (int) N, lo8, f.n_ff, ws8.hq, ws8.dh,
-                                             m.Dm + xg_r0 * N, m.cs);
-                                } else {
-                                    std::fprintf(stderr, "strata: the int8 expert products refused layer %lld (workspace %d)\n",
-                                                 (long long) l, (int) ws_ok);
-                                    std::exit(1);
+                                bool done8 = false;
+                                if (use_i8) {
+                                    if (static bool said = false; !said) {
+                                        said = true;
+                                        std::fprintf(stderr, "strata: prompt experts on the fused int8 DPAS products (STRATA_PREFILL_MMQ=%s)\n",
+                                                     i8_mode() == 2 ? "auto" : "1");
+                                    }
+                                    namespace i8 = strata::prefill::i8;
+                                    i8::Layout lo8;
+                                    i8::make_layout(lo8, xg_c, xg_n);
+                                    i8::Workspace ws8;
+                                    pt.mark(kPfGemmGU, cs);
+                                    if (i8::workspace(lo8, (int) N, f.n_ff, ws8, m.cs)) {
+                                        i8::quantize_rows(m.Xs + xg_r0 * N, lo8, (int) N, ws8.xq, ws8.dx, m.cs);
+                                        if (i8::gate_up(f.gu_type, xg_g, f.up_off, f.n_ff, lo8, (int) N, ws8.xq, ws8.dx, m.GU + xg_r0 * 1280, m.cs)) {
+                                            i8::swiglu_quantize(m.GU + xg_r0 * 1280, lo8, f.n_ff, ws8.hq, ws8.dh, m.cs);
+                                            pt.mark(kPfGemmD, cs);
+                                            done8 = i8::down(f.d_type, xg_g, f.down_off, (int) N, lo8, f.n_ff, ws8.hq, ws8.dh, m.Dm + xg_r0 * N, m.cs);
+                                        }
+                                    }
+                                    if (!done8) {
+                                        if (static bool said_f = false; !said_f) {
+                                            said_f = true;
+                                            std::fprintf(stderr, "strata: the int8 expert products could not run (layer %lld, no workspace or a format they do not handle): the FP16 chain is used\n", (long long) l);
+                                        }
+                                    }
+                                }
+                                if (!done8) {   // the FP16 chain: dequantize, two oneMKL GEMMs, SwiGLU, per expert
+                                    int64_t o = xg_r0;
+                                    for (int i = 0; i < xg_n; ++i) {
+                                        const int qd = i % DQ;
+                                        pt.mark(kPfDequant, cs);
+                                        strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, xg_g[i], xg_u[i], xg_d[i], f.n_ff, f.n_embd,
+                                                                               m.dq_gu[qd], m.dq_d[qd], m.cs);
+                                        pt.mark(kPfGemmGU, cs);
+                                        m.gemm.f16(m.Xs + o * N, m.dq_gu[qd], m.GU + o * 1280, xg_c[i], 1280, N);
+                                        swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                        pt.mark(kPfGemmD, cs);
+                                        m.gemm.f16(m.Hh + o * 640, m.dq_d[qd], m.Dm + o * N, xg_c[i], N, 640);
+                                        o += xg_c[i];
+                                    }
                                 }
                                 if (xg_ns > 0) {
                                     const int rel = xg_slots[xg_ns - 1];

@@ -33,9 +33,30 @@
 #include <type_traits>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/esimd_moe.hpp"
 
+#ifdef STRATA_I8_NO_ESIMD
+// an AOT build for a device without the s8 8x16x32 DPAS (Alchemist, Xe-HPC): no ESIMD kernels, available() is false
+namespace strata::prefill::i8 {
+void make_layout(Layout& lo, const int32_t* cnt, int n) {
+    lo.n = n;
+    int r = 0, t = 0;
+    for (int i = 0; i < n; ++i) { lo.cnt[i] = cnt[i]; lo.row0[i] = r; lo.tile0[i] = t; r += cnt[i]; t += (cnt[i] + 7) / 8; }
+    lo.row0[n] = r;
+    lo.tile0[n] = t;
+}
+bool available(void*) { return false; }
+size_t xq_bytes(const Layout& lo, int K) { return (size_t) lo.tile0[lo.n] * 8 * K; }
+size_t dx_bytes(const Layout& lo, int K) { return (size_t) lo.tile0[lo.n] * (K / 32) * 8 * sizeof(float); }
+bool workspace(const Layout&, int, int, Workspace&, void*) { return false; }
+void quantize_rows(const uint16_t*, const Layout&, int, int8_t*, float*, void*) {}
+bool gate_up(int, const uint8_t* const*, size_t, int, const Layout&, int, const int8_t*, const float*, float*, void*) { return false; }
+void swiglu_quantize(const float*, const Layout&, int, int8_t*, float*, void*) {}
+bool down(int, const uint8_t* const*, size_t, int, const Layout&, int, const int8_t*, const float*, float*, void*) { return false; }
+}  // namespace strata::prefill::i8
+#else
 namespace strata::prefill::i8 {
 namespace {
 #define GGML_TABLE_BEGIN(type, name, size) static const type name[size] = {
@@ -65,8 +86,9 @@ constexpr int N_TABLE = 3456;
 
 uint32_t* tables(sycl::queue& q) {
     static std::mutex mu;
-    static uint32_t* t = nullptr;   // one device per process in the port
+    static std::unordered_map<sycl::device, uint32_t*> per_dev;   // a layer split has one prompt path per card
     std::lock_guard<std::mutex> lk(mu);
+    uint32_t*& t = per_dev[q.get_device()];
     if (!t) {
         std::vector<uint32_t> h(N_TABLE, 0);
         for (int i = 0; i < 512; ++i) h[O_IQ3S + i] = iq3s_grid[i];
@@ -93,6 +115,17 @@ SYCL_ESIMD_FUNCTION inline simd<uint32_t, 16> ld32(const uint8_t* base, simd<uin
     simd<uint32_t, 16> lo = gather<uint32_t, 16>(reinterpret_cast<const uint32_t*>(base), a);
     simd<uint32_t, 16> hi = gather<uint32_t, 16>(reinterpret_cast<const uint32_t*>(base), a + 4u);
     simd<uint32_t, 16> sh = (off & 2u) << 3;   // 0 or 16
+    return (lo >> sh) | ((hi << 16) << (16u - sh));
+}
+// the same with the second dword clamped to byte offset `lim` (the last dword of the matrix): the down matrix ends the expert blob, and a block
+// whose last field is not dword aligned would otherwise read up to 3 bytes past it
+SYCL_ESIMD_FUNCTION inline simd<uint32_t, 16> ld32c(const uint8_t* base, simd<uint32_t, 16> off, uint32_t lim) {
+    simd<uint32_t, 16> a = off & ~3u;
+    simd<uint32_t, 16> a2 = a + 4u;
+    a2.merge(simd<uint32_t, 16>(lim), a2 > lim);
+    simd<uint32_t, 16> lo = gather<uint32_t, 16>(reinterpret_cast<const uint32_t*>(base), a);
+    simd<uint32_t, 16> hi = gather<uint32_t, 16>(reinterpret_cast<const uint32_t*>(base), a2);
+    simd<uint32_t, 16> sh = (off & 2u) << 3;
     return (lo >> sh) | ((hi << 16) << (16u - sh));
 }
 SYCL_ESIMD_FUNCTION inline simd<uint32_t, 16> ld16(const uint8_t* base, simd<uint32_t, 16> off) {
@@ -132,6 +165,7 @@ struct GArgs {
     int nkb;                          // K / 32
     int rowb;                         // bytes per weight row
     int ldy;
+    uint32_t lim;                     // byte offset of the last dword of the matrix the clamped reads (ld32c) stay inside
     int dbg;                          // bring-up switches (STRATA_I8_DBG): 1 skip the decode, 2 skip the activation loads, 4 skip the stores, 8 skip the K loop
 };
 
@@ -161,16 +195,16 @@ int fill_args_mt(GArgs& a, const Layout& lo, int MT) {
     return rb;
 }
 
-template <int F, int MT> struct TagGu;
-template <int F, int MT> struct TagDn;
+template <int F, int MT, int G> struct TagGu;
+template <int F, int MT, int G> struct TagDn;
 
 // ------------------------------------------------------------------------------------------------ gate/up
-template <int F, int MT>
+template <int F, int MT, int G>
 void launch_gu(sycl::queue& q, const GArgs a, int nrowblocks) {
-    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
+    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     constexpr int NS = (F == T_IQ2S) ? 2 : 1;   // IQ2_S: two scales per 32 values -> two DPAS with the other half zeroed
     q.submit([&](sycl::handler& h) {
-        h.parallel_for<TagGu<F, MT>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
+        h.parallel_for<TagGu<F, MT, G>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int rbg = (int) id[0], nt = (int) id[1];
             const Pick pk = pick_expert(a, rbg);
             const int cnt = pk.cnt;
@@ -307,11 +341,11 @@ void launch_gu(sycl::queue& q, const GArgs a, int nrowblocks) {
 }
 
 // ------------------------------------------------------------------------------------------------ down
-template <int F, int MT>
+template <int F, int MT, int G>
 void launch_dn(sycl::queue& q, const GArgs a, int nrowblocks) {
-    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
+    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     q.submit([&](sycl::handler& h) {
-        h.parallel_for<TagDn<F, MT>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
+        h.parallel_for<TagDn<F, MT, G>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int rbg = (int) id[0], nt = (int) id[1];
             const Pick pk = pick_expert(a, rbg);
             const int cnt = pk.cnt;
@@ -334,7 +368,7 @@ void launch_dn(sycl::queue& q, const GArgs a, int nrowblocks) {
                         sw0 = half_of(ld16(We, ro + P));
 #pragma unroll
                         for (int j = 0; j < 4; ++j) {
-                            simd<uint32_t, 16> qd = ld32(We, ro + (P + 2 + 4 * j));
+                            simd<uint32_t, 16> qd = ld32c(We, ro + (P + 2 + 4 * j), a.lim);
                             // four byte-pair lookups (lo value in byte 0, hi value in byte 1), repacked into the two dwords
                             simd<uint32_t, 16> t0 = gather<uint32_t, 16>(T + O_IQ4, (qd & 0xffu) << 2);
                             simd<uint32_t, 16> t1 = gather<uint32_t, 16>(T + O_IQ4, ((qd >> 8) & 0xffu) << 2);
@@ -348,8 +382,8 @@ void launch_dn(sycl::queue& q, const GArgs a, int nrowblocks) {
                         const uint32_t P = (uint32_t) (kb >> 1) * 18;
                         const int hb = kb & 1;
                         sw0 = half_of(ld16(We, ro + P));
-                        simd<uint32_t, 16> q0 = ld32(We, ro + (P + 2 + 8 * hb));
-                        simd<uint32_t, 16> q1 = ld32(We, ro + (P + 6 + 8 * hb));
+                        simd<uint32_t, 16> q0 = ld32c(We, ro + (P + 2 + 8 * hb), a.lim);
+                        simd<uint32_t, 16> q1 = ld32c(We, ro + (P + 6 + 8 * hb), a.lim);
 #pragma unroll
                         for (int r = 0; r < 8; ++r) {
                             simd<uint32_t, 16> qb = ((r < 4 ? q0 : q1) >> (8 * (r & 3))) & 0xffu;
@@ -390,6 +424,324 @@ void launch_dn(sycl::queue& q, const GArgs a, int nrowblocks) {
     });
 }
 
+// ------------------------------------------------------------------------------------------------ work-group versions
+// A work group is WGT = 8 threads side by side on 8 consecutive output tiles (128 outputs) of the same row block.  The
+// activation tiles of the row block are read from global memory ONCE per group, in chunks of 4 steps of 32 (128 of K), into local
+// memory (double buffered, one barrier per chunk) and every thread reads them from there, instead of every thread reading all of
+// them from L2 (80 threads per expert re-read the same ~200 KB: the activation loads were 8 of 19 us of gate/up).  The codebook
+// the decoders gather from is copied into local memory by the group once (its gathers then cost ~nothing).
+constexpr int WGT = 8;
+constexpr auto kAl16 = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::alignment<16>};
+
+// bytes of the tables a format gathers from (local memory), and the segments copied from the global table buffer
+template <int F> constexpr int tab_bytes() {
+    return F == T_IQ3S ? 2048 : F == T_IQ3XXS ? 1536 : F == T_IQ2S ? 8192 : 1024;   // IQ3XXS: grid 1024 + ksigns 512
+}
+
+template <int F, int MT>
+struct WgLayout {
+    static constexpr int TB = tab_bytes<F>();
+    static constexpr int ASZ = MT * 1024;   // activation tiles of one stage: MT tiles x 4 steps x 256 bytes
+    static constexpr int DSZ = MT * 128;    // their scales: MT tiles x 4 steps x 32 bytes
+    static constexpr int STAGE = ASZ + DSZ;
+    static constexpr int TOTAL = TB + 2 * STAGE;
+    static constexpr int SPLIT = 8 / MT;    // threads per tile in the staging load
+    static constexpr int PART = 1024 / SPLIT;   // bytes of one tile's activations a thread stages
+};
+
+// Staging of one chunk's activation tiles: global -> registers (LOAD_CHUNK) -> local memory stage SS (STORE_CHUNK).  Macros, not
+// lambdas: a lambda capturing the staging registers by reference put them in private memory.
+#define LOAD_CHUNK(CC)                                                                                                         \
+    if (s_tile < nvalid) {                                                                                                     \
+        const int* src_ = Xi + ((size_t) (tbase + s_tile) * a.nkb + (CC) * 4) * 64 + s_part * (L::PART / 4);                  \
+        _Pragma("unroll")                                                                                                      \
+        for (int k = 0; k < L::PART / 256; ++k) stg.template select<64, 1>(64 * k) = block_load<int, 64>(src_ + 64 * k, kAl16); \
+        if (s_part == 0) stg_dx = block_load<float, 32>(a.dx + ((size_t) (tbase + s_tile) * a.nkb + (CC) * 4) * 8, kAl16);    \
+    }
+#define STORE_CHUNK(SS)                                                                                                        \
+    if (s_tile < nvalid) {                                                                                                     \
+        const uint32_t base_ = L::TB + (SS) * L::STAGE;                                                                        \
+        _Pragma("unroll")                                                                                                      \
+        for (int k = 0; k < L::PART / 256; ++k)                                                                                \
+            slm_block_store<int, 64>(base_ + s_tile * 1024 + s_part * L::PART + 256 * k, stg.template select<64, 1>(64 * k), kAl16); \
+        if (s_part == 0) slm_block_store<float, 32>(base_ + L::ASZ + s_tile * 128, stg_dx, kAl16);                             \
+    }
+
+template <int F, int MT, int G> struct TagGuW;
+template <int F, int MT, int G> struct TagDnW;
+
+template <int F, int MT, int G>
+void launch_gu_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
+    using L = WgLayout<F, MT>;
+    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
+    constexpr int NS = (F == T_IQ2S) ? 2 : 1;
+    q.submit([&](sycl::handler& h) {
+        h.parallel_for<TagGuW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
+                                         [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
+            slm_init<L::TOTAL>();
+            const int rbg = (int) it.get_group(0), lt = (int) it.get_local_id(1), nt = (int) it.get_global_id(1);
+            const Pick pk = pick_expert(a, rbg);
+            const int cnt = pk.cnt;
+            const int ntl = (cnt + 7) >> 3;
+            const int tl0 = (rbg - pk.rb0) * MT;
+            const int nvalid = (ntl - tl0) < MT ? (ntl - tl0) : MT;
+            const int tbase = pk.tile0 + tl0;
+            const uint8_t* We = pk.blob;
+            const uint32_t* T = a.tab;
+            const int* Xi = reinterpret_cast<const int*>(a.Xq);
+            // the codebook into local memory: thread lt copies its eighth of each segment
+            if constexpr (F == T_IQ3S) {
+#pragma unroll
+                for (int k = 0; k < tab_bytes<F>() / WGT / 64; ++k)
+                    slm_block_store<uint32_t, 16>(lt * (tab_bytes<F>() / WGT) + 64 * k, block_load<uint32_t, 16>(T + O_IQ3S + (lt * (tab_bytes<F>() / WGT) + 64 * k) / 4, kAl16), kAl16);
+            } else if constexpr (F == T_IQ3XXS) {
+#pragma unroll
+                for (int k = 0; k < 1024 / WGT / 64; ++k)
+                    slm_block_store<uint32_t, 16>(lt * (1024 / WGT) + 64 * k, block_load<uint32_t, 16>(T + O_IQ3XXS + (lt * (1024 / WGT) + 64 * k) / 4, kAl16), kAl16);
+                slm_block_store<uint32_t, 16>(1024 + lt * (512 / WGT), block_load<uint32_t, 16>(T + O_KSIGNS + lt * (512 / WGT) / 4, kAl16), kAl16);
+            } else {   // IQ2_S
+#pragma unroll
+                for (int k = 0; k < tab_bytes<F>() / WGT / 64; ++k)
+                    slm_block_store<uint32_t, 16>(lt * (tab_bytes<F>() / WGT) + 64 * k, block_load<uint32_t, 16>(T + O_IQ2S + (lt * (tab_bytes<F>() / WGT) + 64 * k) / 4, kAl16), kAl16);
+            }
+            // staging: this thread's piece of the chunk c (tile, part) into registers, then into stage s
+            const int s_tile = lt / L::SPLIT, s_part = lt % L::SPLIT;
+            simd<int, L::PART / 4> stg;
+            simd<float, 32> stg_dx;
+            simd<uint32_t, 16> lane(0, 1);
+            simd<uint32_t, 16> ro = (lane & 1u) * a.sec_off + ((lane >> 1) + (uint32_t) (8 * nt)) * (uint32_t) a.rowb;
+            simd<float, 128 * MT> acc = 0.f;
+            const int nchunks = (a.dbg & 8) ? 0 : (a.nkb >> 2);
+            if (nchunks > 0) { LOAD_CHUNK(0); STORE_CHUNK(0); }
+            barrier();   // the codebook and chunk 0 are in local memory
+            simd<float, 16> d = 0.f;
+            simd<uint32_t, 16> w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+            for (int c = 0; c < nchunks; ++c) {
+                const int sb = c >> 1;
+                const int stage_off = L::TB + (c & 1) * L::STAGE;
+                if (c + 1 < nchunks) { LOAD_CHUNK(c + 1); }
+                if ((c & 1) == 0) {   // new superblock: its scale and the fields shared by its 8 steps
+                    const uint32_t P = (uint32_t) sb * blk_bytes<F>();
+                    d = half_of(ld16(We, ro + P));
+                    if constexpr (F == T_IQ3S) {
+                        w0 = ld32(We, ro + (P + 106)); w1 = ld32(We, ro + (P + 66)); w2 = ld32(We, ro + (P + 70));
+                    } else if constexpr (F == T_IQ2S) {
+                        w0 = ld32(We, ro + (P + 74)); w1 = ld32(We, ro + (P + 78)); w2 = ld32(We, ro + (P + 66)); w3 = ld32(We, ro + (P + 70));
+                    }
+                }
+                const uint32_t P = (uint32_t) sb * blk_bytes<F>();
+#pragma unroll 1
+                for (int ib4 = 0; ib4 < 4; ++ib4) {
+                    const int ib = ((c & 1) << 2) + ib4;
+                    simd<uint32_t, 128> fr0 = 0x01010101u, fr1 = 0u;
+                    simd<float, 16> sw0 = 1.f, sw1 = 1.f;
+                    if (!(a.dbg & 1)) {
+                        if constexpr (F == T_IQ3S) {
+                            simd<uint32_t, 16> q0 = ld32(We, ro + (P + 2 + 8 * ib));
+                            simd<uint32_t, 16> q1 = ld32(We, ro + (P + 6 + 8 * ib));
+                            simd<uint32_t, 16> sg = ld32(We, ro + (P + 74 + 4 * ib));
+                            simd<uint32_t, 16> qhv = (((ib < 4) ? w1 : w2) >> (8 * (ib & 3))) & 0xffu;
+                            simd<uint32_t, 16> scn = ((w0 >> (8 * (ib >> 1))) >> (4 * (ib & 1))) & 0xfu;
+                            sw0 = d * simd<float, 16>(simd<int, 16>(scn * 2u + 1u));
+#pragma unroll
+                            for (int r = 0; r < 8; ++r) {
+                                simd<uint32_t, 16> qsw = r < 4 ? q0 : q1;
+                                simd<uint32_t, 16> idx = ((qsw >> (8 * (r & 3))) & 0xffu) | (((qhv >> r) & 1u) << 8);
+                                simd<uint32_t, 16> g = slm_gather<uint32_t, 16>(idx << 2);
+                                simd<uint32_t, 16> nib = ((sg >> (8 * (r >> 1))) >> (4 * (r & 1))) & 0xfu;
+                                fr0.template select<16, 1>(16 * r) = apply_signs(g, nib);
+                            }
+                        } else if constexpr (F == T_IQ3XXS) {
+                            simd<uint32_t, 16> q0 = ld32(We, ro + (P + 2 + 8 * ib));
+                            simd<uint32_t, 16> q1 = ld32(We, ro + (P + 6 + 8 * ib));
+                            simd<uint32_t, 16> aux = ld32(We, ro + (P + 66 + 4 * ib));
+                            sw0 = d * simd<float, 16>(simd<int, 16>((aux >> 28) * 2u + 1u)) * 0.25f;
+#pragma unroll
+                            for (int il = 0; il < 4; ++il) {
+                                simd<uint32_t, 16> sbyte = slm_gather<uint32_t, 16>(1024u + (((aux >> (7 * il)) & 127u) << 2));
+#pragma unroll
+                                for (int hh = 0; hh < 2; ++hh) {
+                                    const int r = 2 * il + hh;
+                                    simd<uint32_t, 16> qsw = r < 4 ? q0 : q1;
+                                    simd<uint32_t, 16> idx = (qsw >> (8 * (r & 3))) & 0xffu;
+                                    simd<uint32_t, 16> g = slm_gather<uint32_t, 16>(idx << 2);
+                                    fr0.template select<16, 1>(16 * r) = apply_signs(g, (sbyte >> (4 * hh)) & 0xfu);
+                                }
+                            }
+                        } else if constexpr (F == T_IQ2S) {
+                            simd<uint32_t, 16> idw = ld32(We, ro + (P + 2 + 4 * ib));
+                            simd<uint32_t, 16> sgw = ld32(We, ro + (P + 34 + 4 * ib));
+                            simd<uint32_t, 16> qhb = (((ib < 4) ? w2 : w3) >> (8 * (ib & 3))) & 0xffu;
+                            simd<uint32_t, 16> scb = (((ib < 4) ? w0 : w1) >> (8 * (ib & 3))) & 0xffu;
+                            sw0 = d * simd<float, 16>(simd<int, 16>((scb & 0xfu) * 2u + 1u)) * 0.125f;
+                            sw1 = d * simd<float, 16>(simd<int, 16>((scb >> 4) * 2u + 1u)) * 0.125f;
+#pragma unroll
+                            for (int il = 0; il < 4; ++il) {
+                                simd<uint32_t, 16> idx = ((idw >> (8 * il)) & 0xffu) | ((qhb << (8 - 2 * il)) & 0x300u);
+                                simd<uint32_t, 16> gl = slm_gather<uint32_t, 16>(idx << 3);
+                                simd<uint32_t, 16> gh = slm_gather<uint32_t, 16>((idx << 3) + 4u);
+                                simd<uint32_t, 16> sbyte = (sgw >> (8 * il)) & 0xffu;
+                                simd<uint32_t, 16> vl = apply_signs(gl, sbyte & 0xfu);
+                                simd<uint32_t, 16> vh = apply_signs(gh, sbyte >> 4);
+                                if (il < 2) {
+                                    fr0.template select<16, 1>(16 * (2 * il)) = vl;
+                                    fr0.template select<16, 1>(16 * (2 * il + 1)) = vh;
+                                } else {
+                                    fr1.template select<16, 1>(16 * (2 * il)) = vl;
+                                    fr1.template select<16, 1>(16 * (2 * il + 1)) = vh;
+                                }
+                            }
+                            fr0.template select<64, 1>(64) = 0u;
+                            fr1.template select<64, 1>(0) = 0u;
+                        }
+                    }
+#pragma unroll
+                    for (int i = 0; i < MT; ++i) {
+                        if (i < nvalid) {
+                            simd<int, 64> av = 0x01010101;
+                            simd<float, 8> dxv = 1.f;
+                            if (!(a.dbg & 2)) {
+                                av = slm_block_load<int, 64>(stage_off + i * 1024 + ib4 * 256, kAl16);
+                                dxv = slm_block_load<float, 8>(stage_off + L::ASZ + i * 128 + ib4 * 32, kAl16);
+                            }
+                            simd<float, 128> tf = dpas_s8(fr0, av);
+#pragma unroll
+                            for (int r = 0; r < 8; ++r) {
+                                const float dxr = dxv[r];
+                                acc.template select<16, 1>(128 * i + 16 * r) += tf.template select<16, 1>(16 * r) * (sw0 * dxr);
+                            }
+                            if constexpr (NS == 2) {
+                                simd<float, 128> tg = dpas_s8(fr1, av);
+#pragma unroll
+                                for (int r = 0; r < 8; ++r) {
+                                    const float dxr = dxv[r];
+                                    acc.template select<16, 1>(128 * i + 16 * r) += tg.template select<16, 1>(16 * r) * (sw1 * dxr);
+                                }
+                            }
+                        }
+                    }
+                }
+                if (c + 1 < nchunks) { STORE_CHUNK((c + 1) & 1); }
+                barrier();
+            }
+#pragma unroll
+            for (int i = 0; i < MT; ++i) {
+                if (i < nvalid) {
+#pragma unroll
+                    for (int r = 0; r < 8; ++r) {
+                        const int rl = (tl0 + i) * 8 + r;
+                        if (rl < cnt && !(a.dbg & 4))
+                            block_store<float, 16>(a.Y + ((size_t) (pk.row0 + rl)) * a.ldy + 16 * nt, acc.template select<16, 1>(128 * i + 16 * r));
+                    }
+                }
+            }
+        });
+    });
+}
+
+template <int F, int MT, int G>
+void launch_dn_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
+    using L = WgLayout<F, MT>;
+    auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
+    q.submit([&](sycl::handler& h) {
+        h.parallel_for<TagDnW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
+                                         [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
+            slm_init<L::TOTAL>();
+            const int rbg = (int) it.get_group(0), lt = (int) it.get_local_id(1), nt = (int) it.get_global_id(1);
+            const Pick pk = pick_expert(a, rbg);
+            const int cnt = pk.cnt;
+            const int ntl = (cnt + 7) >> 3;
+            const int tl0 = (rbg - pk.rb0) * MT;
+            const int nvalid = (ntl - tl0) < MT ? (ntl - tl0) : MT;
+            const int tbase = pk.tile0 + tl0;
+            const uint8_t* We = pk.blob;
+            const uint32_t* T = a.tab;
+            const int* Xi = reinterpret_cast<const int*>(a.Xq);
+            constexpr uint32_t TOFF = (F == T_IQ4NL) ? O_IQ4 : O_Q2;
+#pragma unroll
+            for (int k = 0; k < tab_bytes<F>() / WGT / 64; ++k)
+                slm_block_store<uint32_t, 16>(lt * (tab_bytes<F>() / WGT) + 64 * k, block_load<uint32_t, 16>(T + TOFF + (lt * (tab_bytes<F>() / WGT) + 64 * k) / 4, kAl16), kAl16);
+            const int s_tile = lt / L::SPLIT, s_part = lt % L::SPLIT;
+            simd<int, L::PART / 4> stg;
+            simd<float, 32> stg_dx;
+            simd<uint32_t, 16> lane(0, 1);
+            simd<uint32_t, 16> ro = (lane + (uint32_t) (16 * nt)) * (uint32_t) a.rowb + a.sec_off;
+            simd<float, 128 * MT> acc = 0.f;
+            const int nchunks = (a.dbg & 8) ? 0 : (a.nkb >> 2);
+            if (nchunks > 0) { LOAD_CHUNK(0); STORE_CHUNK(0); }
+            barrier();
+            for (int c = 0; c < nchunks; ++c) {
+                const int stage_off = L::TB + (c & 1) * L::STAGE;
+                if (c + 1 < nchunks) { LOAD_CHUNK(c + 1); }
+#pragma unroll 1
+                for (int ib4 = 0; ib4 < 4; ++ib4) {
+                    const int kb = c * 4 + ib4;
+                    simd<float, 16> sw0 = 1.f;
+                    simd<uint32_t, 128> fr0 = 0x01010101u;
+                    if (!(a.dbg & 1)) {
+                        if constexpr (F == T_IQ4NL) {
+                            const uint32_t P = (uint32_t) kb * 18;
+                            sw0 = half_of(ld16(We, ro + P));
+#pragma unroll
+                            for (int j = 0; j < 4; ++j) {
+                                simd<uint32_t, 16> qd = ld32c(We, ro + (P + 2 + 4 * j), a.lim);
+                                simd<uint32_t, 16> t0 = slm_gather<uint32_t, 16>((qd & 0xffu) << 2);
+                                simd<uint32_t, 16> t1 = slm_gather<uint32_t, 16>(((qd >> 8) & 0xffu) << 2);
+                                simd<uint32_t, 16> t2 = slm_gather<uint32_t, 16>(((qd >> 16) & 0xffu) << 2);
+                                simd<uint32_t, 16> t3 = slm_gather<uint32_t, 16>((qd >> 24) << 2);
+                                fr0.template select<16, 1>(16 * j) = (t0 & 0xffu) | ((t1 & 0xffu) << 8) | ((t2 & 0xffu) << 16) | (t3 << 24);
+                                fr0.template select<16, 1>(16 * (j + 4)) =
+                                    ((t0 >> 8) & 0xffu) | (t1 & 0xff00u) | ((t2 & 0xff00u) << 8) | ((t3 & 0xff00u) << 16);
+                            }
+                        } else {   // T_Q2_0
+                            const uint32_t P = (uint32_t) (kb >> 1) * 18;
+                            const int hb = kb & 1;
+                            sw0 = half_of(ld16(We, ro + P));
+                            simd<uint32_t, 16> q0 = ld32c(We, ro + (P + 2 + 8 * hb), a.lim);
+                            simd<uint32_t, 16> q1 = ld32c(We, ro + (P + 6 + 8 * hb), a.lim);
+#pragma unroll
+                            for (int r = 0; r < 8; ++r) {
+                                simd<uint32_t, 16> qb = ((r < 4 ? q0 : q1) >> (8 * (r & 3))) & 0xffu;
+                                fr0.template select<16, 1>(16 * r) = slm_gather<uint32_t, 16>(qb << 2);
+                            }
+                        }
+                    }
+#pragma unroll
+                    for (int i = 0; i < MT; ++i) {
+                        if (i < nvalid) {
+                            simd<int, 64> av = 0x01010101;
+                            simd<float, 8> dxv = 1.f;
+                            if (!(a.dbg & 2)) {
+                                av = slm_block_load<int, 64>(stage_off + i * 1024 + ib4 * 256, kAl16);
+                                dxv = slm_block_load<float, 8>(stage_off + L::ASZ + i * 128 + ib4 * 32, kAl16);
+                            }
+                            simd<float, 128> tf = dpas_s8(fr0, av);
+#pragma unroll
+                            for (int r = 0; r < 8; ++r) {
+                                const float dxr = dxv[r];
+                                acc.template select<16, 1>(128 * i + 16 * r) += tf.template select<16, 1>(16 * r) * (sw0 * dxr);
+                            }
+                        }
+                    }
+                }
+                if (c + 1 < nchunks) { STORE_CHUNK((c + 1) & 1); }
+                barrier();
+            }
+#pragma unroll
+            for (int i = 0; i < MT; ++i) {
+                if (i < nvalid) {
+#pragma unroll
+                    for (int r = 0; r < 8; ++r) {
+                        const int rl = (tl0 + i) * 8 + r;
+                        if (rl < cnt && !(a.dbg & 4))
+                            block_store<float, 16>(a.Y + ((size_t) (pk.row0 + rl)) * a.ldy + 16 * nt, acc.template select<16, 1>(128 * i + 16 * r));
+                    }
+                }
+            }
+        });
+    });
+}
+
 // MT from the group's mean number of 8-row tiles per expert.
 int pick_mt(const Layout& lo) {
     const double mean = lo.n ? (double) lo.tile0[lo.n] / lo.n : 0;
@@ -404,6 +756,17 @@ int dbg_flags() {
 int mt_for(const Layout& lo) {
     static const int mo = [] { const char* s = std::getenv("STRATA_I8_MT"); return s ? std::atoi(s) : 0; }();
     return mo ? mo : pick_mt(lo);
+}
+
+// register mode per tile height: STRATA_I8_GRF=128 (more threads per EU, spills at MT 8) or 256; default 256
+int wg_for() {
+    static const int v = [] { const char* s = std::getenv("STRATA_I8_WG"); return s ? std::atoi(s) : 1; }();
+    return v;
+}
+int grf_for(int mt) {
+    static const int g = [] { const char* s = std::getenv("STRATA_I8_GRF"); return s ? std::atoi(s) : 256; }();
+    (void) mt;
+    return g == 128 ? 128 : 256;
 }
 
 template <class F>
@@ -444,10 +807,14 @@ void make_layout(Layout& lo, const int32_t* cnt, int n) {
 
 bool available(void* stream) {
     sycl::queue& q = *strata::q_of(stream);
-    static const bool ok = [&] {
+    static std::mutex mu;
+    static std::unordered_map<sycl::device, bool> per_dev;
+    std::lock_guard<std::mutex> lk(mu);
+    const sycl::device d = q.get_device();
+    if (auto it = per_dev.find(d); it != per_dev.end()) return it->second;
+    const bool ok = [&] {
         const char* v = std::getenv("STRATA_I8_FORCE");
         if (v && v[0] == '0') return false;
-        sycl::device d = q.get_device();
         if (!d.has(sycl::aspect::ext_intel_esimd)) return false;
         namespace mx = sycl::ext::oneapi::experimental::matrix;
         bool s8 = false;
@@ -455,6 +822,7 @@ bool available(void* stream) {
             if (c.atype == mx::matrix_type::sint8 && c.btype == mx::matrix_type::sint8 && c.nsize == 16 && c.ksize == 32) s8 = true;
         return s8;
     }();
+    per_dev[d] = ok;
     return ok;
 }
 
@@ -464,9 +832,13 @@ size_t dx_bytes(const Layout& lo, int K) { return (size_t) lo.tile0[lo.n] * (K /
 bool workspace(const Layout& lo, int K, int n_ff, Workspace& ws, void* stream) {
     sycl::queue& q = *strata::q_of(stream);
     static std::mutex mu;
-    static Workspace cur;
-    static size_t cap_x = 0, cap_h = 0;
+    struct St { Workspace cur; size_t cap_x = 0, cap_h = 0; };
+    static std::unordered_map<sycl::device, St> per_dev;
     std::lock_guard<std::mutex> lk(mu);
+    St& st = per_dev[q.get_device()];
+    Workspace& cur = st.cur;
+    size_t& cap_x = st.cap_x;
+    size_t& cap_h = st.cap_h;
     const size_t nx = xq_bytes(lo, K), nh = xq_bytes(lo, n_ff);
     if (nx > cap_x || nh > cap_h) {
         q.wait();
@@ -497,16 +869,19 @@ void quantize_rows(const uint16_t* X, const Layout& lo, int K, int8_t* Xq, float
     q.submit([&](sycl::handler& h) {
         h.parallel_for<QuantTag>(sycl::range<2>((size_t) lo.tile0[lo.n], (size_t) a.nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int T = (int) id[0], kb = (int) id[1];
-            int e = 0;
-            while (e + 1 < a.n && T >= a.tile0[e + 1]) ++e;
-            const int cnt = a.row0[e + 1] - a.row0[e];
+            // the expert of tile T, by constant-index reads of the argument arrays (see pick_expert)
+            int t0e = a.tile0[0], r0e = a.row0[0], r1e = a.row0[1];
+#pragma unroll
+            for (int i = 1; i < kMaxGroup; ++i)
+                if (i < a.n && T >= a.tile0[i]) { t0e = a.tile0[i]; r0e = a.row0[i]; r1e = a.row0[i + 1]; }
+            const int cnt = r1e - r0e;
             simd<float, 8> dxv = 0.f;
 #pragma unroll
             for (int r = 0; r < 8; ++r) {
-                const int rl = (T - a.tile0[e]) * 8 + r;
+                const int rl = (T - t0e) * 8 + r;
                 simd<uint32_t, 8> qd = 0u;
                 if (rl < cnt) {
-                    simd<half, 32> xh = block_load<half, 32>(Xh + ((size_t) (a.row0[e] + rl)) * a.ld + kb * 32);
+                    simd<half, 32> xh = block_load<half, 32>(Xh + ((size_t) (r0e + rl)) * a.ld + kb * 32);
                     simd<float, 32> x = xh;
                     float amax = hmax<float>(abs(x));
                     const float dd = amax / 127.f;
@@ -539,16 +914,19 @@ void swiglu_quantize(const float* GU, const Layout& lo, int n_ff, int8_t* Hq, fl
     q.submit([&](sycl::handler& h) {
         h.parallel_for<SwigluTag>(sycl::range<2>((size_t) lo.tile0[lo.n], (size_t) a.nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int T = (int) id[0], kb = (int) id[1];
-            int e = 0;
-            while (e + 1 < a.n && T >= a.tile0[e + 1]) ++e;
-            const int cnt = a.row0[e + 1] - a.row0[e];
+            // the expert of tile T, by constant-index reads of the argument arrays (see pick_expert)
+            int t0e = a.tile0[0], r0e = a.row0[0], r1e = a.row0[1];
+#pragma unroll
+            for (int i = 1; i < kMaxGroup; ++i)
+                if (i < a.n && T >= a.tile0[i]) { t0e = a.tile0[i]; r0e = a.row0[i]; r1e = a.row0[i + 1]; }
+            const int cnt = r1e - r0e;
             simd<float, 8> dxv = 0.f;
 #pragma unroll
             for (int r = 0; r < 8; ++r) {
-                const int rl = (T - a.tile0[e]) * 8 + r;
+                const int rl = (T - t0e) * 8 + r;
                 simd<uint32_t, 8> qd = 0u;
                 if (rl < cnt) {
-                    simd<float, 64> v = block_load<float, 64>(GU + ((size_t) (a.row0[e] + rl)) * a.ld + kb * 64);
+                    simd<float, 64> v = block_load<float, 64>(GU + ((size_t) (r0e + rl)) * a.ld + kb * 64);
                     simd<float, 32> g = v.template select<32, 2>(0);
                     simd<float, 32> u = v.template select<32, 2>(1);
                     simd<float, 32> x = g * u / (1.f + exp(-g));
@@ -591,9 +969,19 @@ bool gate_up(int gu_type, const uint8_t* const* blob, size_t up_off, int n_ff, c
     const int rb = fill_args_mt(a, lo, mt);
     return dispatch_mt(mt, [&](auto mtc) {
         constexpr int MT = decltype(mtc)::value;
-        if (gu_type == T_IQ3S) launch_gu<T_IQ3S, MT>(q, a, rb);
-        else if (gu_type == T_IQ3XXS) launch_gu<T_IQ3XXS, MT>(q, a, rb);
-        else launch_gu<T_IQ2S, MT>(q, a, rb);
+        if (wg_for() && gu_type != T_IQ2S && a.nkb % 4 == 0 && a.ntiles % WGT == 0) {   // IQ2_S: its 8 KB codebook copied into local memory by every group costs more than it saves (35 vs 16 us)
+            if (gu_type == T_IQ3S) launch_gu_wg<T_IQ3S, MT, 256>(q, a, rb);
+            else if (gu_type == T_IQ3XXS) launch_gu_wg<T_IQ3XXS, MT, 256>(q, a, rb);
+            else launch_gu_wg<T_IQ2S, MT, 256>(q, a, rb);
+        } else         if (grf_for(MT) == 128) {
+            if (gu_type == T_IQ3S) launch_gu<T_IQ3S, MT, 128>(q, a, rb);
+            else if (gu_type == T_IQ3XXS) launch_gu<T_IQ3XXS, MT, 128>(q, a, rb);
+            else launch_gu<T_IQ2S, MT, 128>(q, a, rb);
+        } else {
+            if (gu_type == T_IQ3S) launch_gu<T_IQ3S, MT, 256>(q, a, rb);
+            else if (gu_type == T_IQ3XXS) launch_gu<T_IQ3XXS, MT, 256>(q, a, rb);
+            else launch_gu<T_IQ2S, MT, 256>(q, a, rb);
+        }
     });
 }
 
@@ -612,15 +1000,25 @@ bool down(int d_type, const uint8_t* const* blob, size_t down_off, int n_embd, c
     a.ntiles = n_embd / 16;
     a.nkb = n_ff / 32;
     a.rowb = (n_ff / block_vals_of(d_type)) * block_bytes_of(d_type);
+    a.lim = (uint32_t) (down_off + (size_t) n_embd * (size_t) a.rowb) - 4u;
     a.ldy = n_embd;
     a.dbg = dbg_flags();
     const int mt = mt_for(lo);
     const int rb = fill_args_mt(a, lo, mt);
     return dispatch_mt(mt, [&](auto mtc) {
         constexpr int MT = decltype(mtc)::value;
-        if (d_type == T_IQ4NL) launch_dn<T_IQ4NL, MT>(q, a, rb);
-        else launch_dn<T_Q2_0, MT>(q, a, rb);
+        if (wg_for() && a.nkb % 4 == 0 && a.ntiles % WGT == 0) {
+            if (d_type == T_IQ4NL) launch_dn_wg<T_IQ4NL, MT, 256>(q, a, rb);
+            else launch_dn_wg<T_Q2_0, MT, 256>(q, a, rb);
+        } else         if (grf_for(MT) == 128) {
+            if (d_type == T_IQ4NL) launch_dn<T_IQ4NL, MT, 128>(q, a, rb);
+            else launch_dn<T_Q2_0, MT, 128>(q, a, rb);
+        } else {
+            if (d_type == T_IQ4NL) launch_dn<T_IQ4NL, MT, 256>(q, a, rb);
+            else launch_dn<T_Q2_0, MT, 256>(q, a, rb);
+        }
     });
 }
 
 }  // namespace strata::prefill::i8
+#endif  // STRATA_I8_NO_ESIMD

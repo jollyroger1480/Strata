@@ -42,6 +42,9 @@ if(STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")
 elseif(STRATA_SYCL_AOT MATCHES "^pvc")
   add_compile_definitions(STRATA_NO_DG2_XMX=1)   # the grouped XMX kernels (sub-group 8, 8x8x16) do not compile for Xe2 / Xe-HPC
 endif()
+if(STRATA_SYCL_AOT AND NOT STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")
+  add_compile_definitions(STRATA_I8_NO_ESIMD=1)   # 151-b70: the fused int8 DPAS expert kernels (ESIMD, s8 8x16x32) are Xe2-only: no AOT build for Alchemist / Xe-HPC
+endif()
 if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)
   # the divide/sqrt rounding option (below) must reach ocloc here: an AOT build has no spir64 backend to take it
@@ -390,8 +393,11 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(xmx_group_parity PRIVATE strata_kernels strata_prefill)
   add_executable(esimd_moe_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_moe_parity.cpp)   # 151-b70: fused int8 expert products vs dequant+oneMKL and FP64
   target_link_libraries(esimd_moe_parity PRIVATE strata_kernels strata_prefill)
-  add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
-  add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
+  add_test(NAME esimd_moe_parity COMMAND esimd_moe_parity 60 8 2)   # 151-b70: skips (exit 0) on a device without the s8 8x16x32 DPAS
+  if(NOT STRATA_SYCL_AOT OR STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build
+    add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
+    add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
+  endif()
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)
