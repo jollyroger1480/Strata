@@ -6,6 +6,7 @@
 # Why: a README that carries a hand-pasted sha256 goes stale the moment the file is rebuilt (the Ubuntu 26.04 tester compared the file
 # with the old build's hash). The template holds placeholders instead, and this script fills them from the real files:
 #   @APPIMAGE@            the AppImage's file name
+#   @APP_VERSION@         the app version, read from apps/desktop/src-tauri/Cargo.toml
 #   @SHA256:<name>@       sha256 of the file <name> found in one of the --files-dir folders
 #   @SIZE_GB:<name>@      its size in GB with one decimal
 #   @INCLUDE:<file>@      (alone on a line) the contents of <file> from the template's folder, with the same placeholders
@@ -56,11 +57,14 @@ fi
 
 [ -n "$APPIMAGE" ] || usage
 TDIR="$(cd "$(dirname "$TEMPLATE")" && pwd)"
+# the app version has one source (the same file Tauri and the shell use)
+APP_VERSION="$(grep -m1 '^version = ' "$TDIR/../src-tauri/Cargo.toml" | cut -d'"' -f2)"
+[ -n "$APP_VERSION" ] || { echo "make-tester-readme: no version in $TDIR/../src-tauri/Cargo.toml" >&2; exit 1; }
 TMP="$(mktemp)"; trap 'rm -f "$TMP" "$TMP.2"' EXIT
 # includes first (one level), then the placeholders
 while IFS= read -r line || [ -n "$line" ]; do
   if [[ "$line" =~ ^@INCLUDE:([^@]+)@$ ]]; then tr -d '\r' < "$TDIR/${BASH_REMATCH[1]}"; else printf '%s\n' "$line"; fi
-done < <(tr -d '\r' < "$TEMPLATE") | sed "s|@APPIMAGE@|$APPIMAGE|g" > "$TMP"
+done < <(tr -d '\r' < "$TEMPLATE") | sed "s|@APPIMAGE@|$APPIMAGE|g; s|@APP_VERSION@|$APP_VERSION|g" > "$TMP"
 
 # @SHA256:name@ and @SIZE_GB:name@
 while IFS= read -r token; do

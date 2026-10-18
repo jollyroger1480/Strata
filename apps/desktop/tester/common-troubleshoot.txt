@@ -11,8 +11,11 @@ IF IT DOES NOT START
 * The app window does not open, or it closes by itself. This build does not give up: Strata keeps running and opens in your web
   browser instead ("browser mode"). You will see a notification and, in a terminal, this line:
       Strata opened in your browser because the app window couldn't start on this computer.
-  Everything works in the browser tab except updating the app itself (see BROWSER MODE below). Please tell us it happened, with your
-  Linux, desktop and graphics driver. The window is the part of Strata that depends most on your computer's graphics setup.
+  The terminal also says  "The app window crashed (signal 11 ...)"  and where the crash log is. Everything works in the browser tab except
+  updating the app itself (see BROWSER MODE below). Please tell us it happened, with your Linux, desktop and graphics driver, and run
+      ./@APPIMAGE@ --save-logs
+  which puts the crash log and the other logs into one file in your Downloads folder (it needs no window). Send us that file.
+  A crash during the very first start does not stop the engine's unpacking: Strata keeps working in the browser.
 * The window opens but stays blank or white: this build already switches off WebKit's DMA-BUF drawing, which is the usual cause.
   If it is still blank, try these one at a time, and tell us which one (if any) helped:
       WEBKIT_DISABLE_COMPOSITING_MODE=1 ./@APPIMAGE@

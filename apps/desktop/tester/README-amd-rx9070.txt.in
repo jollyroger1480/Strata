@@ -1,4 +1,4 @@
-STRATA FOR LINUX - TESTER BUILD FOR AMD RX 9000 (RDNA4) CARDS (RX 9070 XT)
+STRATA @APP_VERSION@ FOR LINUX - TESTER BUILD FOR AMD RX 9000 (RDNA4) CARDS (RX 9070 XT)
 =====================================================================
 
 This is a private test version of Strata for Linux with an AMD graphics card. Please keep it to yourself: it is not a public release.
@@ -63,7 +63,8 @@ give it that file and it can do the setup for you). The installer starts a tiny 
 
 WHAT TO SEND BACK
 -----------------
-* The desktop app:  Settings > Engine > Diagnostics > View logs > Save logs. Send the saved file.
+* The desktop app:  Settings > Engine > Diagnostics > View logs > Save logs. Send the saved file. If the window crashed or would not open, run
+  ./@APPIMAGE@ --save-logs  in a terminal instead and send the file it writes in your Downloads folder (it includes the crash log).
 * The terminal app: the output of   strata doctor   (and   uname -r ,  id ,  ls /dev/kfd /dev/dri ).
 * The speed: the tokens-per-second numbers. The app shows "generating - N tok/s" while it answers. In the terminal app,
   with the server running:   strata bench run --url http://127.0.0.1:8080 --suite serving-smoke --repeat 2 --out ~/strata-bench-1
@@ -85,6 +86,6 @@ WHAT WE TESTED AND WHAT WE DID NOT
 WHERE THINGS ARE (to remove Strata completely, delete the files and these folders)
 ---------------------------------------------------------------------------------
   ~/.strata                      settings, chats, prepared model files
-  ~/.local/share/strata          the unpacked engine and the terminal app
+  ~/.local/share/strata          the unpacked engine and the terminal app, and logs/ (what the app printed, and a crash log if the window ever crashes)
   ~/.local/bin/strata            the terminal app's command
   ~/Documents/Strata             downloaded models (Models) and your work folder (Workspace)
