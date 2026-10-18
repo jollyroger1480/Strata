@@ -5499,7 +5499,10 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: file tier io prefetch ON (STRATA_IO_PREFETCH=1): whole-blob preads, "
                                      "the layer's uncached experts and the predicted ones read by %s I/O threads (STRATA_IO_PF_THREADS, default 8)\n",
                              th != nullptr ? th : "8");
-            else
+            if (src.io_prefetch() && src.io_sched())
+                std::fprintf(stderr, "strata generate: io prefetch scheduling ON (STRATA_IO_PF_SCHED=1): a deadline per read, "
+                                     "confidence admission (STRATA_IO_PF_MINCONF), a per-window byte budget (STRATA_IO_PF_BUDGET_MB / _FRAC)\n");
+            if (!src.io_prefetch())
                 std::fprintf(stderr, "strata generate: STRATA_IO_PREFETCH=1 is not available here (Linux mapped file tier "
                                      "only, not with unbuffered reads); the file tier reads as before\n");
             if (src.io_prefetch()) {   // recommend, never force: the engine runs as asked
@@ -7921,6 +7924,23 @@ int main(int argc, char** argv) {
                                  "cache (STRATA_PREFILL_HELPER_SOURCE)\n");
         }
         strata::prefill::Prefill sp;
+        // 149-prefetch STRATA_RAM_ADAPT2=1 (with STRATA_RAM_ADAPT=n, the promotions staged per window): see the window loop
+        struct RamAdapt2 {
+            bool on = false;
+            float prompt_w = 0.25f, cached_w = 0.15f;
+            int per_layer = 2;
+            int skip_top = 2;
+            int64_t installed = 0;
+            std::vector<float> seed;
+        } ram_adapt2;
+        {
+            const char* v = std::getenv("STRATA_RAM_ADAPT2");
+            ram_adapt2.on = v != nullptr && std::atoi(v) != 0;
+            if (const char* w = std::getenv("STRATA_RAM_ADAPT_PROMPT_W")) ram_adapt2.prompt_w = (float) std::max(0.0, std::atof(w));
+            if (const char* w = std::getenv("STRATA_RAM_ADAPT_CACHED_W")) ram_adapt2.cached_w = (float) std::clamp(std::atof(w), 0.0, 1.0);
+            if (const char* w = std::getenv("STRATA_RAM_ADAPT_PER_LAYER")) ram_adapt2.per_layer = std::max(1, std::atoi(w));
+            if (const char* w = std::getenv("STRATA_RAM_ADAPT_SKIP_TOP")) ram_adapt2.skip_top = std::max(0, std::atoi(w));
+        }
         // the pool is idle while a prompt is read unless batch slots decode between its parts; with
         // STRATA_PREFILL_CPU_SHARE the staged-chunk limit before the chunk below sizes the loans (bytes_needed reads it)
         // #1607: Windows, the commit limit (RAM + page file) is what ends the engine silently; compare what this run plans
@@ -10420,6 +10440,19 @@ int main(int argc, char** argv) {
             return true;
         };
         sp.should_stop = [&] { return stop_req.load(); };
+        // 149-prefetch STRATA_RAM_ADAPT2: the prompt's routing seeds the RAM policy with a limited weight
+        // (STRATA_RAM_ADAPT_PROMPT_W, default 0.25: an expert every prompt token routes to counts like ~5 decode routings),
+        // fading by 5% a decode window; the decode's own counts and the GPU tier are untouched
+        if (ram_adapt2.on && ram_adapt2.prompt_w > 0.0f) {
+            ram_adapt2.seed.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
+            sp.on_routes = [&](int64_t l, const int32_t* ids, int64_t n) {
+                if (l < 0 || l >= g.n_layers || n <= 0) return;
+                const float per = ram_adapt2.prompt_w * 20.0f * (float) g.n_expert_used / (float) n;   // = w x 20 / tokens
+                float* sd = ram_adapt2.seed.data() + l * g.n_expert;
+                for (int64_t i = 0; i < n; ++i)
+                    if (ids[i] >= 0 && ids[i] < g.n_expert) sd[ids[i]] += per;
+            };
+        }
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -14365,6 +14398,79 @@ int main(int argc, char** argv) {
                     const char* e = std::getenv("STRATA_RAM_ADAPT");
                     return e != nullptr ? std::max(0, std::atoi(e)) : 0;
                 }();
+                if (ram_adapt_n > 0 && ram_adapt2.on && !first_window && !drive.d.usage.empty() && pending.empty() &&
+                    (!ajob || astate == AState::Idle) && src.complement_ready() && !multi_gpu && !peer.valid() &&
+                    !remote_opt && o.batch == 0) {
+                    // 149-prefetch STRATA_RAM_ADAPT2=1: install the promotions whose reads have landed (window boundary:
+                    // nothing reads the RAM copy now), then stage the next ones, ranked by the stall they are expected to
+                    // save per byte: (decayed decode count + the prompt's seed) x the miss's cost (a cold expert costs
+                    // a drive read, one in the page cache STRATA_RAM_ADAPT_CACHED_W of that), against what the evicted
+                    // one is expected to cost; up to STRATA_RAM_ADAPT_PER_LAYER pairs a layer.  The reads run on the
+                    // source's I/O thread, not here.
+                    ram_adapt2.installed += src.ram_install(host_res.data(), g.n_expert);
+                    for (float& x : ram_adapt2.seed) x *= 0.95f;
+                    struct Cand { float score; int32_t e; };
+                    struct RamSwap2 { float gain; int32_t layer, in, out; };
+                    std::vector<RamSwap2> swaps;
+                    std::vector<Cand> ins, outs;
+                    for (int64_t l = 0; l < g.n_layers; ++l) {
+                        const float* u = drive.d.usage.data() + l * g.n_expert;
+                        const float* sd = ram_adapt2.seed.empty() ? nullptr : ram_adapt2.seed.data() + l * g.n_expert;
+                        const int32_t* r = host_res.data() + l * g.n_expert;
+                        ins.clear();
+                        outs.clear();
+                        for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
+                            if (r[e] >= 0) continue;   // in VRAM
+                            const float ue = u[e] + (sd != nullptr ? sd[e] : 0.0f);
+                            if (src.has_resident(l, e)) outs.push_back({ue, e});
+                            else if (ue >= 2.0f) ins.push_back({ue, e});
+                        }
+                        // the GPU tier's own next picks are left to it: its round takes the layer's most used experts
+                        // outside VRAM (about 2 a layer a round), and a RAM place spent on one of them is skipped at the
+                        // install (measured: 60% of the promotions skipped before this rule) - STRATA_RAM_ADAPT_SKIP_TOP
+                        if (ram_adapt2.skip_top > 0 && !ins.empty()) {
+                            std::vector<float> du;
+                            for (const Cand& c : ins) du.push_back(u[c.e]);
+                            const size_t k = std::min(du.size(), (size_t) ram_adapt2.skip_top);
+                            std::nth_element(du.begin(), du.begin() + (std::ptrdiff_t) (k - 1), du.end(), std::greater<float>());
+                            const float top = du[k - 1];
+                            size_t dropped = 0;
+                            ins.erase(std::remove_if(ins.begin(), ins.end(), [&](const Cand& c) {
+                                          if (dropped < k && u[c.e] >= top) { ++dropped; return true; }
+                                          return false;
+                                      }), ins.end());
+                        }
+                        if (ins.empty() || outs.empty()) continue;
+                        const size_t P = (size_t) ram_adapt2.per_layer;
+                        const size_t ni = std::min(ins.size(), 2 * P), no = std::min(outs.size(), P);
+                        std::partial_sort(ins.begin(), ins.begin() + (std::ptrdiff_t) ni, ins.end(),
+                                          [](const Cand& a, const Cand& b) { return a.score > b.score; });
+                        std::partial_sort(outs.begin(), outs.begin() + (std::ptrdiff_t) no, outs.end(),
+                                          [](const Cand& a, const Cand& b) { return a.score < b.score; });
+                        ins.resize(ni);
+                        for (Cand& c : ins) {   // the miss cost of the few best: cold on the drive, or in the page cache
+                            if (src.ram_queued(l, c.e)) { c.score = -1.0f; continue; }
+                            c.score *= src.tier_of(l, c.e) == 1 ? ram_adapt2.cached_w : 1.0f;
+                        }
+                        std::sort(ins.begin(), ins.end(), [](const Cand& a, const Cand& b) { return a.score > b.score; });
+                        const double bytes = (double) std::max<uint64_t>(1, src.blob_bytes(l));
+                        size_t oi = 0;
+                        for (size_t k = 0; k < ins.size() && oi < no; ++k) {
+                            while (oi < no && src.ram_queued(l, outs[oi].e)) ++oi;
+                            if (oi >= no) break;
+                            const float gain = ins[k].score - outs[oi].score;   // the evicted one would cost a drive read
+                            if (ins[k].score <= 0.0f || gain < 1.0f) break;
+                            swaps.push_back({(float) (gain / bytes * 1048576.0), (int32_t) l, ins[k].e, outs[oi].e});
+                            ++oi;
+                        }
+                    }
+                    std::sort(swaps.begin(), swaps.end(), [](const RamSwap2& a, const RamSwap2& b) { return a.gain > b.gain; });
+                    int staged_n = 0;
+                    for (const RamSwap2& x : swaps) {
+                        if (staged_n >= ram_adapt_n) break;
+                        if (src.ram_stage(x.layer, x.in, x.out)) ++staged_n;
+                    }
+                } else
                 if (ram_adapt_n > 0 && !first_window && !drive.d.usage.empty() && pending.empty() &&
                     (!ajob || astate == AState::Idle) && src.complement_ready() && !multi_gpu && !peer.valid() &&
                     !remote_opt && o.batch == 0) {
@@ -14852,6 +14958,11 @@ int main(int argc, char** argv) {
                                      "VRAM tier, %lld blob reads from the file\n",
                              (double) src.resident_bytes() / 1073741824.0, (long long) src.exchanges(),
                              (long long) src.file_reads());
+            if (ram_adapt2.on)   // 149-prefetch: the staged promotions, cumulative
+                std::fprintf(stderr, "strata serve: resident RAM (STRATA_RAM_ADAPT2): %lld promotions read on the I/O thread, "
+                                     "%lld installed, %lld skipped at the install (%lld of them: the GPU tier took one of the pair)\n",
+                             (long long) src.ram_staged_reads(),
+                             (long long) ram_adapt2.installed, (long long) (src.ram_install_skips() + src.ram_install_gpu()), (long long) src.ram_install_gpu());
             if (src.ram_adapts() > 0)   // STRATA_RAM_ADAPT, cumulative
                 std::fprintf(stderr, "strata serve: resident RAM: %lld experts moved in from the file in place of "
                                      "unused ones (STRATA_RAM_ADAPT)\n", (long long) src.ram_adapts());
@@ -14903,11 +15014,38 @@ int main(int argc, char** argv) {
                                      (unsigned long long) (ic.pf_dropped - ic_prev.pf_dropped),
                                      (double) (ic.crit_us - ic_prev.crit_us) / 1e3,
                                      (unsigned long long) (ic.crit_n - ic_prev.crit_n));
+                    if (src.io_prefetch())   // 149-prefetch: bytes read ahead, of them used before their demand; the scheduler's drops
+                        std::fprintf(stderr, "; read ahead %.1f MB, %.1f MB of it used; %llu late, %llu not admitted (confidence), "
+                                             "%llu (budget %.0f MB/window)",
+                                     (double) (ic.pf_bytes - ic_prev.pf_bytes) / 1e6,
+                                     (double) (ic.pf_used_bytes - ic_prev.pf_used_bytes) / 1e6,
+                                     (unsigned long long) (ic.pf_late - ic_prev.pf_late),
+                                     (unsigned long long) (ic.pf_rej_conf - ic_prev.pf_rej_conf),
+                                     (unsigned long long) (ic.pf_rej_budget - ic_prev.pf_rej_budget),
+                                     (double) ic.pf_budget_bytes / 1048576.0);
                     std::fprintf(stderr, "\n");
                     io_prev = io_now;
                     ic_prev = ic;
                     fb_prev = fb;
                 }
+            }
+            if (drive.d.cold_mode != 0) {   // 149-cold STRATA_COLD_OVERLAP: this request's layers that had a blob to read
+                static strata::core::ExpertDispatch cp;
+                const strata::core::ExpertDispatch& c = drive.d;
+                const double nl = (double) std::max<int64_t>(1, c.cold_layers - cp.cold_layers);
+                std::fprintf(stderr, "strata serve: cold reads (STRATA_COLD_OVERLAP=%d) this request: %lld experts from the mapping "
+                                     "directly; %lld layers with a blob to "
+                                     "read (%lld such experts, %lld ready beside them, %lld pool batches); per such layer: "
+                                     "R %.3f ms, C_r %.3f ms, C_c %.3f ms, the decode waited %.3f ms; total waited %.1f ms, min(R, C_r) %.1f ms\n",
+                             c.cold_mode, (long long) (c.cold_zc - cp.cold_zc), (long long) (c.cold_layers - cp.cold_layers),
+                             (long long) (c.cold_pending - cp.cold_pending), (long long) (c.cold_ready - cp.cold_ready),
+                             (long long) (c.cold_batches - cp.cold_batches),
+                             (c.ms_cold_r - cp.ms_cold_r) / nl, (c.ms_cold_cr - cp.ms_cold_cr) / nl,
+                             (c.ms_cold_cc - cp.ms_cold_cc) / nl, (c.ms_cold_wait - cp.ms_cold_wait) / nl,
+                             c.ms_cold_wait - cp.ms_cold_wait, c.ms_cold_hide - cp.ms_cold_hide);
+                cp.cold_layers = c.cold_layers; cp.cold_pending = c.cold_pending; cp.cold_ready = c.cold_ready; cp.cold_zc = c.cold_zc;
+                cp.cold_batches = c.cold_batches; cp.ms_cold_r = c.ms_cold_r; cp.ms_cold_cr = c.ms_cold_cr;
+                cp.ms_cold_cc = c.ms_cold_cc; cp.ms_cold_wait = c.ms_cold_wait; cp.ms_cold_hide = c.ms_cold_hide;
             }
             // STRATA_SPLIT_TIMING: where each verify stage's host time went, cumulative per window since the start
             // (waiting for its GPU to ring a layer, the CPU pool and plan per layer, staging the window)

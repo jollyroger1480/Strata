@@ -198,6 +198,9 @@ public:
     /// says how many of the run's tokens that is (-1 when the run read them all).  A read beside the batch slots
     /// (STRATA_PIPED_CONCURRENT) gives way to a waiting shorter request there.
     std::function<bool()> stop_at_chunk;
+    /// 149-prefetch (STRATA_RAM_ADAPT2): a layer's routed expert ids (T x k, -1 = none) after the prompt path downloaded them
+    /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
+    std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
     int64_t stopped_at() const { return stopped_at_; }
     /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
     /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's
