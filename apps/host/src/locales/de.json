@@ -3221,5 +3221,13 @@
   "s3225": "Was sie getan hat",
   "s3226": "Dateien",
   "s3227": "Bitte hilf mir, von hier aus weiterzumachen.",
-  "s3228": "…und {0} weitere Schritte"
+  "s3228": "…und {0} weitere Schritte",
+  "s3229": "Gib eine Zahl ein.",
+  "s3230": "Gib eine ganze Zahl von {0} bis {1} ein.",
+  "s3231": "Beim Hinzufügen einer Fähigkeit öffnet sich ein Ordnerfenster auf dem Computer, auf dem Strata läuft. Öffne Strata auf diesem Computer, um eine hinzuzufügen.",
+  "s3232": "Screenshot gespeichert",
+  "s3233": "Er liegt in deinem Downloads-Ordner.",
+  "s3234": "Der Screenshot wurde nicht gespeichert",
+  "s3235": "Versuche es noch einmal oder mache stattdessen einen Screenshot dieses Fensters.",
+  "s3236": "Das Ordnerfenster hat sich nicht geöffnet. Gib stattdessen den Ordnerpfad ein."
 }

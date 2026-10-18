@@ -3221,5 +3221,13 @@
   "s3225": "O que fez",
   "s3226": "Arquivos",
   "s3227": "Por favor, ajude-me a continuar daqui.",
-  "s3228": "…e mais {0} etapas"
+  "s3228": "…e mais {0} etapas",
+  "s3229": "Digite um número.",
+  "s3230": "Digite um número inteiro de {0} a {1}.",
+  "s3231": "Adicionar uma habilidade abre uma janela de pastas no computador que executa o Strata. Abra o Strata nesse computador para adicionar uma.",
+  "s3232": "Captura de tela salva",
+  "s3233": "Ela está na sua pasta Downloads.",
+  "s3234": "A captura de tela não foi salva",
+  "s3235": "Tente de novo ou tire uma captura desta janela.",
+  "s3236": "A janela de pastas não abriu. Digite o caminho da pasta."
 }
