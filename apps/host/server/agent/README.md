@@ -103,3 +103,21 @@ Failures the person sees are plain sentences with a next step (`AgentUnavailable
 `tests/agent-events.test.mjs` (pure), `tests/agent-tools-settings.test.mjs` (Settings -> Tools, web search, the browser and the person's own tools; the Harness-backed ones need STRATA_HARNESS_DIR and the browser one also Chrome or Edge), `tests/agent-bridge.test.mjs`, `tests/agent-modes.test.mjs` and `tests/agent-host.test.mjs` (need a built Harness:
 `STRATA_HARNESS_DIR=<checkout>`, otherwise they skip and say so). The model in those tests is `tests/helpers/scripted-worker.mjs`.
 `scripts/agent-flow.mjs` drives the real app in Chrome and takes screenshots.
+
+## Helper agents on a named model (`plugins/strata-models.mjs`, `model-routes.mjs`)
+
+The Harness's `subagent` tool takes an exact `provider` route key and model id, and the app had its model choice switched off, so every helper ran on the chat's model. The profile now enables the Harness's `subagent-model-selection-settings` with every route the app can reach (local instances and saved API models), and the `strata-models` plugin wraps the two tool definitions the Harness registers for each chat (`subagent`, `list_subagent_models`) in place:
+
+- the model is found from its id, `provider/id`, the name in the model picker, `connection name`, or "local" (any letters). A close guess is not started: the tool answers "Did you mean ...?" and nothing runs until the call is made again with that model. Several fits are listed; nothing fitting lists the models that can be used and says they can be added in Models.
+- the tool's own text says when to use it ("ask a subagent", "ask model X"), not to look for the model with shell commands, and not to wait with sleep. The system prompt (`preset.mjs`) says the same, so it reaches every model, local or hosted.
+- `list_subagent_models` lists the models by the names the person knows.
+
+If a Harness update renames those tools the wrapping does nothing and `tests/agent-subagent-models.test.mjs` (real Harness) fails.
+
+## Reasoning for API models
+
+A model on OpenRouter whose model list names `reasoning` in `supported_parameters` gets `reasoning: true` and the efforts `{off: none, low, medium, high, max: xhigh}` and the `openrouter` thinking format, so the Reasoning menu works and the choice reaches OpenRouter as `reasoning: { effort }`. Other API models keep the provider's own default (the menu stays greyed).
+
+## Pictures
+
+Pictures are on by default for every model that can read them: an API model reads them unless the person switched it off (Settings > Models > "Read pictures with this model") or its server says it cannot; a local model reads them when it was loaded with Read pictures (on by default). `src/lib/pictures.ts` is the one answer used by the composer and by Send; the agent route declares image input from the same flag.
