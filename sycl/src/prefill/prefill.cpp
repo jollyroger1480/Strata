@@ -5,6 +5,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
+#include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
@@ -230,7 +231,20 @@ inline int ring_slots(size_t T) {
 }
 // A770 port: STRATA_PF_XMX=2 holds up to a group of staged experts until its launch, so routed-only staging needs
 // that many more slots for the lookahead to keep copying (the slots are only reused once the group's event is in)
-inline int stage_slots() { return strata::prefill::xmx::mode() == 2 ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE; }
+// 151-b70: the fused int8 DPAS expert products (prefill/esimd_moe.dp.cpp, Battlemage).  STRATA_PREFILL_MMQ=1 (or STRATA_PF_I8=1) turns
+// them on for the layers whose experts are IQ3_S gate/up + IQ4_NL down, STRATA_PREFILL_MMQ=0 keeps the FP16 path; off by default
+// until the owner has the quality check (the activations are quantized, so the bits differ from the FP16 path).
+inline int i8_mode() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_PREFILL_MMQ");
+        if (e == nullptr || e[0] == 0) e = std::getenv("STRATA_PF_I8");
+        if (e == nullptr || e[0] == 0) return 0;
+        if (e[0] == 'a' || e[0] == 'A') return 2;
+        return std::atoi(e) != 0 ? 1 : 0;
+    }();
+    return v;
+}
+inline int stage_slots() { return (strata::prefill::xmx::mode() == 2 || i8_mode() != 0) ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE; }
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // A770 port: STRATA_PF_XMX=1 dequantizes a whole group of experts, then one grouped XMX launch per product
 inline int dq_slots() { return strata::prefill::xmx::mode() == 1 ? strata::prefill::xmx::kMaxGroup : DQ; }
@@ -3945,7 +3959,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
                             return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
                         };
-                        const bool xmx2 = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
+                        const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
+                        // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
+                        // held group of staged experts as above
+                        const bool i8on = !xmx2_only && i8_mode() != 0 && !use_mmq && lay.native &&
+                                          lay.fmt[(size_t) l].gu_type == 21 && lay.fmt[(size_t) l].d_type == 20 &&
+                                          lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
+                                          strata::prefill::i8::available(m.cs);
+                        const bool xmx2 = xmx2_only || i8on;
                         if (strata::prefill::xmx::mode() == 2 && !xmx2) {
                             static bool said = false;
                             if (!said) {
@@ -3965,13 +3986,46 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         int64_t xg_r0 = 0;
                         auto xflush = [&]() {
                             if (xg_n == 0) return;
+                            const auto& f = lay.fmt[(size_t) l];
+                            int64_t nr = 0;
+                            for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
+                            if (i8on) {
+                                if (static bool said = false; !said) {
+                                    said = true;
+                                    std::fprintf(stderr, "strata: prompt experts on the fused int8 DPAS products (STRATA_PREFILL_MMQ=1)\n");
+                                }
+                                namespace i8 = strata::prefill::i8;
+                                i8::Layout lo8;
+                                i8::make_layout(lo8, xg_c, xg_n);
+                                i8::Workspace ws8;
+                                const bool ws_ok = i8::workspace(lo8, (int) N, f.n_ff, ws8, m.cs);
+                                pt.mark(kPfGemmGU, cs);
+                                if (ws_ok &&
+                                    (i8::quantize_rows(m.Xs + xg_r0 * N, lo8, (int) N, ws8.xq, ws8.dx, m.cs), true) &&
+                                    i8::gate_up(f.gu_type, xg_g, f.up_off, f.n_ff, lo8, (int) N, ws8.xq, ws8.dx,
+                                                m.GU + xg_r0 * 1280, m.cs)) {
+                                    i8::swiglu_quantize(m.GU + xg_r0 * 1280, lo8, f.n_ff, ws8.hq, ws8.dh, m.cs);
+                                    pt.mark(kPfGemmD, cs);
+                                    i8::down(f.d_type, xg_g, f.down_off, (int) N, lo8, f.n_ff, ws8.hq, ws8.dh,
+                                             m.Dm + xg_r0 * N, m.cs);
+                                } else {
+                                    std::fprintf(stderr, "strata: the int8 expert products refused layer %lld (workspace %d)\n",
+                                                 (long long) l, (int) ws_ok);
+                                    std::exit(1);
+                                }
+                                if (xg_ns > 0) {
+                                    const int rel = xg_slots[xg_ns - 1];
+                                    dpct::sync_barrier(m.used[rel], m.cs);
+                                    for (int i = 0; i < xg_ns; ++i) m.used_of[xg_slots[i]] = rel;
+                                }
+                                xg_n = 0;
+                                xg_ns = 0;
+                                return;
+                            }
                             if (static bool said = false; !said) {
                                 said = true;
                                 std::fprintf(stderr, "strata: prompt experts on the fused grouped XMX (STRATA_PF_XMX=2)\n");
                             }
-                            const auto& f = lay.fmt[(size_t) l];
-                            int64_t nr = 0;
-                            for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
                             // measured (xmx_group_parity, 16 experts): the fused launch wins below ~200 rows per
                             // expert, dequantize + oneMKL above (gate/up 0.67-0.76x at 320); STRATA_PF_XMX_ROWS moves it
                             static const int xg_max = [] {
