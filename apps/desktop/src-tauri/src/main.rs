@@ -1077,4 +1077,32 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn the_host_command_listens_on_loopback_only_and_carries_the_shutdown_secret() {
+        let res = scratch("hostcmd");
+        let server = res.join("host").join("server");
+        std::fs::create_dir_all(&server).unwrap();
+        std::fs::write(server.join("index.mjs"), b"").unwrap();
+        std::fs::create_dir_all(res.join("host").join("dist")).unwrap();
+        std::fs::create_dir_all(res.join("node")).unwrap();
+        std::fs::write(res.join("node").join(NODE_EXE), b"").unwrap();
+        // a caller's environment must not widen the bind address: the command sets it itself
+        std::env::set_var("STRATA_BIND", "0.0.0.0");
+        let cmd = host_command(&res, 47831, "s3cret").expect("a host command");
+        std::env::remove_var("STRATA_BIND");
+        let env: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
+            .collect();
+        assert_eq!(env.get("STRATA_BIND").map(String::as_str), Some("127.0.0.1"));
+        assert_eq!(env.get("STRATA_PORT").map(String::as_str), Some("47831"));
+        assert_eq!(env.get("STRATA_SHUTDOWN_TOKEN").map(String::as_str), Some("s3cret"));
+        assert_eq!(env.get("STRATA_PACKAGED").map(String::as_str), Some("1"));
+        assert_eq!(env.get("STRATA_NO_ACQUIRE").map(String::as_str), Some("1"));
+        assert!(env.get("STRATA_DIST").unwrap().ends_with("dist"));
+        // a layout without the built UI or the host is refused in plain words
+        assert!(host_command(&scratch("empty"), 1, "x").unwrap_err().contains("App Host entry is missing"));
+        let _ = std::fs::remove_dir_all(&res);
+    }
 }
