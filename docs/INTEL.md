@@ -881,3 +881,61 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
 | decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle |
 | prefill | 149 tok/s on a 2,701-token prompt; 424 tok/s on a 104,798-token prompt at 131k context |
 | quality | correct code on every test; matches the NVIDIA path token for token in spirit, not measured |
+
+## Arc Pro B70: `--prefill 8192` in the long-context config (2026-10-18, branch f-151-b70)
+
+`setup_intel.py` now recommends 8,192-token prompt chunks for a Battlemage card with 24 GB or more when the context is over 32K (the
+prompt borrows cache slots; `recommended_prefill()`), 4,096 everywhere else, and it keeps a chunk size you put in the config.
+Arc Pro B70, IQ3_S, setup's 128K flags (`--kv-resident 32768 --vram-reserve-mib 2048`), `--pcie-frac 0 --adapt-every 0`, 2 rounds,
+32 greedy tokens after the prompt (identical in every run):
+
+| prompt | `--prefill 4096` | `--prefill 8192` | cache slots | decode after |
+|---|---|---|---|---|
+| 16K | 1,222 tok/s | 1,347-1,362 (+10-11%) | 11,795 both | 33-38 / 38 |
+| 32K | 1,187 | 1,361-1,383 (+15-16%) | 11,794-11,795 both | 35 / 38.6 |
+
+The lent slots are refilled after the prompt, so the bigger chunk costs the decode nothing. First-token logits against 4096
+(`STRATA_DUMP_FIRST_LOGITS`, whole vocabulary): KL 1.1e-2 nats at 16K and 3.0e-2 at 32K, top-1 the same, largest logit
+difference 1.0 (the chunk boundary moves where the QSA block selection is made, so a different chunk size is not bit-identical;
+two runs of the same size are, KL 0). With the 32K context (own prompt buffers, no borrowing) a bigger chunk is +20% on a 16K
+prompt (1,236 -> 1,478-1,482) but takes 1,397 cache slots (10,926 -> 9,529) and decode after it falls 9-16%, so 4,096 stays there.
+
+## Arc Pro B70: the fused int8 expert path for the prompt (2026-10-18, branch f-151-b70, default on for Battlemage)
+
+On a Battlemage GPU (B70, B580, B570: detected by the device architecture id, `bmg-g21` and `bmg-g31`, not by name) the engine computes the routed experts of the prompt with ESIMD kernels that decode the quantized weights in
+registers straight into the s8 DPAS B operand (no FP16 copy of the expert, 2.1 MB of weights read instead of 9.8 MB written and read
+back) and multiply them by q8_1-quantized activations; `sycl/src/prefill/esimd_moe.dp.cpp`, behaviour note and switches in
+[INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md). Gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0 are covered (47 of the 48 layers of
+the mixed IQ3_S pack; the other layer, IQ4_XS gate/up, and any other format keep the FP16 path). Default (STRATA_PREFILL_MMQ unset) is `auto` on Battlemage and the FP16 chain on every other GPU (Alchemist A750 / A770, Lunar Lake, other vendors); `=0` turns it off, `=1` forces it, `=auto` is the default. The activations are
+quantized, so the bits differ from the FP16 path. `auto` times both chains on this GPU at the first layer of each format and takes int8
+below the measured crossover (130-250 rows per expert here), per group of experts.
+
+Arc Pro B70, IQ3_S pack, 32K config, `--prefill 4096`, fixed flags (`STRATA_PREFILL_CPU_SHARE=0 STRATA_ROUTE_TAIL_SKIP=0 --pcie-frac 0
+--adapt-every 0`), 5 interleaved rounds per size, prefill tok/s (medians; the noise arm is the default run again):
+
+| prompt | default | noise arm | `=1` | `=auto` |
+|---|---|---|---|---|
+| 1,024 tokens | 645.8 | 648.3 | 775.4 (+20%) | 783.5 (+21%) |
+| 4,095 tokens | 1,257.0 | 1,256.8 | 1,413.8 (+12.5%) | 1,407.7 (+12.0%) |
+
+The output tokens are identical in all runs. Quality (teacher-forced KL against the FP16 path over 6,002 positions of 28 prompts): mean
+2e-4 nats, p99 6e-3, top-1 99.7%, perplexity ratio 1.0004; a `--prefill 8192` chunk moves the first-token distribution by 1e-2 to 3e-2
+for comparison. At more than ~130 rows per expert (a chunk of 8,192 tokens or more) the int8 chain stops winning because every row block
+decodes the weights again (1.03x at 194 rows against 1.4-1.9x at 60): use `auto`.
+
+### Arc Pro B70, what else was measured on the prompt path (2026-10-18, branch f-151-b70)
+
+All on the 4,095-token IQ3_S prompt, 32K config, `--prefill 4096`, fixed flags, 3-4 interleaved rounds with a noise arm (prefill tok/s,
+medians, output tokens identical in every arm):
+
+| change | result |
+|---|---|
+| `STRATA_GDN_XE=1` (variant 6, the sub-group recurrence that is the default on Alchemist; bit-identical) | 1,251 -> 1,207 (-3.5%): stays off on Battlemage |
+| `STRATA_PROMPT_ATTN_XMX=1` / `=32` (the joint_matrix prompt attention, 64- / 32-cell chunks) | 1,258 -> 952 / 913 (-24% / -27%): stays opt-in |
+| QSA prompt attention, probabilities stored `[cell][head]` and read as three vectors per cell in the value phase (`STRATA_ATTN_RS=2`, now the default; first-token logits md5 equal at 4K and 16K) | 1,254 -> 1,265 (+0.9%, 3 of 3 rounds) |
+| the same plus a 16-shuffle reduce-scatter of the 12 heads' score sums (`STRATA_ATTN_RS=1`; also bit-exact) | 1,254 -> 1,236 (-1.5%): the score phase is not shuffle bound |
+| int8 expert groups of 24 or 32 experts instead of 16 | 1,416 -> 1,420 / 1,416: no effect |
+| K-quant / Q5_1 / Q8_0 multi-entry decode kernels (`STRATA_KQ_SPLIT`, on by default; bit-identical to `=0`), `native_grouped_parity --kqbench 16`, synthetic UD-Q4_K_XL-shaped experts | 1 token: 76.4 vs 75.0 us (-1.8%); 2 tokens: 122.5 vs 135.9 us (+10%); 4 tokens (an MTP window): 202.6 vs 233 us (+13%); Q6_K 4 tokens 387 vs 485 (+20%), Q8_0 290 vs 341 (+15%) |
+
+The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
+G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
