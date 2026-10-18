@@ -107,6 +107,22 @@ int main() {
     std::vector<Option> o3 = {{8192, 64, 64, gib(7.5), 0}, {8192, 16, 64, gib(7.0), 0}};
     const Pick s = choose(h, edge, 28700, o3, 0);
     std::printf("%s\n", describe(s, h, 28700).c_str());
+    // request-sized chunks: a prompt that fits today's 8192 stays one chunk; a longer one is cut into equal chunks of at most the plan's
+    CHECK(balanced_chunk(4101, 8192, 3840) == 4352);
+    CHECK(balanced_chunk(8192, 8192, 3840) == 8192);
+    CHECK(balanced_chunk(300, 8192, 3840) == 512);
+    CHECK(balanced_chunk(20400, 8192, 3840) == 3584);    // 6 equal chunks (last 2,480), no stub
+    CHECK(balanced_chunk(28887, 8192, 3840) == 3840);    // 8 chunks: 7 x 3840 + 2,007
+    CHECK(balanced_chunk(8200, 8192, 3840) == 2816);     // 3 chunks of 2,816 instead of 3,840 + 3,840 + 520
+    CHECK(balanced_chunk(20400, 8192, 0) == 8192);       // no plan: today's cap
+    for (int64_t t = 8193; t < 40000; t += 37) {
+        const int64_t c = balanced_chunk(t, 8192, 3840);
+        const int64_t n = (t + c - 1) / c;
+        CHECK(c % 256 == 0 && c <= 8192);
+        CHECK((t - (n - 1) * c) * 5 >= c * 2 || n == 1);   // the last chunk is at least 40% of a chunk
+        CHECK(c <= 3840);
+        CHECK(n <= (t + 3839) / 3840 + 1);
+    }
     std::printf("%s\n", failed ? "FAILED" : "prefill_plan_test: ok");
     return failed ? 1 : 0;
 }

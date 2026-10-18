@@ -127,6 +127,27 @@ inline Pick choose(const Host& h, const Tier& t, int64_t tokens, const std::vect
     return p;
 }
 
+/// The chunk a request of `tokens` reads in when the plan chose `plan` < `cap` (the buffers' chunk, what the VRAM scan picked): a
+/// prompt that fits one chunk of `cap` keeps ONE chunk (rounded to 256) - one pass reads each expert once, so it cannot thrash the
+/// page cache and splitting it only adds a pass - and a longer one reads in n = ceil(tokens / plan) chunks of equal size (rounded up
+/// to 256, at most `cap`), so there is never a stub of a tail.
+inline int64_t balanced_chunk(int64_t tokens, int64_t cap, int64_t plan) {
+    if (tokens <= 0 || cap <= 0) return 0;
+    const int64_t one = (tokens + 255) / 256 * 256;
+    if (plan <= 0 || plan >= cap || one <= cap) return std::min(one, cap);
+    // n chunks of the plan's size or a little less (never more: the loan the plan priced stays the loan), the first size whose last
+    // chunk is at least 40% of a chunk; failing that, the one with the longest last chunk
+    const int64_t n = (tokens + plan - 1) / plan;
+    int64_t c = std::min((tokens + n - 1) / n + 255, plan + 255) / 256 * 256, best = c;
+    double best_tail = -1;
+    for (int k = 0; k < 8 && c >= 256; ++k, c -= 256) {
+        const int64_t nn = (tokens + c - 1) / c, tail = tokens - (nn - 1) * c;
+        if (tail * 5 >= c * 2) return c;
+        if ((double) tail / (double) c > best_tail) { best_tail = (double) tail / (double) c; best = c; }
+    }
+    return best;
+}
+
 /// One log line: what was chosen, why, and the reads it expects per prompt.
 inline std::string describe(const Pick& p, const Host& h, int64_t tokens) {
     char b[768];

@@ -7245,6 +7245,14 @@ int main(int argc, char** argv) {
         const int64_t rounded = per > std::numeric_limits<int64_t>::max() - 255 ? per : ((per + 255) / 256) * 256;
         return std::min(max_chunk, rounded);
     };
+    // #2824: the chunk a request of `tokens` reads in when the host-aware plan chose `plan` (< cap, the buffers' chunk = what the VRAM
+    // scan picked).  A prompt that fits one chunk of `cap` keeps ONE chunk, as before (a single pass reads each expert once, so the
+    // page cache cannot thrash, and splitting it would only add a pass); a longer one reads in n = ceil(tokens / plan) chunks of
+    // EQUAL size (no tiny tail), at most `cap`.
+    auto planned_chunk = [&](int64_t tokens, int64_t cap, int64_t plan) -> int64_t {
+        if (plan <= 0 || plan >= cap || tokens <= 0) return equal_chunk(tokens, cap);
+        return strata::program::prefill_plan::balanced_chunk(tokens, cap, plan);
+    };
     // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,
     // or with --prefill auto the largest chunk whose buffers take at most kAutoLendPct % of the slots (a
     // lent slot's expert is streamed during the prompt and refilled after it; measured on a 12 GB card, 32K Q2_0
@@ -8099,6 +8107,7 @@ int main(int argc, char** argv) {
         // (decided above, before the lend regions were sized: a no-op here unless the resident RAM mode skipped it)
         decide_split_ring();
         std::vector<PfPart> pf_parts;
+        int64_t pf_plan_chunk = 0;   // #2824: the host-aware plan's chunk for prompts longer than o.prefill_chunk (0: none)
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
@@ -8235,6 +8244,11 @@ int main(int argc, char** argv) {
                     },
                     [&](int64_t c) { return ring_room(c, nullptr, cap0); }, restore_ring);
             }
+            // the buffers stay sized for today's chunk; the plan's smaller chunk applies to prompts longer than it (planned_chunk)
+            if (chunk > 0 && chunk != chunk_vram) {
+                pf_plan_chunk = chunk;
+                chunk = chunk_vram;
+            }
             if (chunk > 0 && alone > chunk_vram) {
                 for (size_t i = 1; i < pf_parts.size(); ++i) {
                     const PfPart& p = pf_parts[i];
@@ -8265,9 +8279,15 @@ int main(int argc, char** argv) {
                     // the RESOLVED ring, not the room offered: ring_slots() clamps to [16, RING_MAX] and a chunk
                     // under stream_all_min() gets STAGE, and STRATA_PREFILL_RING overrides both.  This is what
                     // `init` lays out, and what the INFO line reports to the Monitor tab.
+                {
                     std::fprintf(stderr, "strata serve: prompt chunk auto: %lld tokens, a %lld-slot ring\n",
                                  (long long) chunk,
                                  (long long) strata::prefill::Prefill::ring_slots_for(chunk));
+                    if (pf_plan_chunk > 0)
+                        std::fprintf(stderr, "strata serve: prompts longer than %lld tokens read in equal chunks of at most %lld "
+                                             "(the host-aware plan); shorter ones in one chunk\n",
+                                     (long long) chunk, (long long) pf_plan_chunk);
+                }
                 else if (chunk != o.prefill_chunk)
                     std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens so its buffers fit in "
                                          "every expert cache\n", (long long) o.prefill_chunk, (long long) chunk);
@@ -12882,7 +12902,7 @@ int main(int argc, char** argv) {
                 const auto t_ln = Clock::now();
                 // what this segment needs, capped by the configured chunk: a request lends only what its own
                 // prompt needs, so a large chunk costs a short prompt nothing
-                const int64_t want_full = equal_chunk(tokens, o.prefill_chunk);
+                const int64_t want_full = planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk);
                 // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
                 const int64_t want_seg = o.prefill_head_alias ? o.prefill_chunk
                                        : split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
@@ -15151,7 +15171,17 @@ int main(int argc, char** argv) {
                     },
                     [&](int64_t) { return strata::prefill::Prefill::ring_cap_for(4096); },
                     [&] { int64_t c2 = chunk_in; (void) plan_lend(c2); }, n_batched);
-                if (chunk != vram_chunk) k = lend_slots(chunk);
+                if (chunk != vram_chunk) {
+                    // the whole prompt fits today's chunk: one pass, keep it (the plan's ring state goes back with it)
+                    if (request_chunk(n_batched, std::numeric_limits<int64_t>::max() / 2) <= vram_chunk) {
+                        chunk = vram_chunk;
+                        int64_t c2 = chunk_in;
+                        (void) plan_lend(c2);
+                    } else {
+                        chunk = std::min(vram_chunk, planned_chunk(n_batched, vram_chunk, chunk));   // equal chunks, no tail
+                    }
+                    k = lend_slots(chunk);
+                }
             }
             const int64_t request_sized = equal_chunk(n_batched, chunk);
             if (k > 0 && request_sized < chunk) {                     // no bigger than this prompt segment needs
