@@ -21,6 +21,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from strata_cli import nav
+
 GIB = 2 ** 30
 BLUE = "#5aa9ff"
 AMBER = "#f5c56b"
@@ -323,7 +325,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
 
     # ---- heading, tabs, rule
     head = Text(no_wrap=True, overflow="crop")
-    head.append("STRATA  Serving   ", style=f"bold {accent}")
+    head.append(f"STRATA  {view_label}   ", style=f"bold {accent}")
     head.append(connection + "   ", style=f"bold {accent}")
     label = f"{model.get('model') or ''} {k(ctx_max) if ctx_max else ''}".strip()
     head.append(label, style="bold")
@@ -335,10 +337,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     pad = max(2, width - len(head.plain) - len(right.plain))
     head.append(" " * pad)
     head.append_text(right)
-    names = ["Overview", "Serving", "Requests", "Engine", "Hardware", "Logs"] + (["Connect"] if connect else [])
-    tabs = Text(no_wrap=True, overflow="crop")
-    for i, n in enumerate(names):
-        tabs.append((f"[{i + 1} {n}]" if i == 0 else f"{i + 1} {n}") + "  ", style=f"bold {accent}" if i == 0 else "")
+    tabs = nav.styled(0, min(width, 110), connect, accent=accent, color=color)
     rule = Text(("-" if ascii_mode else "─") * min(width, 110), style="dim")
 
     # ---- model state bar
@@ -439,7 +438,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     right = Group(Text("Recent requests", style=f"bold {accent}"), req)
     bottom.add_row(Group(*lines), right)
 
-    hint = Text(("1-7 views" if connect else "1-6 views") + "   / filter   Space freeze   r refresh   t theme   b open in browser   ? help   q quit", style="dim")
+    hint = Text(f"{nav.keys(connect)} views" + "   / filter   Space freeze   r refresh   t theme   b open in browser   ? help   q quit", style="dim")
     parts: list[Any] = [head, tabs, rule, st, state_bar, Text(""), row(tiles1), row(tiles2)]
     if ncards:
         parts += [Text(""), _cards_strip(cards, glyphs, accent, ascii_mode)]

@@ -18,6 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from strata_cli import nav
 from strata_cli.client import complete_slots
 from strata_cli.render import (_queue_wait, activity_continuity_notice, activity_label, display_width,
                                field, group_occupancy, number, safe)
@@ -742,7 +743,7 @@ def _device_role(index: int, topology: dict) -> str:
 def render_dashboard(snapshot: dict, *, width: int, height: int, history: MonitorHistory,
                      connection: str = "", connection_state: str = "connected", frozen: bool = False,
                      filter_text: str = "", glyphs: str = "ascii", color: bool = True,
-                     theme: str = "dark") -> Group:
+                     theme: str = "dark", connect: bool = False) -> Group:
     """Compose the primary one-screen monitor at standard terminal sizes.
 
     Smaller terminals retain the existing compact text renderer in MonitorApp.
@@ -792,7 +793,7 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
                       title=Text("CONNECTION", style=f"bold {danger}" if blocked else f"bold {accent}"),
                       border_style=danger_border if blocked else "dim", box=_rounded(),
                       height=max(8, height - 4))
-        return Group(header, panel, Text("r Retry   q Detach   1-6 Views", style="dim"))
+        return Group(header, panel, Text(f"r Retry   q Detach   {nav.keys(connect)} Views", style="dim"))
 
     model_name = safe(model.get("id"), 80)
     if compact and display_width(model_name) > 19:
@@ -881,10 +882,8 @@ def render_dashboard(snapshot: dict, *, width: int, height: int, history: Monito
     requests = _request_lines(snapshot, compact, filter_text, tall=height >= 40)
     activity = _activity(snapshot, compact, filter_text)
     age = _age(snapshot)
-    footer = Text((f"1 Over  2 Serve  3 Reqs  4 Engine  5 GPU  6 Logs  age {number(age, 's', 1)}"
-                   if compact else
-                   f"1 Overview   2 Serving   3 Requests   4 Engine   5 Hardware   6 Logs"
-                   f"    age {number(age, 's', 1)}"), style="dim")
+    age_text = f"age {number(age, 's', 1)}"
+    footer = Text(nav.plain(0, max(20, width - len(age_text) - 4), connect) + "    " + age_text, style="dim")
     if width >= 126 and height >= 34:
         return _visual_overview(snapshot, history, width=width, height=height,
                                 header=header, footer=footer, live=live, glyphs=glyphs,

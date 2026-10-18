@@ -94,7 +94,7 @@ class Build(unittest.TestCase):
 class Draw(unittest.TestCase):
     def test_the_approved_layout(self):
         text = draw(overview.build(metrics("reading")), connect=True)
-        for part in ("STRATA  Serving", "IQ3_S 128K", "Reading prompt · 97%", "[LIVE]", "[1 Overview]", "7 Connect",
+        for part in ("STRATA  Overview", "IQ3_S 128K", "Reading prompt · 97%", "[LIVE]", "[1 Overview]", "7 Connect",
                      "Model state", "[Reading]", "35,610 / 36,742 tokens · 97%",
                      "Speed", "GPU load", "VRAM", "GPU temp", "Power", "PCIe", "CPU", "Disk read",
                      "88 %", "RTX 5070", "11.2 / 12 GB", "1,644 experts cached", "54 °C", "114 W", "of 250 W limit", "Gen4 x16",

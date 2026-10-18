@@ -47,7 +47,10 @@ class Connect(unittest.TestCase):
             self.assertNotIn("abcdefghijklmnop", t)                      # masked until k
             for name in ("OpenCode", "Codex CLI", "Claude Code", "oh-my-pi", "pi (pi.dev)", "Hermes Agent", "OpenClaw", "DeepSeek Harness"):
                 self.assertIn(name, t)
-            self.assertIn("tested", t)
+            self.assertIn("Vendor tested", t)
+            self.assertIn("This server", t)
+            self.assertIn("Not checked", t)
+            self.assertIn("opencode 1.19.3", t)
             self.assertIn("OpenCode setup", t)
             self.assertIn("~/.config/opencode/opencode.json", t)
             await pilot.press("k")
@@ -55,7 +58,10 @@ class Connect(unittest.TestCase):
             self.assertIn("abcdefghijklmnop", flat(app).replace("▒", ""))
             await pilot.press("7")
             await pilot.pause(0.2)
-            self.assertIn("Model state", text_of(app))                    # 7 again goes back
+            self.assertIn("Connect an app", text_of(app))                 # 7 is a view like the others: pressing it again stays
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            self.assertIn("Model state", text_of(app))                    # Esc goes back to the view you came from
         self.run_app(case)
 
     def test_views_one_to_six_leave_connect(self):
@@ -94,10 +100,10 @@ class Connect(unittest.TestCase):
                 await pilot.press("7", "h")
                 for _ in range(30):
                     await pilot.pause(0.1)
-                    if "1/2 checks" in text_of(app):
+                    if "Failed (1/2)" in text_of(app):
                         break
                 t = flat(app)
-                self.assertIn("problem (1/2 checks)", t)
+                self.assertIn("Failed (1/2)", t)
                 self.assertIn("prompt: It answered: 'pong'.", t)
                 self.assertIn("did not call the tool", t)
             self.run_app(case)

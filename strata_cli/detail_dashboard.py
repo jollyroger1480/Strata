@@ -13,11 +13,12 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
+from strata_cli import nav
 from strata_cli.client import complete_slots
 from strata_cli.dashboard import (set_ascii_boxes, _rounded, _age, _current_batch_value, _current_sample,
                                   _device_role, _gib, _meter, _rate_spark, _spark,
                                   _state, _visual_pair, _visual_panel, MonitorHistory)
-from strata_cli.render import (_device_stage, _queue_wait, _recent_detail,
+from strata_cli.render import (VIEWS, _device_stage, _queue_wait, _recent_detail,
                                _request_detail, _slot_detail, activity_continuity_notice,
                                activity_label, activity_rows, field, number,
                                request_rows, safe)
@@ -547,7 +548,7 @@ def render_detail_dashboard(snapshot: dict, view: str, *, width: int, height: in
                             connection_state: str = "connected", frozen: bool = False,
                             filter_text: str = "", glyphs: str = "ascii",
                             color: bool = True, theme: str = "dark", selected: int = 0,
-                            detail: bool = False, serving_pane: str = "devices") -> Group:
+                            detail: bool = False, serving_pane: str = "devices", connect: bool = False) -> Group:
     """Render the five wide pages with the visual Overview's panel language."""
     set_ascii_boxes(glyphs == "ascii")
     palette = _palette(color, theme)
@@ -561,8 +562,10 @@ def render_detail_dashboard(snapshot: dict, view: str, *, width: int, height: in
     header = Panel(heading, box=_rounded(), border_style=active if color else "",
                    padding=(0, 1))
     age = _age(snapshot)
-    footer = _txt("1 Overview   2 Serving   3 Requests   4 Engine   5 Hardware   6 Logs   "
-                  f"Tab pane   ↑↓ select   Enter detail   / filter   age {number(age, 's', 1)}", "dim")
+    hints = f"Tab pane  ↑↓ select  Enter detail  / filter  age {number(age, 's', 1)}"
+    footer = nav.styled(VIEWS.index(view), max(24, width - len(hints) - 5), connect, accent=palette["cyan"] if color else "", color=color)
+    footer.append("   ")
+    footer.append(hints, style="dim")
     top_h = 6 if height >= 40 else 5
     room = max(0, height - 4 - top_h)
     mid_h = room // 2 + (3 if view in ("serving", "requests", "logs") else 1)

@@ -24,7 +24,7 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
-from strata_cli.launch.widgets import (ACCENT, BAD, FG, MUTE, WARN, Cell, Item, Menu, bar)
+from strata_cli.launch.widgets import (ACCENT, BAD, DARK, FG, LIGHT, MUTE, WARN, Cell, Item, Menu, bar)
 
 STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context", "Context"), ("pictures", "Pictures"),
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
@@ -319,7 +319,7 @@ class ConfirmScreen(ModalScreen):
                 Binding("enter", "pick", show=False), Binding("escape", "cancel", show=False)]
     DEFAULT_CSS = f"""
     ConfirmScreen {{ align: center middle; background: #0e1113 80%; }}
-    #dialog {{ width: 70; height: auto; background: #161a1d; border: solid {ACCENT}; padding: 1 2; }}
+    #dialog {{ width: 70; max-width: 100%; height: auto; max-height: 100%; background: #161a1d; border: solid {ACCENT}; padding: 1 2; }}
     """
 
     def __init__(self, question: str, detail: str, options: list[tuple[str, str]]):
@@ -327,16 +327,25 @@ class ConfirmScreen(ModalScreen):
         self.question, self.detail, self.options = question, detail, options
 
     def compose(self) -> ComposeResult:
+        pal = LIGHT if self.app.has_class("theme-light") else DARK          # the monitor's light theme reaches its pop-ups
         with Vertical(id="dialog"):
-            yield Static(Text(self.question, style=f"bold {ACCENT}"), markup=False)
-            yield Static(Text(self.detail, style=MUTE), markup=False)
+            yield Static(Text(self.question, style=f"bold {pal.accent}"), markup=False)
+            yield Static(Text(self.detail, style=pal.mute), markup=False)
             yield Static("", markup=False)
-            yield Menu(id="confirm-menu")
-            yield Static(Text("Up/Down choose   Enter confirm   Esc cancel", style=MUTE), markup=False)
+            yield Menu(id="confirm-menu", palette=pal)
+            yield Static(Text("Up/Down choose   Enter confirm   Esc cancel", style=pal.mute), markup=False)
 
     def on_mount(self) -> None:
         m = self.query_one(Menu)
         m.set_items([Item([label], key=key) for key, label in self.options], 0)
+        if self.app.has_class("theme-light"):          # the monitor's light theme: a white dialog with dark text (the dark one is the default)
+            dialog = self.query_one("#dialog")
+            dialog.styles.background = LIGHT.panel
+            dialog.styles.border = ("solid", LIGHT.accent)
+            dialog.styles.color = LIGHT.fg
+            self.styles.background = "#f9fafb 70%"
+            for static in dialog.query(Static):
+                static.styles.background = LIGHT.panel
 
     def action_move(self, step: int) -> None:
         self.query_one(Menu).move(step)

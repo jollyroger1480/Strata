@@ -7,6 +7,7 @@ import time
 import unicodedata
 from typing import Any
 
+from strata_cli import nav
 from strata_cli.client import complete_slots
 
 
@@ -332,7 +333,7 @@ def _row_window(rows: list[dict], selected: int, capacity: int) -> tuple[int, in
 
 
 def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
-                  filter_text: str, selected: int) -> str:
+                  filter_text: str, selected: int, connect: bool = False) -> str:
     work, rates = snapshot.get("work") or {}, snapshot.get("rates") or {}
     topology, devices = snapshot.get("topology") or {}, snapshot.get("devices") or []
     recent = snapshot.get("recent") or []
@@ -400,15 +401,15 @@ def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
         lines += ["Stage/layer mapping unavailable; groups are not GPU assignments"]
     age = time.time() - snapshot["sampled_at"] if isinstance(snapshot.get("sampled_at"), (int, float)) else None
     lines += ["", f"Sample age {number(age, ' s', 1)}  |  Source {safe(snapshot.get('source'))}",
-              "1-6 views   / filter   Space freeze   r refresh   t theme   ? help   q quit"]
+              f"{nav.keys(connect)} views   / filter   Space freeze   r refresh   t theme   ? help   q quit"]
     return "\n".join(_line(x, width) for x in lines[:height])
 
 
 def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                 selected: int = 0, frozen: bool = False, filter_text: str = "",
                 glyphs: str = "ascii", connection: str = "", serving_pane: str = "devices",
-                detail: bool = False, connection_state: str | None = None) -> str:
-    """Render the six views with explicit unavailable markers and no fake rates."""
+                detail: bool = False, connection_state: str | None = None, connect: bool = False) -> str:
+    """Render the six views (seven with Connect, when `strata launch` opened the monitor) with explicit unavailable markers and no fake rates."""
     width, height = max(width, 30), max(height, 8)
     tiny = width < 60 or height < 14
     view = view if view in VIEWS else "overview"
@@ -449,17 +450,12 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
         else:
             marker = f"[{labels[state]}]"
     lines = [f"STRATA  {view.title():<10} {safe(connection, max(0, width - 42))} {marker}"]
-    if width >= 60 and height >= 16:
-        if width < 80:
-            labels = ("Over", "Serve", "Reqs", "Engine", "GPU", "Logs")
-            nav = " ".join(f"[{i + 1}]{label}" if VIEWS[i] == view else f"{i + 1}{label}"
-                           for i, label in enumerate(labels)) + "  q quit"
-        else:
-            nav = "  ".join(f"[{i + 1} {name.title()}]" if name == view else f"{i + 1} {name.title()}"
-                            for i, name in enumerate(VIEWS))
-        lines += [_line(nav, width), "-" * min(width, 100)]
+    if tiny:       # a small window: the tabs (names kept, the selected one marked) and, under them, the keys that matter
+        lines += [nav.plain(VIEWS.index(view), width, connect), f"{nav.keys(connect)} views  q quit  ? help"[:width]]
     else:
-        lines += [f"1-6 views  q quit  ? help", "-" * min(width, 100)]
+        quit_hint = "  q quit"
+        tab_line = nav.plain(VIEWS.index(view), width - len(quit_hint), connect) if width < 80 else nav.plain(VIEWS.index(view), width, connect)
+        lines += [tab_line + (quit_hint if width < 80 else ""), "-" * min(width, 100)]
     if connection_state in ("connecting", "disconnected", "auth_required", "incompatible"):
         title, message, action = {
             "connecting": ("CONNECTING", "Waiting for the first telemetry snapshot.",
@@ -570,7 +566,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     lines += [f"Model {safe(model.get('id'), max(10, width-30))}  {model_state}",
               f"In flight {number(work.get('active'))}   Slots occupied {number(work.get('occupied_slots'))}/{number(work.get('slots_effective'))}   Engine waiting {number(work.get('waiting'))}   Pre-admit {number(work.get('queued'))}"]
     if view == "serving" and width >= 100 and height >= 24 and serving_pane == "devices" and not detail:
-        return _wide_serving(lines, snapshot, width, height, filter_text, selected)
+        return _wide_serving(lines, snapshot, width, height, filter_text, selected, connect)
     if view == "overview":
         lines += [f"Answer speed  {number(rates.get('answer_tok_s'), ' tok/s', 1)} [engine, {number(rates.get('answer_window_s'), ' s', 1)} window]",
                   f"Prompt reading {number(rates.get('prefill_tok_s'), ' tok/s', 1)} [reported mean]",
@@ -736,5 +732,5 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     if not detail:
         lines.append("")
     lines += [f"Sample age {number(age, ' s', 1)}   Source {safe(snapshot.get('source'))}",
-              "1-6 views  / filter  Space freeze  r refresh  t theme  ? help  q quit"]
+              f"{nav.keys(connect)} views  / filter  Space freeze  r refresh  t theme  ? help  q quit"]
     return "\n".join(_line(x, width) for x in lines[:height])
