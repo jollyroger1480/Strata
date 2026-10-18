@@ -983,6 +983,9 @@ async function api(req, res, path, method, url) {
   /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
   if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}
   if(nativeSettings&&method==='PATCH')return json(res,200,native.save(nativeSettings[1],await readBody(req)));
+  const nativeSettingsFile=/^\/api\/native\/models\/([a-z0-9_-]+)\/settings-file$/.exec(path);
+  if(nativeSettingsFile&&method==='GET')return json(res,200,native.settingsFile(nativeSettingsFile[1]));
+  if(nativeSettingsFile&&method==='POST')return json(res,200,await native.openSettingsFile(nativeSettingsFile[1]));
 
   // Credentials are handled only on the host. Responses and events expose a key-set flag.
   return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message);}}
