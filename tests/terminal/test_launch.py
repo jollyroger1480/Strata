@@ -125,7 +125,8 @@ class CatalogRules(unittest.TestCase):
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
             self.assertEqual(cat.max_context("qwen", "Q2_0", hw), 32768)
             self.assertEqual(cat.computer().line(), "Apple M4 · 32 GB unified memory · " + cat.computer().line().split(" · ")[-1])
-            self.assertNotIn("0 GB", cat.computer().line())
+            # no "0 GB" of video memory in the card part of the line (the free-disk figure after it may end in a zero: "60 GB free")
+            self.assertNotIn("0 GB", " · ".join(cat.computer().line().split(" · ")[:2]))
 
     def test_verdict_words_never_block(self):
         self.assertEqual(verdict("fits")[0], "fits")
