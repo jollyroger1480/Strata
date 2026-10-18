@@ -33,7 +33,7 @@ class _VersionAction(argparse.Action):
 
     def __call__(self, parser, namespace, values, option_string=None):
         import strata_cli
-        sys.stdout.write(f"strata {strata_cli.version()} (python {sys.version.split()[0]} at {sys.executable})\n")
+        sys.stdout.write(f"strata {strata_cli.PRODUCT_VERSION} (build {strata_cli.version()}; python {sys.version.split()[0]} at {sys.executable})\n")
         parser.exit()
 
 

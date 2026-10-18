@@ -23,27 +23,32 @@ to your graphics card) comes with the first model: `strata launch` fetches the o
 2. **Model**: the catalog of the app and `setup.py` (one source), with download size, what it needs (graphics memory + RAM) and "fits / tight / does not fit this computer".
    A warning, never a block. The n-gram table stays on your SSD and is not counted. `o` = your own files (a folder or a .gguf; checked with the fingerprint table).
    *(Cards: only with two or more usable graphics cards.)*
-3. **Folder**: where model files are stored, free space shown.
+3. **Folder**: where model files are stored, free space shown. For a model that is already installed (also one the desktop app installed) it starts where the model is, says
+   "Already downloaded" and lists only what is really missing with its size (the draft layer, about 5.2 GB; the picture reader, 0.9 GB). It never says "download the model" when only
+   a helper file is missing.
 4. **Context** (8K to 512K, with the extra memory each costs) and the memory format (`m`: 8-bit or 4-bit).
-5. **Pictures**: only for models that can read them; says what it adds (about 0.9 GB: the picture-reader file, downloaded with the model through
-   setup's Control mode, the same path the app's "Read pictures" uses). On a card under 24 GB and on AMD the picture reader runs on the CPU (nothing taken
-   from the graphics card); on a bigger NVIDIA card it runs on the GPU. It needs `strata-vision` beside the engine in the engine package; the screen
-   warns in plain words when the installed engine has none, and the run says "Pictures could not be switched on" instead of silently answering text only.
+5. **Pictures**: only for models that can read them. They are **on by default** (Yes is preselected; `--vision off` or "No" turns them off). It says what it adds (about 0.9 GB:
+   the picture-reader file, downloaded with the model through setup's Control mode, the same path the app's "Read pictures" uses). The reader runs on the graphics card
+   for the NVIDIA (CUDA) and AMD (HIP) builds (it keeps about 1.4 GB free) and on the CPU for the others. It needs `strata-vision` beside the engine in the engine package; with an
+   engine that has none, pictures default to off and the screen says so in plain words. A model that cannot read pictures stays off with no question.
 6. **Parallel requests**: "fit to your card" (12 GB: 1, 20: 2, 24: 3, 32+: 4) or 1 to 4; a warning if it will not fit.
-7. **Tuning**: quick (about 20 minutes) / thorough (up to 2 hours) / skip (`strata tune auto`; the "answers may change very slightly" tick is off).
+7. **Tuning**: quick (about 20 minutes) / thorough (up to 2 hours) / skip (`strata tune auto`; the "answers may change very slightly" tick is off). The screens suggest quick the first
+   time (it is done once and kept); the command line skips tuning unless you add `--tune`.
 8. **Advanced** (optional): every engine setting with default, tuned value and your value; edit, reset, add a setting by name (checked against the engine's own list; a warning, not a refusal);
-   the exact command and the matching `strata launch` flags.
+   the exact command (it includes the context, memory format and picture choice you made above; it has its own scroll area: Tab, then the arrows) and the matching `strata launch` flags.
 9. **Access**: this computer only (127.0.0.1), your network (LAN address, key), Cloudflare quick tunnel (needs `cloudflared`), Tailscale (needs it installed and connected); port; API key
    (made for you beyond this computer: the server will not start on a network without one).
-10. **Save as preset** and launch. Then downloads (with progress), engine start, and the monitor.
+10. **Save as preset** and launch. Then downloads (with progress), engine start, and the monitor. In a small window the summary shrinks so the three choices stay on screen,
+    and the key line says what Enter will do. No web page opens by itself; only `--open` opens one.
 
 Keys: arrows choose, Enter goes on, Esc goes back, `?` explains the screen, `q` leaves. Every screen says in plain words what it means and what to do next.
 
 ## After the start: the monitor
 
 The Strata Monitor with the new **Overview** (key 1: model state bar, speed, GPU load, VRAM, temperature, power, PCIe, CPU, disk, context fill, experts in VRAM, system RAM, recent requests; read from the
-server's `/metrics`, the same data as the browser Monitor), the other five views as before, and **7 Connect**: the address, the key (hidden until `k`), and the setup for each app
-(`c` copy, `w` write it for you after a backup, `h` check it: one prompt and one tool call sent the way that app sends them). `q` asks: keep serving in the background, or stop
+server's `/metrics`, the same data as the browser Monitor), the other five views as before, and **7 Connect** (the seventh view: the arrow keys reach it like the others, and every view's hint says 1-7): the address, the key (hidden until `k`), and the setup for each app
+(`c` copy, `w` write it for you after a backup, `h` check it: one prompt and one tool call sent the way that app sends them). The list keeps two things apart: **Vendor tested** (the app
+version its maker tested the setup with: history) and **This server** (Not checked / Passed / Failed for your server, after `h`). `q` asks: keep serving in the background, or stop
 (stopping unloads the model and frees the graphics memory).
 
 In the classic Windows console (the Windows 10 default window) the monitor first switches that window's font to Cascadia Mono when it is installed (the console font API: no admin, nothing saved, gone with the window) and draws the full look; otherwise it draws a solid-block look: █ bars with a thin ▄ track, ▄ / █ sparklines, square boxes and the 16 palette colours (`•` instead of `●` when the font is not Consolas). It always shows one line: "For the full look, use Windows Terminal (built into Windows 11)". Windows Terminal, Linux and macOS are never touched. `STRATA_GLYPHS=unicode|ascii|solid` forces a look. With two or more graphics cards the Overview tiles show the busiest card (load), all cards (memory), the hottest card and the total power, a "Cards" strip lists each card (up to 4, then "press 5" for the Hardware view), and the CPU tile says "2 CPUs · 64 cores" from the server's new `sockets` figure.
@@ -57,6 +62,8 @@ strata launch --model iq3_xxs --context 128k --parallel 4 --vision off --tune qu
 strata launch --model-path /data/models/IQ3_XXS --no-tui               # files you already have
 strata launch --preset Office --set prefill=65536 --set STRATA_PIN_BY_NEED=1 --no-tui
 strata launch --plan --model q2_0                                      # what would happen; nothing changes
+strata launch --model q2_0 --yes --no-tui                              # no questions (for one: download on a computer with no engine yet)
+strata launch --model q2_0 --open                                      # also open the server's page in your browser once it serves
 strata launch --list-presets | --delete-preset NAME | --status | --stop [--preset NAME] | --show-key
 ```
 
@@ -75,6 +82,26 @@ words (for example: Claude Code needs `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; OpenCode
 
 `setup.py` sets up NVIDIA (CUDA) and AMD (HIP) cards. For an Intel Arc card its Linux path is a container build that the Terminal does not run: if the model's files and their prepared pack are
 already on the disk, `strata launch` writes the run settings itself and says so; otherwise it says which file is missing. Nothing is downloaded or compiled in that case.
+
+## Models you already have
+
+`strata models list` looks in the same places the screens and `strata launch` look (one function, `strata_control/discovery.py`): the folder you name with `--install-dir` or
+STRATA_INSTALL_DIR (then only that one), the Terminal's own folder, the folders earlier installs remembered in settings.json, and the desktop app's install folder, which the Terminal
+shares (Windows `%LOCALAPPDATA%\Strata\install`; Linux and macOS `$XDG_DATA_HOME/strata/install`, by default `~/.local/share/strata/install`). The data folder is the one you set, else the
+app's (`app-settings.json` beside its install folder, else a `Documents/Strata` that holds models), else Strata's default. `strata models import PATH --plan` knows the Gyro-S and Gyro-M files
+(TQK6/TQK7 and TQ2_T experts) and every file set setup installs, also under another name when the header matches, and says which run config, prepared pack, draft layer and picture reader
+already exist for them. Nothing is copied or moved.
+
+## When there is no engine for this computer
+
+`strata launch` does not refuse. It says, in plain words, "Strata couldn't find an engine for this computer (the reason). The model will download, but it may not run until you install the right
+engine (next step: ...)", asks whether to go on (Enter means yes; `--yes` skips the question; nothing to download means no question), downloads the model, and ends with a message that names the
+engine problem and the next step. The exit code is 0 and nothing is started.
+
+## Cards of different makes
+
+One engine drives the cards of one make (CUDA: NVIDIA, HIP: AMD). Only those cards are offered for running and splitting; a model is never split across makes, and two models at the same
+time, one on each make, is not supported yet. When the other make has the bigger card you get one line: "This computer also has an AMD R9700 (32 GB). The AMD build of Strata can use it - it fits bigger models."
 
 ## Limits
 

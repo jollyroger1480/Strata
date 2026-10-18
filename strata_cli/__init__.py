@@ -5,6 +5,10 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
+#: The version people are told: the Strata app's own (apps/desktop/src-tauri/Cargo.toml `version`; tests/terminal/test_tuiqa_version.py keeps the
+#: two equal). `version()` below is the files' build number, which the engine-compatibility checks compare, so it stays numeric.
+PRODUCT_VERSION = "0.2.0-beta"
+
 
 def version() -> str:
     """The terminal's version: the VERSION file of an archive, else the source tree's CMake project version."""
