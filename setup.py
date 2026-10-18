@@ -395,9 +395,9 @@ MODELS = {
                                 "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4"},
     "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local) - slightly faster on short prompts; "
                            "a 102 GB download that this PC turns into a Strata pack once (about 20-40 minutes, 110 GB more disk); "
-                           "RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision. No images yet",
+                           "RTX 50 cards have FP4 tensor cores, other NVIDIA cards run it at 8-bit precision. It reads pictures (the shared Qwen3.8-Flash-Next encoder)",
                   "download_gb": 102.2, "prepare_gb": 110.0, "ram_gb": 80, "arena_gb": 68.0,
-                  "families": ("nvfp4",), "nvidia_only": True, "vision": False, "repo": NVFP4_FP4LOCAL_REPO,
+                  "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_FP4LOCAL_REPO,
                   "prepare": "fp4-local", "engine": FP4LOCAL_ENGINE,
                   "license": "NVIDIA Open Model Agreement (Licensed by NVIDIA Corporation under the NVIDIA Open Model "
                              "Agreement) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
@@ -1961,6 +1961,15 @@ def ready_files(model: str) -> list:
     return [(role, repo, t["revision"], path, size, sha) for path, (role, size, sha) in t["files"].items()]
 
 
+def ready_needed(model: str, models_dir: Path) -> list:
+    """ready_files without the checkpoint's tensors once a prepared model (MODELS[..]["prepare"]) is prepared: the
+    engine reads the prepared files only, so the ~95 GB of safetensors need not stay (or come back) on the disk."""
+    files = ready_files(model)
+    if MODELS[model].get("prepare") and prepared_done(model, models_dir):
+        files = [f for f in files if not f[3].startswith("tensors/")]
+    return files
+
+
 def ready_where(models_dir: Path, f) -> Path:
     """Where one of them goes: <models>/<owner>--<repo>/<its path in the repository> (the repository's layout, so the
     pack folder is whole as the engine reads it)."""
@@ -2008,7 +2017,7 @@ def ready_fetch(model: str, models_dir: Path) -> None:
     ready-made pack, linked instead of downloaded (the PLE table and the embedding); or downloaded from its pinned
     revision and checked against its size and SHA-256 (a wrong file is deleted and setup stops)."""
     others = [(ready_where(models_dir, g), g[5]) for m in MODELS if MODELS[m].get("repo") for g in ready_files(m)]
-    for f in ready_files(model):
+    for f in ready_needed(model, models_dir):
         dst, size, sha = ready_where(models_dir, f), f[4], f[5]
         if ready_verified(dst, sha):
             ok(f"{f[3]} already downloaded")
@@ -7120,7 +7129,7 @@ def main() -> int:
     if ready:
         models_dir = Path(a.models_dir)
         for r in elsewhere:                            # already downloaded and checked in a Strata folder elsewhere
-            if all(ready_verified(ready_where(r / "models", f), f[5]) for f in ready_files(model)):
+            if all(ready_verified(ready_where(r / "models", f), f[5]) for f in ready_needed(model, r / "models")):
                 models_dir = r / "models"
                 ok(f"model files found in {models_dir}")
                 break
@@ -7145,12 +7154,15 @@ def main() -> int:
                 mark(s, "whole (checked against its own tensor directory)")
             except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
                 warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
-    have_model = all(ready_verified(ready_where(models_dir, f), f[5]) for f in ready_files(model)) if ready else \
+    have_model = all(ready_verified(ready_where(models_dir, f), f[5]) for f in ready_needed(model, models_dir)) if ready else \
         all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count
     on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
     to_fetch = 0 if a.gguf_dir or have_model else max(MODELS[model]["download_gb"] - on_disk, 0)
+    if ready and not have_model and MODELS[model].get("prepare") and prepared_done(model, models_dir):
+        to_fetch = sum(f[4] for f in ready_needed(model, models_dir)
+                       if not ready_verified(ready_where(models_dir, f), f[5])) / 1e9   # the small files only
     # count only what step 6 will still write: a pack whose experts.bin is already there (the AVX-512 Q2_0
     # conversion, or the low-RAM mode's copy) and an existing MTP draft layer need no new room
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
