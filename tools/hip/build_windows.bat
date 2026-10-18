@@ -16,6 +16,7 @@ rem                        gfx1031 = RX 6700 XT / 6800M, #915 #1078; drop it fro
 rem   STRATA_ROCM_VERSION  10.2.0a20260930        STRATA_ROCM_INDEX  https://nightly.repo.amd.com/rocm/whl-next/
 rem   ROCM_VENV            <repo>\.rocm-win       BUILD_DIR          <repo>\build-hip-win     DIST_DIR  <repo>\dist
 rem   STRATA_GGML_DIR      a llama.cpp checkout at the pinned commit (default: CMake fetches it)
+rem   STRATA_ROCM_KEEP      1 = use the ROCM_VENV as it is (no pip install, even when its archs differ from STRATA_HIP_ARCHS)
 rem   STRATA_NO_VISION     1 = skip the two picture readers (strata-vision.exe for the CPU, strata-vision-hip.exe for the GPU)
 setlocal EnableDelayedExpansion
 for %%I in ("%~dp0..\..") do set "SRC=%%~fI"
@@ -40,7 +41,7 @@ set "STAMP=%ROCM_VENV%\strata-rocm.txt"
 set "WANT=%STRATA_ROCM_VERSION% %EXTRAS%"
 set "HAVE="
 if exist "%STAMP%" set /p HAVE=<"%STAMP%"
-if not "!HAVE!"=="!WANT!" (
+if not "!HAVE!"=="!WANT!" if not "%STRATA_ROCM_KEEP%"=="1" (
   echo Installing ROCm %STRATA_ROCM_VERSION% [%EXTRAS%] into %ROCM_VENV% ...
   "%ROCM_VENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --index-url "%STRATA_ROCM_INDEX%" "rocm[%EXTRAS%]==%STRATA_ROCM_VERSION%" || exit /b 1
   "%ROCM_VENV%\Scripts\rocm-sdk.exe" init || exit /b 1
