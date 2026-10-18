@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readFileSync as readSource } from 'node:fs';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createEngineStep } from '../server/engine-step.mjs';
@@ -122,4 +123,27 @@ test('the three NVFP4 versions have clear names and one line that tells them apa
     assert.ok(['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].every((m, i) => lib.versionNote(m) !== lines[i]), `${language}: the line is translated`);
   }
   lib.setTranslationLanguage('en');
+});
+
+test('4d: picture reading is on unless the person turned it off (no saved choice is not "off")', async () => {
+  const { nativeFixture } = await import('./helpers/native-fixture.mjs');
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const f = nativeFixture();
+  try {
+    await f.control.refresh(true);
+    const first = () => f.control.state().installed.models.find(m => m.model === 'iq2_xs');
+    assert.equal(first().visionEnabled, undefined, 'a model never loaded and never turned off');
+    const path = join(f.repo, 'strata-iq2_xs.json');
+    const cfg = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...cfg, ui_vision_enabled: false }));
+    await f.control.refresh(true);
+    assert.equal(first().visionEnabled, false, 'turned off by the person: stays off');
+    writeFileSync(path, JSON.stringify({ ...cfg, ui_vision_enabled: true, ui_vision_device: 'cpu' }));
+    await f.control.refresh(true);
+    assert.equal(first().visionEnabled, true);
+  } finally { await f.cleanup(); }
+  const screen = readSource(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
+  assert.match(screen, /setVision\(installed\.visionEnabled === false \? 'no'/);
+  assert.match(screen, /else\s+setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
 });

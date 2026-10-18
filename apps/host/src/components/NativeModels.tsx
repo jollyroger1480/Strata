@@ -120,7 +120,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         if (installed) {
             if (installed.context)
                 setContext(installed.context);
-            setVision(installed.visionEnabled === false || installed.images === 'off' ? 'no' : installed.visionDevice ?? installed.images ?? 'yes');
+            // Off only when the person turned it off (a saved choice); a model prepared without the picture files (images 'off') still starts with it ON.
+            setVision(installed.visionEnabled === false ? 'no' : installed.visionDevice ?? (installed.images && installed.images !== 'off' ? installed.images : 'yes'));
             setKv(installed.kv ?? 'int8');
             setLowRam(installed.lowRamMode ?? 'auto');
             // A model never tuned has no saved choice: keep the page's own (Leave 20%) rather than flipping to Full performance.
