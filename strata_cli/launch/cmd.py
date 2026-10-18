@@ -307,6 +307,19 @@ def _stop_all(name: str | None) -> int:
     return 0
 
 
+def _tui(run, *args, **kw) -> int:
+    """Open the screens. An error of the screens themselves ends with a plain sentence and a non-zero exit code, never a traceback and exit 0
+    (tester report T02)."""
+    try:
+        return int(run(*args, **kw) or 0)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:                                   # noqa: BLE001
+        print(f"strata: The launch screens stopped because of an unexpected problem ({type(e).__name__}: {e}), and nothing was started. "
+              "Run the same command with --no-tui to see the steps as plain lines.", file=sys.stderr)
+        return 1
+
+
 def running_launches() -> list[dict]:
     """Launch profiles whose server is up now: [{name, profile, url, state}]."""
     from strata_control import profiles, runtime
@@ -435,7 +448,7 @@ def run_launch(a: argparse.Namespace) -> int:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
             from strata_cli.launch import app
-            return app.run_tui(None, catalog=catalog, feed=a.feed)
+            return _tui(app.run_tui, None, catalog=catalog, feed=a.feed)
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
         s, notes = apply_defaults(s, catalog)
@@ -473,7 +486,7 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"[!] {fw}")
         if interactive and have_choices:
             from strata_cli.launch import app
-            return app.run_tui(s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))
+            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))
         try:
             result = runner.run()
         except LaunchError as e:

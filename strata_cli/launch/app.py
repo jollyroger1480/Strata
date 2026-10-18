@@ -185,7 +185,7 @@ class LaunchApp(App):
 
     def goto(self, step_id: str) -> None:
         self.current = step_id
-        self.switch_screen(SCREENS[step_id]())
+        self.show(SCREENS[step_id]())
 
     def begin_setup(self, *, preset: str | None = None, own_files: bool = False) -> None:
         self.ctx.tune_chosen = False
@@ -199,7 +199,7 @@ class LaunchApp(App):
         self.ctx.picked_in_list = False
         self.ctx.invalidate_rows()
         self.current = "model"
-        self.switch_screen(ModelScreen())
+        self.show(ModelScreen())
 
     def advance(self) -> None:
         flow = self.flow()
@@ -214,13 +214,22 @@ class LaunchApp(App):
             self.goto(flow[i - 1])
         else:
             self.current = "start"
-            self.switch_screen(StartScreen())
+            self.show(StartScreen())
 
     # ---- starting
     def start_preset(self, name: str) -> None:
         s = store.load(name)
         self.ctx.settings = s
         self.run_launch()
+
+    def show(self, screen) -> None:
+        """Put `screen` in front. The first screen of a run that skips the questions has nothing to replace (the app starts with only its
+        empty base screen), so it is pushed; every later one replaces the one on top. (switch_screen on the base screen raised
+        IndexError: pop from empty list, tester report T02.)"""
+        if len(self.screen_stack) <= 1:
+            self.push_screen(screen)
+        else:
+            self.switch_screen(screen)
 
     def run_launch(self, confirmed: bool = False) -> None:
         s = self.ctx.settings
@@ -244,7 +253,7 @@ class LaunchApp(App):
         screen = RunScreen()
         self.run_screen = screen
         self.current = "run"
-        self.switch_screen(screen)
+        self.show(screen)
         self.running = True
         threading.Thread(target=self._work, daemon=True).start()
 
@@ -304,7 +313,7 @@ class LaunchApp(App):
 
     def back_to_start(self) -> None:
         self.current = "start"
-        self.switch_screen(StartScreen())
+        self.show(StartScreen())
 
 
 # ------------------------------------------------------------------------------------------------ the monitor
@@ -362,6 +371,11 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
     ctx = Ctx(catalog=catalog, computer=computer, rows=rows, settings=s, glyphs=Glyphs(), feed=feed)
     app = LaunchApp(ctx, auto_run=auto_run)
     result = app.run()
+    if getattr(app, "return_code", 0) not in (0, None) or getattr(app, "_exception", None) is not None:
+        # The screens stopped on an error of their own (not a launch failure, which the run screen shows). Never end quietly with exit 0.
+        print("strata: The launch screens stopped because of an unexpected problem, and nothing was started. "
+              "Run the same command with --no-tui to see the steps as plain lines, and send the output if you ask for help.", file=sys.stderr)
+        return 1
     if app.stopped_after_save:
         print(f"Saved the preset '{ctx.settings.name}'. Start it with: strata launch --preset \"{ctx.settings.name}\"")
         return 0
