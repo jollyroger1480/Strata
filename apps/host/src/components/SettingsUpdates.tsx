@@ -6,11 +6,12 @@ import { useStore } from '../lib/store';
 import type { SoftwareUpdate, UpdateCheckResult } from '../lib/types';
 import { nativeAction, useNative } from '../lib/native';
 import { NativeProgress } from './NativeModels';
+import { appVersionLabel } from '../lib/app-version';
 /** Installed versions are real host values. Installation needs a host updater. */
 export function SettingsUpdates() {
     const native = useNative();
     const [confirm, setConfirm] = useState('');
-    const appVersion = useStore(s => s.setup?.app.version);
+    const appVersion = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
     const engineVersion = useStore(s => s.engine?.engine.version);
     const [rollback, setRollback] = useState(false);
     const [component, setComponent] = useState<'strata' | 'engine'>('strata');
@@ -19,7 +20,7 @@ export function SettingsUpdates() {
     const [error, setError] = useState('');
     const request = useRef<AbortController | null>(null);
     useEffect(() => () => request.current?.abort(), []);
-    const installed = component === 'strata' ? native?.version ?? appVersion : native?.available ? (native.installed?.engine?.version ?? 'Not installed') : engineVersion;
+    const installed = component === 'strata' ? appVersion : native?.available ? (native.installed?.engine?.version ?? 'Not installed') : engineVersion;
     const active = native?.jobs.find(j => j.state === 'running');
     async function operate(kind: string) {
         setError('');
@@ -68,7 +69,7 @@ export function SettingsUpdates() {
     }
     return <>
     <div className="settings-versions" aria-busy={checking}>
-      {tr(versionRow('Strata', native?.version ?? appVersion, result?.strata))}
+      {tr(versionRow('Strata', appVersion, result?.strata))}
       {tr(versionRow('Engine', native?.available ? (native.installed?.engine?.version ?? 'Not installed') : engineVersion, result?.engine))}
       <div className="settings-update-actions"><Btn size="sm" icon="refresh" disabled={checking} className={checking ? 'settings-update-checking' : undefined} onClick={() => void check()}>{tr(checking ? 'Checking…' : error || result?.strata.status === 'error' ? 'Try again' : result ? 'Check again' : 'Check for updates')}</Btn><Btn size="sm" variant="ghost" onClick={() => setRollback(true)}>{tr("Roll back\u2026")}</Btn></div>
       <div className="settings-update-inline" role="status" aria-live="polite">{tr(checking ? 'Checking for new versions…' : error ? <span className="inline-error">{tr(error)}</span> : result ? <><span className="sr-only">{tr(result.strata.message)} {tr(result.engine.message)} </span>{tr("Checked at ")}{tr(new Date(result.checkedAt).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' }))}</> : null)}</div>
@@ -84,4 +85,13 @@ export function SettingsUpdates() {
     {tr(active ? <NativeProgress job={active}/> : null)}{tr(native?.jobs.filter(j => j.state === 'error' && ['update-strata', 'update-engine', 'rollback'].includes(j.kind)).slice(-1).map(j => <p role="alert" key={j.id} className="small inline-error">{tr(j.error ?? j.summary)}</p>))}
     <Dialog open={!!confirm} compact title={tr(confirm === 'update-strata' ? 'Update Strata?' : 'Update engine?')} onClose={() => setConfirm('')} actions={<><Btn onClick={() => setConfirm('')}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate(confirm)}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p>{tr((native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</Dialog>
   </>;
+}
+
+/** "Strata 0.2.0-beta · Engine 0.1.45.3": the app's own version first, the engine's beside it (About). */
+export function AboutVersions() {
+    const native = useNative();
+    const app = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
+    const engineVersion = useStore(s => s.engine?.engine.version);
+    const engine = native?.available ? native.installed?.engine?.version : engineVersion;
+    return <p className="settings-about-version"><strong>{tr("Strata")} {app ?? ''}</strong>{engine ? <span className="muted"> · {tr("Engine")} {engine}</span> : null}</p>;
 }

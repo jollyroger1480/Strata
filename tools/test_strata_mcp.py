@@ -799,3 +799,85 @@ class RemoveMissingFilesTest(unittest.TestCase):
             self.assertFalse(folder.exists()); self.assertFalse(cfg.exists())
             again = mod.Tools(S()).strata_remove(model="gyro-m", confirm=True)
             self.assertEqual(again["failed"], [], "a second delete of the same model finds nothing left and still succeeds")
+
+
+class DiskUsageTest(unittest.TestCase):
+    """QA 2026-10-18 (F02): Storage showed IQ3_S as 0.0 GB while it uses 84 GB, and Gyro-S as 119 GB while it is 59 GB.  The sizes come from the real
+    files: every part of a model in parts, the picture reader, the packs; a file one config names through several flags counts once; a
+    file two models share counts once in the total; a model's own figure leaves out another model's files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = Path(self.tmp.name)
+        self.root, self.data, self.own = d / "install", d / "data", d / "owner-folder"
+        for p in (self.root, self.data / "models" / "gyro-Gyro-S", self.data / "packs" / "swift-iq2_xs", self.data / "mtp" / "rt", self.own):
+            p.mkdir(parents=True)
+        (d / "settings.json").write_text(json.dumps({"data_dir": str(self.data)}), encoding="utf-8")
+        env = mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(d / "settings.json")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def blob(self, path: Path, size: int) -> str:
+        path.write_bytes(b"x" * size)
+        return str(path)
+
+    def write_config(self, name: str, args: list, vision=None):
+        cfg = {"exe": sys.executable, "args": args, "port": 8080}
+        if vision:
+            cfg["vision"] = {"mmproj": vision}
+        (self.root / f"strata-{name}.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_sizes_come_from_the_files_not_from_what_may_be_deleted(self):
+        gyro = self.blob(self.data / "models" / "gyro-Gyro-S" / "Gyro-S.gguf", 59_000)
+        reader = self.blob(self.data / "models" / "mmproj.gguf", 900)
+        part1 = self.blob(self.own / "Model-IQ3_S-00001-of-00002.gguf", 30_000)
+        self.blob(self.own / "Model-IQ3_S-00002-of-00002.gguf", 54_000)
+        # Gyro: the one file is --native, --ple-gguf, --embd-gguf and --native-dense-gguf at once
+        self.write_config("gyro-gyro-s", ["--native", gyro, "--ple-gguf", gyro, "--embd-gguf", gyro, "--native-dense-gguf", gyro], reader)
+        # IQ3_S: adopted from the person's own folder, the config names the first part only
+        self.write_config("iq3_s", ["--native", part1], reader)
+        s = M.Strata(self.root)
+        use = s.disk_usage()
+        self.assertEqual(use["models"]["gyro-gyro-s"]["bytes"], 59_000, "the Gyro file is counted once, not four times")
+        self.assertEqual(use["models"]["iq3_s"]["bytes"], 84_000, "both parts of IQ3_S, although the config names the first")
+        self.assertEqual(use["shared_bytes"], 900, "the picture reader both use is one file")
+        self.assertEqual(use["total_bytes"], 59_000 + 84_000 + 900, "rows plus the shared files add up to the total")
+        self.assertEqual(use["models"]["iq3_s"]["shared_bytes"], 900)
+        # deleting IQ3_S would remove nothing: its files are the person's own
+        by = {d["model"]: d for d in (s.describe_config(c, use) for c in s.configs())}
+        self.assertEqual(by["iq3_s"]["disk_bytes"], 84_000)
+        self.assertEqual(by["iq3_s"]["removable_gb"], 0.0)
+        self.assertEqual(by["gyro-gyro-s"]["disk_bytes"], 59_000)
+
+    def test_a_pack_folder_and_the_shared_draft_layer_count_once(self):
+        gguf = self.blob(self.data / "models" / "gyro-Gyro-S" / "m.gguf", 10_000)
+        pack = self.data / "packs" / "swift-iq2_xs"
+        self.blob(pack / "experts.bin", 40_000)
+        self.blob(pack / "index.txt", 100)
+        mtp = self.data / "mtp" / "rt"
+        self.blob(mtp / "experts.bin", 5_000)
+        self.write_config("swift-iq2_xs", ["--native", gguf, "--pack", str(pack), "--mtp", str(mtp)])
+        link_target = self.data / "models" / "gyro-Gyro-S" / "m2.gguf"
+        try:
+            os.link(gguf, link_target)                      # a hard link: the same bytes under another name
+        except OSError:
+            self.skipTest("no hard links here")
+        self.write_config("other", ["--native", str(link_target), "--mtp", str(mtp)])
+        use = M.Strata(self.root).disk_usage()
+        self.assertEqual(use["models"]["swift-iq2_xs"]["bytes"], 40_100)
+        self.assertEqual(use["models"]["other"]["bytes"], 0)
+        self.assertEqual(use["shared_bytes"], 10_000 + 5_000, "the hard-linked GGUF and the draft layer are shared")
+        self.assertEqual(use["total_bytes"], 55_100)
+
+    def test_a_model_with_a_part_missing_is_not_ready(self):
+        part1 = self.blob(self.own / "Model-00001-of-00003.gguf", 10)
+        self.blob(self.own / "Model-00002-of-00003.gguf", 10)
+        self.write_config("three-parts", ["--native", part1])
+        s = M.Strata(self.root)
+        desc = s.describe_config(s.configs()[0])
+        self.assertFalse(desc["ready"], "one part of three is on disk: not downloaded")
+        self.assertTrue(any(m.endswith("Model-00003-of-00003.gguf") for m in desc["missing_files"]), desc["missing_files"])
+        self.blob(self.own / "Model-00003-of-00003.gguf", 10)
+        desc = s.describe_config(s.configs()[0])
+        self.assertEqual([m for m in desc["missing_files"] if m.endswith(".gguf")], [])

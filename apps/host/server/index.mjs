@@ -58,10 +58,11 @@ import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, cre
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
-import { appVersionFrom } from './app-version.mjs';
+import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
+import { nativeUnloadPlan } from './storage-check.mjs';
 import { installBundledEngine } from './bundled-engine.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
@@ -1272,7 +1273,7 @@ async function api(req, res, path, method, url) {
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
   if (path === '/api/updates/check' && method === 'GET' && control?.updateCheck) return json(res, 200, await checkComponentUpdates({ control, appUpdater, appVersion: process.env.STRATA_APP_VERSION || null }));
-  if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:native.state().version??setupState().app.version, engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
+  if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:appVersionToShow(setupState().app.version,native.state().version), engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
 
   if (path === '/api/setup/step' && method === 'POST') {
     const body = await readBody(req);
@@ -1334,7 +1335,9 @@ async function api(req, res, path, method, url) {
     if (storageChanging || modelOperations || models.directoryBusy() || imageModels.busy()||native.state().jobs.some(j=>j.state==='running')) return error(res, 409, 'Finish or cancel model downloads and loading before changing the folder.');
     if (serving.state().requests.some(r => ['queued', 'generating'].includes(r.state))) return error(res, 409, 'Finish or cancel model requests before changing the folder.');
     if (changed && instances.length && body.unload !== true) return error(res, 409, 'Unload the current models before changing the folder.');
-    if(native.state().instances.length){if(!body.unload)return error(res,409,'Unload native models before changing the model folder.');for(const instance of native.state().instances)await native.unload(instance.id);}
+    const nativePlan=nativeUnloadPlan({changed,unload:body.unload,instances:native.state().instances});
+    if(nativePlan.refuse)return error(res,409,nativePlan.refuse);
+    for(const id of nativePlan.ids)await native.unload(id);
     storageChanging = true;
     try {
       if (changed) {

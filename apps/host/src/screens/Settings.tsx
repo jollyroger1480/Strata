@@ -7,7 +7,7 @@ import { SettingsModels } from '../components/SettingsModels';
 import { SettingsTools } from '../components/SettingsTools';
 import { SettingsStorage } from '../components/SettingsStorage';
 import { PrivacyNotes } from '../components/PrivacyNotes';
-import { SettingsUpdates } from '../components/SettingsUpdates';
+import { AboutVersions, SettingsUpdates } from '../components/SettingsUpdates';
 import { NativeOperations } from '../components/NativeOperations';
 import { FontChoice } from '../components/FontChoice';
 import { LANGUAGES } from '../lib/i18n';
@@ -58,7 +58,7 @@ export function SettingsScreen() {
           {tr(panel.sections.map(section => <section className="settings-section" key={section}>
             <h2 className="h3" style={{ marginBottom: 14 }}>{tr(section)}</h2>
             <div className="st-card st-card--flush">
-              {tr(section === 'About' ? <div className="settings-about-brand"><Brand variant="lockup" height={28}/></div> : null)}
+              {tr(section === 'About' ? <div className="settings-about-brand"><Brand variant="lockup" height={28}/><AboutVersions/></div> : null)}
               {tr(section === 'Storage' ? <SettingsStorage /> : null)}
               {tr(section === 'Privacy' ? <PrivacyNotes /> : null)}
               {tr(section === 'Update' ? <SettingsUpdates /> : null)}

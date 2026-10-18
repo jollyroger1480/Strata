@@ -3235,5 +3235,10 @@
   "s3239": "Die Engine für diesen PC wird heruntergeladen…",
   "s3240": "{0} wird vorbereitet",
   "s3241": "Teile des Downloads",
-  "s3242": "Bildleser"
+  "s3242": "Bildleser",
+  "s3243": "Gemeinsame Dateien",
+  "s3244": "Von mehr als einem Modell genutzt",
+  "s3245": "Diese Dateien liegen in deinem eigenen Ordner und bleiben dort. Nur der Eintrag in Strata wird entfernt.",
+  "s3246": "Das laufende Modell wird entladen.",
+  "s3247": "Lokal"
 }

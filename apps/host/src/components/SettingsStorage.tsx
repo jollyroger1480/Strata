@@ -1,6 +1,6 @@
 import { tr } from '../lib/i18n';
 import { useState } from 'react';
-import { Btn, Dialog, ErrorNotice, Field, Icon, Select } from './ui';
+import { Btn, Dialog, ErrorNotice, Field, Icon } from './ui';
 import { changeModelDirectory, getState, lifecycleStatus, removeVariant, runtimeModelAction, unloadModel, useStore } from '../lib/store';
 import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { sizeGb } from '../lib/format';
@@ -17,6 +17,12 @@ export function SettingsStorage() {
     const [directoryPending, setDirectoryPending] = useState(false), [directoryError, setDirectoryError] = useState(''), [notice, setNotice] = useState('');
     const library = state.library;
     const versions = library ? pickerGroups(library).flatMap(group => group.versions) : [];
+    // ONE list and ONE total: the optimized models (sizes from their real files, shared files counted once) and the other local models together.
+    const nativeModels = native?.installed?.models ?? [];
+    const sharedGb = (native?.installed?.usage?.shared_bytes ?? 0) / 1e9;
+    const nativeGb = native?.installed?.usage ? native.installed.usage.total_gb : nativeModels.reduce((n, m) => n + (m.diskGb ?? 0), 0);
+    const totalGb = nativeGb + versions.reduce((n, v) => n + (v.diskGb ?? 0), 0);
+    const rows = nativeModels.length + versions.length;
     const version = versions.find(v => v.id === selected);
     const running = !!version && (state.runtime?.instances.some(i => i.variantId === version.id) || library?.loaded === version.id);
     const lifecycle = lifecycleStatus(state);
@@ -29,7 +35,7 @@ export function SettingsStorage() {
         setDirectoryError('');
         setNotice('');
         try {
-            const result = await changeModelDirectory(path, true);
+            const result = await changeModelDirectory(path, path.trim() !== currentDirectory);   // checking the same folder unloads nothing
             const count = result.library.variants.filter(v => ['installed', 'loaded'].includes(v.state)).length + result.imageModels.variants.filter(v => v.state === 'installed').length;
             setEditing(false);
             setNotice(`${count} ${count === 1 ? 'version' : 'versions'} found${result.library.mode === 'simulated' ? ' in this example library' : ''}. Future downloads will use this folder.`);
@@ -92,15 +98,13 @@ export function SettingsStorage() {
       {tr(notice ? <p className="small storage-directory__notice" role="status"><Icon name="check" size={15}/>{tr(notice)}</p> : null)}
       {tr(directoryError ? <ErrorNotice message={directoryError}/> : null)}
     </section>
-    <Field label={tr("Downloaded models")} hint={tr("{0} on this computer. Choose a version to delete its files.", [sizeGb(library?.disk.usedGb ?? 0)])}>
-      <Select value="" ariaLabel={tr("Delete downloaded model version")} menuSize="comfortable" menuMinWidth={520} singleLine disabled={!versions.length || pending || directoryPending} options={[
-            { value: '', label: versions.length ? 'Choose a version…' : 'No downloaded models', disabled: true },
-            ...versions.map(v => ({ value: v.id, label: `${v.local ? v.name : v.family} · ${v.quant} · ${sizeGb(v.diskGb)}${v.local ? ' · Local' : ''}`, disabled: pickerVersionState(v, library?.loaded ?? null).busy })),
-        ]} onChange={id => { setError(''); setSelected(id); }}/>
+    <Field label={tr("Downloaded models")} hint={tr("{0} on this computer. Choose a version to delete its files.", [sizeGb(totalGb)])}>
+      {tr(rows ? <ul className="storage-models" aria-label={tr("Downloaded models")}>
+        {tr(nativeModels.map(m => <li className="storage-model" key={m.model}><span className="storage-model__name" title={m.model_name || m.model}><strong>{nativeShortName(m.model)}</strong>{tr(native?.instances.some(i => i.model === m.model) ? <small className="muted">{tr('Loaded')}</small> : null)}</span><span className="storage-model__size muted">{tr(sizeGb(m.diskGb ?? 0))}</span><Btn size="sm" variant="danger" disabled={!!native?.jobs.some(j => j.state === 'running')} onClick={() => setNativeDeleting(m.model)}>{tr("Delete")}</Btn></li>))}
+        {tr(versions.map(v => <li className="storage-model" key={v.id}><span className="storage-model__name" title={`${v.family} · ${v.quant}`}><strong>{`${v.local ? v.name : v.family} · ${v.quant}`}</strong>{tr(v.local ? <small className="muted">{tr('Local')}</small> : null)}{tr(v.id === library?.loaded ? <small className="muted">{tr('Loaded')}</small> : null)}</span><span className="storage-model__size muted">{tr(sizeGb(v.diskGb))}</span><Btn size="sm" variant="danger" disabled={pickerVersionState(v, library?.loaded ?? null).busy || pending || directoryPending} onClick={() => { setError(''); setSelected(v.id); }}>{tr("Delete")}</Btn></li>))}
+        {tr(sharedGb > 0 ? <li className="storage-model storage-model--shared"><span className="storage-model__name"><strong>{tr("Shared files")}</strong><small className="muted">{tr("Used by more than one model")}</small></span><span className="storage-model__size muted">{tr(sizeGb(sharedGb))}</span><span/></li> : null)}
+      </ul> : <p className="small muted">{tr("No downloaded models")}</p>)}
     </Field>
-    {tr(native?.installed?.models.length ? <Field label={tr("Downloaded models")} hint={tr("{0} on this computer. Choose a version to delete its files.", [sizeGb((native.installed.models).reduce((n, m) => n + (m.diskGb ?? 0), 0))])}>
-      <ul className="storage-models">{tr(native.installed.models.map(m => <li className="storage-model" key={m.model}><span className="storage-model__name" title={m.model_name || m.model}><strong>{nativeShortName(m.model)}</strong>{tr(native.instances.some(i => i.model === m.model) ? <small className="muted">{tr('Loaded')}</small> : null)}</span><span className="storage-model__size muted">{tr(sizeGb(m.diskGb ?? 0))}</span><Btn size="sm" variant="danger" disabled={!!native.jobs.some(j => j.state === 'running')} onClick={() => setNativeDeleting(m.model)}>{tr("Delete")}</Btn></li>))}</ul>
-    </Field> : null)}
     <NativeDeleteDialog id={nativeDeleting} onClose={() => setNativeDeleting(null)}/>
     <Dialog open={!!selected} compact title={tr(version?.local ? 'Remove from Strata?' : `Delete ${version?.quant ?? 'model version'}?`)} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr("Keep version")}</Btn><Btn variant="danger" disabled={pending || unavailable} onClick={() => void remove()}>{tr(pending ? 'Working…' : version?.local ? 'Remove model' : 'Delete version')}</Btn></>}>
       <p>{tr(version ? `${version.local ? version.name : version.family} · ${version.quant} · ${sizeGb(version.diskGb)}` : 'This version is no longer downloaded.')}</p>

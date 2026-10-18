@@ -571,7 +571,7 @@ class Strata:
         except (OSError, ValueError):
             return {}
 
-    def describe_config(self, path: Path) -> dict:
+    def describe_config(self, path: Path, usage: dict | None = None) -> dict:
         cfg = self.read_config(path)
         a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
 
@@ -580,9 +580,12 @@ class Strata:
         tag = path.stem[len("strata-"):]
         missing = [p for p in [cfg.get("exe"), *[x for x in a if isinstance(x, str) and x.endswith(".gguf")]]
                    if not p or not Path(p).exists()]
-        missing += shard_gaps([x for x in a if isinstance(x, str) and x.endswith(".gguf")])   # a model in parts is whole only with every part
+        gaps = shard_gaps([x for x in a if isinstance(x, str) and x.endswith(".gguf")])   # a model in parts is whole only with every part
+        missing += gaps
         script = self.root / f"run-{tag}.{'bat' if WIN else 'sh'}"
         vis = cfg.get("vision")
+        own_usage = (usage or self.disk_usage())["models"].get(tag) or {"gb": 0.0, "bytes": 0, "shared_bytes": 0}
+        plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
@@ -590,8 +593,11 @@ class Strata:
                 "gpu": cfg.get("gpu"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
-                "ready": not missing and bool(cfg), "missing_files": missing[:3],
-                "disk_gb": self.removal_plan(path)["gb"], "disk_bytes": self.removal_plan(path)["bytes"],
+                "ready": not missing and bool(cfg), "missing_files": missing[:3], "parts_missing": len(gaps),
+                "disk_gb": own_usage["gb"], "disk_bytes": own_usage["bytes"],
+                "shared_bytes": own_usage["shared_bytes"],
+                # what Delete would remove (files in Strata's own folders that no other model uses); the person's own GGUF folders stay
+                "removable_gb": plan["gb"], "kept_files": len(plan["keep"]),
                 "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))}
 
     # ---- what a model owns on disk (Delete, and the per-model disk usage in Storage)
@@ -602,9 +608,19 @@ class Strata:
         """(the GGUF files, the folders) a run config names: --native/--ple-gguf/... and --pack/--mtp, plus any other .gguf."""
         a = [x for x in (cfg.get("args") or []) if isinstance(x, str)]
         files = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.FILE_FLAGS]
-        files += [Path(x) for x in a if x.lower().endswith(".gguf") and Path(x) not in files]
+        files += [Path(x) for x in a if x.lower().endswith(".gguf")]
         dirs = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.DIR_FLAGS]
-        return files, dirs
+        seen, once = set(), []
+        for f in files:                                 # one file named by several flags is still one file
+            if norm(f) not in seen:
+                seen.add(norm(f))
+                once.append(f)
+        seen_d, once_d = set(), []
+        for d in dirs:
+            if norm(d) not in seen_d:
+                seen_d.add(norm(d))
+                once_d.append(d)
+        return once, once_d
 
     @staticmethod
     def tree_bytes(path: Path) -> int:
@@ -621,6 +637,61 @@ class Strata:
                 except OSError:
                     pass
         return total
+
+    @staticmethod
+    def file_key(path: Path):
+        """What makes two names the same file on disk: device + inode (hard links), else the resolved path."""
+        try:
+            st = os.stat(path)
+            if st.st_ino:
+                return ("ino", st.st_dev, st.st_ino), st.st_size
+            return ("path", str(norm(path))), st.st_size
+        except OSError:
+            return None, 0
+
+    def used_files(self, cfg: dict) -> dict:
+        """Every file a model really uses, from its run config: all parts of a multi-part GGUF (the config names the first), the
+        picture reader, the packs and the draft layer folders.  {file identity: bytes}, wherever they live (the Strata folders or the
+        person's own)."""
+        files, dirs = self.model_paths(cfg)
+        paths = list(files)
+        vis = cfg.get("vision")
+        if isinstance(vis, dict) and isinstance(vis.get("mmproj"), str):
+            paths.append(Path(vis["mmproj"]))
+        for f in list(paths):                           # the other parts of a multi-part file
+            m = SHARD_NAME.match(str(f))
+            if m:
+                paths += [Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)]
+        for d in dirs:
+            for base, _sub, names in os.walk(d):
+                paths += [Path(base) / n for n in names]
+        out = {}
+        for p in paths:
+            if p.is_file():
+                key, size = self.file_key(p)
+                if key is not None:
+                    out[key] = size
+        return out
+
+    def disk_usage(self) -> dict:
+        """What the installed models take on disk, from the real files: each model's own files, the files shared between models
+        (the picture reader, the draft layer) counted ONCE, and the total.  A model's own figure leaves out the shared files and
+        every other model's; rows plus 'shared' add up to the total."""
+        per = {c.stem[len("strata-"):]: self.used_files(self.read_config(c)) for c in self.configs()}
+        owners: dict = {}
+        for files in per.values():
+            for k in files:
+                owners[k] = owners.get(k, 0) + 1
+        models, shared = {}, {}
+        for tag, files in per.items():
+            own = sum(b for k, b in files.items() if owners[k] == 1)
+            models[tag] = {"bytes": own, "gb": round(own / 1e9, 2), "files": len(files),
+                           "shared_bytes": sum(b for k, b in files.items() if owners[k] > 1)}
+            shared.update({k: b for k, b in files.items() if owners[k] > 1})
+        shared_bytes = sum(shared.values())
+        total = sum(m["bytes"] for m in models.values()) + shared_bytes
+        return {"models": models, "shared_bytes": shared_bytes, "shared_gb": round(shared_bytes / 1e9, 2),
+                "total_bytes": total, "total_gb": round(total / 1e9, 2)}
 
     def removal_plan(self, config: Path) -> dict:
         """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
@@ -709,9 +780,11 @@ class Strata:
                                 entry["downloading"] = bool(list(c.glob("*.part")))
                             items.setdefault(sub, []).append(entry)
         mtp = data / "mtp" / "rt" / "experts.bin"
+        usage = self.disk_usage()
         return {"strata_folder": str(self.root), "data_folder": str(data), "data_folder_exists": data.is_dir(),
                 "python_env": self.venv_python().exists(), "engine": self.engine_info(),
-                "models": [self.describe_config(c) for c in self.configs()],
+                "models": [self.describe_config(c, usage) for c in self.configs()],
+                "usage": usage,
                 "downloads": items.get("models", []), "prepared": items.get("packs", []),
                 "draft_layer": mtp.exists()}
 

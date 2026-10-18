@@ -5653,7 +5653,8 @@ textarea.config-editor.st-input {
 .key-input .st-input { min-width: 0; flex: 1; }
 .dialog-feature-icon { display: grid; place-items: center; width: 52px; height: 52px; border: 1px solid var(--st-line); border-radius: 16px; background: var(--st-surface-2); color: var(--st-accent); }
 .key-url { overflow-wrap: anywhere; padding: 14px; background: var(--st-surface-2); border-radius: 10px; }
-.settings-about-brand { display: flex; padding: 22px 20px 0; }
+.settings-about-brand { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 22px 20px 0; }
+.settings-about-version { margin: 0; font-size: var(--st-fs-base); }
 .prompt-progress { display: flex; align-items: center; gap: 16px; }
 .prompt-progress > .st-bar { flex: 1; }
 .hardware-section { display: flex; flex-direction: column; gap: 20px; }
@@ -7493,3 +7494,5 @@ textarea {
 .st-btn.btn-neutral { background: var(--st-surface); color: var(--st-ink); border: 1px solid var(--st-line); box-shadow: none; }
 .st-btn.btn-neutral:hover:not(:disabled) { background: var(--st-surface-2); }
 .native-vision-missing { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.storage-model--shared { background: var(--st-surface-2); }
+.storage-model--shared small { font-size: var(--st-fs-xs); }

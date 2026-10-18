@@ -3235,5 +3235,10 @@
   "s3239": "Baixando o mecanismo para este PC…",
   "s3240": "Preparando {0}",
   "s3241": "Partes do download",
-  "s3242": "Leitor de imagens"
+  "s3242": "Leitor de imagens",
+  "s3243": "Arquivos compartilhados",
+  "s3244": "Usados por mais de um modelo",
+  "s3245": "Esses arquivos estão na sua própria pasta e continuam lá. Só a entrada no Strata é removida.",
+  "s3246": "O modelo em execução será descarregado.",
+  "s3247": "Local"
 }

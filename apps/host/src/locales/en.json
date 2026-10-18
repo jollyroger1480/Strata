@@ -3235,5 +3235,10 @@
   "s3239": "Downloading the engine for this PC…",
   "s3240": "Preparing {0}",
   "s3241": "Download parts",
-  "s3242": "Picture reader"
+  "s3242": "Picture reader",
+  "s3243": "Shared files",
+  "s3244": "Used by more than one model",
+  "s3245": "These files are in your own folder, so they stay there. Only the entry in Strata is removed.",
+  "s3246": "The running model will be unloaded.",
+  "s3247": "Local"
 }
