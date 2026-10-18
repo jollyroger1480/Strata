@@ -25,7 +25,7 @@ namespace strata::kernels::cpu {
 
 /// The most default workers: past this the layer barrier costs more than the extra cores read (see the header comment).
 /// Measured on 6c/12t (z440), 20c (P2003), 32c/64t (r9700) and 64c (l620): notes-152-users.md.
-inline constexpr int kPoolWorkersCap = 24;
+inline constexpr int kPoolWorkersCap = 32;
 /// Cores kept free for the other threads of the engine (copy / IO threads, the GPU driver's, the OS) on a CPU with at
 /// least `kPoolReserveFrom` cores that the pool may use (besides the host's).  Small CPUs keep every core.
 inline constexpr int kPoolReserveFrom = 16;

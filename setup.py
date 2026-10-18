@@ -998,7 +998,7 @@ def two_socket_note(sockets) -> list[str]:
 # keeps in step with these numbers).  Setup writes no worker count on an ordinary CPU: the engine picks it, from the
 # physical cores (not the SMT siblings), minus the host thread's core and a reserve on a big CPU, on the host thread's
 # socket, under a cap.  What setup does write (a hybrid CPU's count, the vision encoder's threads) is capped the same way.
-POOL_WORKERS_CAP = 24
+POOL_WORKERS_CAP = 32
 POOL_RESERVE_FROM = 16
 POOL_RESERVE = 1
 VISION_THREADS_CAP = 16
