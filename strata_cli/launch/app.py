@@ -98,6 +98,31 @@ class Ctx:
         except Exception:                                    # noqa: BLE001
             return None
 
+    # ---- where the model is and what it still needs
+    def model_state(self, data_dir: str | None = None):
+        """The chosen model's state (installed, what helper files are missing, sizes) for these choices."""
+        from strata_cli.launch import modelstate
+        s = self.settings
+        return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows)
+
+    def default_folder(self) -> Path:
+        """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
+        prepared data), else the data folder every command agrees on."""
+        s = self.settings
+        if s.model_path:
+            try:
+                from strata_control import discovery
+                p = Path(s.model_path).expanduser()
+                first = p if p.is_file() else next(iter(sorted(p.glob("*.gguf"))), None)
+                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                if found:
+                    return Path(found)
+            except OSError:
+                pass
+            return self.catalog.data_dir()
+        return self.catalog.data_dir_for(s.family, s.model)
+
     def invalidate_rows(self) -> None:
         self._adv = None
 
@@ -245,10 +270,11 @@ class LaunchApp(App):
                 if choice == "go":
                     self.run_launch(confirmed=True)
 
-            self.push_screen(ConfirmScreen(f"Download about {gb:.0f} GB?",
-                                           f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; an interrupted download continues where it stopped."
-                                           + room + warn,
-                                           [("go", "Download and start"), ("no", "Not now")]), done)
+            asker = getattr(self.runner, "download_question", None)
+            title, text = asker() if asker else (f"Download about {gb:.0f} GB?",
+                                                 f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; "
+                                                 "an interrupted download continues where it stopped.")
+            self.push_screen(ConfirmScreen(title, text + room + warn, [("go", "Download and start"), ("no", "Not now")]), done)
             return
         screen = RunScreen()
         self.run_screen = screen

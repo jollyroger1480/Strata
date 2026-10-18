@@ -396,7 +396,7 @@ class Runner:
             args += ["--kv", s.kv]
         if fam in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
-        data = s.data_dir
+        data = s.data_dir or self.existing_data_dir()
         if data:
             args += ["--data-dir", str(data)]
         if s.model_path:
@@ -427,25 +427,53 @@ class Runner:
         desc = self.catalog.strata.describe_config(path)
         return path, desc
 
-    def download_gb(self) -> float:
-        """How much would be downloaded for this launch right now: 0 when the model is installed with these choices (or is the person's own files)."""
+    def existing_data_dir(self) -> Path | None:
+        """The data folder to give setup when the person chose none: the folder the model already lives in (its run config names its files),
+        else the folder the desktop app uses, so a helper file that is missing is fetched next to the rest, never into a second folder.
+        None: setup's own default is right."""
         s = self.s
-        if s.model_path or not (s.family and s.model):
+        try:
+            if s.model_path:
+                from strata_control import discovery
+                first = next(iter(sorted(Path(s.model_path).glob("*.gguf"))), None) if Path(s.model_path).is_dir() else Path(s.model_path)
+                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                return Path(found) if found else None
+            if s.family and s.model:
+                path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+                if path is not None:
+                    from strata_control import discovery
+                    found = discovery.footprint(read_config(path), path).data_dir
+                    if found is not None:
+                        return found
+            found, source = self.catalog.data_dir_choice()
+            return found if source != "default" else None
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    def model_state(self):
+        """What this launch still needs for the model, in numbers and words (strata_cli/launch/modelstate.py)."""
+        from strata_cli.launch import modelstate
+        s = self.s
+        path, desc = (None, None)
+        if s.family and s.model and not s.model_path:
+            path, desc = self.installed_state()
+        return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path, data_dir=s.data_dir,
+                                 config=path, desc=desc)
+
+    def download_gb(self) -> float:
+        """How much would be downloaded for this launch right now: 0 when everything is on disk (the model is installed with these choices
+        or is the person's own files). A model whose helper files are missing counts only those files, never the whole model."""
+        s = self.s
+        if not (s.family and s.model) and not s.model_path:
             return 0.0
         try:
-            path, desc = self.installed_state()
-            lost = files_present(read_config(path)) if path is not None else []
-            if lost and all("mmproj" in Path(x).name.lower() for x in lost):
-                return 0.9                                   # only the picture reader's file is gone
-            if path is not None and desc is not None and not lost:
-                if desc_matches(desc, s):
-                    return 0.0
-                # the model is on disk: what differs is the context / memory format (nothing to download) or the pictures (the 0.9 GB reader file)
-                return 0.9 if (s.vision != "off" and (desc.get("images") or "off") == "off") else 0.0
-            row = next((r for r in self.catalog.rows() if r.family == s.family and r.model == s.model), None)
-            return float(row.download_gb) if row else 0.0
+            return float(self.model_state().remaining_gb)
         except Exception:                                    # noqa: BLE001
             return 0.0
+
+    def download_question(self) -> tuple[str, str]:
+        """(title, text) of the question before a download starts, naming exactly what is fetched."""
+        return self.model_state().question()
 
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog

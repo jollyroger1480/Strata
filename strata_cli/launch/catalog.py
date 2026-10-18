@@ -10,6 +10,7 @@ words instead of guessing.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -151,15 +152,23 @@ def installer_folder(explicit: str | os.PathLike | None = None) -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def install_root(explicit: str | os.PathLike | None = None) -> Path:
-    """Where run configs of installed models live: STRATA_INSTALL_DIR, else beside the components folder (what the app uses)."""
+def install_places(explicit: str | os.PathLike | None = None, src: str | os.PathLike | None = None) -> list:
+    """Every folder with run configs, main one first: the SAME discovery `strata models list` and the own-files import use
+    (strata_control/discovery.py). An explicit folder (the argument, or STRATA_INSTALL_DIR) is the only one."""
+    from strata_control import discovery
+    return discovery.places(here=installer_folder(src), explicit=explicit)
+
+
+def install_root(explicit: str | os.PathLike | None = None, src: str | os.PathLike | None = None) -> Path:
+    """Where run configs of installed models live: the main place found by the shared discovery, else the folder a new model is
+    installed into (beside the components folder, what the app uses)."""
+    from strata_control import discovery
     if explicit:
         return Path(explicit)
     env = os.environ.get("STRATA_INSTALL_DIR")
     if env:
         return Path(env)
-    from strata_control import engine_component
-    return engine_component.components_dir().parent / "install"
+    return discovery.find_install(here=installer_folder(src))[0]
 
 
 # Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the common
@@ -192,7 +201,8 @@ class Catalog:
     def __init__(self, src: str | os.PathLike | None = None, root: str | os.PathLike | None = None,
                  hardware: dict | None = None):
         self.src = installer_folder(src)
-        self.root = install_root(root)
+        self.places = install_places(root, self.src)
+        self.root = Path(root) if root else (self.places[0].path if self.places else install_root(None, self.src))
         mcp = self.src / "tools" / "strata_mcp.py"
         if not mcp.is_file() or not (self.src / "setup.py").is_file():
             raise CatalogUnavailable(
@@ -215,6 +225,8 @@ class Catalog:
                 sys.stdout = real
         self.mcp = mod
         self.strata = mod.Strata(self.root, self.src)
+        self._mcp_data_dir = self.strata.data_dir
+        self.strata.data_dir = self.data_dir          # one answer to "where is the data folder" for every caller, the app's included
         self._hardware_override = hardware
 
     # ---- the computer
@@ -281,7 +293,7 @@ class Catalog:
                     about=size["about"], download_gb=float(size["download_gb"]), need_vram_gb=f["vramUseGb"],
                     need_ram_gb=f["ramUseGb"], spill_gb=f["spillGb"], verdict=cat, words=words,
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
-                    installed=bool(size.get("installed")), mem_total=bool(size.get("mem_total")),
+                    installed=bool(size.get("installed")) or self.installed_config(str(size["id"])) is not None, mem_total=bool(size.get("mem_total")),
                     memory_gb=float(size.get("memory_gb") or 0),
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
@@ -348,19 +360,55 @@ class Catalog:
 
     # ---- installed models
     def installed_configs(self) -> list[dict]:
-        out = []
+        out, seen = [], set()
         for path in self.strata.configs():
+            seen.add(path.name)
             d = self.strata.describe_config(path)
             d["path"] = str(path)
             out.append(d)
+        for place in self.places:
+            if place.path == self.root:
+                continue
+            from strata_control import discovery
+            for path in discovery.config_files(place.path):
+                if path.name in seen:
+                    continue
+                seen.add(path.name)
+                d = self.strata.describe_config(path)
+                d["path"] = str(path)
+                out.append(d)
         return out
 
     def installed_config(self, tag: str) -> Path | None:
-        p = self.root / f"strata-{tag.lower()}.json"
-        return p if p.is_file() else None
+        name = f"strata-{tag.lower()}.json"
+        for folder in [self.root, *[p.path for p in self.places if p.path != self.root]]:
+            p = folder / name
+            if p.is_file():
+                return p
+        return None
+
+    def data_dir_choice(self) -> tuple[Path, str]:
+        """(the data folder, where it came from): the person's own setting, the desktop app's folder, a Documents/Strata that holds models,
+        else the default beside the install. The same rule for every command."""
+        from strata_control import discovery
+        return discovery.data_dir(Path(self._mcp_data_dir()))
 
     def data_dir(self) -> Path:
-        return self.strata.data_dir()
+        return self.data_dir_choice()[0]
+
+    def data_dir_for(self, family: str | None, model: str | None) -> Path:
+        """Where this model's files are: the folder its installed run config names, else the data folder."""
+        if family and model:
+            path = self.installed_config(self.tag_of(family, model))
+            if path is not None:
+                try:
+                    from strata_control import discovery
+                    found = discovery.footprint(json.loads(path.read_text(encoding="utf-8-sig")), path).data_dir
+                    if found is not None:
+                        return found
+                except (OSError, ValueError):
+                    pass
+        return self.data_dir()
 
     def disk_free(self, path: str | os.PathLike) -> float | None:
         return self.strata.disk_free(Path(path))

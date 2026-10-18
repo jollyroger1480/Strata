@@ -4,9 +4,10 @@ The setup installer writes strata-*.json beside setup.py. A configured model is
 not automatically a compatible or loadable model: component presence and native
 engine compatibility are reported separately.
 
-Finding an existing install: a terminal archive is a new folder with no run configs in it. The folders earlier
-Strata installs remembered in the user's settings file (``installs``, written by setup.py next to ``data_dir``) are
-searched for run configs, read-only, and the first that has any is used where it is. Nothing is copied or moved:
+Finding an existing install: a terminal archive is a new folder with no run configs in it. The places where Strata
+installs keep run configs (the Terminal's own folder, the folders earlier installs remembered in the user's settings file,
+and the desktop app's install folder, which the Terminal shares) are searched read-only by strata_control/discovery.py,
+the same function the launch screens use; the first place that has any is the main one. Nothing is copied or moved:
 the configs name their engine and model files by absolute path, so the old install and its data folder keep
 serving the models.
 """
@@ -20,6 +21,7 @@ import re
 import stat
 from pathlib import Path
 
+from strata_control import discovery
 from strata_control.doctor import inspect as inspect_components
 from strata_control.gguf_preflight import inspect_metadata
 from strata_control.profiles import ProfileError
@@ -37,33 +39,16 @@ SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "q
 
 
 def settings_path() -> Path:
-    """The user's Strata settings file: the same place setup.py writes it (%APPDATA%\\Strata\\settings.json, or
+    """The user's Strata settings file: the same place setup.py writes it (%APPDATA%/Strata/settings.json, or
     $XDG_CONFIG_HOME/strata/settings.json). The desktop app sets STRATA_SETTINGS_FILE to a file of its own (in its data folder), so it
     never reads an older command-line install's list of Strata folders."""
-    own = os.environ.get("STRATA_SETTINGS_FILE")
-    if own:
-        return Path(own)
-    if os.name == "nt":
-        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
+    return discovery.own_settings_file()
 
 
 def remembered_installs() -> list[Path]:
     """Earlier Strata folders recorded in the settings file, newest first. Read-only; a missing or unreadable file
     is an empty list."""
-    try:
-        with settings_path().open("rb") as stream:
-            data = json.loads(stream.read(1024 * 1024).decode("utf-8-sig"))
-    except (OSError, UnicodeError, ValueError):
-        return []
-    items = data.get("installs") if isinstance(data, dict) else None
-    found: list[Path] = []
-    for raw in (items if isinstance(items, list) else [])[:20]:
-        if isinstance(raw, str) and raw:
-            path = Path(raw).expanduser()
-            if path.is_absolute() and path not in found:
-                found.append(path)
-    return found
+    return discovery._installs_in(discovery._read_json(settings_path()))        # noqa: SLF001
 
 
 def _has_configs(directory: Path) -> bool:
@@ -74,20 +59,25 @@ def _has_configs(directory: Path) -> bool:
 
 
 def resolve_install(override: str | None = None) -> tuple[Path, str]:
-    """(the install folder, how it was found): explicit (an argument or STRATA_INSTALL_DIR), here (this folder has run
-    configs), remembered (an earlier install from the settings file) or default (this folder, with none yet)."""
+    """(the main install folder, how it was found): explicit (an argument or STRATA_INSTALL_DIR), here (this folder has run
+    configs), remembered (an earlier install from the settings file), app (the desktop app's install folder, shared with the
+    Terminal) or default (the app's folder, with no model in it yet)."""
     raw = override or os.environ.get("STRATA_INSTALL_DIR")
     if raw is not None:
         path = Path(raw).expanduser()
         if not path.is_absolute() or not path.is_dir():
             raise ProfileError("install directory must be an existing absolute directory", 5)
         return path.resolve(), "explicit"
-    if _has_configs(ROOT):
-        return ROOT, "here"
-    for earlier in remembered_installs():
-        if earlier != ROOT and _has_configs(earlier):
-            return earlier.resolve(), "remembered"
-    return ROOT, "default"
+    return discovery.find_install(here=ROOT)
+
+
+def all_installs(override: str | None = None) -> list[tuple[Path, str]]:
+    """Every folder with run configs, main one first: what `strata models list` shows and what the launch screens read."""
+    directory, source = resolve_install(override)
+    if source == "explicit":
+        return [(directory, source)]
+    found = [(p.path, p.source) for p in discovery.places(here=ROOT)]
+    return found or [(directory, source)]
 
 
 def install_dir(override: str | None = None) -> Path:
@@ -180,15 +170,28 @@ def _inspect_one(model_id: str, path: Path) -> tuple[dict, dict]:
 
 def list_installed(override: str | None = None) -> dict:
     directory, source = resolve_install(override)
+    places = all_installs(override)
     models = []
-    for model_id, path in _paths(directory):
+    for place, place_source in places:
         try:
-            summary, _ = _inspect_one(model_id, path)
+            entries = _paths(place) if place.is_dir() else []
         except ProfileError as exc:
-            summary = {"id": model_id, "source_config": str(path), "component_status": "invalid",
-                       "error": str(exc), "execution_compatibility": "unverified"}
-        models.append(summary)
+            models.append({"id": place.name, "install_dir": str(place), "component_status": "invalid", "error": str(exc),
+                           "execution_compatibility": "unverified"})
+            continue
+        for model_id, path in entries:
+            if any(m.get("id") == model_id for m in models):
+                continue                                   # the same model in a later place: the main one wins
+            try:
+                summary, _ = _inspect_one(model_id, path)
+            except ProfileError as exc:
+                summary = {"id": model_id, "source_config": str(path), "component_status": "invalid",
+                           "error": str(exc), "execution_compatibility": "unverified"}
+            summary["install_dir"] = str(place)
+            summary["install_dir_source"] = place_source
+            models.append(summary)
     return {"scope": "local_run_configs", "install_dir": str(directory), "install_dir_source": source,
+            "install_dirs": [str(p) for p, _ in places],
             "models": models,
             "model_count": len(models), "discovery_limit": MAX_CONFIGS}
 
@@ -196,9 +199,15 @@ def list_installed(override: str | None = None) -> dict:
 def inspect(model_id: str, override: str | None = None) -> dict:
     if not isinstance(model_id, str) or not MODEL_ID.fullmatch(model_id):
         raise ProfileError("model ID must be a setup config name without a path")
-    directory = install_dir(override)
-    choices = dict(_paths(directory))
-    path = choices.get(model_id)
+    directory, path = None, None
+    for place, _src in all_installs(override):
+        try:
+            choices = dict(_paths(place)) if place.is_dir() else {}
+        except ProfileError:
+            continue
+        if model_id in choices:
+            directory, path = place, choices[model_id]
+            break
     if path is None:
         raise ProfileError(f"model {model_id!r} is not configured in this installation", 5)
     summary, report = _inspect_one(model_id, path)
@@ -248,6 +257,40 @@ def _candidate_selection(shards: list[Path]) -> dict | None:
                     "setup_args_hint": ["--family", family, "--model", model,
                                         "--gguf-dir", str(shards[0].parent)]}
     return None
+
+
+def _candidate_by_header(shards: list[Path], tensors: int, payload: int, experts: set[str]) -> dict | None:
+    """A file set whose NAME setup does not know (renamed, or downloaded elsewhere) but whose header is exactly a known one: the same tensor
+    count, the same payload size and the same expert formats as a row of the fingerprint table."""
+    try:
+        catalog = json.loads((ROOT / "data" / "gguf_fingerprints.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    for selection in sorted(SUPPORTED_SELECTIONS):
+        row = catalog.get(selection) if isinstance(catalog, dict) else None
+        if not isinstance(row, dict) or row.get("tensors") != tensors or row.get("bytes") != payload:
+            continue
+        expected = row.get("expert_bytes")
+        if not isinstance(expected, dict) or set(expected) != experts:
+            continue
+        family, model = selection.split("/", 1)
+        return {"family": family, "model": model, "basis": "header_size_and_tensors",
+                "expected_expert_types": sorted(expected), "expected_tensor_count": tensors,
+                "setup_args_hint": ["--family", family, "--model", model, "--gguf-dir", str(shards[0].parent)]}
+    return None
+
+
+def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
+    """Is this model already installed (a run config of any known install names the file) and what was prepared beside it (pack, draft
+    layer, picture reader)? Read-only; None when the file set is not one Strata knows."""
+    if not shards or candidate is None:
+        return None
+    first = shards[0]
+    cfg = discovery.run_config_for(first, discovery.places(here=ROOT))
+    beside = discovery.prepared_beside(first)
+    if cfg is None and not any(beside.get(k) for k in ("pack", "mtp", "mmproj")):
+        return {"config": None, "data_dir": str(beside["data_dir"]) if beside.get("data_dir") else None, "pack": None, "mtp": None, "mmproj": None}
+    return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}
 
 
 UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
@@ -363,6 +406,7 @@ def plan_import(raw_path: str) -> dict:
     metadata = None
     observed_experts: set[str] = set()
     observed_tensor_count = 0
+    observed_payload = 0
     if files and not issues:
         for item in shards:
             try:
@@ -374,6 +418,7 @@ def plan_import(raw_path: str) -> dict:
                 metadata = inspected
             observed_experts.update(inspected["expert_tensor_types"])
             observed_tensor_count += inspected["tensor_count_scanned"]
+            observed_payload += int(inspected.get("payload_bytes_required") or 0)
             if inspected["architecture"] is not None and inspected["architecture"] != "qwen4exp":
                 issues.append(f"{item.name}: unsupported_architecture")
     if metadata is not None:
@@ -390,6 +435,8 @@ def plan_import(raw_path: str) -> dict:
     elif projectors:
         messages.extend(p["plain"] for p in projectors)
     candidate = _candidate_selection(shards)
+    if candidate is None and metadata is not None and not issues:
+        candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
     if candidate is None:
         issues.append("unrecognized_or_unsupported_model_variant")
     elif metadata is not None:
@@ -402,7 +449,7 @@ def plan_import(raw_path: str) -> dict:
             "observed_expert_types": sorted(observed_experts),
             "observed_tensor_count": observed_tensor_count,
             "ignored_auxiliary_files": sorted(ignored_auxiliary),
-            "projectors": projectors, "messages": messages,
+            "projectors": projectors, "messages": messages, "already_set_up": _already_set_up(shards, candidate),
             "reads_pictures": any(p["status"] in ("ok", "other_name") for p in projectors) and
             not any(i.endswith("unsupported_architecture") for i in issues),
             "file_set_status": "plausible" if not issues else "invalid_or_incomplete",

@@ -588,7 +588,7 @@ class FolderScreen(Base):
     def on_mount(self) -> None:
         s = self.ctx.settings
         f = self.query_one("#folderpath", Input)
-        f.value = s.data_dir or str(self.ctx.catalog.data_dir())
+        f.value = s.data_dir or str(self.ctx.default_folder())
         f.focus()
         self.paint()
 
@@ -601,33 +601,39 @@ class FolderScreen(Base):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_next()
 
-    def need_gb(self) -> float:
-        s = self.ctx.settings
-        r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
-        if r is None:
-            return 8.0
-        return 8.0 + (0 if s.model_path else r.download_gb)
+    def state(self, value: str | None = None):
+        return self.ctx.model_state(value or None)
+
+    def need_gb(self, st=None) -> float:
+        """The room to ask for: what is still to download plus working room (a little when the model is already there)."""
+        st = st or self.state()
+        return st.remaining_gb + (2.0 if (st.installed or st.own_files) else 8.0)
 
     def refresh_body(self) -> None:
         try:
             value = self.query_one("#folderpath", Input).value.strip()
         except Exception:                                    # noqa: BLE001
             return
-        free = self.ctx.catalog.disk_free(value or self.ctx.catalog.data_dir())
-        need = self.need_gb()
+        free = self.ctx.catalog.disk_free(value or self.ctx.default_folder())
+        st = self.state(value)
+        need = self.need_gb(st)
         s = self.ctx.settings
         out = Text()
         if s.model_path:
             out.append(f"Your model files stay where they are: {s.model_path}\n", style=FG)
             out.append("Strata only writes its prepared data here (packs, a small draft layer).\n", style=MUTE)
-        else:
-            out.append(f"Needs about {need:.0f} GB (the download plus working room).", style=FG)
-            out.append("\n")
+        out.append(st.headline(), style=FG)
+        out.append("\n")
+        if st.installed and st.folder is not None:
+            out.append(f"It is stored in {st.folder}\n", style=MUTE)
+        if st.parts and (st.installed or st.own_files):
+            for p in st.parts:
+                out.append(f"  - missing: {p.label}, about {p.gb:.1f} GB\n", style=WARN)
         if free is not None:
             warn = free < need
             out.append(f"Free space in that folder's drive: {free:,.0f} GB", style=WARN if warn else FG)
             if warn:
-                out.append(f"   Not enough for {need:.0f} GB. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
+                out.append(f"   Not enough for the {need:.0f} GB needed. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
         else:
             out.append("The free space of that folder could not be read.", style=MUTE)
         moving = self.models_that_would_move(value)
@@ -639,7 +645,7 @@ class FolderScreen(Base):
     def models_that_would_move(self, value: str) -> str | None:
         """The folder holding model files today when a different one is typed (setup gathers the model files into the data folder), else None."""
         try:
-            old = Path(self.ctx.catalog.data_dir())
+            old = Path(self.ctx.default_folder())
             new = Path(value).expanduser() if value else old
             if os.path.normcase(str(new.resolve())) == os.path.normcase(str(old.resolve())):
                 return None
@@ -651,12 +657,15 @@ class FolderScreen(Base):
         return None
 
     def explain(self) -> Text:
+        if self.state().installed:
+            return Text("This model is already on this computer, so the folder starts where it is. Press Enter to keep it. "
+                        "Another folder only matters for files that still have to be downloaded.", style=MUTE)
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
                     "Press Enter to keep it, or type another folder (it is created if it does not exist).", style=MUTE)
 
     def commit(self) -> None:
         value = self.query_one("#folderpath", Input).value.strip().strip('"')
-        default = str(self.ctx.catalog.data_dir())
+        default = str(self.ctx.default_folder())
         self.ctx.settings.data_dir = None if (not value or value == default) else value
 
 
