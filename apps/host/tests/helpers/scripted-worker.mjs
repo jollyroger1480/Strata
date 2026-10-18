@@ -27,6 +27,8 @@
  *   SCRIPT:planreply                a reply ending with a numbered plan of three steps (each step's text carries SCRIPT:goalstep)
  *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
  *   SCRIPT:multi <json>             {"calls":[[tool,args],...],"say":"final text"}: all the calls in one reply, then the text once their results are in
+ *   SCRIPT:searchloop               a model that never stops: every reply rewrites a numbered plan and calls web_search again with a new query
+ *   SCRIPT:bloat <prompt tokens>    a reply that is only thinking (no answer text), with usage reporting that many prompt tokens (a context at 100%)
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
  */
@@ -78,9 +80,10 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const id = `chatcmpl-${requests.length}`;
     const send = (delta, finish = null, extra = {}) => res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`);
+    let promptTokens = 100 + messages.length;
     const finish = (reason, tokens = 10) => {
       send({}, reason);
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [], usage: { prompt_tokens: 100 + messages.length, completion_tokens: tokens, total_tokens: 100 + messages.length + tokens } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: tokens, total_tokens: promptTokens + tokens } })}\n\n`);
       res.write('data: [DONE]\n\n'); res.end();
     };
     const toolCall = async (name, call) => {
@@ -115,6 +118,26 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       const answered = messages.some(m => m.role === 'assistant');
       if (/biggest lever/.test(t) && !answered && last.role !== 'tool') return say(['{"step": 2, "why": "The layout decided in step 1 shapes everything after it."}']);
       if (/IMPROVEMENT PLAN/.test(t) && !answered && last.role !== 'tool') return say(['## Better path\n\n', '1. Improve the first attempt SCRIPT:goalstep\n', '2. Polish and check SCRIPT:goalstep\n']);
+    }
+    if (directive?.[1] === 'searchloop') {
+      const n = requests.filter(r => r.directive === 'searchloop').length;
+      send({ role: 'assistant', content: `Plan, version ${n}:
+
+## Search plan
+
+1. Search for the topic
+2. Read the best result
+3. Write the summary
+
+` });
+      const argsJson = JSON.stringify({ queries: [`topic search number ${n}`] });
+      send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'web_search', arguments: argsJson } }] });
+      return finish('tool_calls', 60);
+    }
+    if (directive?.[1] === 'bloat') {
+      promptTokens = parseInt((directive[2] ?? '').trim(), 10) || 100;
+      send({ role: 'assistant', content: '', reasoning_content: 'Thinking about it for a long time and never getting to the answer.' });
+      return finish('stop', 20);
     }
     if (directive?.[1] === 'goalstep') {
       // A goal round: read the goal, mark it complete, then say so.

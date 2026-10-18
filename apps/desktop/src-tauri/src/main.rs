@@ -855,7 +855,8 @@ fn run_embedded() {
                 eprintln!("[strata] {e}");
                 Box::<dyn std::error::Error>::from(e)
             })?;
-            open_window(app, port)?;
+            let shell_token = handle.state::<ShutdownToken>().0.lock().unwrap().clone().unwrap_or_default();
+            open_window(app, port, &shell_token)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -873,13 +874,17 @@ fn run_embedded() {
 }
 
 /// The one window, on the host's own origin so the page and its API share an origin exactly as the browser build does.
-fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+#[cfg_attr(windows, allow(unused_variables))]
+fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    // The shell's own file-drop handler is off: with it on, Windows hands a dropped file to the shell and the page never sees it, so pictures
-    // could not be dropped on the chat (QA report 1, item 4). With it off the page gets ordinary drag and drop events (apps/host DropZone), the
-    // same as in a browser, on every system.
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0).disable_drag_drop_handler();
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    // Dropping pictures on the chat (QA report 1, item 4). Windows: the shell's own file-drop handler is off, because with it on the system hands
+    // the dropped file to the shell and the page never sees it; with it off the page gets ordinary drag and drop events (apps/host DropZone), as
+    // in a browser. Linux and macOS: the page gets the drag events but WebKit gives it no files, so the handler stays on and the shell passes the
+    // drop on (see drop_script and hand_over_drop below).
+    #[cfg(windows)]
+    let builder = builder.disable_drag_drop_handler();
     // WebKitGTK (2.50 to 2.52 at least) dereferences a null pointer in AcceleratedBackingStore::update in its UI process when a page calls
     // document.startViewTransition (the web process asks the UI process to enter accelerated compositing, and the backing store is not
     // there). The page itself does not call it on that engine (apps/host/src/lib/router.ts), and this line keeps any other script from doing
@@ -888,8 +893,171 @@ fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Er
     let builder = builder.initialization_script(
         "try { Object.defineProperty(Document.prototype, 'startViewTransition', { value: undefined, configurable: true, writable: true }); } catch (e) {}",
     );
-    builder.build()?;
+    #[cfg_attr(windows, allow(unused_variables))]
+    let window = builder.build()?;
+    #[cfg(not(windows))]
+    {
+        let target = window.clone();
+        let token = shell_token.to_string();
+        window.on_webview_event(move |event| {
+            if let tauri::WebviewEvent::DragDrop(drag) = event {
+                match drag {
+                    tauri::DragDropEvent::Enter { .. } => { let _ = target.eval(&drag_script("enter")); }
+                    tauri::DragDropEvent::Leave => { let _ = target.eval(&drag_script("leave")); }
+                    tauri::DragDropEvent::Drop { paths, .. } => {
+                        let _ = target.eval(&drag_script("leave"));
+                        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                        hand_over_drop(target.clone(), port, token.clone(), paths);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    #[cfg(target_os = "linux")]
+    hook_linux_drops(&window, port, shell_token);
     Ok(())
+}
+
+/// A file:// address from a drag, as a path (percent-escapes decoded); anything else (http, mailto, text) is not a dropped file.
+#[cfg_attr(windows, allow(dead_code))]
+fn file_uri_to_path(uri: &str) -> Option<String> {
+    let rest = uri.trim().strip_prefix("file://")?;
+    // file://host/path: only an empty or local host is a file on this computer
+    let rest = match rest.find('/') { Some(0) => rest, Some(i) if rest[..i].eq_ignore_ascii_case("localhost") => &rest[i..], _ => return None };
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(v) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) { out.push(v); i += 3; continue; }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    let path = String::from_utf8(out).ok()?;
+    if path.contains('\0') { None } else { Some(path) }
+}
+
+/// Linux: WebKitGTK 2.52 gives the page a file drag without the files, and the window library's own drop handler never sees one, so the
+/// shell reads the drop itself from the GTK drag signals of the page widget: the file:// addresses arrive with the drag data, the drop hands
+/// them to the host exactly as the other systems do (hand_over_drop), and the page shows its drop box meanwhile (QA, drop on the chat).
+#[cfg(target_os = "linux")]
+fn hook_linux_drops(window: &tauri::WebviewWindow, port: u16, token: &str) {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let target = window.clone();
+    let token = token.to_string();
+    let _ = window.with_webview(move |platform| {
+        let view = platform.inner();
+        let paths: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let hovering = Rc::new(Cell::new(false));
+        let generation = Rc::new(Cell::new(0u32));
+        {
+            let (paths, hovering, generation, target) = (paths.clone(), hovering.clone(), generation.clone(), target.clone());
+            view.connect_drag_data_received(move |_, _, _, _, data, _, _| {
+                let list: Vec<String> = data.uris().iter().filter_map(|u| file_uri_to_path(u.as_str())).collect();
+                if list.is_empty() { return; }
+                *paths.borrow_mut() = list;
+                generation.set(generation.get() + 1);
+                if !hovering.replace(true) { let _ = target.eval(&drag_script("enter")); }
+            });
+        }
+        {
+            // WebKit only accepts a drag when the page says so, and the page is not given the files: once the addresses of a file drag are known,
+            // the shell accepts it (as a copy) itself, so GTK goes on to deliver the drop.
+            let paths = paths.clone();
+            view.connect_drag_motion(move |_, ctx, _, _, time| {
+                if paths.borrow().is_empty() { return false; }
+                ctx.drag_status(gtk::gdk::DragAction::COPY, time);
+                true
+            });
+        }
+        {
+            let (paths, hovering, generation, target) = (paths.clone(), hovering.clone(), generation.clone(), target.clone());
+            let token = token.clone();
+            view.connect_drag_drop(move |_, ctx, _, _, time| {
+                generation.set(generation.get() + 1);
+                let list = std::mem::take(&mut *paths.borrow_mut());
+                if list.is_empty() { return false; }   // not a file: the page deals with it
+                hovering.set(false);
+                ctx.drop_finish(true, time);
+                let _ = target.eval(&drag_script("leave"));
+                hand_over_drop(target.clone(), port, token.clone(), list);
+                true
+            });
+        }
+        {
+            let (paths, hovering, target, token) = (paths.clone(), hovering.clone(), target.clone(), token.clone());
+            view.connect_drag_leave(move |widget, _, _| {
+                // WebKit's own handling of a drop never reaches this widget's drop signal, but GTK does say "leave" at the moment of the drop:
+                // a leave with every mouse button already up (and a file drag known) is the drop. A leave with the button still down is the
+                // pointer going out of the window.
+                if hovering.get() && !paths.borrow().is_empty() && pointer_buttons_up(widget) {
+                    let list = std::mem::take(&mut *paths.borrow_mut());
+                    hovering.set(false);
+                    let _ = target.eval(&drag_script("leave"));
+                    hand_over_drop(target.clone(), port, token.clone(), list);
+                }
+            });
+        }
+        view.connect_drag_leave(move |_, _, _| {
+            // only a leave that nothing follows ends the drag (a drop is handled above and clears the state)
+            let seen = generation.get();
+            let (paths, hovering, generation, target) = (paths.clone(), hovering.clone(), generation.clone(), target.clone());
+            gtk::glib::idle_add_local_once(move || {
+                if generation.get() == seen && hovering.replace(false) {
+                    paths.borrow_mut().clear();
+                    let _ = target.eval(&drag_script("leave"));
+                }
+            });
+        });
+    });
+}
+
+/// True when no mouse button is held down (GTK drag drop: the button is already up when the drop arrives).
+#[cfg(target_os = "linux")]
+fn pointer_buttons_up(widget: &webkit2gtk::WebView) -> bool {
+    use gtk::prelude::*;
+    let Some(window) = widget.window() else { return false };
+    let Some(pointer) = gtk::gdk::Display::default().and_then(|d| d.default_seat()).and_then(|s| s.pointer()) else { return false };
+    let (_, _, _, mask) = window.device_position(&pointer);
+    !mask.intersects(gtk::gdk::ModifierType::BUTTON1_MASK | gtk::gdk::ModifierType::BUTTON2_MASK | gtk::gdk::ModifierType::BUTTON3_MASK)
+}
+
+/// The script that tells the page a file drag is over the window (`state` is "enter" or "leave"); the page shows its drop box (apps/host DropZone).
+#[cfg_attr(windows, allow(dead_code))]
+fn drag_script(state: &str) -> String {
+    format!("window.dispatchEvent(new CustomEvent('strata:native-drag', {{ detail: '{state}' }}));")
+}
+
+/// The script that tells the page which dropped files the host holds for it (`files_json` is the host's own JSON array of { id, name, type, size }).
+#[cfg_attr(windows, allow(dead_code))]
+fn drop_script(files_json: &str) -> String {
+    format!("window.dispatchEvent(new CustomEvent('strata:native-drop', {{ detail: {files_json} }}));")
+}
+
+/// The files of one drop, by path, to the host (which reads them and keeps each for the page to fetch once); then the page is told.
+/// Off the window's own thread, so the window never waits for a big picture to be read.
+#[cfg(not(windows))]
+fn hand_over_drop(window: tauri::WebviewWindow, port: u16, token: String, paths: Vec<String>) {
+    std::thread::spawn(move || {
+        let body = serde_json::json!({ "paths": paths }).to_string();
+        let answer = http_request_body(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/app/drop"),
+            &[("x-strata-shutdown", token.as_str()), ("content-type", "application/json")],
+            Some(&body),
+        );
+        let files = match answer {
+            Ok((status, text)) if status.contains(" 200") => serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("files").cloned()),
+            Ok((status, _)) => { eprintln!("[strata] the host did not take the dropped files: {status}"); None }
+            Err(e) => { eprintln!("[strata] the dropped files could not be handed to the host: {e}"); None }
+        };
+        let json = files.map(|f| f.to_string()).unwrap_or_else(|| "[]".to_string());
+        let _ = window.eval(&drop_script(&json));
+    });
 }
 
 /// Linux window process: shows the page of the host the shell started and registers the app updater with it. It starts no host and
@@ -937,7 +1105,7 @@ fn run_window_process() -> ! {
                     eprintln!("[strata] the app updater could not be registered with the host: {e}");
                 }
             }
-            open_window(app, port)
+            open_window(app, port, &token)
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -953,6 +1121,24 @@ fn run_window_process() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_file_addresses_become_paths_and_nothing_else_does() {
+        assert_eq!(file_uri_to_path("file:///home/me/My%20Pictures/a%2Bb.png").as_deref(), Some("/home/me/My Pictures/a+b.png"));
+        assert_eq!(file_uri_to_path("file://localhost/tmp/x.txt").as_deref(), Some("/tmp/x.txt"));
+        assert_eq!(file_uri_to_path("  file:///tmp/%C4%8C.txt\r\n").as_deref(), Some("/tmp/\u{10C}.txt"));
+        for bad in ["http://example.com/a.png", "file://otherhost/tmp/x", "mailto:a@b.c", "/tmp/plain", "file://", "file:///tmp/a%00b"] { assert_eq!(file_uri_to_path(bad), None, "{bad}"); }
+        assert_eq!(file_uri_to_path("file:///100%").as_deref(), Some("/100%"));
+    }
+
+    #[test]
+    fn the_scripts_the_shell_sends_the_page_for_a_file_drop() {
+        assert_eq!(drag_script("enter"), "window.dispatchEvent(new CustomEvent('strata:native-drag', { detail: 'enter' }));");
+        let files = r#"[{"id":"a","name":"x.png","type":"image/png","size":3}]"#;
+        let script = drop_script(files);
+        assert!(script.starts_with("window.dispatchEvent(new CustomEvent('strata:native-drop', { detail: [{"));
+        assert!(script.contains("x.png") && script.ends_with("}));"));
+    }
 
     #[test]
     fn the_window_origin_is_stable_unless_the_port_is_taken() {

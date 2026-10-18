@@ -223,6 +223,7 @@ class LaunchMonitor(MonitorApp):
         t.append(f"     URL {self.info['url']}/v1    model {self.info.get('model') or 'strata'}    key {shown}  ")
         t.append("(k hide)" if self.show_key else "(k show)", style=MUTE)
         t.append("\n")
+        t.append(f"     Claude Code and other Anthropic apps use {self.info['url']} (no /v1)\n", style=MUTE)
         for u in self.info.get("urls", [])[1:]:
             t.append(f"     also reachable at {u}/v1\n", style=MUTE)
         t.append("\n   " + "App".ljust(20) + "Works with".ljust(22) + "Status\n", style="bold")

@@ -804,6 +804,20 @@ class ConnectCommand(unittest.TestCase):
         self.assertIn("ANTHROPIC_AUTH_TOKEN", out)
         self.assertNotIn("/v1", out.split("ANTHROPIC_BASE_URL")[1].splitlines()[0])      # the Anthropic client adds /v1 itself
 
+    def test_a_pasted_v1_address_is_cut_back_to_the_server_root(self):
+        """The Anthropic client adds /v1/messages itself, so ANTHROPIC_BASE_URL must never end in /v1 (that gave /v1/v1/messages, a 404);
+        the OpenAI-style apps get exactly one /v1."""
+        code, out, _ = run_cli(["connect", "claude-code", "--url", "http://127.0.0.1:8080/v1/", "--key", "sk-x1234567890abc", "--show-key", "--output", "json"])
+        data = json.loads(out)
+        self.assertEqual(data["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8080")
+        self.assertIn('"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080"', data["files"][0]["text"])
+        code, out, _ = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:8080/v1", "--output", "json"])
+        text = json.loads(out)["files"][0]["text"]
+        self.assertIn("http://127.0.0.1:8080/v1", text)
+        self.assertNotIn("/v1/v1", text)
+        code, out, _ = run_cli(["connect", "claude-code", "--url", "http://127.0.0.1:8080"])
+        self.assertIn("without /v1", out)
+
     def test_write_keeps_a_backup_and_merges(self):
         target = Path(os.environ["HOME"]) / ".config" / "opencode" / "opencode.json"
         target.parent.mkdir(parents=True)

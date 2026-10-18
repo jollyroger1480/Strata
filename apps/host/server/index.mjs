@@ -49,6 +49,7 @@ import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
+import { createNativeDrops } from './native-drop.mjs';
 import { createVisionProbe, effectiveVision, readsPicturesByDefault } from './vision-probe.mjs';
 import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
@@ -69,6 +70,7 @@ import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
+import { apiPath } from './api-paths.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -464,6 +466,7 @@ function loadWorkspaces() {
 let workspaces = loadWorkspaces();
 /* The folder each chat works in ("Select a folder"): the agent's working folder and sandbox for that chat. */
 const chatAttachments = createAttachments();
+const nativeDrops = createNativeDrops();
 const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: chatId => chatFolders.get(chatId) ?? workspaces[0]?.path ?? WORKSPACE, attachments: chatAttachments });
 try { uploads.sweep(); } catch { /* best effort */ }
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
@@ -926,7 +929,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path.startsWith('/v1/')) {
       if (storageChanging && method !== 'GET') return error(res, 409, 'Wait for the model folder check to finish.');
-      return await openai(req, res, path, method);
+      return await openai(req, res, apiPath(path), method);
     }
     return await staticFile(req, res, path);
   } catch (err) {
@@ -1269,6 +1272,18 @@ async function api(req, res, path, method, url) {
     json(res, 202, { stopping: true });
     setImmediate(() => void shutdown());
     return;
+  }
+
+  // Files dropped on the app window (Linux, macOS): the shell hands over the paths, the page fetches each file once (native-drop.mjs).
+  if (path === '/api/app/drop' && method === 'POST') {
+    if (!fromShell()) return error(res, 403, 'Not allowed.');
+    try { return json(res, 200, { files: await nativeDrops.add((await readBody(req)).paths) }); } catch (err) { return error(res, 400, err.message); }
+  }
+  const dropGet = /^\/api\/app\/drop\/([0-9a-f-]{36})$/.exec(path);
+  if (dropGet && method === 'GET') {
+    const file = nativeDrops.take(dropGet[1]);
+    if (!file) return error(res, 404, 'That file is no longer available. Drop it again.');
+    res.writeHead(200, { 'content-type': file.type, 'content-length': file.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(file.bytes); return undefined;
   }
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
