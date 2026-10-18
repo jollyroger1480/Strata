@@ -221,7 +221,7 @@ class LightTheme(unittest.TestCase):
 
     def run_app(self, coro, size=(120, 40)):
         async def go():
-            app = LaunchMonitor(Source(metrics("idle")), None, info=dict(INFO), interval=30, theme="light")
+            app = LaunchMonitor(Source(metrics("idle")), None, info=dict(INFO), interval=30, theme="light", color="always")
             async with app.run_test(size=size) as pilot:
                 await pilot.pause(0.4)
                 return await coro(app, pilot)

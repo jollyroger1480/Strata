@@ -172,7 +172,7 @@ def places(*, here: Path | None = None, explicit: str | os.PathLike | None = Non
         seen.add(key)
         n = len(config_files(path))
         if n:
-            out.append(Place(path.resolve() if path.exists() else path, source, n))
+            out.append(Place(path if source == "here" else (path.resolve() if path.exists() else path), source, n))
     return out
 
 

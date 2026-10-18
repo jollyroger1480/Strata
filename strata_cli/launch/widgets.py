@@ -77,12 +77,14 @@ Screen {{ background: {BG}; color: {FG}; }}
 #shell {{ width: 100%; height: 100%; background: {PANEL}; padding: 0 1; }}
 #head {{ height: 1; }}
 #rule1, #rule2 {{ height: 1; color: {RULE}; }}
-#body {{ height: 1fr; }}
+#body {{ height: 1fr; overflow-y: auto; }}
 #explain {{ height: auto; max-height: 4; color: {MUTE}; }}
-#hints {{ height: 1; color: {MUTE}; }}
+#hints {{ height: auto; max-height: 3; color: {MUTE}; }}
 #message {{ height: auto; max-height: 3; color: {MUTE}; }}
 Menu {{ height: auto; max-height: 100%; }}
 .field {{ height: 3; border: solid {ACCENT}; display: none; }}
+.field.slim {{ height: 1; border: none; padding: 0 1; background: {SEL}; }}
+#cmdbox {{ height: 6; border-top: solid {RULE}; scrollbar-size-vertical: 1; }}
 .field.open {{ display: block; }}
 Input {{ background: {PANEL}; color: {FG}; }}
 """

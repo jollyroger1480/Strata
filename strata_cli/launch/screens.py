@@ -16,7 +16,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Static
 
@@ -127,7 +127,9 @@ class Base(Screen):
             self.query_one("#head", Static).update(self.head_text())
             self.query_one("#rule1", Static).update(Text(self.rule(), style=MUTE))
             self.query_one("#rule2", Static).update(Text(self.rule(), style=MUTE))
-            self.query_one("#explain", Static).update(self.explain())
+            explanation = self.explain()
+            self.query_one("#explain", Static).update(explanation)
+            self.query_one("#explain", Static).display = bool(explanation.plain.strip())     # no empty row where there is nothing to say
             self.query_one("#hints", Static).update(Text(self.hints_text(), style=MUTE))
             self.query_one("#message", Static).update(Text(self.message, style=WARN if self.message.startswith("!") else MUTE))
         except Exception:                                    # noqa: BLE001 - a screen that is closing
@@ -912,7 +914,8 @@ class TuningScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains"], key="quick"),
+        first = self.ctx.fresh_setup and not s.tuned_preset
+        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
                  Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
                  Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
         if not self.ctx.tune_chosen and s.tune == "skip" and not s.tuned_preset and self.ctx.fresh_setup:
@@ -926,9 +929,8 @@ class TuningScreen(Base):
             f"\n  [{'x' if on else ' '}] Allow settings that change answers very slightly (same quality)   press a to change", style=MUTE))
 
     def explain(self) -> Text:
-        return Text("Tuning is optional. It tries single changes against your settings, keeps only gains above the noise, and saves the "
-                    "result as a preset the Strata app can use too. Close other heavy programs while it measures. If your computer is "
-                    "already at its best it says so and changes nothing.", style=MUTE)
+        return Text("Tuning is optional: it keeps only real gains, and the result is a preset the Strata app can use too. Close other heavy "
+                    "programs while it measures. The command line skips tuning unless you add --tune.", style=MUTE)
 
     def action_allow(self) -> None:
         self.ctx.settings.tune_allow_small = not self.ctx.settings.tune_allow_small
@@ -943,19 +945,21 @@ class TuningScreen(Base):
 
 class AdvancedScreen(Base):
     step_id = "advanced"
-    hints = "↑↓ choose   Enter edit   Del reset   x experimental   / filter   a add by name   c copy command   n next   Esc back"
+    hints = "n next   ↑↓ choose   Enter edit   Esc back   Del reset   x experimental   / filter   a add by name   c copy command   Tab scroll command"
     help_text = ("Every engine setting with its default, the value the tuner chose and your own value. You never have to touch this. "
                  "A name the engine does not list gets a warning, not a refusal.")
 
     BINDINGS = [b for b in Base.BINDINGS if b.key != "enter"] + [
         Binding("enter", "edit", show=False), Binding("delete", "reset", show=False), Binding("backspace", "reset", show=False),
         Binding("x", "experimental", show=False), Binding("slash", "filter", show=False), Binding("a", "add", show=False),
-        Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False)]
+        Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False),
+        Binding("tab", "scroll_command", show=False)]
 
     def body(self) -> ComposeResult:
         yield Static("", id="advhead", markup=False)
         yield Menu([("Setting", 24), ("Default", 11), ("Tuned", 13), ("Yours", 10), ("What it does", 0)], id="menu", window=8)
-        yield Static("", id="cmdline", markup=False)
+        with VerticalScroll(id="cmdbox"):                    # the long command has its own scroll area (Tab, then the arrows) instead of running off the screen
+            yield Static("", id="cmdline", markup=False)
         yield Input(id="edit", classes="field", disabled=True)
 
     def on_mount(self) -> None:
@@ -983,7 +987,10 @@ class AdvancedScreen(Base):
                               key=r.name))
         items.append(Item([Cell("+ Add a setting by name…", ""), "", "", "", Cell("for flags of newer engine versions", MUTE)], key="__add__"))
         m = self.query_one(Menu)
-        m.window = max(4, (self.size.height or 30) - 15)
+        body_h = self.query_one("#body").size.height or max(6, (self.size.height or 30) - 8)
+        box_h = max(3, min(8, body_h // 3))
+        self.query_one("#cmdbox").styles.height = box_h
+        m.window = max(3, body_h - box_h - 4)                # the heading, the column titles, the "n of m" line and the box's rule
         m.set_items(items, min(m.index, len(items) - 1))
 
     def on_resize(self, _e) -> None:
@@ -993,23 +1000,33 @@ class AdvancedScreen(Base):
 
     def refresh_body(self) -> None:
         eng = self.ctx.engine_note
-        t = Text()
+        t = Text(no_wrap=True, overflow="ellipsis")
         t.append("All settings", style=f"bold {ACCENT}")
-        t.append("   (optional · for tinkerers)", style=MUTE)
-        extra = "   / filter" + (f": {self.filter}" if self.filter else "") + "   x show experimental only" + (" (on)" if self.only_experimental else "")
+        if self.width() >= 70:
+            t.append("   (optional · for tinkerers)", style=MUTE)
+            extra = "   / filter" + (f": {self.filter}" if self.filter else "") + "   x show experimental only" + (" (on)" if self.only_experimental else "")
+        else:
+            extra = "  (optional)" + (f"  filter: {self.filter}" if self.filter else "") + ("  experimental only" if self.only_experimental else "")
         t.append(extra, style=MUTE)
         self.query_one("#advhead", Static).update(t)
         s = self.ctx.settings
         cmd = self.ctx.command_text()
         out = Text()
-        out.append("Command that will run\n", style=f"bold {ACCENT}")
+        out.append("Command that will run (your choices above are in it)\n", style=f"bold {ACCENT}")
         out.append("  " + cmd + "\n")
         out.append("  Same as: " + S.flags_text(s) + "\n", style=MUTE)
         if eng:
             out.append("  " + eng, style=WARN)
         self.query_one("#cmdline", Static).update(out)
 
+    def hints_text(self) -> str:
+        if (self.size.width or 80) < 60:
+            return "n next  Enter edit  Esc back  Tab command"
+        return super().hints_text()
+
     def explain(self) -> Text:
+        if (self.size.height or 30) < 20:
+            return Text("")                                  # a small window: the list and the command matter more than the sentence under them
         m = self.menu()
         cur = m.current if m else None
         if cur is not None and cur.key not in (None, "__add__"):
@@ -1105,6 +1122,15 @@ class AdvancedScreen(Base):
         except Exception:                                    # noqa: BLE001
             self.say("Your terminal does not allow copying; select the lines above with the mouse.", True)
 
+    def action_scroll_command(self) -> None:
+        box = self.query_one("#cmdbox")
+        if box.has_focus:
+            self.set_focus(None)
+            self.say("")
+        else:
+            box.focus()
+            self.say("Up/Down/PageUp/PageDown scroll the command; Tab or Esc goes back to the list.")
+
     def action_go_next(self) -> None:
         if self.mode:
             return
@@ -1117,6 +1143,10 @@ class AdvancedScreen(Base):
         if self.mode:
             self.mode = ""
             self.close_field("edit")
+            self.say("")
+            return
+        if self.query_one("#cmdbox").has_focus:
+            self.set_focus(None)
             self.say("")
             return
         super().action_back()
@@ -1272,13 +1302,19 @@ class SaveScreen(Base):
         self.query_one(Menu).set_items(items, 0)
         self.paint()
 
-    def refresh_body(self) -> None:
+    def hints_text(self) -> str:
+        cur = self.menu().current if self.menu() else None
+        label = (cur.cells[0] if isinstance(cur.cells[0], str) else cur.cells[0].text) if cur is not None else "do it"
+        if (self.size.width or 80) < 60:
+            return f"Enter: {label}  Esc back"
+        return f"{self.g.updown} choose  Enter: {label}  Tab rename  Esc back  ? help"
+
+    def on_cursor(self) -> None:
+        self.paint()
+
+    def summary_lines(self) -> list[tuple[str, str]]:
         s = self.ctx.settings
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
-        t = Text()
-        t.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
-        t.append("  Name   ")
-        t.append("(type below)\n", style=MUTE)
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),
                  ("Context", S.context_label(s.context) + f", memory {s.kv or 'int8'}"),
                  ("Pictures", "on" if s.vision != "off" else "off"),
@@ -1288,13 +1324,50 @@ class SaveScreen(Base):
                  ("Storage", s.data_dir or "Strata's data folder")]
         if s.extra:
             lines.append(("Advanced", ", ".join(f"{k}={v}" for k, v in s.extra.items())))
-        for k, v in lines:
-            t.append(f"  {k:<10}{v}\n")
-        for n in self.ctx.warnings():
-            t.append(f"  ! {n}\n", style=WARN)
+        return lines
+
+    def refresh_body(self) -> None:
+        """The summary, the name and the three choices. When the body is too short for all of it (a small window), the summary shrinks to a
+        few short lines and the name field to one row, so the three choices stay on screen and Enter never acts on something you cannot see."""
+        s = self.ctx.settings
+        lines = self.summary_lines()
+        warnings = self.ctx.warnings()
+        body_h = self.query_one("#body").size.height
+        full_need = 2 + len(lines) + len(warnings) + 3 + 3
+        compact = bool(body_h) and full_need > body_h
+        name = self.query_one("#name", Input)
+        name.set_class(compact, "slim")
+        if compact:
+            t = Text(no_wrap=True, overflow="ellipsis")
+            tiny = body_h < 9
+            model = dict(lines)["Model"].replace("Qwen3.8-Flash-Next ", "")
+            rows = [f"{model} \u00b7 {S.context_label(s.context)} \u00b7 memory {s.kv or 'int8'}",
+                    f"Pictures {'on' if s.vision != 'off' else 'off'} \u00b7 Parallel {s.parallel or 'auto'} \u00b7 Tuning {s.tune}",
+                    f"Access {s.access}, port {s.port}" + (f" \u00b7 Storage {s.data_dir}" if s.data_dir else "")]
+            t.append("Save, then launch   name:\n" if tiny else "Save as preset, then launch   name:\n", style=f"bold {ACCENT}")
+            for ln in rows[:2 if tiny else 3]:
+                t.append("  " + ln + "\n")
+            if warnings and not tiny:
+                t.append(f"  ! {warnings[0]}" + (f"  (+{len(warnings) - 1} more)" if len(warnings) > 1 else "") + "\n", style=WARN)
+            t.rstrip()
+        else:
+            t = Text()
+            t.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
+            t.append("  Name   ")
+            t.append("(type below)\n", style=MUTE)
+            for k, v in lines:
+                t.append(f"  {k:<10}{v}\n")
+            for n in warnings:
+                t.append(f"  ! {n}\n", style=WARN)
+            t.rstrip()
         self.query_one("#summary", Static).update(t)
+        if getattr(self, "_compact", None) != compact:       # the body's height changes with it: look again once the layout has settled
+            self._compact = compact
+            self.call_after_refresh(self.paint)
 
     def explain(self) -> Text:
+        if (self.size.height or 30) < 20:
+            return Text("")                                  # a small window: the choices matter more than the sentence
         st = self.ctx.model_state()
         if st.remaining_gb < 0.05:
             fetch = "Nothing needs to be downloaded."

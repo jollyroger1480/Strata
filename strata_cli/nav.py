@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rich.text import Text
-
 NAMES = ("Overview", "Serving", "Requests", "Engine", "Hardware", "Logs", "Connect")
 SHORT = ("Over", "Serve", "Reqs", "Engine", "GPU", "Logs", "Conn")
 
@@ -75,8 +73,10 @@ def plain(current: int, width: int, connect: bool = False) -> str:
     return line[:max(1, width)]
 
 
-def styled(current: int, width: int, connect: bool = False, *, accent: str = "", color: bool = True) -> Text:
-    """The same line as rich Text: the selected tab in bold and the accent colour (just bold, in brackets, without colour)."""
+def styled(current: int, width: int, connect: bool = False, *, accent: str = "", color: bool = True):
+    """The same line as rich Text: the selected tab in bold and the accent colour (just bold, in brackets, without colour).
+    (rich is imported here: the plain-text parts of this module also run in the thin stdlib-only monitor bundle.)"""
+    from rich.text import Text
     tabs = layout(current, width, connect)
     out = Text(no_wrap=True, overflow="crop")
     if tabs.left:

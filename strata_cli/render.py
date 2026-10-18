@@ -193,9 +193,17 @@ def request_rows(snapshot: dict, filter_text: str = "", *, limit: int | None = N
     recent = (snapshot.get("recent") or [])[:limit]
     needle = filter_text.lower()
     if needle:
-        live = [row for row in live if needle in (safe(row.get("id")) + safe(row.get("state"))).lower()]
-        recent = [row for row in recent if needle in (safe(row.get("id")) + safe(row.get("finish"))).lower()]
+        # what the screen calls the row counts too: LIVE for a request in flight, DONE for a finished one
+        live = [row for row in live if needle in (safe(row.get("id")) + " " + safe(row.get("state")) + " live").lower()]
+        recent = [row for row in recent if needle in (safe(row.get("id")) + " " + safe(row.get("finish")) + " done").lower()]
     return live, recent
+
+
+def no_requests_text(filter_text: str = "") -> str:
+    """The empty-list sentence: with a filter on it says so and names the filter, so an empty page is never a mystery."""
+    if not filter_text:
+        return "No request summaries"
+    return f"No requests match this filter ({safe(filter_text, 30)}). It looks at the id, the state, and live or done. Esc clears it."
 
 
 def activity_rows(snapshot: dict, filter_text: str = "") -> list[dict]:
@@ -350,14 +358,14 @@ def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
     # When height is scarce, preserve pressure outside the batch window; slot rows remain in the Groups pane.
     all_requests = work.get("requests") or []
     requests = sorted((row for row in all_requests if not filter_text or
-                       filter_text.lower() in (safe(row.get("id")) + safe(row.get("state"))).lower()),
+                       filter_text.lower() in (safe(row.get("id")) + " " + safe(row.get("state")) + " live").lower()),
                       key=lambda row: row.get("slot") is not None)
     if requests:
         for row in requests:
             wait = _queue_wait(row, snapshot.get("sampled_at"))
             left.append(_line(f"{field(row.get('id'), 12)} {_replica_short(row)}s{number(row.get('slot')):<2} g{number(row.get('group')):<2} {field(row.get('state'), 9)} wait {number(wait, 's', 1):<6} {_request_work(row)}", left_width))
     elif all_requests:
-        left.append("No matching request summaries")
+        left.append(no_requests_text(filter_text) if filter_text else "No matching request summaries")
     else:
         left.append("Request identity unavailable; showing engine slots")
         for row in work.get("slots") or []:
@@ -502,7 +510,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                         lines += [f"Prompt {number(row.get('prompt_tokens'))} tokens",
                                   f"Wait {number(_queue_wait(row, sampled), ' s', 1)}  Engine first {number(row.get('first_engine_token_s'), ' s', 2)}"]
             else:
-                lines += ["No request summaries"]
+                lines += [no_requests_text(filter_text)]
         elif view == "serving":
             optional = [_batch_window(work, width), _stage_in_flight(work, width)]
             if not tiny:
@@ -593,7 +601,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
             lines.append("")
         if serving_pane == "requests":
             rows = [r for r in (work.get("requests") or []) if not filter_text or
-                    filter_text.lower() in (safe(r.get("id")) + safe(r.get("state"))).lower()]
+                    filter_text.lower() in (safe(r.get("id")) + " " + safe(r.get("state")) + " live").lower()]
             capacity = max(1, height - len(lines) - (10 if detail and rows else 4))
             start = min(max(0, selected - capacity // 2), max(0, len(rows) - capacity))
             lines += [f"Requests {start + 1 if rows else 0}-{min(start + capacity, len(rows))} of {len(rows)}  (Up/Down scroll; wait is queue time)"]
@@ -636,7 +644,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     elif view == "requests":
         active, shown = request_rows(snapshot, filter_text)
         rows = [("LIVE", row) for row in active] + [("DONE", row) for row in shown]
-        lines += [f"Live {len(active)}  /  recent {len(shown)}   No prompt bodies", ""]
+        lines += [f"Live {len(active)}  /  recent {len(shown)}   No prompt bodies" + (f"   Filter: {safe(filter_text, 20)}  (Esc clears)" if filter_text else ""), ""]
         if rows:
             index = min(max(0, selected), len(rows) - 1)
             capacity = max(1, height - len(lines) - (10 if detail else 4))
@@ -654,7 +662,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                 kind, row = rows[index]
                 lines += (_request_detail(row, sampled, width) if kind == "LIVE" else _recent_detail(row, width))
         else:
-            lines.append("No request summaries")
+            lines.append(no_requests_text(filter_text))
     elif view == "engine":
         lines += [f"Context capacity {number(model.get('context'), ' tokens')}",
                   f"Batch groups {number(work.get('groups'))}",

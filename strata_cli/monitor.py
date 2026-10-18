@@ -152,7 +152,7 @@ class MonitorApp(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
             yield Static("", id="content", markup=False)
-            yield Input(placeholder="Filter request state, then Enter", max_length=80, id="filter")
+            yield Input(placeholder="Filter by request id, state, live or done, then Enter", max_length=80, id="filter")
             yield Static("Read only  |  q detaches without stopping Strata", id="message", markup=False)
 
     def on_mount(self) -> None:
