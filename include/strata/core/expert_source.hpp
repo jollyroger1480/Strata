@@ -259,6 +259,8 @@ public:
     virtual void prefetch_end() {}
     /// 149 STRATA_IO_PF_GATE: whether the decode's read-ahead runs now (the look-ahead then predicts one layer, not two)
     virtual bool read_ahead_open() const { return true; }
+    /// 0.2.0: the source the Linux file-tier defaults apply to (the GGUF read in place); STRATA_COLD_OVERLAP's default
+    virtual bool linux_file_defaults() const { return false; }
     /// 149-cold STRATA_COLD_OVERLAP=3: the last prefetch_begin left this expert unstaged because the page cache holds
     /// all of it (the GGUF read in place): its gate, up and down rows in the mapping.  False: ask `blob`.
     virtual bool zc_roles(int64_t layer, int64_t expert, const uint8_t** p) { (void) layer; (void) expert; (void) p; return false; }
@@ -992,6 +994,9 @@ public:
     static bool in_decode();
     bool gate_open() const { return !gate_on_ || gate_open_.load(std::memory_order_relaxed); }
     bool read_ahead_open() const override { return gate_open(); }
+#if defined(__linux__)
+    bool linux_file_defaults() const override { return !role_ptr_.empty(); }   // the GGUF in place only (measured)
+#endif
     bool gate_on() const { return gate_on_; }
     double gate_held() const { return gate_ewma_; }
     int64_t gate_closed_windows() const { return gate_closed_w_; }

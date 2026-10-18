@@ -1822,14 +1822,11 @@ int64_t FileExpertSource::prefetch_begin(int64_t layer, const int64_t* experts, 
     prefetch_end();
     async_todo_.clear();
     async_fill_us_ = 0;
-    static const int mode = [] {   // as the dispatch reads it (0.2.0: 4 by default on Linux)
+    static const int mode_env = [] {   // as the dispatch reads it (0.2.0: unset = 4 for the GGUF read in place on Linux)
         const char* v = std::getenv("STRATA_COLD_OVERLAP");
-#if defined(__linux__)
-        return v == nullptr || v[0] == '\0' ? 4 : std::atoi(v);
-#else
-        return v == nullptr || v[0] == '\0' ? 0 : std::atoi(v);
-#endif
+        return v == nullptr || v[0] == '\0' ? -1 : std::atoi(v);
     }();
+    const int mode = mode_env >= 0 ? mode_env : (linux_file_defaults() ? 4 : 0);
     claim_todo(layer, experts, n, async_todo_, pending, mode >= 3);
     if (mode == 4) {   // zero-copy only: the blobs that must be read are read here, as `prefetch` reads them
         const auto t0 = std::chrono::steady_clock::now();
@@ -4383,17 +4380,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     };
     const auto c0 = std::chrono::steady_clock::now();
     const FileExpertSource::DecodeScope decode_scope;   // 149 STRATA_IO_PF_GATE: this thread reads for the decode
-    // 149-cold STRATA_COLD_OVERLAP: 0 off (default), 1 overlap, 2 measure only, 3 overlap + zero-copy, 4 zero-copy only
-    // 0.2.0: 4 by default on Linux (zero-copy needs the page cache's residency query); elsewhere 0
+    // 149-cold STRATA_COLD_OVERLAP: 0 off, 1 overlap, 2 measure only, 3 overlap + zero-copy, 4 zero-copy only.
+    // 0.2.0: unset, 4 for the GGUF read in place on Linux (zero-copy needs the page cache's residency query), else 0
     static const int cold_env = [] {
         const char* v = std::getenv("STRATA_COLD_OVERLAP");
-#if defined(__linux__)
-        return v == nullptr || v[0] == '\0' ? 4 : std::clamp(std::atoi(v), 0, 4);
-#else
-        return v == nullptr || v[0] == '\0' ? 0 : std::clamp(std::atoi(v), 0, 4);
-#endif
+        return v == nullptr || v[0] == '\0' ? -1 : std::clamp(std::atoi(v), 0, 4);
     }();
-    d.cold_mode = cold_env;
+    d.cold_mode = cold_env >= 0 ? cold_env : (d.src != nullptr && d.src->linux_file_defaults() ? 4 : 0);
     pt("begin");
     d.src->begin_layer(d.layers, ids, n_tok * k);
     pt("begun");

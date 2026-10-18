@@ -5449,19 +5449,16 @@ int main(int argc, char** argv) {
         // ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch).  0.2.0: on by
         // default on Linux, with the decode gate (STRATA_IO_PF_GATE) and zero-copy page-cached experts
         // (STRATA_COLD_OVERLAP=4); STRATA_IO_PREFETCH=0 / STRATA_IO_PF_GATE=0 / STRATA_COLD_OVERLAP=0 turn them off.
+        // the defaults are for the GGUF read in place (what was measured); an experts.bin pack keeps them off unless set
         const char* io_pf_env = std::getenv("STRATA_IO_PREFETCH");
-#if defined(__linux__)
-        const bool io_pf_default = io_pf_env == nullptr || io_pf_env[0] == '\0';
-#else
-        const bool io_pf_default = false;
-#endif
+        const bool io_pf_default = (io_pf_env == nullptr || io_pf_env[0] == '\0') && src.linux_file_defaults();
         if (io_pf_default || (io_pf_env != nullptr && std::atoi(io_pf_env) != 0)) {
             const char* th = std::getenv("STRATA_IO_PF_THREADS");
             src.set_io_prefetch(true, th != nullptr ? std::atoi(th) : 0);
             if (src.io_prefetch() && io_pf_default) {
                 const char* cv = std::getenv("STRATA_COLD_OVERLAP");
-                std::fprintf(stderr, "strata generate: file tier (Linux defaults): page-cached experts computed from the "
-                                     "mapping (STRATA_COLD_OVERLAP=%s), io prefetch with whole-blob preads on %s I/O threads, "
+                std::fprintf(stderr, "strata generate: file tier (Linux defaults, the GGUF read in place): page-cached experts "
+                                     "computed from the mapping (STRATA_COLD_OVERLAP=%s), io prefetch with whole-blob preads on %s I/O threads, "
                                      "the decode's read-ahead %s; off: STRATA_COLD_OVERLAP=0, STRATA_IO_PREFETCH=0, "
                                      "STRATA_IO_PF_GATE=0\n", cv != nullptr && cv[0] != '\0' ? cv : "4", th != nullptr ? th : "8",
                              src.gate_on() ? "only while the page cache has room for it and it pays (STRATA_IO_PF_GATE=1)"
