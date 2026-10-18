@@ -3150,5 +3150,6 @@
   "s3154": "Strata se ha detenido",
   "s3155": "Strata se ha detenido. Puedes cerrar esta pestaña. Para volver a usarlo, inicia Strata desde su icono.",
   "s3156": "No se pudo detener Strata desde aquí. Ejecuta la app con --quit en una terminal o inténtalo de nuevo.",
-  "s3157": "Saliendo…"
+  "s3157": "Saliendo…",
+  "s3158": "Se está descomprimiendo el motor incluido con la app. La primera vez tarda aproximadamente un minuto."
 }

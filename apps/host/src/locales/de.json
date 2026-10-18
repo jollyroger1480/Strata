@@ -3150,5 +3150,6 @@
   "s3154": "Strata wurde beendet",
   "s3155": "Strata wurde beendet. Du kannst diesen Tab schließen. Um es wieder zu nutzen, starte Strata über sein Symbol.",
   "s3156": "Strata konnte von hier aus nicht beendet werden. Starte die App im Terminal mit --quit oder versuche es erneut.",
-  "s3157": "Wird beendet …"
+  "s3157": "Wird beendet …",
+  "s3158": "Die mit der App gelieferte Engine wird entpackt. Beim ersten Start dauert das etwa eine Minute."
 }

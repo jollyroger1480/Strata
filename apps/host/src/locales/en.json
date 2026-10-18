@@ -3150,5 +3150,6 @@
   "s3154": "Strata has stopped",
   "s3155": "Strata has stopped. You can close this tab. To use it again, start Strata from its icon.",
   "s3156": "Strata could not be stopped from here. Run the app with --quit in a terminal, or try again.",
-  "s3157": "Quitting…"
+  "s3157": "Quitting…",
+  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time."
 }
