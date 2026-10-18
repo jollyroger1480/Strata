@@ -52,7 +52,7 @@ class GyroCatalog(unittest.TestCase):
 
     def test_mcp_table_matches(self):
         for m in ("Gyro-S", "Gyro-M"):
-            for k in ("download_gb", "ram_gb", "arena_gb", "mem_total", "vision"):
+            for k in ("download_gb", "ram_gb", "arena_gb", "mem_total", "vision", "engine"):
                 self.assertEqual(setup.MODELS[m][k], M.FALLBACK_MODELS[m][k], (m, k))
         self.assertEqual(setup.FAMILIES["gyro"]["tag"], M.FALLBACK_FAMILIES["gyro"]["tag"])
 
@@ -88,11 +88,30 @@ class GyroCatalog(unittest.TestCase):
 
 
 class GyroEngineVersionTest(unittest.TestCase):
-    def test_gyro_needs_the_split_release_engine(self):
-        self.assertEqual(setup.GYRO_ENGINE, (0, 1, 45))
+    """Gyro's expert files are native_experts.txt v5 (Hadamard-folded). The released 0.1.45 engine reads only up to v4, so the
+    minimum is 0.1.45.1, the first engine package built after the v5 reader (APR port, f47b0385f) was merged."""
+
+    def test_gyro_needs_an_engine_that_reads_v5_files(self):
+        self.assertEqual(setup.GYRO_ENGINE, (0, 1, 45, 1))
+        self.assertGreater(setup.GYRO_ENGINE, (0, 1, 45))            # the released 0.1.45 is not enough
         sizes = [m for m in setup.MODELS.values() if "gyro" in str(m.get("file", "")).lower()]
         self.assertEqual(len(sizes), 2)
-        self.assertTrue(all(m["engine"] == (0, 1, 45) for m in sizes))
+        self.assertTrue(all(m["engine"] == (0, 1, 45, 1) for m in sizes))
+
+    def test_every_catalog_agrees(self):
+        for m in ("Gyro-S", "Gyro-M"):
+            self.assertEqual(setup.MODELS[m]["engine"], M.FALLBACK_MODELS[m]["engine"], m)
+
+    def test_the_catalog_tells_the_app_the_minimum(self):
+        table = M.Strata(ROOT).model_table(hardware(64.0, 12.0))
+        gyro = {x["model"]: x for x in next(f for f in table if f["family"] == "gyro")["sizes"]}
+        self.assertEqual({k: v["engine_min"] for k, v in gyro.items()}, {"Gyro-S": "0.1.45.1", "Gyro-M": "0.1.45.1"})
+        qwen = {x["model"]: x for x in next(f for f in table if f["family"] == "qwen")["sizes"]}
+        self.assertIsNone(qwen["Q2_0"]["engine_min"])                # a size with no minimum of its own says so
+
+    def test_the_pack_reader_is_in_the_source_this_minimum_describes(self):
+        text = (ROOT / "src" / "kernels" / "cpu" / "expert_layout.cpp").read_text(encoding="utf-8")
+        self.assertIn("native_experts.txt v5 declares Hadamard-folded experts", text)
 
 
 if __name__ == "__main__":

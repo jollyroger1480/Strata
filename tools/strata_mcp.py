@@ -79,10 +79,12 @@ FALLBACK_MODELS = {
              "vision": True},
     "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
                         "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
+               "engine": (0, 1, 45, 1),
                "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
                "vision": True},
     "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
                         "about 20% slower than Q2_0 on 12 GB cards",
+               "engine": (0, 1, 45, 1),
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "vision": True},
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
@@ -958,6 +960,9 @@ class Strata:
                               # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
                               "mem_total": bool(d.get("mem_total")),
+                              # the first engine that reads this size's files (setup.py "engine"); the app says "needs a newer engine"
+                              # with the update step when the installed one is older. None: any engine that setup accepts.
+                              "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
                               "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):

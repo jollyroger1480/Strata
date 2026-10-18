@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {NATIVE_FIELDS} from '../../server/native-settings.mjs';
 import {createNativeControl} from '../../server/native-control.mjs';
-export function nativeFixture({modelsDirectory,tuneHandler}={}){
+export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
  const root=mkdtempSync(join(tmpdir(),'strata-native-test-')),repo=join(root,'repo'),directory=join(root,'data');
  const venvBin=process.platform==='win32'?'.venv/Scripts':'.venv/bin',venvPython=process.platform==='win32'?'.venv/Scripts/python.exe':'.venv/bin/python';
  for(const path of ['tools','serve',venvBin,'engine/.previous'])mkdirSync(join(repo,path),{recursive:true});
@@ -21,7 +21,7 @@ export function nativeFixture({modelsDirectory,tuneHandler}={}){
    if(message.method==='initialize')result={protocolVersion:'2024-11-05'};
    else if(message.method==='tools/list')result={tools:['strata_models','strata_status','strata_install'].map(name=>({name}))};
    else if(message.params.name==='strata_models')result={structuredContent:catalog};
-   else if(message.params.name==='strata_status')result={structuredContent:{installed,hardware,running:external,summary:'Fixture installation'}};
+   else if(message.params.name==='strata_status')result={structuredContent:{installed,hardware,running:external,summary:'Fixture installation',...(engineStatus?{engine:engineStatus}:{})}};
    else result={structuredContent:{summary:'Ready to prepare',plan:{download_gb:68},install:{running:false,exit_code:0}}};
    queueMicrotask(()=>child.stdout.emit('data',Buffer.from(JSON.stringify({jsonrpc:'2.0',id:message.id,result})+'\n')));
   }};

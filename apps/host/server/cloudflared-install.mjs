@@ -6,6 +6,7 @@ import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { require as requireAcquisition } from './acquisition.mjs';
+import { findConnector, skippedMessage } from './cloudflared-find.mjs';
 
 const run = promisify(execFile);
 const RELEASES = 'https://api.github.com/repos/cloudflare/cloudflared/releases/latest';
@@ -30,20 +31,23 @@ export function verifyConnector(bytes, digest) {
  * component folder). A connector found there is used as it is; one that is not there is never fetched while the app
  * runs (acquisition.mjs), it is a notice.
  */
-export function createConnectorInstaller({ directory, componentDirectory = null, platform = process.platform, arch = process.arch, fetchImpl = fetch }) {
+export function createConnectorInstaller({ directory, componentDirectory = null, platform = process.platform, arch = process.arch, fetchImpl = fetch, env = process.env, home, run: runVersion, usable, search }) {
   const name = platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
   const binary = join(directory, name);
-  let installing = null;
-  async function locate() {
-    for (const candidate of [binary, componentDirectory && join(componentDirectory, name)].filter(Boolean)) {
-      try { await access(candidate, platform === 'win32' ? constants.F_OK : constants.X_OK); return candidate; }
-      catch { /* try the next place */ }
-    }
-    return null;
+  let installing = null, last = { found: null, skipped: [] };
+  /** Strata's own folder first, then the component folder, PATH and the usual install places (cloudflared-find.mjs). */
+  async function look() {
+    last = await findConnector({ directory, componentDirectory, platform, env, home, run: runVersion, usable, search });
+    return last;
   }
+  async function locate() { return (await look()).found?.path ?? null; }
+  /** What is in use ({ path, version, source, label }), or null; set by the last look. */
+  const connector = () => last.found;
   async function install() {
     const existing = await locate();
     if (existing) return existing;
+    const unusable = skippedMessage(last.skipped);
+    if (unusable) throw new Error(unusable);
     requireAcquisition('The Cloudflare connector (cloudflared)', 'the optional connector component');
     const name = connectorAsset(platform, arch);
     await mkdir(directory, { recursive: true });
@@ -83,7 +87,7 @@ export function createConnectorInstaller({ directory, componentDirectory = null,
       return binary;
     } finally { await rm(stage, { recursive: true, force: true }); }
   }
-  return { locate, ensure() {
+  return { locate, connector, async inspect() { await look(); return last; }, ensure() {
     if (!installing) installing = install().finally(() => { installing = null; });
     return installing;
   } };

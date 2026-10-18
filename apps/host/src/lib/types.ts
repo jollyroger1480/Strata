@@ -223,7 +223,7 @@ export interface ServeRequest {
   finishReason?: string | null;
 }
 
-export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; installed: boolean; originUrl: string; }
+export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
 
 export interface ServingState {
   tunnel?: TunnelState;

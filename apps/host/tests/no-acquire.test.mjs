@@ -36,7 +36,7 @@ test('the llama.cpp and cloudflared fetches refuse before any request is made', 
     await assert.rejects(engineInstall.install({ force: true }), err => err instanceof AcquisitionRefused && /llama\.cpp/.test(err.message) && err.status === 409);
     await assert.rejects(engineInstall.findRelease(), AcquisitionRefused);
     let connectorRequests = 0;
-    const installer = createConnectorInstaller({ directory, platform: 'linux', arch: 'x64', fetchImpl: async () => { connectorRequests++; return { ok: false }; } });
+    const installer = createConnectorInstaller({ directory, platform: 'linux', arch: 'x64', env: { STRATA_CLOUDFLARED_SEARCH: 'own' }, fetchImpl: async () => { connectorRequests++; return { ok: false }; } });
     await assert.rejects(installer.ensure(), err => err instanceof AcquisitionRefused && /optional connector component/.test(err.message));
     assert.equal(requests + connectorRequests, 0, 'nothing was requested');
     assert.equal(existsSync(join(directory, '.install-')), false);
@@ -54,7 +54,7 @@ test('a connector placed in the component folder is used as it is; it is never f
   const name = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
   await writeFile(join(components, name), 'binary', { mode: 0o755 });
   try {
-    const installer = createConnectorInstaller({ directory: join(directory, 'own'), componentDirectory: components, fetchImpl: async () => { throw new Error('no network'); } });
+    const installer = createConnectorInstaller({ directory: join(directory, 'own'), componentDirectory: components, env: { STRATA_CLOUDFLARED_SEARCH: 'own' }, run: async () => 'cloudflared version 2026.5.0', fetchImpl: async () => { throw new Error('no network'); } });
     assert.equal(await installer.locate(), join(components, name));
     assert.equal(await installer.ensure(), join(components, name));
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -67,7 +67,7 @@ async function runHost({ env, calls }) {
   const port = await freePort(), base = `http://127.0.0.1:${port}`;
   const host = spawn(process.execPath, ['--import', spy, 'server/index.mjs'], {
     cwd: root, stdio: 'ignore',
-    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_REAL_ENGINE: '1', ACQUIRE_SPY_LOG: log, ...env },
+    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_REAL_ENGINE: '1', STRATA_CLOUDFLARED_SEARCH: 'own', ACQUIRE_SPY_LOG: log, ...env },
   });
   const call = async (path, method = 'GET', body) => {
     const response = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });

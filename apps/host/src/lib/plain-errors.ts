@@ -15,6 +15,13 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
+  { kind: 'tunnel-own-running', match: /Strata’s tunnel for this address is already running \(PID/i, message: 'Strata’s tunnel for this address is already running.', next: 'Stop it first, or use it as it is, then connect again here.' },
+  { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
+  { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
+  { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },
+  { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },
+  { kind: 'connector-old', match: /cloudflared at .* is version .* too old/i, message: 'The Cloudflare connector on this computer is too old.', next: 'Update cloudflared to a newer version, then press Retry setup.' },
+  { kind: 'connector-broken', match: /did not run as cloudflared/i, message: 'The file found as cloudflared did not run.', next: 'Reinstall cloudflared, then press Retry setup.' },
   { kind: 'picture-reading', match: /vision files|picture reading/i, message: 'Picture reading isn’t available for this model.', next: 'Turn off picture reading and try again.' },
   { kind: 'access', match: /PermissionError|access is denied|can.t open its settings file/i, message: 'Strata can’t open its settings file.', next: 'Run Strata once as yourself (not as administrator) or press Repair.' },
   // A start that died: the exit code or the engine's own last line says why. Say "low on memory" only when that evidence is there

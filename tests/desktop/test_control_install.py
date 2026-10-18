@@ -139,6 +139,11 @@ class ControlModeTests(unittest.TestCase):
         out = subprocess.run([str(bindir / "python"), "a b", "c"], capture_output=True, text=True).stdout
         self.assertEqual(out.strip(), "real a b c")
         self.assertEqual(stage.dedupe_python(folder), [], "run twice: nothing left to change")
+        # no external program: with an empty PATH (and, in the AppImage, libraries that make `dirname` fail) the launcher still starts the
+        # interpreter, from another folder and through a relative name. Ubuntu 26.04: "dirname: libsystemd.so.0: version LIBSYSTEMD_254 not found".
+        for cwd, name in ((str(folder), "python/bin/python3"), (str(bindir), "./python"), (str(bindir.parent), "bin/python")):
+            r = subprocess.run(["/bin/sh", name, "x"], capture_output=True, text=True, cwd=cwd, env={"PATH": ""})
+            self.assertEqual(r.stdout.strip(), "real x", (cwd, name, r.stderr))
 
     def test_the_bundle_lists_everything_the_install_imports(self):
         sys.path.insert(0, str(ROOT / "apps" / "desktop" / "scripts"))
