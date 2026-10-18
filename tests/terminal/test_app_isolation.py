@@ -31,7 +31,8 @@ class AppIsolation(unittest.TestCase):
         (base / "xdg" / "strata" / "settings.json").write_text(json.dumps({"installs": [str(self.old)], "data_dir": str(base / "T-data")}))
         self.app_data = base / "app" / "Strata"
         self.app_data.mkdir(parents=True)
-        self.env = {"APPDATA": str(base / "appdata"), "XDG_CONFIG_HOME": str(base / "xdg")}
+        self.env = {"APPDATA": str(base / "appdata"), "XDG_CONFIG_HOME": str(base / "xdg"),
+                    "LOCALAPPDATA": str(base / "local"), "XDG_DATA_HOME": str(base / "xdg-data"), "STRATA_COMPONENTS_DIR": ""}
         self.base = base
         self.terminal = base / "terminal"
         self.terminal.mkdir()
@@ -48,7 +49,10 @@ class AppIsolation(unittest.TestCase):
             os.environ.pop("STRATA_INSTALL_DIR", None)
             self.assertEqual(models.settings_path(), self.app_data / "app-settings.json")
             self.assertEqual(models.remembered_installs(), [])
-            self.assertEqual(models.resolve_install(), (self.terminal, "default"))
+            # no older install is adopted: with nothing of its own yet the app gets its own install folder (beside its components folder)
+            found, how = models.resolve_install()
+            self.assertEqual(how, "default")
+            self.assertNotEqual(found, self.old.resolve())
             self.assertEqual(strata_setup.settings_path(), self.app_data / "app-settings.json")
             self.assertEqual(strata_setup.load_settings(), {})
             # the installer's own list of "other installs" has no sibling scan and no shared settings

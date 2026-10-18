@@ -294,7 +294,7 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
+    S.hip_vision = lambda asked, vram_gb=0.0: "none"                 # images are not wired on the SYCL port yet
     S.build_engine_hip = lambda *a, **k: stub
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply

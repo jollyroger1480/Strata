@@ -2143,7 +2143,7 @@ def unsloth_images_default(model, family, ram, gpu=None) -> bool:
     return g.get("vram_gb", 0.0) >= UNSLOTH_IMAGES_MIN_VRAM_GB
 
 
-IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
+IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # = strata_control/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
                                         # encoder's ~1.1-1.4 GB is ~850 expert slots lost, 3-5% of decode and prompt on P100 / A4000
                                         # 16 GB (Linux, IQ3_S / IQ3_XXS), and 35-60% on an RTX 4080 SUPER under Windows as reported)
 
@@ -3384,13 +3384,13 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     return eng
 
 
-def hip_vision(asked) -> str:
-    """The picture reader wanted with the AMD backend (--vision): "gpu" for yes/gpu and when nothing was asked (pictures are on
-    by default), "cpu" when asked for (#304), "none" for no.  "gpu" is a wish: hip_reader() settles it against what the
-    engine folder carries (the HIP reader, else the CPU one) once the engine is known."""
-    if asked in ("no", "none"):
-        return "none"
-    return "cpu" if asked == "cpu" else "gpu"
+def hip_vision(asked, vram_gb: float = 0.0) -> str:
+    """The picture reader wanted with the AMD backend (--vision): when nothing was asked or "yes" (pictures are on by default) the
+    default of strata_control/vision_reader.py for this card - the CPU reader under 24 GB, the GPU reader from 24 GB (owner decision
+    2026-10-18, every make of card); "gpu" / "cpu" as asked (#304), "none" for no.  "gpu" is a wish: hip_reader() settles it against
+    what the engine folder carries (the HIP reader, else the CPU one) once the engine is known."""
+    from strata_control import vision_reader as VR
+    return VR.wanted(asked, vram_gb)
 
 
 def reader_archs(eng: Path) -> list:
@@ -5997,9 +5997,10 @@ def control_engine_step(gpu, vision):
         ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
     except EC.EngineMissing as e:
         plain = getattr(e, "plain_notice", None) or getattr(e, "driver_notice", None)
-        if os.environ.get("STRATA_NEED_ENGINE") == "1":
-            # strata launch needs an engine now: stop before step 5 instead of after the download.  The app does not stop (owner
-            # decision 2026-10-18): it says so in its download card and still downloads the model.
+        if os.environ.get("STRATA_NEED_ENGINE") == "1" and os.environ.get("STRATA_ALLOW_NO_ENGINE") != "1":
+            # strata launch needs an engine now: stop before step 5 instead of after the download, unless launch itself asked to go on
+            # (STRATA_ALLOW_NO_ENGINE: the person said yes to "download the model anyway").  The app does not stop (owner decision
+            # 2026-10-18): it says so in its download card and still downloads the model.
             fail(plain or "no engine is installed for this PC",
                  "get the engine that matches this graphics card (`strata update`, or the app's Settings), then run this again; "
                  "nothing was downloaded and files already downloaded are kept")
@@ -6095,9 +6096,9 @@ def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
         default = "y" if (big or hip) else "n"
         if ask("Do you want images?", ["y", "n"], default, a.yes) != "y":
             return "none"
-        asked = "gpu" if hip else "cpu" if not big else "gpu"
+        asked = "yes" if hip else "cpu" if not big else "gpu"
     if hip:
-        return hip_vision(asked)               # settled against the engine's readers in hip_reader() (GPU reader, else CPU)
+        return hip_vision(asked, vram)               # settled against the engine's readers in hip_reader() (GPU reader, else CPU)
     if asked == "yes":
         asked = "gpu" if big else "cpu"
     if asked == "gpu" and not big and vram > 0:
@@ -6815,6 +6816,13 @@ def main() -> int:
                                for g in amd_ok)
             + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
+        say("  One engine drives the cards of one make: a model is never split across NVIDIA and AMD cards, and two models at the same")
+        say("  time, one on each, is not supported yet.")
+        from strata_control import gpu_fit
+        bigger = gpu_fit.other_vendor_note([{**g, "vendor": "nvidia", "usable": gpu_problem(g) is None} for g in found] +
+                                           [{**g, "vendor": "amd", "usable": True} for g in amd_ok], "nvidia")
+        if bigger:
+            say("  " + bigger)
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
@@ -7177,7 +7185,7 @@ def main() -> int:
         # MODEL-UPDATE: Unsloth's files on AMD (Linux) read images with the CPU encoder by default where their experts
         # all stay in RAM (it takes no VRAM; measured on an R9700 with UD-Q4_K_XL and UD-Q5_K_XL, docs/QUANTS.md)
         vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
-                            else "cpu")
+                            else "cpu", float((gpu or {}).get("vram_gb") or 0.0))
     elif a.vision:
         vision = flash_vision_encoder(a.vision, gpu) if a.vision != "no" else "none"
         vision = "none" if vision in ("no", "none") else vision

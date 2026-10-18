@@ -51,7 +51,7 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Pictures:** on by default. The engine package carries two picture readers: `strata-vision-hip`, which reads a picture on the
+- **Pictures:** on by default; the reader is the CPU one under 24 GB of VRAM and the GPU one from 24 GB (the same rule for every make, `strata_control/vision_reader.py`); `--vision gpu` / `--vision cpu` switch it. The engine package carries two picture readers: `strata-vision-hip`, which reads a picture on the
   card (llama.cpp's HIP backend; about 1.4 GiB of VRAM, measured on an R9700: 0.06 s for a 260-token picture and 0.4 s for 972
   tokens, against 3.1 s and 14 s on the CPU), and `strata-vision`, the CPU reader. If the GPU reader cannot start (the card is
   not one it was built for, the HIP runtime does not load, the card is busy) the server starts the CPU reader by itself and

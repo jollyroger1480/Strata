@@ -33,7 +33,7 @@ class _VersionAction(argparse.Action):
 
     def __call__(self, parser, namespace, values, option_string=None):
         import strata_cli
-        sys.stdout.write(f"strata {strata_cli.version()} (python {sys.version.split()[0]} at {sys.executable})\n")
+        sys.stdout.write(f"strata {strata_cli.PRODUCT_VERSION} (build {strata_cli.version()}; python {sys.version.split()[0]} at {sys.executable})\n")
         parser.exit()
 
 
@@ -512,11 +512,9 @@ def _models(a: argparse.Namespace) -> int:
                 print(json.dumps({"schema_version": 1, "ok": False, "plan": result},
                                  ensure_ascii=False, allow_nan=False))
             else:
-                print(f"GGUF file set is incomplete or invalid: {', '.join(result['issues'])}", file=sys.stderr)
+                print(_import_problem(result), file=sys.stderr)
             return 5
-        return _success({"plan": result}, machine=a.output == "json",
-                        human=f"{result['file_count']} GGUF file(s): {result['file_set_status']}\n"
-                        f"Adoption: {result['adoption_status']}\nNo files changed")
+        return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -544,7 +542,12 @@ def _models(a: argparse.Namespace) -> int:
         result = models.list_installed(a.install_dir)
         lines = [f"{item['id']}  {item['component_status']}  "
                  f"{item.get('name', item.get('error', ''))}" for item in result["models"]]
-        return _success(result, machine=a.output == "json", human="\n".join(lines) or "No local model run configs")
+        if not lines:
+            where = ", ".join(result.get("install_dirs") or [result["install_dir"]])
+            lines = [f"No installed models found. Looked in: {where}. "
+                     "If your models are somewhere else, add --install-dir FOLDER (the folder with the strata-*.json files), "
+                     "or run `strata launch` to set one up."]
+        return _success(result, machine=a.output == "json", human="\n".join(lines))
     result = models.inspect(a.model_id, a.install_dir)
     item = result["model"]
     return _success(result, machine=a.output == "json",
@@ -552,6 +555,41 @@ def _models(a: argparse.Namespace) -> int:
                     f"Config: {item['source_config']}\n"
                     f"Components: {len(result['components']['components'])}, "
                     f"issues: {len(result['components']['issues'])}")
+
+
+def _import_problem(plan: dict) -> str:
+    """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
+    from strata_cli.launch.runner import plain_issue
+    issues = [str(x) for x in plan.get("issues") or []]
+    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
+        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
+    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    text = f"These files cannot be used as they are: {words}."
+    holds = plan.get("folder_holds") or []
+    if holds:
+        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
+        other = [h["file"] for h in holds if not h.get("model")]
+        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
+            ". Point at the .gguf file of the one you want."
+    return text
+
+
+def _import_words(plan: dict) -> str:
+    """The plain-words result of `strata models import --plan`: what the files are, what is already set up, what changes (nothing)."""
+    cand = plan.get("candidate_selection") or {}
+    lines = [f"{plan['file_count']} GGUF file(s): {plan['file_set_status']}"]
+    if cand.get("family"):
+        lines.append(f"These files are Strata's {cand['family']} {cand['model']}.")
+    done = plan.get("already_set_up")
+    if done:
+        have = [name for key, name in (("pack", "prepared model data"), ("mtp", "draft layer"), ("mmproj", "picture reader")) if done.get(key)]
+        if done.get("config"):
+            lines.append(f"Already set up: {done['config']}" + (f" (with the {', '.join(have)})" if have else ""))
+        elif have:
+            lines.append(f"Prepared files found beside it: {', '.join(have)}.")
+    lines.append(f"Adoption: {plan['adoption_status']}")
+    lines.append("No files changed")
+    return "\n".join(lines)
 
 
 def _redact_argv(args: list[str]) -> list[str]:

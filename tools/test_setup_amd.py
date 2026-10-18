@@ -442,6 +442,13 @@ class HipVisionWish(unittest.TestCase):
                 self.assertEqual(setup.hip_vision("cpu"), "cpu")
                 self.assertEqual(setup.hip_vision("no"), "none")
                 self.assertEqual(setup.hip_vision("none"), "none")
+                # owner decision 2026-10-18: nothing asked / yes = the CPU reader under 24 GB, the GPU reader from 24 GB; gpu / cpu are kept
+                self.assertEqual(setup.hip_vision(None, 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 23.9), "gpu")
+                self.assertEqual(setup.hip_vision(None, 32.0), "gpu")
+                self.assertEqual(setup.hip_vision("gpu", 16.0), "gpu")
+                self.assertEqual(setup.hip_vision("cpu", 32.0), "cpu")
 
     def test_reader_settled_against_the_engine_folder(self):
         for win, suffix in ((False, ""), (True, ".exe")):

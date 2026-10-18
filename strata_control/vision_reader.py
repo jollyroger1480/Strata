@@ -18,6 +18,28 @@ from pathlib import Path
 CPU_READER = "strata-vision"
 GPU_READER = "strata-vision-hip"
 
+#: Owner decision 2026-10-18: pictures are ON by default, and the reader runs on the CPU for a card under 24 GB (the GPU reader keeps about
+#: 1-1.4 GB of VRAM that the experts would use: a few % of decode, more on some PCs, #2406) and on the GPU for 24 GB and above - on every make
+#: of card.  A person can switch it per model (--vision gpu / --vision cpu, the Pictures step); what was asked for is kept.
+GPU_MIN_VRAM_GB = 23.5
+
+
+def default_mode(vram_gb: float | None) -> str:
+    """"cpu" or "gpu": the reader an unspecific "pictures on" gets on a card with this much memory (unknown memory: "gpu")."""
+    vram = float(vram_gb or 0.0)
+    return "cpu" if 0 < vram < GPU_MIN_VRAM_GB else "gpu"
+
+
+def wanted(asked: str | None, vram_gb: float | None) -> str:
+    """What is wanted for `asked` (None, "yes", "on", "gpu", "cpu", "no"/"none"/"off"): "gpu", "cpu" or "none".  Nothing asked and "yes" mean
+    the default for this card; "gpu" and "cpu" are kept as asked."""
+    a = (asked or "").lower()
+    if a in ("no", "none", "off"):
+        return "none"
+    if a in ("gpu", "cpu"):
+        return a
+    return default_mode(vram_gb)
+
 GFX = re.compile(r"gfx[0-9a-f]+", re.IGNORECASE)
 
 

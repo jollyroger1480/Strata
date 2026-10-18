@@ -653,6 +653,9 @@ def experts_loading_words(args: list, size: str) -> str:
     return f"loading the experts into RAM ({size}) and locking part of them for the GPU."
 
 
+OPENS_BROWSER = False        # set in main() when the server was started with --open: only then may a message say a browser opens
+
+
 def narrate_start(log_path: str, offset: int, args: list, done: threading.Event, heartbeat=20.0) -> None:
     """While the engine starts, say in the server window what it is doing, from its log: the start reads tens of GB
     into RAM and locks part of it for the GPU, and on many PCs everything is slow or frozen for a minute or more -
@@ -691,7 +694,8 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
                 if "PLE on" in line or "expert arena:" in line or "experts via mmap" in line:   # #505: mapped
                     say("arena", f"[strata] {loading}\n"
                                  "         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.\n"
-                                 "         Please wait and don't close this window; the browser opens when it is ready.")
+                                 "         Please wait and don't close this window"
+                                 + ("; the browser opens when it is ready." if OPENS_BROWSER else "; the server says when it is ready."))
                 elif " loaded " in line and "GiB at" in line:
                     say("loaded", "[strata] experts loaded: " + line.split(" loaded ", 1)[1].strip() +
                         f" ({time.time() - t0:.0f} s so far)")
@@ -7590,6 +7594,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    global OPENS_BROWSER
+    OPENS_BROWSER = bool(a.open)
     # Every ordinary way of being asked to stop takes Ctrl+C's path (QUIT to the engine, then exit): SIGTERM (#96 docker
     # stop; systemd), SIGHUP (the terminal closed, ssh dropped), and on Windows Ctrl+Break and the console's close,
     # logoff and shutdown events. They are installed before anything slow starts, so one that arrives while the model

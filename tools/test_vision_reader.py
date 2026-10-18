@@ -24,6 +24,17 @@ def folder(*names: str) -> Path:
 
 
 class Choose(unittest.TestCase):
+    def test_the_default_reader_by_card_memory_is_one_rule_for_every_make(self):
+        self.assertEqual(VR.default_mode(12), "cpu")
+        self.assertEqual(VR.default_mode(16), "cpu")
+        self.assertEqual(VR.default_mode(23.5), "gpu")
+        self.assertEqual(VR.default_mode(24), "gpu")
+        self.assertEqual(VR.default_mode(32), "gpu")
+        self.assertEqual(VR.default_mode(None), "gpu")                  # memory unknown: the GPU reader falls back by itself
+        for asked, vram, want in ((None, 16, "cpu"), ("yes", 12, "cpu"), ("on", 32, "gpu"), ("gpu", 12, "gpu"), ("cpu", 32, "cpu"),
+                                  ("no", 32, "none"), ("off", 12, "none")):
+            self.assertEqual(VR.wanted(asked, vram), want, (asked, vram))
+
     def test_hip_present_gives_the_gpu_reader_with_the_cpu_one_to_fall_back_on(self):
         d = folder("strata-vision", "strata-vision-hip")
         for ask in ("yes", "on", "gpu"):

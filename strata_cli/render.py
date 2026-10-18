@@ -7,6 +7,7 @@ import time
 import unicodedata
 from typing import Any
 
+from strata_cli import nav
 from strata_cli.client import complete_slots
 
 
@@ -192,9 +193,17 @@ def request_rows(snapshot: dict, filter_text: str = "", *, limit: int | None = N
     recent = (snapshot.get("recent") or [])[:limit]
     needle = filter_text.lower()
     if needle:
-        live = [row for row in live if needle in (safe(row.get("id")) + safe(row.get("state"))).lower()]
-        recent = [row for row in recent if needle in (safe(row.get("id")) + safe(row.get("finish"))).lower()]
+        # what the screen calls the row counts too: LIVE for a request in flight, DONE for a finished one
+        live = [row for row in live if needle in (safe(row.get("id")) + " " + safe(row.get("state")) + " live").lower()]
+        recent = [row for row in recent if needle in (safe(row.get("id")) + " " + safe(row.get("finish")) + " done").lower()]
     return live, recent
+
+
+def no_requests_text(filter_text: str = "") -> str:
+    """The empty-list sentence: with a filter on it says so and names the filter, so an empty page is never a mystery."""
+    if not filter_text:
+        return "No request summaries"
+    return f"No requests match this filter ({safe(filter_text, 30)}). It looks at the id, the state, and live or done. Esc clears it."
 
 
 def activity_rows(snapshot: dict, filter_text: str = "") -> list[dict]:
@@ -332,7 +341,7 @@ def _row_window(rows: list[dict], selected: int, capacity: int) -> tuple[int, in
 
 
 def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
-                  filter_text: str, selected: int) -> str:
+                  filter_text: str, selected: int, connect: bool = False) -> str:
     work, rates = snapshot.get("work") or {}, snapshot.get("rates") or {}
     topology, devices = snapshot.get("topology") or {}, snapshot.get("devices") or []
     recent = snapshot.get("recent") or []
@@ -349,14 +358,14 @@ def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
     # When height is scarce, preserve pressure outside the batch window; slot rows remain in the Groups pane.
     all_requests = work.get("requests") or []
     requests = sorted((row for row in all_requests if not filter_text or
-                       filter_text.lower() in (safe(row.get("id")) + safe(row.get("state"))).lower()),
+                       filter_text.lower() in (safe(row.get("id")) + " " + safe(row.get("state")) + " live").lower()),
                       key=lambda row: row.get("slot") is not None)
     if requests:
         for row in requests:
             wait = _queue_wait(row, snapshot.get("sampled_at"))
             left.append(_line(f"{field(row.get('id'), 12)} {_replica_short(row)}s{number(row.get('slot')):<2} g{number(row.get('group')):<2} {field(row.get('state'), 9)} wait {number(wait, 's', 1):<6} {_request_work(row)}", left_width))
     elif all_requests:
-        left.append("No matching request summaries")
+        left.append(no_requests_text(filter_text) if filter_text else "No matching request summaries")
     else:
         left.append("Request identity unavailable; showing engine slots")
         for row in work.get("slots") or []:
@@ -400,15 +409,15 @@ def _wide_serving(lines: list[str], snapshot: dict, width: int, height: int,
         lines += ["Stage/layer mapping unavailable; groups are not GPU assignments"]
     age = time.time() - snapshot["sampled_at"] if isinstance(snapshot.get("sampled_at"), (int, float)) else None
     lines += ["", f"Sample age {number(age, ' s', 1)}  |  Source {safe(snapshot.get('source'))}",
-              "1-6 views   / filter   Space freeze   r refresh   t theme   ? help   q quit"]
+              f"{nav.keys(connect)} views   / filter   Space freeze   r refresh   t theme   ? help   q quit"]
     return "\n".join(_line(x, width) for x in lines[:height])
 
 
 def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                 selected: int = 0, frozen: bool = False, filter_text: str = "",
                 glyphs: str = "ascii", connection: str = "", serving_pane: str = "devices",
-                detail: bool = False, connection_state: str | None = None) -> str:
-    """Render the six views with explicit unavailable markers and no fake rates."""
+                detail: bool = False, connection_state: str | None = None, connect: bool = False) -> str:
+    """Render the six views (seven with Connect, when `strata launch` opened the monitor) with explicit unavailable markers and no fake rates."""
     width, height = max(width, 30), max(height, 8)
     tiny = width < 60 or height < 14
     view = view if view in VIEWS else "overview"
@@ -449,17 +458,12 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
         else:
             marker = f"[{labels[state]}]"
     lines = [f"STRATA  {view.title():<10} {safe(connection, max(0, width - 42))} {marker}"]
-    if width >= 60 and height >= 16:
-        if width < 80:
-            labels = ("Over", "Serve", "Reqs", "Engine", "GPU", "Logs")
-            nav = " ".join(f"[{i + 1}]{label}" if VIEWS[i] == view else f"{i + 1}{label}"
-                           for i, label in enumerate(labels)) + "  q quit"
-        else:
-            nav = "  ".join(f"[{i + 1} {name.title()}]" if name == view else f"{i + 1} {name.title()}"
-                            for i, name in enumerate(VIEWS))
-        lines += [_line(nav, width), "-" * min(width, 100)]
+    if tiny:       # a small window: the tabs (names kept, the selected one marked) and, under them, the keys that matter
+        lines += [nav.plain(VIEWS.index(view), width, connect), f"{nav.keys(connect)} views  q quit  ? help"[:width]]
     else:
-        lines += [f"1-6 views  q quit  ? help", "-" * min(width, 100)]
+        quit_hint = "  q quit"
+        tab_line = nav.plain(VIEWS.index(view), width - len(quit_hint), connect) if width < 80 else nav.plain(VIEWS.index(view), width, connect)
+        lines += [tab_line + (quit_hint if width < 80 else ""), "-" * min(width, 100)]
     if connection_state in ("connecting", "disconnected", "auth_required", "incompatible"):
         title, message, action = {
             "connecting": ("CONNECTING", "Waiting for the first telemetry snapshot.",
@@ -506,7 +510,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                         lines += [f"Prompt {number(row.get('prompt_tokens'))} tokens",
                                   f"Wait {number(_queue_wait(row, sampled), ' s', 1)}  Engine first {number(row.get('first_engine_token_s'), ' s', 2)}"]
             else:
-                lines += ["No request summaries"]
+                lines += [no_requests_text(filter_text)]
         elif view == "serving":
             optional = [_batch_window(work, width), _stage_in_flight(work, width)]
             if not tiny:
@@ -570,7 +574,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     lines += [f"Model {safe(model.get('id'), max(10, width-30))}  {model_state}",
               f"In flight {number(work.get('active'))}   Slots occupied {number(work.get('occupied_slots'))}/{number(work.get('slots_effective'))}   Engine waiting {number(work.get('waiting'))}   Pre-admit {number(work.get('queued'))}"]
     if view == "serving" and width >= 100 and height >= 24 and serving_pane == "devices" and not detail:
-        return _wide_serving(lines, snapshot, width, height, filter_text, selected)
+        return _wide_serving(lines, snapshot, width, height, filter_text, selected, connect)
     if view == "overview":
         lines += [f"Answer speed  {number(rates.get('answer_tok_s'), ' tok/s', 1)} [engine, {number(rates.get('answer_window_s'), ' s', 1)} window]",
                   f"Prompt reading {number(rates.get('prefill_tok_s'), ' tok/s', 1)} [reported mean]",
@@ -597,7 +601,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
             lines.append("")
         if serving_pane == "requests":
             rows = [r for r in (work.get("requests") or []) if not filter_text or
-                    filter_text.lower() in (safe(r.get("id")) + safe(r.get("state"))).lower()]
+                    filter_text.lower() in (safe(r.get("id")) + " " + safe(r.get("state")) + " live").lower()]
             capacity = max(1, height - len(lines) - (10 if detail and rows else 4))
             start = min(max(0, selected - capacity // 2), max(0, len(rows) - capacity))
             lines += [f"Requests {start + 1 if rows else 0}-{min(start + capacity, len(rows))} of {len(rows)}  (Up/Down scroll; wait is queue time)"]
@@ -640,7 +644,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     elif view == "requests":
         active, shown = request_rows(snapshot, filter_text)
         rows = [("LIVE", row) for row in active] + [("DONE", row) for row in shown]
-        lines += [f"Live {len(active)}  /  recent {len(shown)}   No prompt bodies", ""]
+        lines += [f"Live {len(active)}  /  recent {len(shown)}   No prompt bodies" + (f"   Filter: {safe(filter_text, 20)}  (Esc clears)" if filter_text else ""), ""]
         if rows:
             index = min(max(0, selected), len(rows) - 1)
             capacity = max(1, height - len(lines) - (10 if detail else 4))
@@ -658,7 +662,7 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
                 kind, row = rows[index]
                 lines += (_request_detail(row, sampled, width) if kind == "LIVE" else _recent_detail(row, width))
         else:
-            lines.append("No request summaries")
+            lines.append(no_requests_text(filter_text))
     elif view == "engine":
         lines += [f"Context capacity {number(model.get('context'), ' tokens')}",
                   f"Batch groups {number(work.get('groups'))}",
@@ -736,5 +740,5 @@ def render_view(snapshot: dict, view: str, width: int = 80, height: int = 24,
     if not detail:
         lines.append("")
     lines += [f"Sample age {number(age, ' s', 1)}   Source {safe(snapshot.get('source'))}",
-              "1-6 views  / filter  Space freeze  r refresh  t theme  ? help  q quit"]
+              f"{nav.keys(connect)} views  / filter  Space freeze  r refresh  t theme  ? help  q quit"]
     return "\n".join(_line(x, width) for x in lines[:height])

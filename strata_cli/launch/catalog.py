@@ -10,6 +10,7 @@ words instead of guessing.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -116,17 +117,26 @@ class Computer:
     os: str = ""
     avx2: bool | None = None
     raw: dict = field(default_factory=dict)
+    engine_vendor: str | None = None           # the make of card the engine drives (nvidia, amd, intel, apple); None: the cards name none
 
     @property
     def usable_gpus(self) -> list[dict]:
-        """The cards that count (strata_control/gpu_fit.py: an integrated chip or a tiny card is ignored), the largest first."""
+        """The cards that count and the engine can drive (strata_control/gpu_fit.py: an integrated chip, a tiny card or a card of another
+        make is left out), the largest first. One engine drives one make, so a model is never split across makes."""
         from strata_control import gpu_fit
-        return gpu_fit.usable_cards(self.gpus)[0]
+        return gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]
 
     @property
     def ignored_gpus(self) -> list[dict]:
         from strata_control import gpu_fit
-        return gpu_fit.usable_cards(self.gpus)[1]
+        mine, others = gpu_fit.for_vendor(self.gpus, self.engine_vendor)
+        return gpu_fit.usable_cards(mine)[1] + [{**c, "why_ignored": "another make of card than this engine drives"} for c in others]
+
+    @property
+    def other_vendor_note(self) -> str | None:
+        """One plain line when a card of another make is the bigger one (None otherwise)."""
+        from strata_control import gpu_fit
+        return gpu_fit.other_vendor_note(self.gpus, self.engine_vendor)
 
     @property
     def main_vram_gb(self) -> float:
@@ -151,15 +161,23 @@ def installer_folder(explicit: str | os.PathLike | None = None) -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def install_root(explicit: str | os.PathLike | None = None) -> Path:
-    """Where run configs of installed models live: STRATA_INSTALL_DIR, else beside the components folder (what the app uses)."""
+def install_places(explicit: str | os.PathLike | None = None, src: str | os.PathLike | None = None) -> list:
+    """Every folder with run configs, main one first: the SAME discovery `strata models list` and the own-files import use
+    (strata_control/discovery.py). An explicit folder (the argument, or STRATA_INSTALL_DIR) is the only one."""
+    from strata_control import discovery
+    return discovery.places(here=installer_folder(src), explicit=explicit)
+
+
+def install_root(explicit: str | os.PathLike | None = None, src: str | os.PathLike | None = None) -> Path:
+    """Where run configs of installed models live: the main place found by the shared discovery, else the folder a new model is
+    installed into (beside the components folder, what the app uses)."""
+    from strata_control import discovery
     if explicit:
         return Path(explicit)
     env = os.environ.get("STRATA_INSTALL_DIR")
     if env:
         return Path(env)
-    from strata_control import engine_component
-    return engine_component.components_dir().parent / "install"
+    return discovery.find_install(here=installer_folder(src))[0]
 
 
 # Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the common
@@ -192,7 +210,8 @@ class Catalog:
     def __init__(self, src: str | os.PathLike | None = None, root: str | os.PathLike | None = None,
                  hardware: dict | None = None):
         self.src = installer_folder(src)
-        self.root = install_root(root)
+        self.places = install_places(root, self.src)
+        self.root = Path(root) if root else (self.places[0].path if self.places else install_root(None, self.src))
         mcp = self.src / "tools" / "strata_mcp.py"
         if not mcp.is_file() or not (self.src / "setup.py").is_file():
             raise CatalogUnavailable(
@@ -215,6 +234,8 @@ class Catalog:
                 sys.stdout = real
         self.mcp = mod
         self.strata = mod.Strata(self.root, self.src)
+        self._mcp_data_dir = self.strata.data_dir
+        self.strata.data_dir = self.data_dir          # one answer to "where is the data folder" for every caller, the app's included
         self._hardware_override = hardware
 
     # ---- the computer
@@ -253,7 +274,26 @@ class Catalog:
     def computer(self, fresh: bool = False) -> Computer:
         hw = self.hardware(fresh)
         return Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []), disk_free_gb=hw.get("disk_free_gb"),
-                        os=str(hw.get("os") or ""), avx2=(hw.get("cpu") or {}).get("avx2"), raw=hw)
+                        os=str(hw.get("os") or ""), avx2=(hw.get("cpu") or {}).get("avx2"), raw=hw,
+                        engine_vendor=self.engine_vendor(hw))
+
+    def installed_backend(self) -> str | None:
+        """The installed engine's backend (cuda, hip, sycl, cpu, metal), None when there is no usable engine yet."""
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            if rep.get("usable"):
+                return (rep.get("engine") or {}).get("backend")
+        except Exception:                                    # noqa: BLE001
+            pass
+        return None
+
+    def engine_vendor(self, hw: dict | None = None) -> str | None:
+        """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
+        computer has several makes)."""
+        from strata_control import gpu_fit
+        hw = hw if hw is not None else self.hardware()
+        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
 
     # ---- the tables
     def tables(self):
@@ -268,7 +308,7 @@ class Catalog:
 
     def rows(self, hw: dict | None = None) -> list[ModelRow]:
         hw = hw or self.hardware()
-        comp = Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []))
+        comp = Computer(ram_gb=hw.get("ram_gb"), gpus=list(hw.get("gpus") or []), engine_vendor=self.engine_vendor(hw))
         vram = comp.main_vram_gb
         rec = self.recommendation(hw)
         out: list[ModelRow] = []
@@ -284,7 +324,7 @@ class Catalog:
                     about=size["about"], download_gb=float(size["download_gb"]), need_vram_gb=f["vramUseGb"],
                     need_ram_gb=f["ramUseGb"], spill_gb=f["spillGb"], verdict=cat, words=words,
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
-                    installed=bool(size.get("installed")), mem_total=bool(size.get("mem_total")),
+                    installed=bool(size.get("installed")) or self.installed_config(str(size["id"])) is not None, mem_total=bool(size.get("mem_total")),
                     memory_gb=float(size.get("memory_gb") or 0),
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
@@ -349,21 +389,95 @@ class Catalog:
                 pass
         return rec
 
+    # ---- pictures
+    def engine_backend(self) -> str | None:
+        """The installed engine's backend (cuda, hip, sycl, cpu, metal), else the one this computer's graphics card needs, else None."""
+        installed = self.installed_backend()
+        if installed:
+            return installed
+        for g in self.computer().usable_gpus:
+            v = str(g.get("vendor") or "").lower()
+            if g.get("unified_gb") or v == "apple":
+                return "metal"
+            return {"nvidia": "cuda", "amd": "hip", "intel": "sycl"}.get(v)
+        return None
+
+    def reader_state(self) -> str:
+        """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
+        "unknown" before any engine is installed (the first launch fetches one that has it)."""
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            exe = (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
+        except Exception:                                    # noqa: BLE001
+            exe = None
+        if not exe:
+            return "unknown"
+        from strata_control import vision_reader as VR
+        found = VR.find(Path(str(exe)).parent, os.name == "nt")
+        return "present" if (found["cpu"] or found["gpu"]) else "missing"
+
+    def picture_default(self, images: bool) -> str:
+        """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the
+        reader the one rule of strata_control/vision_reader.py gives: the CPU reader under 24 GB of graphics memory, the GPU reader from 24 GB,
+        on every make of card (owner decision 2026-10-18). Without a usable graphics card there is nothing to read on: the CPU reader."""
+        from strata_control import vision_reader as VR
+        if not images or self.reader_state() == "missing":
+            return "off"
+        vram = self.computer().main_vram_gb
+        return VR.default_mode(vram) if vram > 0 else "cpu"      # a Mac (unified memory) or no card: nothing to keep free, the CPU reader
+
     # ---- installed models
     def installed_configs(self) -> list[dict]:
-        out = []
+        out, seen = [], set()
         for path in self.strata.configs():
+            seen.add(path.name)
             d = self.strata.describe_config(path)
             d["path"] = str(path)
             out.append(d)
+        for place in self.places:
+            if place.path == self.root:
+                continue
+            from strata_control import discovery
+            for path in discovery.config_files(place.path):
+                if path.name in seen:
+                    continue
+                seen.add(path.name)
+                d = self.strata.describe_config(path)
+                d["path"] = str(path)
+                out.append(d)
         return out
 
     def installed_config(self, tag: str) -> Path | None:
-        p = self.root / f"strata-{tag.lower()}.json"
-        return p if p.is_file() else None
+        name = f"strata-{tag.lower()}.json"
+        for folder in [self.root, *[p.path for p in self.places if p.path != self.root]]:
+            p = folder / name
+            if p.is_file():
+                return p
+        return None
+
+    def data_dir_choice(self) -> tuple[Path, str]:
+        """(the data folder, where it came from): the person's own setting, the desktop app's folder, a Documents/Strata that holds models,
+        else the default beside the install. The same rule for every command."""
+        from strata_control import discovery
+        return discovery.data_dir(Path(self._mcp_data_dir()))
 
     def data_dir(self) -> Path:
-        return self.strata.data_dir()
+        return self.data_dir_choice()[0]
+
+    def data_dir_for(self, family: str | None, model: str | None) -> Path:
+        """Where this model's files are: the folder its installed run config names, else the data folder."""
+        if family and model:
+            path = self.installed_config(self.tag_of(family, model))
+            if path is not None:
+                try:
+                    from strata_control import discovery
+                    found = discovery.footprint(json.loads(path.read_text(encoding="utf-8-sig")), path).data_dir
+                    if found is not None:
+                        return found
+                except (OSError, ValueError):
+                    pass
+        return self.data_dir()
 
     def disk_free(self, path: str | os.PathLike) -> float | None:
         return self.strata.disk_free(Path(path))

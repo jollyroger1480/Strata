@@ -83,7 +83,7 @@ class LaunchSettings:
     gpus: list[int] | None = None              # None = the engine's choice (all usable cards)
     context: int | None = None
     kv: str | None = None                      # None = int8 above 8K, as setup
-    vision: str = "off"                        # off | on | gpu | cpu
+    vision: str | None = None                  # None = the default (on when the model can read pictures and the engine has the reader), off | on | gpu | cpu
     parallel: int | None = None                # None = fit to the card
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app
@@ -259,7 +259,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--context {context_label(s.context).lower()}")
         if s.kv:
             parts.append(f"--kv {s.kv}")
-        parts.append(f"--vision {s.vision}")
+        if s.vision:
+            parts.append(f"--vision {s.vision}")
         if s.parallel:
             parts.append(f"--parallel {s.parallel}")
         parts.append(f"--tune {s.tune}")

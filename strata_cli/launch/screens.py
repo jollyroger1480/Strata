@@ -16,7 +16,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Static
 
@@ -24,7 +24,7 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
-from strata_cli.launch.widgets import (ACCENT, BAD, FG, MUTE, WARN, Cell, Item, Menu, bar)
+from strata_cli.launch.widgets import (ACCENT, BAD, DARK, FG, LIGHT, MUTE, WARN, Cell, Item, Menu, bar)
 
 STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context", "Context"), ("pictures", "Pictures"),
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
@@ -127,7 +127,9 @@ class Base(Screen):
             self.query_one("#head", Static).update(self.head_text())
             self.query_one("#rule1", Static).update(Text(self.rule(), style=MUTE))
             self.query_one("#rule2", Static).update(Text(self.rule(), style=MUTE))
-            self.query_one("#explain", Static).update(self.explain())
+            explanation = self.explain()
+            self.query_one("#explain", Static).update(explanation)
+            self.query_one("#explain", Static).display = bool(explanation.plain.strip())     # no empty row where there is nothing to say
             self.query_one("#hints", Static).update(Text(self.hints_text(), style=MUTE))
             self.query_one("#message", Static).update(Text(self.message, style=WARN if self.message.startswith("!") else MUTE))
         except Exception:                                    # noqa: BLE001 - a screen that is closing
@@ -319,7 +321,7 @@ class ConfirmScreen(ModalScreen):
                 Binding("enter", "pick", show=False), Binding("escape", "cancel", show=False)]
     DEFAULT_CSS = f"""
     ConfirmScreen {{ align: center middle; background: #0e1113 80%; }}
-    #dialog {{ width: 70; height: auto; background: #161a1d; border: solid {ACCENT}; padding: 1 2; }}
+    #dialog {{ width: 70; max-width: 100%; height: auto; max-height: 100%; background: #161a1d; border: solid {ACCENT}; padding: 1 2; }}
     """
 
     def __init__(self, question: str, detail: str, options: list[tuple[str, str]]):
@@ -327,16 +329,25 @@ class ConfirmScreen(ModalScreen):
         self.question, self.detail, self.options = question, detail, options
 
     def compose(self) -> ComposeResult:
+        pal = LIGHT if self.app.has_class("theme-light") else DARK          # the monitor's light theme reaches its pop-ups
         with Vertical(id="dialog"):
-            yield Static(Text(self.question, style=f"bold {ACCENT}"), markup=False)
-            yield Static(Text(self.detail, style=MUTE), markup=False)
+            yield Static(Text(self.question, style=f"bold {pal.accent}"), markup=False)
+            yield Static(Text(self.detail, style=pal.mute), markup=False)
             yield Static("", markup=False)
-            yield Menu(id="confirm-menu")
-            yield Static(Text("Up/Down choose   Enter confirm   Esc cancel", style=MUTE), markup=False)
+            yield Menu(id="confirm-menu", palette=pal)
+            yield Static(Text("Up/Down choose   Enter confirm   Esc cancel", style=pal.mute), markup=False)
 
     def on_mount(self) -> None:
         m = self.query_one(Menu)
         m.set_items([Item([label], key=key) for key, label in self.options], 0)
+        if self.app.has_class("theme-light"):          # the monitor's light theme: a white dialog with dark text (the dark one is the default)
+            dialog = self.query_one("#dialog")
+            dialog.styles.background = LIGHT.panel
+            dialog.styles.border = ("solid", LIGHT.accent)
+            dialog.styles.color = LIGHT.fg
+            self.styles.background = "#f9fafb 70%"
+            for static in dialog.query(Static):
+                static.styles.background = LIGHT.panel
 
     def action_move(self, step: int) -> None:
         self.query_one(Menu).move(step)
@@ -430,6 +441,9 @@ class ModelScreen(Base):
                 if r.spill_gb:
                     out.append(f"About {r.spill_gb:.0f} GB would be read from the SSD while it answers. ", style=MUTE)
         out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
+        note = self.ctx.computer.other_vendor_note
+        if note:
+            out.append(" " + note, style=WARN)
         return out
 
     def on_cursor(self) -> None:
@@ -527,7 +541,7 @@ class CardsScreen(Base):
 
     def choices(self) -> dict:
         from strata_control import gpu_fit
-        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus)
+        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus, self.ctx.computer.engine_vendor)
 
     def on_mount(self) -> None:
         self.res = self.choices()
@@ -588,7 +602,7 @@ class FolderScreen(Base):
     def on_mount(self) -> None:
         s = self.ctx.settings
         f = self.query_one("#folderpath", Input)
-        f.value = s.data_dir or str(self.ctx.catalog.data_dir())
+        f.value = s.data_dir or str(self.ctx.default_folder())
         f.focus()
         self.paint()
 
@@ -601,33 +615,39 @@ class FolderScreen(Base):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_next()
 
-    def need_gb(self) -> float:
-        s = self.ctx.settings
-        r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
-        if r is None:
-            return 8.0
-        return 8.0 + (0 if s.model_path else r.download_gb)
+    def state(self, value: str | None = None):
+        return self.ctx.model_state(value or None)
+
+    def need_gb(self, st=None) -> float:
+        """The room to ask for: what is still to download plus working room (a little when the model is already there)."""
+        st = st or self.state()
+        return st.remaining_gb + (2.0 if (st.installed or st.own_files) else 8.0)
 
     def refresh_body(self) -> None:
         try:
             value = self.query_one("#folderpath", Input).value.strip()
         except Exception:                                    # noqa: BLE001
             return
-        free = self.ctx.catalog.disk_free(value or self.ctx.catalog.data_dir())
-        need = self.need_gb()
+        free = self.ctx.catalog.disk_free(value or self.ctx.default_folder())
+        st = self.state(value)
+        need = self.need_gb(st)
         s = self.ctx.settings
         out = Text()
         if s.model_path:
             out.append(f"Your model files stay where they are: {s.model_path}\n", style=FG)
             out.append("Strata only writes its prepared data here (packs, a small draft layer).\n", style=MUTE)
-        else:
-            out.append(f"Needs about {need:.0f} GB (the download plus working room).", style=FG)
-            out.append("\n")
+        out.append(st.headline(), style=FG)
+        out.append("\n")
+        if st.installed and st.folder is not None:
+            out.append(f"It is stored in {st.folder}\n", style=MUTE)
+        if st.parts and (st.installed or st.own_files):
+            for p in st.parts:
+                out.append(f"  - missing: {p.label}, about {p.gb:.1f} GB\n", style=WARN)
         if free is not None:
             warn = free < need
             out.append(f"Free space in that folder's drive: {free:,.0f} GB", style=WARN if warn else FG)
             if warn:
-                out.append(f"   Not enough for {need:.0f} GB. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
+                out.append(f"   Not enough for the {need:.0f} GB needed. You can still go on, but the download is likely to stop; pick a bigger drive.", style=WARN)
         else:
             out.append("The free space of that folder could not be read.", style=MUTE)
         moving = self.models_that_would_move(value)
@@ -639,7 +659,7 @@ class FolderScreen(Base):
     def models_that_would_move(self, value: str) -> str | None:
         """The folder holding model files today when a different one is typed (setup gathers the model files into the data folder), else None."""
         try:
-            old = Path(self.ctx.catalog.data_dir())
+            old = Path(self.ctx.default_folder())
             new = Path(value).expanduser() if value else old
             if os.path.normcase(str(new.resolve())) == os.path.normcase(str(old.resolve())):
                 return None
@@ -651,12 +671,15 @@ class FolderScreen(Base):
         return None
 
     def explain(self) -> Text:
+        if self.state().installed:
+            return Text("This model is already on this computer, so the folder starts where it is. Press Enter to keep it. "
+                        "Another folder only matters for files that still have to be downloaded.", style=MUTE)
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
                     "Press Enter to keep it, or type another folder (it is created if it does not exist).", style=MUTE)
 
     def commit(self) -> None:
         value = self.query_one("#folderpath", Input).value.strip().strip('"')
-        default = str(self.ctx.catalog.data_dir())
+        default = str(self.ctx.default_folder())
         self.ctx.settings.data_dir = None if (not value or value == default) else value
 
 
@@ -799,11 +822,7 @@ class PicturesScreen(Base):
     def reader(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches it)."""
-        exe = self.ctx.engine_exe()
-        if not exe:
-            return "unknown"
-        folder = Path(str(exe)).parent
-        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+        return self.ctx.catalog.reader_state()
 
     def on_mount(self) -> None:
         s = self.ctx.settings
@@ -814,21 +833,23 @@ class PicturesScreen(Base):
             items.append(Item(["Yes, read pictures" + ("  (this engine has no picture reader)" if self.reader() == "missing" else "")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
-        sel = 1 if s.vision != "off" and self.supported else 0
+        sel = 1 if s.vision != "off" and self.supported and self.reader() != "missing" else 0       # pictures are on unless someone said off
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 
     def explain(self) -> Text:
-        vram = self.ctx.computer.main_vram_gb
         amd = any(str(g.get("vendor")) == "amd" for g in self.ctx.computer.usable_gpus)
-        extra = ("a 0.9 GB download. On your AMD card the picture reader runs on the graphics card (about 1 GB of its memory, under a second "
-                 "per picture) and starts on the processor by itself if it cannot." if amd and self.reader() != "missing" else
-                 "a 0.9 GB download. On a card under 24 GB the picture reader runs on the CPU (a few seconds per picture, nothing "
-                 "taken from the graphics card). On a bigger card it runs on the GPU and keeps about 1.4 GB free, costing a few % of text speed."
-                 if vram < 24 else "a 0.9 GB download, and about 1.4 GB of graphics memory kept free for the picture reader (text is a few % slower).")
+        on_card = self.ctx.catalog.picture_default(True) == "gpu"
+        extra = ("a 0.9 GB download (if it is not on this computer yet). On your AMD card the picture reader runs on the graphics card "
+                 "(about 1 GB of its memory, under a second per picture) and starts on the processor by itself if it cannot."
+                 if amd and on_card and self.reader() != "missing" else
+                 "a 0.9 GB download (if it is not on this computer yet), and about 1.4 GB of graphics memory kept free for the picture reader "
+                 "(text is a few % slower)." if on_card else
+                 "a 0.9 GB download (if it is not on this computer yet). The picture reader runs on the CPU: a few seconds per picture, nothing "
+                 "taken from the graphics card.")
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
-        out = Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        out = Text("Pictures are on by default. They add " + extra + " Say No if you only chat in text.", style=MUTE)
         if self.reader() == "missing":
             out.append("\nHeads up: the engine installed here does not carry the picture reader, so the model would answer text only. "
                        "Update the engine, or say No.", style=WARN)
@@ -836,7 +857,11 @@ class PicturesScreen(Base):
         return out
 
     def commit(self) -> None:
-        self.ctx.settings.vision = self.menu().current.key
+        key = self.menu().current.key
+        if key == "on":                                      # yes: the reader on the card (NVIDIA, AMD) or the CPU, as the default says
+            device = self.ctx.catalog.picture_default(True)
+            key = device if device != "off" else "on"
+        self.ctx.settings.vision = key
 
 
 # ------------------------------------------------------------------------------------------------ 6 parallel
@@ -893,7 +918,8 @@ class TuningScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains"], key="quick"),
+        first = self.ctx.fresh_setup and not s.tuned_preset
+        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
                  Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
                  Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
         if not self.ctx.tune_chosen and s.tune == "skip" and not s.tuned_preset and self.ctx.fresh_setup:
@@ -907,9 +933,8 @@ class TuningScreen(Base):
             f"\n  [{'x' if on else ' '}] Allow settings that change answers very slightly (same quality)   press a to change", style=MUTE))
 
     def explain(self) -> Text:
-        return Text("Tuning is optional. It tries single changes against your settings, keeps only gains above the noise, and saves the "
-                    "result as a preset the Strata app can use too. Close other heavy programs while it measures. If your computer is "
-                    "already at its best it says so and changes nothing.", style=MUTE)
+        return Text("Tuning is optional: it keeps only real gains, and the result is a preset the Strata app can use too. Close other heavy "
+                    "programs while it measures. The command line skips tuning unless you add --tune.", style=MUTE)
 
     def action_allow(self) -> None:
         self.ctx.settings.tune_allow_small = not self.ctx.settings.tune_allow_small
@@ -924,19 +949,21 @@ class TuningScreen(Base):
 
 class AdvancedScreen(Base):
     step_id = "advanced"
-    hints = "↑↓ choose   Enter edit   Del reset   x experimental   / filter   a add by name   c copy command   n next   Esc back"
+    hints = "n next   ↑↓ choose   Enter edit   Esc back   Del reset   x experimental   / filter   a add by name   c copy command   Tab scroll command"
     help_text = ("Every engine setting with its default, the value the tuner chose and your own value. You never have to touch this. "
                  "A name the engine does not list gets a warning, not a refusal.")
 
     BINDINGS = [b for b in Base.BINDINGS if b.key != "enter"] + [
         Binding("enter", "edit", show=False), Binding("delete", "reset", show=False), Binding("backspace", "reset", show=False),
         Binding("x", "experimental", show=False), Binding("slash", "filter", show=False), Binding("a", "add", show=False),
-        Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False)]
+        Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False),
+        Binding("tab", "scroll_command", show=False)]
 
     def body(self) -> ComposeResult:
         yield Static("", id="advhead", markup=False)
         yield Menu([("Setting", 24), ("Default", 11), ("Tuned", 13), ("Yours", 10), ("What it does", 0)], id="menu", window=8)
-        yield Static("", id="cmdline", markup=False)
+        with VerticalScroll(id="cmdbox"):                    # the long command has its own scroll area (Tab, then the arrows) instead of running off the screen
+            yield Static("", id="cmdline", markup=False)
         yield Input(id="edit", classes="field", disabled=True)
 
     def on_mount(self) -> None:
@@ -964,7 +991,10 @@ class AdvancedScreen(Base):
                               key=r.name))
         items.append(Item([Cell("+ Add a setting by name…", ""), "", "", "", Cell("for flags of newer engine versions", MUTE)], key="__add__"))
         m = self.query_one(Menu)
-        m.window = max(4, (self.size.height or 30) - 15)
+        body_h = self.query_one("#body").size.height or max(6, (self.size.height or 30) - 8)
+        box_h = max(3, min(8, body_h // 3))
+        self.query_one("#cmdbox").styles.height = box_h
+        m.window = max(3, body_h - box_h - 4)                # the heading, the column titles, the "n of m" line and the box's rule
         m.set_items(items, min(m.index, len(items) - 1))
 
     def on_resize(self, _e) -> None:
@@ -974,23 +1004,33 @@ class AdvancedScreen(Base):
 
     def refresh_body(self) -> None:
         eng = self.ctx.engine_note
-        t = Text()
+        t = Text(no_wrap=True, overflow="ellipsis")
         t.append("All settings", style=f"bold {ACCENT}")
-        t.append("   (optional · for tinkerers)", style=MUTE)
-        extra = "   / filter" + (f": {self.filter}" if self.filter else "") + "   x show experimental only" + (" (on)" if self.only_experimental else "")
+        if self.width() >= 70:
+            t.append("   (optional · for tinkerers)", style=MUTE)
+            extra = "   / filter" + (f": {self.filter}" if self.filter else "") + "   x show experimental only" + (" (on)" if self.only_experimental else "")
+        else:
+            extra = "  (optional)" + (f"  filter: {self.filter}" if self.filter else "") + ("  experimental only" if self.only_experimental else "")
         t.append(extra, style=MUTE)
         self.query_one("#advhead", Static).update(t)
         s = self.ctx.settings
         cmd = self.ctx.command_text()
         out = Text()
-        out.append("Command that will run\n", style=f"bold {ACCENT}")
+        out.append("Command that will run (your choices above are in it)\n", style=f"bold {ACCENT}")
         out.append("  " + cmd + "\n")
         out.append("  Same as: " + S.flags_text(s) + "\n", style=MUTE)
         if eng:
             out.append("  " + eng, style=WARN)
         self.query_one("#cmdline", Static).update(out)
 
+    def hints_text(self) -> str:
+        if (self.size.width or 80) < 60:
+            return "n next  Enter edit  Esc back  Tab command"
+        return super().hints_text()
+
     def explain(self) -> Text:
+        if (self.size.height or 30) < 20:
+            return Text("")                                  # a small window: the list and the command matter more than the sentence under them
         m = self.menu()
         cur = m.current if m else None
         if cur is not None and cur.key not in (None, "__add__"):
@@ -1086,6 +1126,15 @@ class AdvancedScreen(Base):
         except Exception:                                    # noqa: BLE001
             self.say("Your terminal does not allow copying; select the lines above with the mouse.", True)
 
+    def action_scroll_command(self) -> None:
+        box = self.query_one("#cmdbox")
+        if box.has_focus:
+            self.set_focus(None)
+            self.say("")
+        else:
+            box.focus()
+            self.say("Up/Down/PageUp/PageDown scroll the command; Tab or Esc goes back to the list.")
+
     def action_go_next(self) -> None:
         if self.mode:
             return
@@ -1098,6 +1147,10 @@ class AdvancedScreen(Base):
         if self.mode:
             self.mode = ""
             self.close_field("edit")
+            self.say("")
+            return
+        if self.query_one("#cmdbox").has_focus:
+            self.set_focus(None)
             self.say("")
             return
         super().action_back()
@@ -1253,13 +1306,19 @@ class SaveScreen(Base):
         self.query_one(Menu).set_items(items, 0)
         self.paint()
 
-    def refresh_body(self) -> None:
+    def hints_text(self) -> str:
+        cur = self.menu().current if self.menu() else None
+        label = (cur.cells[0] if isinstance(cur.cells[0], str) else cur.cells[0].text) if cur is not None else "do it"
+        if (self.size.width or 80) < 60:
+            return f"Enter: {label}  Esc back"
+        return f"{self.g.updown} choose  Enter: {label}  Tab rename  Esc back  ? help"
+
+    def on_cursor(self) -> None:
+        self.paint()
+
+    def summary_lines(self) -> list[tuple[str, str]]:
         s = self.ctx.settings
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
-        t = Text()
-        t.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
-        t.append("  Name   ")
-        t.append("(type below)\n", style=MUTE)
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),
                  ("Context", S.context_label(s.context) + f", memory {s.kv or 'int8'}"),
                  ("Pictures", "on" if s.vision != "off" else "off"),
@@ -1269,14 +1328,60 @@ class SaveScreen(Base):
                  ("Storage", s.data_dir or "Strata's data folder")]
         if s.extra:
             lines.append(("Advanced", ", ".join(f"{k}={v}" for k, v in s.extra.items())))
-        for k, v in lines:
-            t.append(f"  {k:<10}{v}\n")
-        for n in self.ctx.warnings():
-            t.append(f"  ! {n}\n", style=WARN)
+        return lines
+
+    def refresh_body(self) -> None:
+        """The summary, the name and the three choices. When the body is too short for all of it (a small window), the summary shrinks to a
+        few short lines and the name field to one row, so the three choices stay on screen and Enter never acts on something you cannot see."""
+        s = self.ctx.settings
+        lines = self.summary_lines()
+        warnings = self.ctx.warnings()
+        body_h = self.query_one("#body").size.height
+        full_need = 2 + len(lines) + len(warnings) + 3 + 3
+        compact = bool(body_h) and full_need > body_h
+        name = self.query_one("#name", Input)
+        name.set_class(compact, "slim")
+        if compact:
+            t = Text(no_wrap=True, overflow="ellipsis")
+            tiny = body_h < 9
+            model = dict(lines)["Model"].replace("Qwen3.8-Flash-Next ", "")
+            rows = [f"{model} \u00b7 {S.context_label(s.context)} \u00b7 memory {s.kv or 'int8'}",
+                    f"Pictures {'on' if s.vision != 'off' else 'off'} \u00b7 Parallel {s.parallel or 'auto'} \u00b7 Tuning {s.tune}",
+                    f"Access {s.access}, port {s.port}" + (f" \u00b7 Storage {s.data_dir}" if s.data_dir else "")]
+            t.append("Save, then launch   name:\n" if tiny else "Save as preset, then launch   name:\n", style=f"bold {ACCENT}")
+            for ln in rows[:2 if tiny else 3]:
+                t.append("  " + ln + "\n")
+            if warnings and not tiny:
+                t.append(f"  ! {warnings[0]}" + (f"  (+{len(warnings) - 1} more)" if len(warnings) > 1 else "") + "\n", style=WARN)
+            t.rstrip()
+        else:
+            t = Text()
+            t.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
+            t.append("  Name   ")
+            t.append("(type below)\n", style=MUTE)
+            for k, v in lines:
+                t.append(f"  {k:<10}{v}\n")
+            for n in warnings:
+                t.append(f"  ! {n}\n", style=WARN)
+            t.rstrip()
         self.query_one("#summary", Static).update(t)
+        if getattr(self, "_compact", None) != compact:       # the body's height changes with it: look again once the layout has settled
+            self._compact = compact
+            self.call_after_refresh(self.paint)
 
     def explain(self) -> Text:
-        return Text("Press Enter on the first choice to save and start. The first start may download the model and tune; the monitor opens when it is serving.", style=MUTE)
+        if (self.size.height or 30) < 20:
+            return Text("")                                  # a small window: the choices matter more than the sentence
+        st = self.ctx.model_state()
+        if st.remaining_gb < 0.05:
+            fetch = "Nothing needs to be downloaded."
+        elif st.only_helpers:
+            fetch = "The model is already downloaded; Strata fetches " + st._names() + "."        # noqa: SLF001
+        else:
+            fetch = f"Strata downloads about {st.remaining_gb:.0f} GB first."
+        tune = " It tunes first." if self.ctx.settings.tune != "skip" else ""
+        return Text(f"Press Enter on the first choice to save and start. {fetch}{tune} The Strata monitor opens in this window when it is serving; "
+                    "no web page opens by itself.", style=MUTE)
 
     def action_rename(self) -> None:
         self.query_one("#name", Input).focus()

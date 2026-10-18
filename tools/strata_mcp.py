@@ -867,10 +867,40 @@ class Strata:
                 if g.get("uma") and g.get("usable"):
                     g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         hw["gpus"] = nv + amd
+        self._engine_vendor(hw)
         if WIN:
             hw["display_adapters"] = windows_video_controllers()
         hw["nvidia_smi"] = bool(shutil.which("nvidia-smi"))
         return hw
+
+    @staticmethod
+    def _engine_vendor(hw: dict) -> None:
+        """One engine drives the cards of ONE make (CUDA: NVIDIA, HIP: AMD, ...): note which one for this PC (the installed engine's, else the one
+        setup fetches first) and, when the other make has the bigger card, the one plain line that says so. The model list below only counts
+        the cards this engine can drive; a model is never split across makes (strata_control/gpu_fit.py)."""
+        try:
+            from strata_control import gpu_fit
+            backend = None
+            try:
+                from strata_control import engine_component as ec
+                rep = ec.status()
+                backend = (rep.get("engine") or {}).get("backend") if rep.get("usable") else None
+            except Exception:                           # noqa: BLE001
+                backend = None
+            vendor = gpu_fit.pick_vendor(hw.get("gpus", []), backend)
+            hw["engine_vendor"] = vendor
+            note = gpu_fit.other_vendor_note(hw.get("gpus", []), vendor)
+            if note:
+                hw["gpu_note"] = note
+        except Exception:                               # noqa: BLE001 - never break the hardware page over this
+            pass
+
+    @staticmethod
+    def engine_gpus(hw: dict | None) -> list:
+        """The usable cards the engine of this PC drives (all usable cards when the make is not known)."""
+        hw = hw or {}
+        vendor = hw.get("engine_vendor")
+        return [g for g in hw.get("gpus", []) if g.get("usable") and (not vendor or not g.get("vendor") or g.get("vendor") == vendor)]
 
     # ---- a Mac (Apple Silicon): unified memory, the Metal engine.  The rules are strata_control/mac_fit.py's (the same module
     # metal/setup_mac.py uses), so the app, the Terminal and a Mac that builds the engine itself judge a model the same way.
@@ -967,7 +997,7 @@ class Strata:
         if hw.get("mac"):
             return self._mac_recommend(hw, models, families)
         S = self.setup_module()
-        usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+        usable = self.engine_gpus(hw)
         ram = hw.get("ram_gb") or 0
         if not usable:
             why = ("no NVIDIA RTX 20-series-or-newer GPU found (nvidia-smi did not list one)"
@@ -1027,7 +1057,7 @@ class Strata:
         models, families, _ctx, _src = self.tables()
         S = self.setup_module()
         ram = (hw or {}).get("ram_gb")
-        usable = [g for g in (hw or {}).get("gpus", []) if g.get("usable")]
+        usable = self.engine_gpus(hw)
         vram = max((g["vram_gb"] for g in usable), default=0.0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
@@ -1059,6 +1089,9 @@ class Strata:
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
+                              # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
+                              # under 24 GB of graphics memory, the GPU reader from 24 GB; the person can switch it per model)
+                              "images_reader": self.images_reader(vram),
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
                               # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
@@ -1078,12 +1111,23 @@ class Strata:
         return out
 
     @staticmethod
+    def images_reader(vram) -> str:
+        try:
+            from strata_control import vision_reader
+            return vision_reader.default_mode(vram) if vram else "cpu"
+        except Exception:                                  # noqa: BLE001
+            return "cpu"
+
+    @staticmethod
     def gpu_options(d: dict, ram, hw) -> dict | None:
         try:
             from strata_control import gpu_fit
             mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
-            res = gpu_fit.options(round(mem, 1), ram, (hw or {}).get("gpus", []))
-            return res if len(res["options"]) >= 2 else None
+            res = gpu_fit.options(round(mem, 1), ram, (hw or {}).get("gpus", []), (hw or {}).get("engine_vendor"))
+            if len(res["options"]) >= 2:
+                return res
+            # one card the engine can drive: no choice to offer, but a bigger card of the other make is still worth one plain line
+            return {"options": [], "recommended": None, "other_vendor_note": res.get("other_vendor_note")} if res.get("other_vendor_note") else None
         except Exception:                                  # noqa: BLE001 - the choice is a convenience: never break the model list
             return None
 
@@ -1620,8 +1664,10 @@ class Tools:
                                 "rope scaling (experimental)",
                 "recommendation": rec, "source": src,
                 "this_pc": {"ram_gb": hw.get("ram_gb"),
-                            "gpus": [{k: g.get(k) for k in ("index", "name", "vram_gb", "usable")}
-                                     for g in hw.get("gpus", [])]}}
+                            "gpus": [{k: g.get(k) for k in ("index", "name", "vram_gb", "usable", "vendor")}
+                                     for g in hw.get("gpus", [])],
+                            **({"engine_vendor": hw["engine_vendor"]} if hw.get("engine_vendor") else {}),
+                            **({"gpu_note": hw["gpu_note"]} if hw.get("gpu_note") else {})}}
 
     # ---- strata_remove
     def strata_remove(self, model=None, confirm=False) -> dict:
@@ -1770,7 +1816,7 @@ class Tools:
             gpu = gpus = kv = low_ram = None
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
-            usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+            usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
             if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or

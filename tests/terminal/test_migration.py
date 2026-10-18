@@ -52,7 +52,10 @@ class ExistingInstallIsFoundInPlace(unittest.TestCase):
             d.mkdir()
         env = mock.patch.dict(os.environ, {"APPDATA": str(self.appdata), "XDG_CONFIG_HOME": str(self.appdata),
                                            "STRATA_PROFILE_DIR": str(self.profiles),
-                                           "STRATA_RUNTIME_DIR": str(base / "runtime")})
+                                           "STRATA_RUNTIME_DIR": str(base / "runtime"),
+                                           # the desktop app's folders of whoever runs the tests are not part of this fixture
+                                           "LOCALAPPDATA": str(base / "local"), "XDG_DATA_HOME": str(base / "localshare"),
+                                           "STRATA_COMPONENTS_DIR": ""})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("STRATA_INSTALL_DIR", None)
@@ -150,12 +153,16 @@ class ExistingInstallIsFoundInPlace(unittest.TestCase):
             self.assertEqual(models.resolve_install()[1], "explicit")
 
     def test_nothing_remembered_means_this_folder_and_no_error(self):
+        # nothing found anywhere: the folder a new model would be installed into (the desktop app's, which the Terminal shares), no error
+        from strata_control import discovery
+        default = (discovery.app_install_dir(), "default")
         setup.settings_path().unlink()
-        self.assertEqual(models.resolve_install(), (self.terminal, "default"))
+        self.assertEqual(models.resolve_install(), default)
         setup.settings_path().write_text("not json")
-        self.assertEqual(models.resolve_install(), (self.terminal, "default"))
+        self.assertEqual(models.resolve_install(), default)
         setup.settings_path().write_text(json.dumps({"installs": ["relative/path", 7, str(self.base / "gone")]}))
-        self.assertEqual(models.resolve_install(), (self.terminal, "default"))
+        self.assertEqual(models.resolve_install(), default)
+        self.assertEqual(models.list_installed()["models"], [])
 
     def test_the_settings_path_is_the_one_setup_writes(self):
         self.assertEqual(models.settings_path(), setup.settings_path())

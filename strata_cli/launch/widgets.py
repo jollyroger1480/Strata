@@ -20,6 +20,26 @@ BG, PANEL, FG, MUTE = "#0e1113", "#161a1d", "#eef1f3", "#8e979f"
 ACCENT, WARN, BAD, SEL, RULE = "#34d399", "#f5c56b", "#f28b82", "#1f2a27", "#3a4146"
 
 
+@dataclass(frozen=True)
+class Palette:
+    """The colours of one theme. The launch screens are dark; the monitor's Connect view and its pop-ups follow the monitor's light theme."""
+
+    bg: str
+    panel: str
+    fg: str
+    mute: str
+    accent: str
+    warn: str
+    bad: str
+    sel: str
+    rule: str
+
+
+DARK = Palette(BG, PANEL, FG, MUTE, ACCENT, WARN, BAD, SEL, RULE)
+# Light: every text colour reads at 4.5:1 or better on the white panel (tests/terminal/test_tuiqa_monitor.py computes it).
+LIGHT = Palette("#f9fafb", "#ffffff", "#221e1f", "#5b5f66", "#0a6b4a", "#8a5a00", "#b01a2e", "#cfeadf", "#c9ced3")
+
+
 def unicode_ok() -> bool:
     if os.environ.get("TERM") == "dumb":
         return False
@@ -57,12 +77,14 @@ Screen {{ background: {BG}; color: {FG}; }}
 #shell {{ width: 100%; height: 100%; background: {PANEL}; padding: 0 1; }}
 #head {{ height: 1; }}
 #rule1, #rule2 {{ height: 1; color: {RULE}; }}
-#body {{ height: 1fr; }}
+#body {{ height: 1fr; overflow-y: auto; }}
 #explain {{ height: auto; max-height: 4; color: {MUTE}; }}
-#hints {{ height: 1; color: {MUTE}; }}
+#hints {{ height: auto; max-height: 3; color: {MUTE}; }}
 #message {{ height: auto; max-height: 3; color: {MUTE}; }}
 Menu {{ height: auto; max-height: 100%; }}
 .field {{ height: 3; border: solid {ACCENT}; display: none; }}
+.field.slim {{ height: 1; border: none; padding: 0 1; background: {SEL}; }}
+#cmdbox {{ height: 6; border-top: solid {RULE}; scrollbar-size-vertical: 1; }}
 .field.open {{ display: block; }}
 Input {{ background: {PANEL}; color: {FG}; }}
 """
@@ -92,8 +114,9 @@ class Menu(Static):
     DEFAULT_CSS = "Menu { height: auto; text-wrap: nowrap; text-overflow: clip; }"
 
     def __init__(self, columns: list[tuple[str, int]] | None = None, *, glyphs: Glyphs | None = None, id: str | None = None,
-                 window: int = 0) -> None:
+                 window: int = 0, palette: Palette | None = None) -> None:
         super().__init__("", id=id, markup=False)
+        self.palette = palette or DARK
         self.columns = columns or []
         self.items: list[Item] = []
         self.index = 0
@@ -158,28 +181,28 @@ class Menu(Static):
         for n, it in enumerate(rows):
             selected = (self.top + n) == self.index
             line = Text(no_wrap=True, overflow="crop")
-            line.append((self.g.cursor + " ") if selected else pad, style=f"bold {ACCENT}" if selected else "")
+            line.append((self.g.cursor + " ") if selected else pad, style=f"bold {self.palette.accent}" if selected else "")
             for k, c in enumerate(it.cells):
                 c = cell(c)
                 w = widths[k] if k < len(widths) else 0
                 txt = c.text.ljust(w) if w else c.text
                 style = c.style if not selected else (c.style if c.style and not selected else "")
                 if selected:
-                    style = f"bold {ACCENT}" if c.style in ("", None) else c.style
+                    style = f"bold {self.palette.accent}" if c.style in ("", None) else c.style
                 elif not c.style and it.style:
                     style = it.style
                 if not it.enabled and not selected:
-                    style = MUTE
+                    style = self.palette.mute
                 line.append(txt, style=style)
             if selected:
-                line.stylize(f"on {SEL}")
+                line.stylize(f"on {self.palette.sel}")
                 line.pad_right(max(0, (self.size.width or 100) - len(line.plain)))
-                line.stylize(f"on {SEL}")
+                line.stylize(f"on {self.palette.sel}")
             out.append_text(line)
             if n < len(rows) - 1:
                 out.append("\n")
         if self.window and len(self.items) > win:
-            out.append(f"\n  {self.top + 1}-{min(len(self.items), self.top + win)} of {len(self.items)}", style=MUTE)
+            out.append(f"\n  {self.top + 1}-{min(len(self.items), self.top + win)} of {len(self.items)}", style=self.palette.mute)
         return out
 
     def on_resize(self, _event) -> None:

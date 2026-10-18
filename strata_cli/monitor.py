@@ -15,6 +15,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, Static
 
+from strata_cli import nav
 from strata_cli.client import ClientError, Endpoint
 from strata_cli.dashboard import MonitorHistory, render_dashboard
 from strata_cli.detail_dashboard import render_detail_dashboard
@@ -101,6 +102,7 @@ class MonitorApp(App):
         Binding("enter", "request_detail", "Row detail", show=False),
         Binding("question_mark", "help", "Help"), Binding("f1", "help", "Help", show=False),
         Binding("b", "browser", "Open in browser", show=False),
+        Binding("7", "view_6", "Connect view", show=False),
     ]
 
     def __init__(self, endpoint: Endpoint, snapshot: dict | None, *, interval: float = 1.0,
@@ -150,7 +152,7 @@ class MonitorApp(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
             yield Static("", id="content", markup=False)
-            yield Input(placeholder="Filter request state, then Enter", max_length=80, id="filter")
+            yield Input(placeholder="Filter by request id, state, live or done, then Enter", max_length=80, id="filter")
             yield Static("Read only  |  q detaches without stopping Strata", id="message", markup=False)
 
     def on_mount(self) -> None:
@@ -170,6 +172,7 @@ class MonitorApp(App):
         }[self.theme_choice]
         if self.color_choice == "never":
             bg, panel, fg, mute = "transparent", "transparent", "ansi_default", "ansi_default"
+        self.set_class(self.theme_choice == "light" and self.color_choice != "never", "theme-light")   # pop-ups and the Connect view follow it
         self.screen.styles.background = bg
         self.query_one("#shell").styles.background = panel
         self.query_one("#content").styles.color = fg
@@ -180,8 +183,14 @@ class MonitorApp(App):
         """The glyph set of the text views (2-6): the Overview's solid look is not theirs, they keep the plain ASCII fallback."""
         return "ascii" if self.glyph_choice == "solid" else self.glyph_choice
 
+    def _view_count(self) -> int:
+        """Six views, and a seventh (Connect) when `strata launch` opened the monitor: arrows, number keys and the tab line all use this."""
+        return nav.count(self.connect_enabled)
+
     def _paint(self, size=None) -> None:
         size = self.screen.size if size is None else size
+        if self.view >= len(VIEWS):          # the Connect view belongs to the launch-aware monitor (strata_cli/launch/monitor_ext.py)
+            return
         snapshot = {**self.displayed, "recent": (self.displayed.get("recent") or [])[:self.requests]}
         snapshot["activity_continuity"] = self.displayed_activity_continuity
         snapshot["work"] = {**(self.displayed.get("work") or {}),
@@ -200,7 +209,7 @@ class MonitorApp(App):
                 history=self.history, connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.text_glyphs,
-                color=self.color_choice != "never", theme=self.theme_choice)
+                color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled)
         elif self.view != 0 and size.width >= 128 and size.height >= 36 and self.connection_state not in (
                 "connecting", "disconnected", "auth_required", "incompatible"):
             display = render_detail_dashboard(
@@ -210,7 +219,7 @@ class MonitorApp(App):
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.text_glyphs,
                 color=self.color_choice != "never", theme=self.theme_choice,
-                selected=self.selected, detail=self.detail, serving_pane=self.serving_pane)
+                selected=self.selected, detail=self.detail, serving_pane=self.serving_pane, connect=self.connect_enabled)
         else:
             content = render_view(snapshot, VIEWS[self.view],
                                   width=max(30, size.width - self.margin), height=max(8, size.height - 2),
@@ -218,7 +227,7 @@ class MonitorApp(App):
                                   filter_text=self.filter_text, glyphs=self.text_glyphs,
                                   connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                                   serving_pane=self.serving_pane,
-                                  detail=self.detail, connection_state=self.connection_state)
+                                  detail=self.detail, connection_state=self.connection_state, connect=self.connect_enabled)
             display = Text(content, no_wrap=True, overflow="crop")
             if self.color_choice != "never":
                 accent = "#0c8a60" if self.theme_choice == "light" else "#34d399"
@@ -228,7 +237,7 @@ class MonitorApp(App):
                     stripped = line.strip()
                     if stripped.startswith("STRATA") or stripped.startswith(("REQUEST FLOW", "GPU SENSORS", "Hardware", "Recent requests", "Slots / groups", "Occupied slots by group")):
                         display.stylize(f"bold {accent}", offset, offset + len(line.rstrip("\n")))
-                    elif stripped.startswith(("---", "Sample age", "1-6 views", "Read only")):
+                    elif stripped.startswith(("---", "Sample age", "1-6 views", "1-7 views", "Read only")):
                         display.stylize(muted, offset, offset + len(line.rstrip("\n")))
                     offset += len(line)
                 display.highlight_regex(r"\[LIVE\]|\[\d [^\]]+\]", f"bold {accent}")
@@ -444,10 +453,10 @@ class MonitorApp(App):
         self._move_row(len(self._selectable_rows()))
 
     def action_previous_view(self) -> None:
-        self._set_view((self.view - 1) % len(VIEWS))
+        self._set_view((self.view - 1) % self._view_count())
 
     def action_next_view(self) -> None:
-        self._set_view((self.view + 1) % len(VIEWS))
+        self._set_view((self.view + 1) % self._view_count())
 
     def _move_row(self, amount: int) -> None:
         rows = self._selectable_rows()
@@ -457,7 +466,7 @@ class MonitorApp(App):
             self._paint()
 
     def action_help(self) -> None:
-        self.error = "1-6/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
+        self.error = f"{nav.keys(self.connect_enabled)}/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
         self._paint()
 
     def action_request_detail(self) -> None:
@@ -545,3 +554,7 @@ class MonitorApp(App):
 
     def action_view_5(self) -> None:
         self._set_view(5)
+
+    def action_view_6(self) -> None:
+        if self.connect_enabled:
+            self._set_view(6)

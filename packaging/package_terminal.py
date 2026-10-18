@@ -97,6 +97,7 @@ PAYLOAD = (
     "requirements.txt",
     "requirements-monitor.txt",
     "docs/MANAGEMENT_PROTOCOL.md",
+    "docs/TERMINAL_LAUNCH.md",         # the README below points at it (`strata launch`); it used to be missing from the archive
     "data/gguf_fingerprints.json",     # `strata models import --plan` names a known file set from this table
 )
 
@@ -438,16 +439,30 @@ Put `bin/` on your PATH to get the `strata` command everywhere:
 
     echo "export PATH=\\"$PWD/bin:$PATH\\"" >> ~/.profile
 """
+    ram = ("    Task Manager > Performance > Memory > Available, or in PowerShell:\n"
+           "    [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)   # GB free" if win else
+           "    free -g" if not target.startswith("darwin") else
+           "    Activity Monitor > Memory, or:  vm_stat   (free + inactive pages x 16 KB)")
     return f"""Strata Terminal {version} ({target})
 {'=' * (len(version) + len(target) + 18)}
 
 This is the terminal distribution. It carries its own Python {PYTHON_VERSION} and its own packages, so you do not
-need Python, pip, Node, a compiler or a development checkout. Starting and serving never install or download
-anything; if something is missing, the error names the command that installs it.
+need Python, pip, Node, a compiler or a development checkout. Serving and watching (`strata serve`, `strata runtime`,
+`strata monitor`) never install or download anything; if something is missing, the error names the command that
+installs it. Only two commands fetch files, and only when you run them: `strata launch` (the engine and the model you
+choose, after it tells you the size) and `strata update` (the engine and the Strata components).
 
 Install
 -------
 {install}
+Before you start a big model
+----------------------------
+A model of tens of GB needs free memory. Check how much is free first:
+
+{ram}
+
+Close other programs (browsers use a lot) if it is less than the model needs; `strata launch` shows what each model needs.
+
 What it does NOT include
 ------------------------
 The **engine** is a separate, independently versioned component and is not bundled: the right engine package

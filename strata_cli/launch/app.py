@@ -72,6 +72,8 @@ class Ctx:
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":
             out.append(f"{r.title}: {r.words}.")
+        if self.computer.other_vendor_note:
+            out.append(self.computer.other_vendor_note)
         missing = acc.missing_helper(s.access)
         if missing:
             out.append(missing)
@@ -97,6 +99,31 @@ class Ctx:
             return (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
         except Exception:                                    # noqa: BLE001
             return None
+
+    # ---- where the model is and what it still needs
+    def model_state(self, data_dir: str | None = None):
+        """The chosen model's state (installed, what helper files are missing, sizes) for these choices."""
+        from strata_cli.launch import modelstate
+        s = self.settings
+        return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows)
+
+    def default_folder(self) -> Path:
+        """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
+        prepared data), else the data folder every command agrees on."""
+        s = self.settings
+        if s.model_path:
+            try:
+                from strata_control import discovery
+                p = Path(s.model_path).expanduser()
+                first = p if p.is_file() else next(iter(sorted(p.glob("*.gguf"))), None)
+                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                if found:
+                    return Path(found)
+            except OSError:
+                pass
+            return self.catalog.data_dir()
+        return self.catalog.data_dir_for(s.family, s.model)
 
     def invalidate_rows(self) -> None:
         self._adv = None
@@ -141,11 +168,11 @@ class Ctx:
             return line + "   (the engine command is shown once the model is installed)"
         try:
             from strata_control import tune_knobs
-            from strata_cli.launch.runner import cards_for_launch, derive_config
+            from strata_cli.launch.runner import apply_choices, cards_for_launch, derive_config
             from serve.server import engine_args
             import contextlib
             import io
-            d = derive_config(cfg, s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog))
+            d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog))
             if s.parallel:
                 d["parallel"] = s.parallel
             with contextlib.redirect_stdout(io.StringIO()):
@@ -185,7 +212,7 @@ class LaunchApp(App):
 
     def goto(self, step_id: str) -> None:
         self.current = step_id
-        self.switch_screen(SCREENS[step_id]())
+        self.show(SCREENS[step_id]())
 
     def begin_setup(self, *, preset: str | None = None, own_files: bool = False) -> None:
         self.ctx.tune_chosen = False
@@ -199,7 +226,7 @@ class LaunchApp(App):
         self.ctx.picked_in_list = False
         self.ctx.invalidate_rows()
         self.current = "model"
-        self.switch_screen(ModelScreen())
+        self.show(ModelScreen())
 
     def advance(self) -> None:
         flow = self.flow()
@@ -214,7 +241,7 @@ class LaunchApp(App):
             self.goto(flow[i - 1])
         else:
             self.current = "start"
-            self.switch_screen(StartScreen())
+            self.show(StartScreen())
 
     # ---- starting
     def start_preset(self, name: str) -> None:
@@ -222,10 +249,19 @@ class LaunchApp(App):
         self.ctx.settings = s
         self.run_launch()
 
+    def show(self, screen) -> None:
+        """Put `screen` in front. The first screen of a run that skips the questions has nothing to replace (the app starts with only its
+        empty base screen), so it is pushed; every later one replaces the one on top. (switch_screen on the base screen raised
+        IndexError: pop from empty list, tester report T02.)"""
+        if len(self.screen_stack) <= 1:
+            self.push_screen(screen)
+        else:
+            self.switch_screen(screen)
+
     def run_launch(self, confirmed: bool = False) -> None:
         s = self.ctx.settings
         self.cancel = threading.Event()
-        self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed)
+        self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed, confirm=self._ask_from_run)
         gb = getattr(self.runner, "download_gb", lambda: 0.0)() if not confirmed else 0.0
         if gb >= 1.0:
             free = self.ctx.catalog.disk_free(s.data_dir or self.ctx.catalog.data_dir())
@@ -236,17 +272,39 @@ class LaunchApp(App):
                 if choice == "go":
                     self.run_launch(confirmed=True)
 
-            self.push_screen(ConfirmScreen(f"Download about {gb:.0f} GB?",
-                                           f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; an interrupted download continues where it stopped."
-                                           + room + warn,
-                                           [("go", "Download and start"), ("no", "Not now")]), done)
+            asker = getattr(self.runner, "download_question", None)
+            title, text = asker() if asker else (f"Download about {gb:.0f} GB?",
+                                                 f"This model is not on this computer yet. Strata will download about {gb:.0f} GB now; "
+                                                 "an interrupted download continues where it stopped.")
+            self.push_screen(ConfirmScreen(title, text + room + warn, [("go", "Download and start"), ("no", "Not now")]), done)
             return
         screen = RunScreen()
         self.run_screen = screen
         self.current = "run"
-        self.switch_screen(screen)
+        self.show(screen)
         self.running = True
         threading.Thread(target=self._work, daemon=True).start()
+
+    def _ask_from_run(self, title: str, text: str) -> bool:
+        """A question from the run (a worker thread): show it on the screen and wait for the answer. Enter means yes."""
+        box: dict[str, bool] = {"go": True}
+        answered = threading.Event()
+
+        def done(choice: str | None) -> None:
+            box["go"] = choice == "go"
+            answered.set()
+
+        def show() -> None:
+            self.push_screen(ConfirmScreen(title, text, [("go", "Download anyway"), ("no", "Not now")]), done)
+
+        try:
+            self.call_from_thread(show)
+        except Exception:                                    # noqa: BLE001 - the app is closing
+            return False
+        while not answered.wait(0.2):
+            if self.cancel.is_set():
+                return False
+        return box["go"]
 
     def _emit(self, ev: Event) -> None:
         screen = self.run_screen
@@ -304,7 +362,7 @@ class LaunchApp(App):
 
     def back_to_start(self) -> None:
         self.current = "start"
-        self.switch_screen(StartScreen())
+        self.show(StartScreen())
 
 
 # ------------------------------------------------------------------------------------------------ the monitor
@@ -344,7 +402,7 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
 
 
 def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None, feed: str | None = None, auto_run: bool = False,
-            save: bool = False) -> int:
+            save: bool = False, open_page: bool = False) -> int:
     """Open the launch screens. `settings` given and `auto_run`: skip the questions and go straight to the run."""
     catalog = catalog or Catalog()
     print("Looking at this computer…", flush=True)
@@ -362,9 +420,21 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
     ctx = Ctx(catalog=catalog, computer=computer, rows=rows, settings=s, glyphs=Glyphs(), feed=feed)
     app = LaunchApp(ctx, auto_run=auto_run)
     result = app.run()
+    if getattr(app, "return_code", 0) not in (0, None) or getattr(app, "_exception", None) is not None:
+        # The screens stopped on an error of their own (not a launch failure, which the run screen shows). Never end quietly with exit 0.
+        print("strata: The launch screens stopped because of an unexpected problem, and nothing was started. "
+              "Run the same command with --no-tui to see the steps as plain lines, and send the output if you ask for help.", file=sys.stderr)
+        return 1
     if app.stopped_after_save:
         print(f"Saved the preset '{ctx.settings.name}'. Start it with: strata launch --preset \"{ctx.settings.name}\"")
         return 0
     if result is None:
         return 0
-    return run_monitor(_info_for(result, ctx.settings))
+    if not result.serving:
+        print(result.final_text)
+        return 0
+    info = _info_for(result, ctx.settings)
+    if open_page:                                            # only with an explicit --open: nothing else opens a browser
+        from strata_cli.launch.cmd import open_page as open_in_browser
+        open_in_browser(info["url"])
+    return run_monitor(info)

@@ -18,6 +18,43 @@ _DEFAULT = re.compile(r"\(\s*default[: ]\s*([^)]*)\)", re.I)
 _PARENS = re.compile(r"\([^)]*\)")
 
 
+# Plain words for the settings people meet most. The engine's own help text is written for its developers (round codes like "R4", internal
+# names); these lines say what the setting does for a person. A setting not listed here keeps the engine's sentence with the codes removed.
+PLAIN = {
+    "--expert-cache": "How many of the model's experts stay in graphics memory (auto picks the most that fit your card).",
+    "--prefill": "How many prompt tokens are read in one go (auto picks for your card).",
+    "--spec": "How many words the draft layer guesses ahead to speed up answers.",
+    "--spec-min-p": "How sure the draft layer must be before a guess is used.",
+    "--mtp": "The draft layer that makes answers faster.",
+    "--pack": "The folder with the model's prepared data.",
+    "--native": "The model file.",
+    "--ple-gguf": "The model file that holds the word-embedding table.",
+    "--expert-profile": "A table of which experts are used most, to decide what stays in graphics memory.",
+    "--max-context": "How much text the model remembers at once.",
+    "--kv": "The format of the conversation memory (int8 uses half of fp16; q4_0 uses less still).",
+    "--kv-resident": "How much of the conversation memory stays in graphics memory.",
+    "--vision": "Let the model read pictures.",
+    "--vram-reserve-mib": "Graphics memory (in MiB) kept free for other programs.",
+    "--adapt-every": "How often the engine re-chooses which experts stay in graphics memory.",
+    "--pcie-frac": "How much of the link to the graphics card is used for moving experts.",
+    "--suffix-draft": "Guess the next words from text already in the conversation.",
+    "--port": "The network port the server listens on.",
+    "--gpu": "Which graphics card to use.",
+    "--gpus": "Which graphics cards to use together.",
+}
+_CODE = re.compile(r"\b[RTS]\d{1,2}\b[:,)]?\s*")
+
+
+def plain_description(name: str, text: str) -> str:
+    """A person's sentence for a setting: ours when we have one, else the engine's with its internal round codes ("R4", "T2") taken out."""
+    if name in PLAIN:
+        return PLAIN[name]
+    cleaned = _CODE.sub("", text or "").strip(" :;,-")
+    cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else "An engine setting (the engine's help has no sentence for it)."
+
+
 @dataclass
 class Param:
     name: str                       # --flag or ENV_NAME
@@ -33,7 +70,7 @@ class Param:
         """One line: the first sentence, cut at 70 characters."""
         text = re.sub(r"\s+", " ", re.sub(r"\([^)]*\)", "", self.description)).strip()
         cut = re.split(r"(?<=[.;:])\s", text, maxsplit=1)[0] if text else ""
-        cut = cut.rstrip(".;:")
+        cut = plain_description(self.name, cut.rstrip(".;:")).rstrip(".;:")
         return cut if len(cut) <= 70 else cut[:67].rstrip() + "..."
 
 

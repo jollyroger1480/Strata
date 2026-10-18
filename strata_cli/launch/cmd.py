@@ -85,10 +85,11 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
     g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
-                   help="let the model read pictures (default off)")
+                   help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader "
+                        "(on the graphics card for NVIDIA and AMD, on the CPU otherwise); off turns it off")
     g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
-    g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
+    g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
@@ -102,6 +103,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
+    o.add_argument("--open", action="store_true", help="open the server's web page in your browser once it is serving (nothing opens a browser without this)")
+    o.add_argument("--yes", action="store_true", help="do not ask questions (for one: whether to download the model on a computer with no engine yet)")
     o.add_argument("--plan", action="store_true", help="show what would happen and exit; nothing is changed")
     o.add_argument("--feed", metavar="URL|DIR", help="where the signed update feed (engine downloads) is; default: STRATA_UPDATE_FEED or the project's")
     o.add_argument("--output", choices=("human", "json"), default="human")
@@ -237,19 +240,51 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
             elif r.verdict == "tight":
                 notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
-            if s.vision != "off" and not r.images:
+            if s.vision not in (None, "off") and not r.images:
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
+            if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
+                s.vision = catalog.picture_default(r.images)
+                if s.vision == "off" and r.images and catalog.reader_state() == "missing":
+                    notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
+                                            "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
     if s.access != "local" and not s.api_key:
         from strata_cli.launch import access
         s.api_key = access.new_key()
         notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
                                 "It is saved with the preset; show it with: strata launch --show-key"))
+    notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
     notices += S.check_parallel(s, vram_gb=vram)
     return s, notices
+
+
+def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
+    """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
+    make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
+    from strata_control import gpu_fit
+    out: list[S.Notice] = []
+    vendor = comp.engine_vendor
+    if s.gpus and vendor:
+        mine = {int(g.get("index", -1)) for g in comp.usable_gpus}
+        others = [g for g in gpu_fit.for_vendor(comp.gpus, vendor)[1] if gpu_fit.usable_cards([g])[0]]
+        for idx in s.gpus:
+            if int(idx) in mine:
+                continue
+            other = next((g for g in others if int(g.get("index", -2)) == int(idx)), None)
+            make = gpu_fit.VENDOR_NAME.get(vendor, vendor)
+            if other is not None:
+                omake = gpu_fit.VENDOR_NAME.get(str(other.get("vendor")), str(other.get("vendor")))
+                out.append(S.Notice("error", f"Card {idx} is an {omake} card ({other.get('name')}), and this build of Strata drives {make} cards only. "
+                                    f"A model cannot be split across {make} and {omake} cards. {gpu_fit.SECOND_MODEL_SENTENCE}",
+                                    f"Name a {make} card (" + ", ".join(str(g.get("index")) for g in comp.usable_gpus) + f"), or install the {omake} "
+                                    "build of Strata to use that card."))
+    note = comp.other_vendor_note
+    if note:
+        out.append(S.Notice("warn", note, ""))
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ plain-text run
@@ -305,6 +340,42 @@ def _stop_all(name: str | None) -> int:
     elif not stopped:
         _say("Nothing from `strata launch` is running.")
     return 0
+
+
+def _ask_yes(title: str, text: str) -> bool:
+    """Ask a yes/no question on the terminal. Enter means yes. When nobody can answer (no keyboard), the answer is yes: the person already
+    named the model on the command line."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return True
+    _say("")
+    _say(f"[!] {text}")
+    try:
+        answer = input("Go on? [Y/n] ").strip().lower()
+    except EOFError:
+        return True
+    return answer in ("", "y", "yes")
+
+
+def open_page(url: str) -> bool:
+    """Open the server's page in the browser. Only ever called for an explicit --open (or the monitor's b key)."""
+    try:
+        import webbrowser
+        return bool(webbrowser.open(url))
+    except Exception:                                        # noqa: BLE001 - no browser here: the address is printed anyway
+        return False
+
+
+def _tui(run, *args, **kw) -> int:
+    """Open the screens. An error of the screens themselves ends with a plain sentence and a non-zero exit code, never a traceback and exit 0
+    (tester report T02)."""
+    try:
+        return int(run(*args, **kw) or 0)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:                                   # noqa: BLE001
+        print(f"strata: The launch screens stopped because of an unexpected problem ({type(e).__name__}: {e}), and nothing was started. "
+              "Run the same command with --no-tui to see the steps as plain lines.", file=sys.stderr)
+        return 1
 
 
 def running_launches() -> list[dict]:
@@ -435,7 +506,7 @@ def run_launch(a: argparse.Namespace) -> int:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
             from strata_cli.launch import app
-            return app.run_tui(None, catalog=catalog, feed=a.feed)
+            return _tui(app.run_tui, None, catalog=catalog, feed=a.feed, open_page=bool(a.open))
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
         s, notes = apply_defaults(s, catalog)
@@ -447,7 +518,7 @@ def run_launch(a: argparse.Namespace) -> int:
             s.api_key = access.new_key()
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed)
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes)
         if a.plan:
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
@@ -473,7 +544,7 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"[!] {fw}")
         if interactive and have_choices:
             from strata_cli.launch import app
-            return app.run_tui(s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))
+            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open))
         try:
             result = runner.run()
         except LaunchError as e:
@@ -483,6 +554,14 @@ def run_launch(a: argparse.Namespace) -> int:
             store.touch_used(saved.name)
         elif a.preset:
             store.touch_used(a.preset)                      # flags next to --preset change this start only
+        if not result.serving:
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, "serving": False, "name": s.name, "profile": result.profile,
+                                  "engine_problem": result.engine_problem, "message": result.final_text}))
+            else:
+                _say("")
+                _say(result.final_text)
+            return 0
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,
@@ -502,6 +581,8 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in result.notices:
             _say(f"[!] {n}")
         local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
+        if a.open and local:
+            open_page(local)
         if result.key and os.name == "nt":
             _say(f"  Watch it:    $env:STRATA_API_KEY = strata launch --show-key; strata monitor --url {local} --credential-env STRATA_API_KEY")
         elif result.key:
@@ -524,15 +605,16 @@ def run_connect(a: argparse.Namespace) -> int:
     from strata_cli.launch import access, harness
     machine = a.output == "json"
     if not a.harness:
-        rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status} for h in harness.HARNESSES]
+        rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status, "vendor_tested": h.tested or None} for h in harness.HARNESSES]
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "harnesses": rows}))
         else:
-            _say(f"{'App':<20}{'Works with':<22}Status")
+            _say(f"{'App':<20}{'Works with':<22}Vendor tested")
             for r in rows:
                 _say(f"{r['id']:<20}{r['speaks']:<22}{r['status']}")
             _say("")
-            _say("Show one: strata connect opencode        Write it for you: strata connect opencode --write")
+            _say("Vendor tested is the app version its maker tested the setup with, not a check of your server.")
+            _say("Check your server: strata connect opencode --check        Show one: strata connect opencode        Write it: strata connect opencode --write")
         return 0
     h = harness.find(a.harness)
     if h is None:
@@ -550,10 +632,30 @@ def run_connect(a: argparse.Namespace) -> int:
     out = harness.render(h, tgt)
     shown_key = key if a.show_key else None
     if machine:
-        print(json.dumps({"schema_version": 1, "ok": True, **{k: (harness.mask(v, key) if isinstance(v, str) else v) for k, v in out.items()
-                                                              if k != "files"},
-                          "files": [{**f, "text": harness.mask(f["text"], key)} for f in out["files"]]}))
-        return 0
+        payload = {"schema_version": 1, "ok": True, **{k: (harness.mask(v, key) if isinstance(v, str) else v) for k, v in out.items()
+                                                       if k != "files"},
+                   "files": [{**f, "text": harness.mask(f["text"], key)} for f in out["files"]],
+                   "vendor_tested": h.tested or None}
+        if not a.check:
+            print(json.dumps(payload))
+            return 0
+        # --check runs the same two checks as the plain-words output (one prompt, one tool call, the way this app sends them) and the answer
+        # says what they found: "ok" is true only when both worked, and the exit code is 1 when one failed or the server cannot be reached.
+        from strata_cli.launch import check
+        results = check.run_checks(h.id if not h.built_in else "opencode", tgt.url, key, tgt.model)
+        passed = all(r.ok for r in results)
+        payload["checks"] = [{"name": r.name, "ok": r.ok, "detail": r.detail, "seconds": round(r.seconds, 1)} for r in results]
+        payload["checked_server"] = tgt.url
+        payload["ok"] = passed
+        if not passed:
+            reached = any(r.ok for r in results)
+            payload["error"] = {"code": 1, "message": ("The server answered, but the app's prompt or tool call did not work: "
+                                                       + "; ".join(f"{r.name}: {r.detail}" for r in results if not r.ok))
+                                if reached else
+                                "The server could not be reached or did not answer the check: "
+                                + "; ".join(f"{r.name}: {r.detail}" for r in results if not r.ok)}
+        print(json.dumps(payload))
+        return 0 if passed else 1
     _say(f"{h.title}  ({h.speaks}; {h.status})")
     if not info.get("running") and not a.url:
         _say("[!] No running Strata server was found, so this uses the default address. Start one with: strata launch")
