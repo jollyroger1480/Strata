@@ -120,5 +120,29 @@ class Packager(unittest.TestCase):
         self.assertFalse(any(self.out.iterdir()) and any(p.name.startswith("0.1.45.1") for p in self.out.iterdir()))
 
 
+
+
+class SubfolderDlls(unittest.TestCase):
+    """A DLL only in a sub-folder is found only when BUILD.json lists the folder (Control puts those on PATH)."""
+
+    def make(self, d, lib_dirs):
+        import json
+        d = Path(d)
+        (d / "strata.exe").write_bytes(make_pe(["rocblas.dll", "KERNEL32.dll"]))
+        (d / "rocm" / "bin").mkdir(parents=True)
+        (d / "rocm" / "bin" / "rocblas.dll").write_bytes(make_pe(["KERNEL32.dll"]))
+        (d / "BUILD.json").write_text(json.dumps({"lib_dirs": lib_dirs}))
+
+    def test_subfolder_dll_not_on_the_path_is_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, [])
+            self.assertEqual(binary_deps.uncovered(Path(d)), [("strata.exe", "rocblas.dll")])
+
+    def test_subfolder_dll_listed_in_lib_dirs_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, ["rocm/bin"])
+            self.assertEqual(binary_deps.uncovered(Path(d)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

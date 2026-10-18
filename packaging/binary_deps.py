@@ -194,7 +194,17 @@ def uncovered(folder: Path, files: list[str] | None = None) -> list[tuple[str, s
     """(file, imported library) pairs that are neither in the package nor the OS's nor the GPU driver's. Empty = a clean PC runs it."""
     folder = Path(folder)
     rels = files if files is not None else [p.relative_to(folder).as_posix() for p in sorted(folder.rglob("*")) if p.is_file() and not p.is_symlink()]
-    bundled_win = {Path(r).name.lower() for r in rels}
+    # Windows loads a DLL from the program's own folder, System32 and PATH; a DLL in a sub-folder counts only when BUILD.json lists
+    # that folder in "lib_dirs" (Control and the app put those folders on PATH when they start the engine). Found 2026-10-18: the
+    # RX 9000 package kept rocblas.dll under rocm/bin, which only Control's PATH finds, and a plain start died with 0xC0000135.
+    lib_dirs = {""}
+    if any(r == "BUILD.json" for r in rels):
+        try:
+            import json
+            lib_dirs |= {str(d).strip("/\\").replace("\\", "/") for d in json.loads((folder / "BUILD.json").read_text(encoding="utf-8")).get("lib_dirs", [])}
+        except (OSError, ValueError):
+            pass
+    bundled_win = {Path(r).name.lower() for r in rels if ("" if Path(r).parent.as_posix() == "." else Path(r).parent.as_posix()) in lib_dirs}
     bundled = {Path(r).name for r in rels}
     problems: list[tuple[str, str]] = []
     for rel in rels:
