@@ -66,6 +66,9 @@ class Result:
     tunnel: str | None = None
 
 
+NO_ENGINE_NEXT = ("Get the engine that matches this computer's graphics card (from whoever sent you Strata, or with `strata update --feed <address>`), "
+                  "then run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
+
 STAGES = ("engine", "model", "config", "tune", "start", "access")
 
 
@@ -322,6 +325,12 @@ class Runner:
                 self.emit("engine", str(ev.get("message") or ""))
             last = ev
         code = p.wait()
+        if code == 0:
+            # `strata update` exits 0 when the feed simply has no engine for this PC (or only one for another card family). That is not an
+            # engine: refuse here, before the model (tens of GB) is touched.
+            after = ec.status(root)
+            if not after.get("usable"):
+                raise LaunchError(self._no_engine_words(last, after), NO_ENGINE_NEXT, 5)
         if code != 0:
             why = ""
             if isinstance(last, dict):
@@ -335,6 +344,21 @@ class Runner:
             raise LaunchError("The engine could not be installed." + (f" {why}" if why else ""),
                               "Check your internet connection, or point Strata at an update source with --feed, then try again.", 6)
         self.emit("engine", "The engine is installed.", 100)
+
+    @staticmethod
+    def _no_engine_words(last: object, report: dict) -> str:
+        """The one plain sentence for "no usable engine for this PC": the update's own note (the wrong-card-family line, or "the feed has no
+        engine package for this PC"), else the engine report's plain notice. Never the raw list of reasons."""
+        note = ""
+        if isinstance(last, dict):
+            for res in last.get("results") or []:
+                if isinstance(res, dict) and res.get("component") == "engine":
+                    note = str(res.get("note") or "").strip()
+        if not note:
+            note = str(report.get("notice") or "").strip()
+        if not note or note.startswith("No engine for this PC was found"):
+            note = "There is no engine for this computer's graphics card in the update source."
+        return note
 
     # ---- 2. the model
     def vision_word(self) -> str:
@@ -443,7 +467,7 @@ class Runner:
         self.emit("model", f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
         env = self._env()
-        env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
+        env.update(STRATA_CONTROL_INSTALL="1", STRATA_NEED_ENGINE="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
         for k in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
             env.pop(k, None)
         env["PYTHONPATH"] = str(cat.src)
