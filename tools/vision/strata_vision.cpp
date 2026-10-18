@@ -81,11 +81,9 @@ int main(int argc, char** argv) {
         else if (a == "--gpu") gpu = true;
         else if (a == "--version") {
 #ifdef STRATA_VISION_HIP
-            std::printf("strata-vision hip (GPU architectures: %s)
-", STRATA_VISION_HIP_ARCHS);
+            std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
 #else
-            std::printf("strata-vision
-");
+            std::printf("strata-vision\n");
 #endif
             return 0;
         }
@@ -129,8 +127,7 @@ int main(int argc, char** argv) {
             have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
         }
         if (!have_gpu) {
-            std::printf("ERR this picture reader found no GPU (it was built for: %s)
-",
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n",
 #ifdef STRATA_VISION_HIP
                         STRATA_VISION_HIP_ARCHS
 #else
@@ -144,8 +141,7 @@ int main(int argc, char** argv) {
         const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
         if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
             !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
-            std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)
-", g_gfx.front().c_str(),
+            std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)\n", g_gfx.front().c_str(),
                         STRATA_VISION_HIP_ARCHS);
             std::fflush(stdout);
             return 3;
