@@ -80,11 +80,11 @@ FALLBACK_MODELS = {
     "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
                         "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
                "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
-               "vision": False},
+               "vision": True},
     "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
                         "about 20% slower than Q2_0 on 12 GB cards",
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
-               "vision": False},
+               "vision": True},
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
                        "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "vision": True},
