@@ -83,6 +83,23 @@ int main() {
     expect(cpu::plan_pool_workers(unk).workers < 255, "unknown 256 -> never 255");
     expect(cpu::plan_pool_workers(cpu_of(8, {})).workers == 7, "unknown, 8 logical -> 7 workers");
 
+    // hybrid CPUs: with more E-cores than P-cores, the P-cores but the host's plus half of the E-cores
+    {
+        auto h = cpu_of(20, {20});
+        h.p_cores = 8;
+        h.e_cores = 12;
+        line("hybrid 8P+12E (Core Ultra 7 265)", h);
+        expect(cpu::plan_pool_workers(h).workers == 13, "8P+12E -> 13 workers (measured: 12-16 beat the 19 of one per core)");
+        auto h2 = cpu_of(32, {24});
+        h2.p_cores = 8;
+        h2.e_cores = 16;
+        expect(cpu::plan_pool_workers(h2).workers == 15, "8P+16E -> 15 workers (#642)");
+        auto h3 = cpu_of(24, {16});
+        h3.p_cores = 8;
+        h3.e_cores = 8;
+        expect(cpu::plan_pool_workers(h3).workers == 15, "8P+8E: not more E-cores than P-cores, every core but the host's");
+    }
+
     // a container quota
     const auto q = cpu_of(128, {64}, 4.0);
     line("64c, container quota 4 CPUs", q);
@@ -106,7 +123,7 @@ int main() {
            "300 workers on 256 threads: more than the CPU threads");
     expect(cpu::pool_workers_warning(30, xeon, cpu::plan_pool_workers(xeon)).find("socket") != std::string::npos,
            "30 workers on 2x20c: crosses the socket");
-    expect(!cpu::pool_workers_warning(30, c64, cpu::plan_pool_workers(c64)).empty(), "30 workers on 64c is above the cap: warns");
+    expect(!cpu::pool_workers_warning(40, c64, cpu::plan_pool_workers(c64)).empty(), "40 workers on 64c is above the cap: warns");
     expect(cpu::pool_workers_warning(8, q, cpu::plan_pool_workers(q)).find("container") != std::string::npos,
            "8 workers under a 4-CPU quota: names the container limit");
 

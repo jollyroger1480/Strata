@@ -50,6 +50,12 @@ class DefaultWorkers(unittest.TestCase):
         self.assertEqual(setup.plan_pool_workers(48, [6, 18]), 5)
         self.assertEqual(setup.plan_pool_workers(1, [1]), 1)
 
+    def test_hybrid(self):
+        self.assertEqual(setup.plan_pool_workers(20, [20], hybrid=(8, 12)), 13)     # Core Ultra 7 265 (measured)
+        self.assertEqual(setup.plan_pool_workers(32, [24], hybrid=(8, 16)), 15)     # i9-14900KF (#642)
+        self.assertEqual(setup.plan_pool_workers(24, [16], hybrid=(8, 8)), 15)      # not more E-cores than P-cores
+        self.assertEqual(setup.hybrid_pool_workers((8, 12)), 13)                    # setup's own rule agrees
+
     def test_unknown_layout_and_quota(self):
         self.assertLessEqual(setup.plan_pool_workers(256, []), setup.POOL_WORKERS_CAP)
         self.assertLess(setup.plan_pool_workers(256, None), 255)

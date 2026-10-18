@@ -37,6 +37,12 @@ struct PoolPlanInput {
     /// thread's own core is counted in it.  One entry on a single-socket CPU.  Empty: the topology is not known.
     std::vector<int> cores_per_package;
     double cpu_quota = 0;               ///< CPUs a container quota allows (cgroup cpu.max); 0: no quota
+    /// Physical performance / efficiency cores of a hybrid CPU (both 0 on an ordinary one).  With more E-cores than
+    /// P-cores the default is the P-cores but the host's plus half of the E-cores (#642: i9-14900KF 8P+16E, 15 workers
+    /// 165 / 116 tok/s against 106 / 84 with all 23; Core Ultra 7 265, 8P+12E, RTX 3060 decode at 4K: 12-16 workers
+    /// +12.6% over the 19 of one-per-core, 24 workers -44%: notes-152-users.md).
+    int p_cores = 0;
+    int e_cores = 0;
 };
 
 struct PoolPlan {
@@ -71,6 +77,13 @@ inline PoolPlan plan_pool_workers(const PoolPlanInput& in) {
     if (n >= kPoolReserveFrom) {                          // a big CPU keeps a core for the engine's other threads
         n -= kPoolReserve;
         if (p.topology_known && p.packages == 1) p.limit = "physical cores, one kept free";
+    }
+    if (in.p_cores > 0 && in.e_cores > in.p_cores) {      // a hybrid CPU with more E-cores than P-cores
+        const int h = std::max(1, in.p_cores - 1 + in.e_cores / 2);
+        if (h < n) {
+            n = h;
+            p.limit = "the performance cores and half of the efficiency cores";
+        }
     }
     if (in.cpu_quota > 0.0) {
         const int q = std::max(1, (int) in.cpu_quota - 1);

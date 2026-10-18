@@ -1004,7 +1004,7 @@ POOL_RESERVE = 1
 VISION_THREADS_CAP = 16
 
 
-def plan_pool_workers(logical: int, cores_per_package=None, quota: float = 0.0) -> int:
+def plan_pool_workers(logical: int, cores_per_package=None, quota: float = 0.0, hybrid=None) -> int:
     """The engine's default pool worker count for a CPU of `logical` threads whose physical cores per socket are
     `cores_per_package` (the host thread's socket first; None/empty: the layout is not known) and a container CPU
     quota (0: none)."""
@@ -1016,6 +1016,8 @@ def plan_pool_workers(logical: int, cores_per_package=None, quota: float = 0.0) 
     n = max(1, local - 1)                              # the host thread has the first core
     if n >= POOL_RESERVE_FROM:
         n -= POOL_RESERVE
+    if hybrid and hybrid[0] > 0 and hybrid[1] > hybrid[0]:   # (P-cores, E-cores): the P-cores but the host's + half the E-cores
+        n = min(n, max(1, hybrid[0] - 1 + hybrid[1] // 2))
     if quota > 0:
         n = min(n, max(1, int(quota) - 1))
     return max(1, min(n, POOL_WORKERS_CAP))
@@ -1037,8 +1039,9 @@ def pool_workers_note(args, layout=None) -> list[str]:
         asked = int(args[args.index("--pool-workers") + 1])
     except (IndexError, ValueError):
         return []
+    hybrid = cpu_cores() if layout is None else None
     logical, cores = layout or cpu_core_layout()
-    rec = plan_pool_workers(logical, cores)
+    rec = plan_pool_workers(logical, cores, hybrid=hybrid)
     if asked <= rec:
         return []
     why = ("more than this PC has CPU threads" if asked + 1 > logical else

@@ -187,6 +187,7 @@ PoolPlanInput pool_plan_input(const CpuTopology& topo) {
     PoolPlanInput in;
     in.logical = topo.logical > 0 ? topo.logical : (int) std::thread::hardware_concurrency();
     in.cpu_quota = topo.cpu_quota;
+    if (topo.is_hybrid) { in.p_cores = topo.p_cores; in.e_cores = topo.e_cores; }
     if (!topo.layout_known) return in;   // cores_per_package stays empty
     // the cores per package, the host package first; the host core counts in its package
     std::vector<std::pair<int, int>> counts;   // (package, cores)
