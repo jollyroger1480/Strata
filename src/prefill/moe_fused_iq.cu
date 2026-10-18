@@ -1394,8 +1394,9 @@ bool native_supported(int gu_type, int d_type) {
     }();
     // gfx12: fused::available() (the Q2_0 pack's expert_w11_kernel, not ported) stays false, so requested() does too; the
     // same opt-in (STRATA_PF_FUSED=1) is read here.  Every other device: requested() as before.
-    // unset: on by default on gfx12 for IQ3_S and IQ3_XXS gate/up only (R9700: prompt +13..+20%, first-token KL against the FP16 prompt
-    // path equal to MMQ's within noise, 96 prompts each); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
+    // unset: on by default on gfx12 for IQ3_S, IQ3_XXS and (148-amd) Q2_0 gate/up (R9700: prompt +13..+20%, first-token KL against the FP16
+    // prompt path equal to MMQ's within noise, 96 prompts each; Q2_0: prompt 4K +16.7%, 20K +19.0%, teacher-forced KL 0.0004 / 0.0016,
+    // tasks equal to MMQ's); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
     static const int env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
         return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0);
@@ -1414,7 +1415,7 @@ bool native_supported(int gu_type, int d_type) {
         return d.ok && d.s120 && !d.t75 && d_covered_on(d_type, d);
     }
 #endif
-    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
+    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && gu_type != T_Q2_0) return false;   // default: only these three
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
