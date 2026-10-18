@@ -308,12 +308,9 @@ inline int ring_budget_slots() {
 inline int ring_slots(size_t T) {
     const char* v = std::getenv("STRATA_PREFILL_RING");
 #if defined(STRATA_USE_HIP)
-    // S6: with the opt-in RDNA4 matrix-core attention (STRATA_HIP_WMMA=1) a 96-slot ring: measured with it, 9070 XT
+    // S6: with the matrix-core attention (STRATA_HIP_WMMA=1 or auto, on a card that has it) a 96-slot ring: measured with it, 9070 XT
     // 4K prompts 718 -> 1,211 tok/s (16K 1,949 -> 2,032), R9700 4K 2,426 -> 2,483 (16K the same)
-    static const bool wmma = [] {
-        const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e != nullptr && (e[0] == '1' || std::strcmp(e, "auto") == 0);
-    }();
+    static const bool wmma = strata::kernels::qsa_prompt_attn_matrix_cores_requested();
     if (!v && g_ring_override <= 0 && wmma) return (int64_t) T >= stream_all_min() ? 96 : STAGE;
 #endif
     // the byte budget as this pack's slots: 1024 fused / 384 not on Q2_0, fewer on a pack with bigger blobs.  The

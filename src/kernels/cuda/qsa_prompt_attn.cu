@@ -2313,6 +2313,15 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
 #endif
 }
 void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
+bool qsa_prompt_attn_matrix_cores_requested() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    return hip_wmma_mode_env() != 0 && hip_wmma_arch(dev) != 3 && !g_wmma_failed.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
+}
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
