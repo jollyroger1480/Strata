@@ -358,6 +358,44 @@ class Catalog:
                 pass
         return rec
 
+    # ---- pictures
+    def engine_backend(self) -> str | None:
+        """The installed engine's backend (cuda, hip, sycl, cpu, metal), else the one this computer's graphics card needs, else None."""
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            if rep.get("usable"):
+                return (rep.get("engine") or {}).get("backend")
+        except Exception:                                    # noqa: BLE001
+            pass
+        for g in self.computer().usable_gpus:
+            v = str(g.get("vendor") or "").lower()
+            if g.get("unified_gb") or v == "apple":
+                return "metal"
+            return {"nvidia": "cuda", "amd": "hip", "intel": "sycl"}.get(v)
+        return None
+
+    def reader_state(self) -> str:
+        """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
+        "unknown" before any engine is installed (the first launch fetches one that has it)."""
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            exe = (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
+        except Exception:                                    # noqa: BLE001
+            exe = None
+        if not exe:
+            return "unknown"
+        folder = Path(str(exe)).parent
+        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+
+    def picture_default(self, images: bool) -> str:
+        """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the
+        reader on the graphics card for the CUDA and HIP builds and on the CPU for the others."""
+        if not images or self.reader_state() == "missing":
+            return "off"
+        return "gpu" if self.engine_backend() in ("cuda", "hip") else "cpu"
+
     # ---- installed models
     def installed_configs(self) -> list[dict]:
         out, seen = [], set()

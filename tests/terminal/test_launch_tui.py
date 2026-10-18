@@ -422,11 +422,20 @@ class PicturesParallelTuning(Base):
             await press(pilot, *self.reach_pictures())
             t = text_of(app)
             self.assertIn("No pictures", t)
+            self.assertIn("Pictures are on by default", flat(app))
             self.assertIn("0.9 GB download", t)
-            self.assertIn("runs on the CPU", t)                       # a 12 GB card
-            await press(pilot, "down", "enter")
-            self.assertEqual(ctx.settings.vision, "on")
+            self.assertIn("graphics memory kept free", flat(app))     # the NVIDIA reader runs on the card
+            self.assertEqual(app.screen.menu().index, 1)              # "Yes" is preselected
+            await press(pilot, "enter")
+            self.assertEqual(ctx.settings.vision, "gpu")
             self.assertIn("How many requests at the same time?", text_of(app))
+        self.run_app(case)
+
+    def test_pictures_no_is_one_key_away(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach_pictures())
+            await press(pilot, "up", "enter")
+            self.assertEqual(ctx.settings.vision, "off")
         self.run_app(case)
 
     def test_pictures_not_offered_for_a_model_without_them(self):

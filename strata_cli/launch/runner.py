@@ -125,6 +125,8 @@ def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
     if desc.get("kv") not in (None, want_kv) and (s.context or 32768) > 8192:
         return False
     images = desc.get("images") or "off"
+    if s.vision is None:
+        return True                                          # no preference yet: the run settles it before it compares
     if (s.vision == "off") != (images == "off"):
         return False
     if s.vision in ("gpu", "cpu") and images != s.vision:
@@ -403,10 +405,19 @@ class Runner:
         return note
 
     # ---- 2. the model
+    def resolved_vision(self) -> str:
+        """The picture setting of this launch: the chosen one, or (nothing chosen) the default for this model and engine (catalog.picture_default)."""
+        s = self.s
+        if s.vision is None:
+            row = next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+            s.vision = self.catalog.picture_default(bool(row.images) if row is not None else False)
+        return s.vision
+
     def vision_word(self) -> str:
         """What setup is told for the picture choice. "on" is setup's "yes": setup (Control mode) picks the CPU encoder on a card under 24 GB
         and on AMD, the GPU encoder on a bigger NVIDIA card, and downloads the pinned picture-reader file (mmproj) with the model."""
         s = self.s
+        self.resolved_vision()
         if s.vision == "off":
             return "no"
         return "yes" if s.vision == "on" else s.vision
@@ -496,6 +507,7 @@ class Runner:
         """What this launch still needs for the model, in numbers and words (strata_cli/launch/modelstate.py)."""
         from strata_cli.launch import modelstate
         s = self.s
+        self.resolved_vision()
         path, desc = (None, None)
         if s.family and s.model and not s.model_path:
             path, desc = self.installed_state()
@@ -521,6 +533,7 @@ class Runner:
         s, cat = self.s, self.catalog
         if s.model_path and not (s.family and s.model):
             self.resolve_own_files()
+        self.resolved_vision()
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
         path, desc = self.installed_state()

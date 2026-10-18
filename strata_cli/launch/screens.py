@@ -808,11 +808,7 @@ class PicturesScreen(Base):
     def reader(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches it)."""
-        exe = self.ctx.engine_exe()
-        if not exe:
-            return "unknown"
-        folder = Path(str(exe)).parent
-        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+        return self.ctx.catalog.reader_state()
 
     def on_mount(self) -> None:
         s = self.ctx.settings
@@ -823,18 +819,19 @@ class PicturesScreen(Base):
             items.append(Item(["Yes, read pictures" + ("  (this engine has no picture reader)" if self.reader() == "missing" else "")], key="on"))
         else:
             items.append(Item([Cell("Yes, read pictures: not available for this model yet", MUTE)], key="on", enabled=False))
-        sel = 1 if s.vision != "off" and self.supported else 0
+        sel = 1 if s.vision != "off" and self.supported and self.reader() != "missing" else 0       # pictures are on unless someone said off
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 
     def explain(self) -> Text:
-        vram = self.ctx.computer.main_vram_gb
-        extra = ("a 0.9 GB download. On a card under 24 GB the picture reader runs on the CPU (a few seconds per picture, nothing "
-                 "taken from the graphics card). On a bigger card it runs on the GPU and keeps about 1.4 GB free, costing a few % of text speed."
-                 if vram < 24 else "a 0.9 GB download, and about 1.4 GB of graphics memory kept free for the picture reader (text is a few % slower).")
+        on_card = self.ctx.catalog.picture_default(True) == "gpu"
+        extra = ("a 0.9 GB download (if it is not on this computer yet), and about 1.4 GB of graphics memory kept free for the picture reader "
+                 "(text is a few % slower)." if on_card else
+                 "a 0.9 GB download (if it is not on this computer yet). The picture reader runs on the CPU: a few seconds per picture, nothing "
+                 "taken from the graphics card.")
         if not self.supported:
             return Text("This model cannot read pictures yet, so pictures stay off. Pick another model if you need them.", style=WARN)
-        out = Text("Pictures add " + extra + " Say No if you only chat in text.", style=MUTE)
+        out = Text("Pictures are on by default. They add " + extra + " Say No if you only chat in text.", style=MUTE)
         if self.reader() == "missing":
             out.append("\nHeads up: the engine installed here does not carry the picture reader, so the model would answer text only. "
                        "Update the engine, or say No.", style=WARN)
@@ -842,7 +839,11 @@ class PicturesScreen(Base):
         return out
 
     def commit(self) -> None:
-        self.ctx.settings.vision = self.menu().current.key
+        key = self.menu().current.key
+        if key == "on":                                      # yes: the reader on the card (NVIDIA, AMD) or the CPU, as the default says
+            device = self.ctx.catalog.picture_default(True)
+            key = device if device != "off" else "on"
+        self.ctx.settings.vision = key
 
 
 # ------------------------------------------------------------------------------------------------ 6 parallel

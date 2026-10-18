@@ -85,7 +85,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
     g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
-                   help="let the model read pictures (default off)")
+                   help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader "
+                        "(on the graphics card for NVIDIA and AMD, on the CPU otherwise); off turns it off")
     g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
@@ -238,9 +239,14 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
             elif r.verdict == "tight":
                 notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
-            if s.vision != "off" and not r.images:
+            if s.vision not in (None, "off") and not r.images:
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
+            if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
+                s.vision = catalog.picture_default(r.images)
+                if s.vision == "off" and r.images and catalog.reader_state() == "missing":
+                    notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
+                                            "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
     if s.access != "local" and not s.api_key:
         from strata_cli.launch import access
