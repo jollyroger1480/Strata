@@ -45,3 +45,18 @@ test('a skill created with Skill enabled off is saved off, kept after a restart,
     assert.equal(again.find(s => s.id === on.data.id).enabled, true);
   } finally { await host.stop(); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
 });
+
+test('F05: the host refuses an output limit below 0 or above its maximum, and keeps the saved one', { timeout: 60000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'strata-qa2-tokens-'));
+  const host = await startHost(home);
+  try {
+    const value = async () => (await host.call('/api/engine')).data.expert.find(p => p.id === 'sample.maxTokens').value;
+    assert.equal(await value(), 0);
+    assert.equal((await host.call('/api/engine', 'PATCH', { expert: [{ id: 'sample.maxTokens', value: -1 }] })).status, 400);
+    assert.equal((await host.call('/api/engine', 'PATCH', { expert: [{ id: 'sample.maxTokens', value: 1048577 }] })).status, 400);
+    assert.equal((await host.call('/api/engine', 'PATCH', { expert: [{ id: 'sample.maxTokens', value: 2.5 }] })).status, 400);
+    assert.equal(await value(), 0, 'nothing was saved');
+    assert.equal((await host.call('/api/engine', 'PATCH', { expert: [{ id: 'sample.maxTokens', value: 4096 }] })).status, 200);
+    assert.equal(await value(), 4096);
+  } finally { await host.stop(); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
+});

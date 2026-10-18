@@ -57,6 +57,8 @@ input:focus, textarea:focus, [contenteditable]:focus { outline: none; box-shadow
 .sampling-field p { margin: 1px 0 0; }
 #response-panel-sampling > .stack { gap: 12px; }
 .sampling-number-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.field-problem { color: var(--st-danger-text); font-size: var(--st-fs-sm); }
+.input-field input[aria-invalid="true"] { border-color: var(--st-danger); }
 .response-projection { display: flex; align-items: center; gap: 20px; }
 .response-projection > div { flex: 1; }
 .response-projection p { margin: 6px 0 0; }
