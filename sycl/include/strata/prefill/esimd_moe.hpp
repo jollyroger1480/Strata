@@ -29,6 +29,26 @@ void make_layout(Layout& lo, const int32_t* cnt, int n);
 
 /// True when this device can run the kernels (a Battlemage-class device: sub-group 16 and the s8 DPAS 8x16x32).
 bool available(void* stream);
+/// True when this device is a Battlemage GPU by its architecture id (bmg-g21: B580 / B570, bmg-g31: B70), not by its name.  The default
+/// choice below uses it: Lunar Lake and the other Xe2 parts can run the kernels (`available`) but are not defaulted.  False in a build
+/// without the ESIMD kernels (STRATA_I8_NO_ESIMD).
+bool battlemage(void* stream);
+/// True when any GPU on this machine is a Battlemage one (sizes the staging ring before a queue exists).
+bool any_battlemage();
+
+/// Which chain the prompt experts take.  `env` is STRATA_PREFILL_MMQ (else STRATA_PF_I8), null or empty when unset.  Returns 0 = the
+/// FP16 chain (dequantize + oneMKL), 1 = the int8 chain everywhere, 2 = auto (int8 per group while the group's rows per expert are under
+/// the crossover measured on this GPU).  Set: "0" -> 0, "auto" -> 2, any other number -> 1.  Unset: auto on a Battlemage device whose
+/// kernels are in the binary and run, else 0 (Alchemist and every other GPU keep the FP16 chain).
+inline int choose_mode(const char* env, bool battlemage_device, bool kernels_available) {
+    if (env != nullptr && env[0] != 0) {
+        if (env[0] == 'a' || env[0] == 'A') return 2;
+        long v = 0;
+        for (const char* c = env; *c >= '0' && *c <= '9' && v < 1000000; ++c) v = v * 10 + (*c - '0');
+        return v != 0 ? 1 : 0;
+    }
+    return (battlemage_device && kernels_available) ? 2 : 0;
+}
 
 size_t xq_bytes(const Layout& lo, int K);   // int8 activations, padded tiles
 size_t dx_bytes(const Layout& lo, int K);   // their scales (floats)

@@ -13,9 +13,9 @@ never exists and the weights are read once, compressed (2.1 MB per expert instea
 ## Switches
 
 * `STRATA_PREFILL_MMQ=1` (alias `STRATA_PF_I8=1`): every group of experts whose formats are supported takes the int8 chain.
-* `STRATA_PREFILL_MMQ=0` (or unset, the default): the FP16 path everywhere. The name is MMQ's because the other backends' int8
+* `STRATA_PREFILL_MMQ=0`: the FP16 path everywhere. The name is MMQ's because the other backends' int8
   prompt-expert path is MMQ; here it is this kernel.
-* `STRATA_PREFILL_MMQ=auto`: per group, int8 while the group's mean rows per expert are under the crossover measured on this GPU.
+* `STRATA_PREFILL_MMQ=auto` (the Battlemage default): per group, int8 while the group's mean rows per expert are under the crossover measured on this GPU.
   At the first layer of each expert format the engine times both chains on synthetic experts (random blobs of the layer's format and
   shape, uneven row counts like a real group) at 16, 32, 64, 128 and 256 mean rows per expert, interpolates where the FP16 chain
   becomes the faster one, flags the result "clear" when the cost ratio falls steadily and the bracketing samples are 5% away from
@@ -24,7 +24,7 @@ never exists and the weights are read once, compressed (2.1 MB per expert instea
   prompt. A measurement that fails (no VRAM) falls back to 64 rows.
 * `STRATA_I8_FORCE=0` hides the device from the kernels, `STRATA_I8_MT=2|4|8` forces the tile height, `STRATA_I8_WG=0` the
   non-work-group kernels, `STRATA_I8_GRF=128` the 128-register mode, `STRATA_I8_DBG` bring-up switches (skip decode / loads / stores).
-* Default off until the owner decides. The activations are quantized, so the bits differ from the FP16 path (see "Quality").
+* Default (unset): `auto` on a Battlemage GPU (bmg-g21 or bmg-g31 by the SYCL architecture id, not by name; the kernels must be in the binary and pass `available()`), the FP16 path on every other GPU. The engine prints one line at load ("int8 prompt experts are on ... STRATA_PREFILL_MMQ=0 turns them off"). If the kernels are not in the binary for the device (an AOT build for other devices) or a launch throws, the group and the rest of the process take the FP16 chain with one log line. The activations are quantized, so the bits differ from the FP16 path (see "Quality").
 
 ## Tiles and thresholds
 

@@ -900,13 +900,13 @@ difference 1.0 (the chunk boundary moves where the QSA block selection is made, 
 two runs of the same size are, KL 0). With the 32K context (own prompt buffers, no borrowing) a bigger chunk is +20% on a 16K
 prompt (1,236 -> 1,478-1,482) but takes 1,397 cache slots (10,926 -> 9,529) and decode after it falls 9-16%, so 4,096 stays there.
 
-## Arc Pro B70: the fused int8 expert path for the prompt (2026-10-18, branch f-151-b70, opt-in)
+## Arc Pro B70: the fused int8 expert path for the prompt (2026-10-18, branch f-151-b70, default on for Battlemage)
 
-`STRATA_PREFILL_MMQ=1` (or `auto`) computes the routed experts of the prompt with ESIMD kernels that decode the quantized weights in
+On a Battlemage GPU (B70, B580, B570: detected by the device architecture id, `bmg-g21` and `bmg-g31`, not by name) the engine computes the routed experts of the prompt with ESIMD kernels that decode the quantized weights in
 registers straight into the s8 DPAS B operand (no FP16 copy of the expert, 2.1 MB of weights read instead of 9.8 MB written and read
 back) and multiply them by q8_1-quantized activations; `sycl/src/prefill/esimd_moe.dp.cpp`, behaviour note and switches in
 [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md). Gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0 are covered (47 of the 48 layers of
-the mixed IQ3_S pack; the other layer, IQ4_XS gate/up, and any other format keep the FP16 path). Off by default: the activations are
+the mixed IQ3_S pack; the other layer, IQ4_XS gate/up, and any other format keep the FP16 path). Default (STRATA_PREFILL_MMQ unset) is `auto` on Battlemage and the FP16 chain on every other GPU (Alchemist A750 / A770, Lunar Lake, other vendors); `=0` turns it off, `=1` forces it, `=auto` is the default. The activations are
 quantized, so the bits differ from the FP16 path. `auto` times both chains on this GPU at the first layer of each format and takes int8
 below the measured crossover (130-250 rows per expert here), per group of experts.
 

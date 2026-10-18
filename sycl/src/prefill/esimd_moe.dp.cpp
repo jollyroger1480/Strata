@@ -48,6 +48,8 @@ void make_layout(Layout& lo, const int32_t* cnt, int n) {
     lo.tile0[n] = t;
 }
 bool available(void*) { return false; }
+bool battlemage(void*) { return false; }
+bool any_battlemage() { return false; }
 size_t xq_bytes(const Layout& lo, int K) { return (size_t) lo.tile0[lo.n] * 8 * K; }
 size_t dx_bytes(const Layout& lo, int K) { return (size_t) lo.tile0[lo.n] * (K / 32) * 8 * sizeof(float); }
 bool workspace(const Layout&, int, int, Workspace&, void*) { return false; }
@@ -803,6 +805,31 @@ void make_layout(Layout& lo, const int32_t* cnt, int n) {
     }
     lo.row0[n] = r;
     lo.tile0[n] = t;
+}
+
+namespace {
+bool bmg_arch(const sycl::device& d) {
+    namespace ex = sycl::ext::oneapi::experimental;
+    if (!d.is_gpu()) return false;
+    const auto a = d.get_info<ex::info::device::architecture>();
+    return a == ex::architecture::intel_gpu_bmg_g21 || a == ex::architecture::intel_gpu_bmg_g31;
+}
+}  // namespace
+
+bool battlemage(void* stream) {
+    sycl::queue& q = *strata::q_of(stream);
+    return bmg_arch(q.get_device());
+}
+
+bool any_battlemage() {
+    static const bool v = [] {
+        try {
+            for (const auto& d : sycl::device::get_devices(sycl::info::device_type::gpu))
+                if (bmg_arch(d)) return true;
+        } catch (...) {}
+        return false;
+    }();
+    return v;
 }
 
 bool available(void* stream) {

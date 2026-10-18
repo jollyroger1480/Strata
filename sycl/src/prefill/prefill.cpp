@@ -238,21 +238,31 @@ inline int ring_slots(size_t T) {
 }
 // A770 port: STRATA_PF_XMX=2 holds up to a group of staged experts until its launch, so routed-only staging needs
 // that many more slots for the lookahead to keep copying (the slots are only reused once the group's event is in)
-// 151-b70: the fused int8 DPAS expert products (prefill/esimd_moe.dp.cpp, Battlemage).  STRATA_PREFILL_MMQ=1 (or STRATA_PF_I8=1) turns
-// them on for the layers whose experts are IQ3_S gate/up + IQ4_NL down, STRATA_PREFILL_MMQ=0 keeps the FP16 path; off by default
-// until the owner has the quality check (the activations are quantized, so the bits differ from the FP16 path).
+// 151-b70: the fused int8 DPAS expert products (prefill/esimd_moe.dp.cpp, Battlemage).  Unset STRATA_PREFILL_MMQ (alias STRATA_PF_I8) is
+// auto on a Battlemage GPU (bmg-g21 / bmg-g31 by architecture id) whose kernels are in the binary, the FP16 chain on every other GPU
+// (Alchemist included); =0 forces the FP16 chain, =1 the int8 chain everywhere it applies (IQ3_S / IQ3_XXS / IQ2_S gate/up with IQ4_NL /
+// Q2_0 down, the 640 x 2560 expert), =auto the per-group choice from the crossover measured on this GPU.  The activations are quantized,
+// so the bits differ from the FP16 path (docs/INTEL_INT8_EXPERTS.md: KL 0.0002 nats, top-1 99.7%).
 static_assert(strata::kernels::kXmxGroupMax <= strata::prefill::i8::kMaxGroup, "the int8 path holds the grouped XMX path's experts: its Layout must be at least as big");
-inline int i8_mode() {
-    static const int v = [] {
-        const char* e = std::getenv("STRATA_PREFILL_MMQ");
-        if (e == nullptr || e[0] == 0) e = std::getenv("STRATA_PF_I8");
-        if (e == nullptr || e[0] == 0) return 0;
-        if (e[0] == 'a' || e[0] == 'A') return 2;
-        return std::atoi(e) != 0 ? 1 : 0;
-    }();
-    return v;
+inline const char* i8_env() {
+    const char* e = std::getenv("STRATA_PREFILL_MMQ");
+    if (e == nullptr || e[0] == 0) e = std::getenv("STRATA_PF_I8");
+    return (e != nullptr && e[0] != 0) ? e : nullptr;
 }
-inline int stage_slots() { return (strata::prefill::xmx::mode() == 2 || i8_mode() != 0) ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE; }
+std::atomic<bool> g_i8_failed{false};    // an int8 launch threw: the FP16 chain for the rest of the process
+// The chain this queue's prompt experts take: 0 FP16, 1 int8, 2 auto.
+inline int i8_mode(void* cs) {
+    if (g_i8_failed.load(std::memory_order_relaxed)) return 0;
+    const char* e = i8_env();
+    if (e != nullptr) return strata::prefill::i8::choose_mode(e, false, false);
+    return strata::prefill::i8::choose_mode(nullptr, strata::prefill::i8::battlemage(cs), strata::prefill::i8::available(cs));
+}
+// ring sizing happens before any queue is at hand: room for the int8 groups whenever the choice could be on
+inline int stage_slots() {
+    const char* e = i8_env();
+    const bool i8 = e != nullptr ? strata::prefill::i8::choose_mode(e, false, false) != 0 : strata::prefill::i8::any_battlemage();
+    return (strata::prefill::xmx::mode() == 2 || i8) ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE;
+}
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // A770 port: STRATA_PF_XMX=1 dequantizes a whole group of experts, then one grouped XMX launch per product
 inline int dq_slots() { return strata::prefill::xmx::mode() == 1 ? strata::prefill::xmx::kMaxGroup : DQ; }
@@ -1151,6 +1161,11 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
         err = "prefill: geometry differs from the artifact's"; return false;
     }
     m.device = dpct::get_current_device_id();
+    if (static bool said_i8 = false; !said_i8 && i8_mode(m.cs) != 0) {
+        said_i8 = true;
+        std::fprintf(stderr, "strata: int8 prompt experts are on (%s); STRATA_PREFILL_MMQ=0 turns them off\n",
+                     i8_env() == nullptr ? "Battlemage default, auto" : "STRATA_PREFILL_MMQ set");
+    }
     if (stage_le_ < 0) stage_le_ = g.n_layers;
     if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != (next_ != nullptr)) {
         err = "prefill: the stage's layer range is wrong";
@@ -4155,13 +4170,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
                         // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
                         // held group of staged experts as above
-                        const bool i8on = !xmx2_only && i8_mode() != 0 && !use_mmq && lay.native &&
+                        const int i8m = i8_mode(m.cs);
+                        const bool i8on = !xmx2_only && i8m != 0 && !use_mmq && lay.native &&
                                           (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22) &&
                                           (lay.fmt[(size_t) l].d_type == 20 || lay.fmt[(size_t) l].d_type == 42) &&
                                           lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
                                           strata::prefill::i8::available(m.cs);
                         const bool xmx2 = xmx2_only || i8on;
-                        if (i8_mode() != 0 && lay.native) {
+                        if (i8_env() != nullptr && i8m != 0 && lay.native) {
                             static std::set<std::tuple<int, int, int, int, int>> said_fmt;
                             const auto& ff = lay.fmt[(size_t) l];
                             if (said_fmt.insert({ff.gu_type, ff.d_type, (int) ff.n_ff, (int) ff.n_embd, (int) i8on}).second)
@@ -4193,8 +4209,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (i8on) {
                                 // STRATA_PREFILL_MMQ=1: always; =auto: while the group's mean rows per expert are under the crossover
                                 // measured on this GPU (i8_calibrate); a group above it takes the FP16 chain below
+                                bool done8 = false;
+                                try {
                                 bool use_i8 = true;
-                                if (i8_mode() == 2) {
+                                if (i8m == 2) {
                                     static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
                                     auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
                                     if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
@@ -4206,12 +4224,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                         std::fprintf(stderr, "strata: int8 experts (auto): %ld groups took the int8 chain, %ld the FP16 chain\n", groups_i8, groups_fp);
                                     }
                                 }
-                                bool done8 = false;
                                 if (use_i8) {
                                     if (static bool said = false; !said) {
                                         said = true;
                                         std::fprintf(stderr, "strata: prompt experts on the fused int8 DPAS products (STRATA_PREFILL_MMQ=%s)\n",
-                                                     i8_mode() == 2 ? "auto" : "1");
+                                                     i8m == 2 ? "auto" : "1");
                                     }
                                     namespace i8 = strata::prefill::i8;
                                     i8::Layout lo8;
@@ -4232,6 +4249,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                             std::fprintf(stderr, "strata: the int8 expert products could not run (layer %lld, no workspace or a format they do not handle): the FP16 chain is used\n", (long long) l);
                                         }
                                     }
+                                }
+                                } catch (const std::exception& ex) {   // the kernels are not in this binary for this device, or a launch failed: the FP16 chain, for good
+                                    done8 = false;
+                                    if (!g_i8_failed.exchange(true))
+                                        std::fprintf(stderr, "strata: the int8 expert kernels failed to launch (%s): the FP16 expert chain is used from here\n", ex.what());
                                 }
                                 if (!done8) {   // the FP16 chain: dequantize, two oneMKL GEMMs, SwiGLU, per expert
                                     int64_t o = xg_r0;
