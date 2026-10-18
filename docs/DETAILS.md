@@ -596,6 +596,20 @@ the same worker count and workload. This does not change kernels, phase barriers
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
 
+**How many CPU threads the engine starts (`--pool-workers`).** Without the setting the engine picks the number of
+CPU expert workers from the CPU, not from the count of logical threads: one worker per *physical* core (never an SMT
+sibling) except the core of the main thread, one core less on a CPU with 17 or more cores, only the cores of the main
+thread's CPU socket on a multi-socket machine, at most 32, no more than a container's CPU limit (docker `--cpus`) allows,
+and on a hybrid CPU with more efficiency than performance cores the performance cores but one plus half of the efficiency
+cores. When the OS does not say which logical processors share a core (some containers), it counts half of them. The start
+line says what bounded the number (`CPU pool: 31 workers by default (32 physical cores, 64 logical processors; bounded by ...)`).
+The workers wait by spinning, so a worker without a core of its own takes time from the others: on a 20-core CPU 24
+workers decoded 44% slower than the default, on a 32-core EPYC 63 workers 35% slower. A count in the config
+(`--pool-workers N`) is always used as given; when it is above what the CPU uses well the engine prints a plain warning
+with the recommended number at start (`strata cpu pool: warning: ...`). Setup writes no worker count except the hybrid
+CPU's, capped the same way, and gives the CPU vision encoder at most 16 threads (`--threads` in the `vision` entry of the
+config changes that).
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows

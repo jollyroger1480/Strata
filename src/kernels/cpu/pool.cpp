@@ -15,7 +15,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
+#include <string>
+#include <thread>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -79,6 +82,59 @@ HostCore host_core_setting() { return (HostCore) g_host_core.load(); }
 
 static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity);
 
+// The fields the default worker count needs (pool_plan.hpp): the logical processors the process may use, the CPU
+// package of the host core and of every worker core, whether the OS told physical cores from SMT siblings, the
+// container CPU quota.  On a multi-socket CPU (not hybrid) the host package comes first in `worker_cores`.
+static void fill_plan_fields(CpuTopology& topo, bool skip_first) {
+    topo.cpu_quota = container_cpu_quota();
+    topo.worker_package.assign(topo.worker_cores.size(), -1);
+#if defined(_WIN32)
+    (void) skip_first;
+    topo.logical = (int) GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return;   // (the sockets of a Windows box are not told apart: one package)
+#elif defined(__APPLE__)
+    (void) skip_first;
+    topo.logical = (int) std::thread::hardware_concurrency();
+    return;   // no SMT on Apple silicon and no sysfs: the cores are the processors
+#else
+    std::vector<unsigned long> mask;
+    std::vector<int> allowed;
+    topo.logical = detail::get_thread_affinity(mask, &allowed) == 0 ? (int) allowed.size()
+                                                                     : (int) std::thread::hardware_concurrency();
+    auto read = [](int cpu, const char* what) -> long {
+        char path[96];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
+        long v = -1;
+        if (std::FILE* f = std::fopen(path, "r")) {
+            if (std::fscanf(f, "%ld", &v) != 1) v = -1;
+            std::fclose(f);
+        }
+        return v;
+    };
+    bool known = !topo.worker_cores.empty() || topo.host_core >= 0;
+    auto pkg_of = [&](int cpu) {
+        const long pkg = read(cpu, "physical_package_id"), core = read(cpu, "core_id");
+        if (pkg < 0 || core < 0) known = false;
+        return (int) pkg;
+    };
+    if (topo.host_core >= 0) topo.host_package = pkg_of(topo.host_core);
+    for (size_t i = 0; i < topo.worker_cores.size(); ++i) topo.worker_package[i] = pkg_of(topo.worker_cores[i]);
+    topo.layout_known = known;
+    if (!known) return;
+    if (skip_first && !topo.is_hybrid && topo.host_core >= 0 && topo.host_package >= 0) {
+        // the host socket first (stable inside each socket): the default workers are the local ones
+        std::vector<size_t> order(topo.worker_cores.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_partition(order.begin(), order.end(),
+                              [&](size_t i) { return topo.worker_package[i] == topo.host_package; });
+        std::vector<int> cores, pkgs;
+        for (size_t i : order) { cores.push_back(topo.worker_cores[i]); pkgs.push_back(topo.worker_package[i]); }
+        topo.worker_cores = std::move(cores);
+        topo.worker_package = std::move(pkgs);
+    }
+#endif
+}
+
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     CpuTopology topo = detect_cpu_topology_impl(skip_first, affinity);
     // --host-core last: the host takes the last core, the workers the others (the first included)
@@ -96,7 +152,59 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
                                 topo.worker_cores.end());
         topo.host_core = topo.host_sibling;
     }
+    fill_plan_fields(topo, skip_first);
     return topo;
+}
+
+double container_cpu_quota() {
+#if defined(__linux__)
+    // cgroup v2: "max 100000" (no limit) or "<quota> <period>"; v1: cpu.cfs_quota_us (-1: none) / cpu.cfs_period_us
+    if (std::FILE* f = std::fopen("/sys/fs/cgroup/cpu.max", "r")) {
+        char a[32] = {0};
+        long period = 0;
+        double q = 0;
+        if (std::fscanf(f, "%31s %ld", a, &period) == 2 && std::strcmp(a, "max") != 0 && period > 0)
+            q = std::atof(a) / (double) period;
+        std::fclose(f);
+        return q > 0 ? q : 0.0;
+    }
+    long quota = -1, period = 0;
+    if (std::FILE* f = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r")) {
+        if (std::fscanf(f, "%ld", &quota) != 1) quota = -1;
+        std::fclose(f);
+    }
+    if (std::FILE* f = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r")) {
+        if (std::fscanf(f, "%ld", &period) != 1) period = 0;
+        std::fclose(f);
+    }
+    return quota > 0 && period > 0 ? (double) quota / (double) period : 0.0;
+#else
+    return 0.0;
+#endif
+}
+
+PoolPlanInput pool_plan_input(const CpuTopology& topo) {
+    PoolPlanInput in;
+    in.logical = topo.logical > 0 ? topo.logical : (int) std::thread::hardware_concurrency();
+    in.cpu_quota = topo.cpu_quota;
+    if (topo.is_hybrid) { in.p_cores = topo.p_cores; in.e_cores = topo.e_cores; }
+    if (!topo.layout_known) return in;   // cores_per_package stays empty
+    // the cores per package, the host package first; the host core counts in its package
+    std::vector<std::pair<int, int>> counts;   // (package, cores)
+    auto add = [&](int pkg) {
+        for (auto& c : counts)
+            if (c.first == pkg) { ++c.second; return; }
+        counts.emplace_back(pkg, 1);
+    };
+    if (topo.host_core >= 0) add(topo.host_package);
+    for (size_t i = 0; i < topo.worker_cores.size(); ++i)
+        add(i < topo.worker_package.size() ? topo.worker_package[i] : -1);
+    if (topo.host_core >= 0) {   // (the host package first even when it has no worker core listed)
+        auto it = std::find_if(counts.begin(), counts.end(), [&](const auto& c) { return c.first == topo.host_package; });
+        if (it != counts.begin()) std::iter_swap(counts.begin(), it);
+    }
+    for (const auto& c : counts) in.cores_per_package.push_back(c.second);
+    return in;
 }
 
 int planned_host_core(PoolAffinity affinity) { return detect_cpu_topology(true, affinity).host_core; }
@@ -501,13 +609,22 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+    const PoolPlanInput plan_in = pool_plan_input(topo_);
+    const PoolPlan plan = plan_pool_workers(plan_in);
     if (n_workers > 0) {
         n_ = n_workers;
+        // recommend, never force: a count above what this CPU uses well runs as configured, with a plain warning
+        static std::atomic<bool> warned{false};
+        const std::string why = pool_workers_warning(n_workers, plan_in, plan);
+        if (!why.empty() && !warned.exchange(true)) std::fprintf(stderr, "strata cpu pool: warning: %s\n", why.c_str());
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
         n_ = (std::max)(1, topo_.p_cores - 1);
     } else {
-        n_ = (int) topo_.worker_cores.size();
+        n_ = (std::min)(plan.workers, (std::max)(1, (int) topo_.worker_cores.size()));
+        plan_limit_ = plan.limit;
     }
+    plan_cores_ = plan.cores;
+    plan_logical_ = plan_in.logical;
     if (n_ < 1) n_ = 1;
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);

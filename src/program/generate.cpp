@@ -5712,6 +5712,9 @@ int main(int argc, char** argv) {
                  o.pool_tasks ? o.pool_tasks : 3 * (pool.workers() + (pool.host_works() ? 1 : 0)),
                  o.pool_tasks ? " (capped by rows)" : " (automatic)",
                  pool.workers() + (pool.host_works() ? 1 : 0));
+    if (pool.plan_limit()[0] != '\0')   // the default count: what it was bounded by (a configured count is never changed)
+        std::fprintf(stderr, "strata generate: CPU pool: %d workers by default (%d physical cores, %d logical processors; bounded by %s)\n",
+                     pool.workers(), pool.plan_cores(), pool.plan_logical(), pool.plan_limit());
     if (pool.is_hybrid() && pool.affinity() != strata::kernels::cpu::PoolAffinity::All) {
         const char* aff_str = pool.affinity() == strata::kernels::cpu::PoolAffinity::PCores ? "p-cores" :
                               pool.affinity() == strata::kernels::cpu::PoolAffinity::All ? "all" : "auto";

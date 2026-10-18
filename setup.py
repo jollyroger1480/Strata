@@ -941,6 +941,7 @@ def recommend_pool_workers(args: list) -> list:
     n = hybrid_pool_workers(cpu_cores())
     if n is None or "--pool-workers" in args:
         return args
+    n = min(n, POOL_WORKERS_CAP)   # setup never writes a big worker count (see plan_pool_workers)
     p, e = cpu_cores()
     ok(f"hybrid CPU ({p} performance + {e} efficiency cores): {n} CPU expert workers - the performance cores and half "
        "of the efficiency cores (--pool-workers in the config; START-HERE --calibrate measures it on this PC)")
@@ -997,6 +998,70 @@ def two_socket_note(sockets) -> list[str]:
     return [f"tip: this PC has {sockets[0]} CPU sockets of {sockets[1]} cores. Expert workers on the other socket have "
             f"been measured slower than fewer, local ones (35 vs 17-18 on 2-socket Xeons): try --pool-workers {n} in "
             "the config's args (START-HERE --calibrate measures it on this PC)"]
+
+
+# The engine's default count of CPU expert workers (include/strata/kernels/cpu/pool_plan.hpp, which tools/test_pool_plan.py
+# keeps in step with these numbers).  Setup writes no worker count on an ordinary CPU: the engine picks it, from the
+# physical cores (not the SMT siblings), minus the host thread's core and a reserve on a big CPU, on the host thread's
+# socket, under a cap.  What setup does write (a hybrid CPU's count, the vision encoder's threads) is capped the same way.
+POOL_WORKERS_CAP = 32
+POOL_RESERVE_FROM = 16
+POOL_RESERVE = 1
+VISION_THREADS_CAP = 16
+
+
+def plan_pool_workers(logical: int, cores_per_package=None, quota: float = 0.0, hybrid=None) -> int:
+    """The engine's default pool worker count for a CPU of `logical` threads whose physical cores per socket are
+    `cores_per_package` (the host thread's socket first; None/empty: the layout is not known) and a container CPU
+    quota (0: none)."""
+    cores = list(cores_per_package or [])
+    if cores and sum(cores) > 0:
+        local = cores[0]
+    else:                                              # no layout: half the logical processors on a many-thread CPU
+        local = logical // 2 if logical >= 16 else logical
+    n = max(1, local - 1)                              # the host thread has the first core
+    if n >= POOL_RESERVE_FROM:
+        n -= POOL_RESERVE
+    if hybrid and hybrid[0] > 0 and hybrid[1] > hybrid[0]:   # (P-cores, E-cores): the P-cores but the host's + half the E-cores
+        n = min(n, max(1, hybrid[0] - 1 + hybrid[1] // 2))
+    if quota > 0:
+        n = min(n, max(1, int(quota) - 1))
+    return max(1, min(n, POOL_WORKERS_CAP))
+
+
+def cpu_core_layout():
+    """(logical threads, [physical cores per socket]); the cores list is empty when the OS does not say."""
+    logical = os.cpu_count() or 1
+    sockets = cpu_sockets()
+    return logical, ([sockets[1]] * sockets[0] if sockets else [])
+
+
+def pool_workers_note(args, layout=None) -> list[str]:
+    """A plain warning when the config's `--pool-workers` is above what this CPU uses well.  Recommend, never force: the
+    count stays as it is and the engine runs with it."""
+    if "--pool-workers" not in args:
+        return []
+    try:
+        asked = int(args[args.index("--pool-workers") + 1])
+    except (IndexError, ValueError):
+        return []
+    hybrid = cpu_cores() if layout is None else None
+    logical, cores = layout or cpu_core_layout()
+    rec = plan_pool_workers(logical, cores, hybrid=hybrid)
+    if asked <= rec:
+        return []
+    why = ("more than this PC has CPU threads" if asked + 1 > logical else
+           "more than its physical cores" if cores and asked + 1 > sum(cores) else
+           "more than the cores of one CPU socket" if len(cores) > 1 and asked + 1 > cores[0] else
+           "more than the memory bandwidth can feed")
+    return [f"the config asks for {asked} CPU expert workers, {why}: extra workers can make Strata slower. Recommended: "
+            f"--pool-workers {rec} (or remove the setting: the engine picks that by itself). It stays as you set it."]
+
+
+def vision_threads(logical: int | None = None) -> int:
+    """The CPU vision encoder's threads: one per physical core as before (half the logical threads), at most
+    VISION_THREADS_CAP - a 256-thread server does not need 128 of them."""
+    return max(1, min((logical if logical is not None else (os.cpu_count() or 8)) // 2, VISION_THREADS_CAP))
 
 
 def cpu_info():
@@ -6195,6 +6260,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.browser is not None:
         cfg["open_browser"] = a.browser
     cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
+    for line in pool_workers_note(cfg["args"]):
+        warn(line)
     cfg_path = home() / f"strata-{tag.lower()}.json"
     if vision != "none":
         old_cfg = cfg_path if cfg_path.is_file() else adopted
@@ -6203,7 +6270,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(gguf), "gpu": vision == "gpu",
                          "max_tokens": vt}          # the text model, opened vocab-only
         if vision == "cpu":
-            cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
+            cfg["vision"]["threads"] = vision_threads()
     elif getattr(a, "vision_tokens", None) is not None:
         warn("--vision-tokens: images are off, so it is not used")
     # requests at once ("parallel", opt-in): written only when given; the recommendation is said once
@@ -7595,7 +7662,7 @@ def main() -> int:
                          "model": str(ready_paths(model, models_dir)["dense"] if ready else shards[0]),
                          "gpu": vision == "gpu", "max_tokens": vt}
         if vision == "cpu":
-            cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
+            cfg["vision"]["threads"] = vision_threads()
     elif a.vision_tokens is not None:
         warn("--vision-tokens: images are off for this model, so it is not used")
     if a.images:                                       # only when given: else an earlier "images" is carried over
@@ -7611,6 +7678,8 @@ def main() -> int:
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])
+        for line in pool_workers_note(cfg["args"]):
+            warn(line)
         for line in two_socket_note(cpu_sockets()):    # bench tips: text only, the config is not touched
             say("  " + line)
     for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN):
