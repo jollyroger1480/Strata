@@ -1865,6 +1865,35 @@ reads over PCIe the number of its missed experts that balances the two sides. Th
 the host times its pool, and least squares with forgetting fit the pool's `a + c*n_cpu + d*n_pcie` and the GPU's `g0 + g*n_pcie`; the engine prints the fit (`pcie model`) at the end of `generate`.
 Every 64th layer with a miss moves one expert to the other side so both fits stay measured. Unset, nothing changes (the logits equal the build before). Measured by us (5 interleaved pairs, box default flags, IQ3_XXS): RTX A4000 arena decode 48.45 -> 51.15 tok/s (+5.6%, 5/5 pairs), RTX 3060 resident 59.12 -> 58.15 (-1.6%), Tesla P100 37.95 -> 37.48 (-1.3%): opt-in, worth trying on A4000-class cards.
 
+## The prompt chunk follows the host's memory (Linux, file tier; on by default, `STRATA_PREFILL_HOST_PLAN=0` turns it off)
+
+When the experts that do not fit in VRAM are read from the model files through the page cache, the size of the prompt chunk decides how many times a long
+prompt walks over those files, and how big the working set is each time (the chunk's activation buffers and the lent slots take RAM and VRAM from the
+cache). Up to 0.1.46 the chunk was always today's pick (8192 on most cards). The planner prices the host from what it can measure at start: the RAM copy and its
+lent slots, the page cache that is left, the drive class (read from the GGUF path) and the PCIe link, and picks the chunk (and the ring) with the fewest
+predicted bytes read per prompt. It prints one `chunk 8192 -> 3840, ring 96 -> 96: ...` line when it changes the pick, and `chunk 8192 kept: ...` when it does not.
+A prompt that fits today's chunk keeps one chunk; a longer one is read in equal chunks of at most the plan's size (no stub at the end). No weight or expert
+changes; only the rounding of the batched prompt path moves (first-window logits KL 0.002-0.012 against the fixed chunk, same top-1; the text matched in 30 of 30
+requests; a run at a fixed chunk is bit-identical to itself).
+
+Where it applies: a Linux file tier whose page cache is smaller than the file set at today's chunk. It does nothing, and says `kept`, when the GPU holds every
+expert, when the file set fits the cache (the owner-class RTX 5070 box: 14.8 GiB set against 41.2 GiB of cache, 2024 vs 2035 tok/s at 20K), when the set can
+never fit (a 16 GiB cgroup, 23.1 GiB set: 99.9 vs 98.9 tok/s at 20K, the fewest passes win), and on a fast NVMe where the bigger chunk wins even though it thrashes (P2003, 8192 kept).
+Windows reads the file tier unbuffered (no page cache), so it keeps today's pick. The plan is made for a prompt of `--max-context` tokens (at most 32768, at least 4096). `STRATA_SSD_GBPS` overrides the drive speed, `STRATA_PREFILL_PLAN_TOKS`
+the prompt speed (tokens/s) it assumes; `--prefill N` and `STRATA_PREFILL_RING` always win.
+
+Measured (RTX 3060 12 GB, IQ2_XS, 20 GiB of experts in RAM, cgroup 34 GB, SATA speed emulated at 450 MB/s, page cache dropped and a fresh engine per run, 5 interleaved
+pairs, plan off against the planner's `8192 -> 3840`, medians):
+
+| prompt (tokens) | plan off, tok/s | planner, tok/s | ratio | pairs faster | drive read, GB (off -> planner) | decode after, tok/s |
+|---|---|---|---|---|---|---|
+| 4,101 | 138.1 | 138.2 | 1.001 (one chunk either way) | 3/5 (tie) | 12.8 -> 12.7 | 27.0 -> 28.2 |
+| 20,400 | 334.0 | 822.3 | **2.46x** | 5/5 | 26.1 -> 2.7 | 25.4 -> 42.6 |
+| 28,887 | 418.8 | 910.4 | **2.17x** | 5/5 | 29.5 -> 0.6 | 28.6 -> 45.7 |
+
+The same box with its real NVMe and a 32 GB cap picks 8192 again (bigger chunk 480 vs 327 tok/s at 3328, even though it thrashes), and the 16 GiB cap is unchanged. Identity gate (fixed flags,
+`--expert-cache 1500`): the plan line says `kept`. Data: `phaseA-tests/notes-150-planner.md`; the host model is `include/strata/program/prefill_plan.hpp` with `tests/program/prefill_plan_test.cpp`.
+
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
 None of these changes the default answers; each was measured against the default with interleaved off/on pairs of whole
