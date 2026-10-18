@@ -10,7 +10,7 @@ import { api, ApiError } from './client';
 export type PlanState = 'proposed' | 'approved' | 'rejected' | 'running' | 'paused' | 'done' | 'stopped';
 export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 export interface PlanStep { id: string; text: string; detail?: string; summary?: string; state: StepState }
-export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[] }
+export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[]; /** A plain sentence (an interface string) when the app stopped the planning turn early. */ caution?: string }
 export interface QueuedMessage { id: string; text: string; deliverAt: 'step' | 'end' }
 
 const PLAN_STATES = ['proposed', 'approved', 'rejected', 'running', 'paused', 'done', 'stopped'];

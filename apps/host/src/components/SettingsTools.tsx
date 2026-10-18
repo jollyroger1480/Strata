@@ -130,7 +130,7 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
     <section className="settings-section">
       <h2 className="h4" style={{ marginBottom: 10 }}>{tr('Web search')}</h2>
       <div className="st-card st-card--flush">
-        <Field label={tr('Where results come from')} hint={tr(keyed ? 'Searches use your own account with this service.' : 'Results come from DuckDuckGo. You do not need an account or a key.')}>
+        <Field label={tr('Where results come from')} hint={tr(keyed ? 'Searches use your own account with this service.' : 'Results come from DuckDuckGo, or from Bing when DuckDuckGo is busy. You do not need an account or a key.')}>
           <Select ariaLabel={tr('Where results come from')} value={state.search.provider} options={SEARCH_CHOICES} onChange={value => { setKey(''); void save({ search: { provider: value } }); }} />
         </Field>
         {keyed ? <Field label={tr('Your key')} hint={tr(state.search.keySet ? 'A key is saved on this computer. Enter a new one to replace it.' : 'Saved on this computer only. Strata never shows it again.')}>

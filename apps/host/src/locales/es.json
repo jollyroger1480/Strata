@@ -1,5 +1,11 @@
 {
   "s0001": "% PCIe",
+  "s7331": "Los resultados vienen de DuckDuckGo, o de Bing cuando DuckDuckGo está ocupado. No necesitas cuenta ni clave.",
+  "s7321": "La búsqueda web está limitada ahora mismo, así que dejé de buscar y seguí con lo que tengo. Inténtalo de nuevo en un minuto o añade una clave de búsqueda en Ajustes → Herramientas → Búsqueda web.",
+  "s7322": "Busqué mucho y me detuve para que este chat no se llene. Esto es lo que tengo hasta ahora. Dime qué quieres que investigue después.",
+  "s7323": "Seguí reescribiendo el plan, así que me detuve aquí con la última versión. Dime qué cambiar o apruébalo.",
+  "s7324": "Me quedé sin espacio en este chat, así que me detuve. Strata está resumiendo los mensajes antiguos para liberar espacio. Escribe “continúa” para seguir o empieza un chat nuevo.",
+  "s7325": "Me detuve sin escribir una respuesta. Envía tu mensaje de nuevo o escribe “continúa”.",
   "s7301": "Escribe /loop, cada cuánto y luego qué hacer. Por ejemplo: /loop 10m comprueba si la compilación pasa. Añade \"stop after 3 answers\" para que termine solo. Usa /loop stop para pararlo.",
   "s7302": "Indica qué hacer cada vez, no solo cuándo parar.",
   "s7303": "El bucle terminó: se ejecutó {0} veces, como pediste. Escribe /loop para iniciar otro.",

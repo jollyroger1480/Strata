@@ -121,3 +121,13 @@ A model on OpenRouter whose model list names `reasoning` in `supported_parameter
 ## Pictures
 
 Pictures are on by default for every model that can read them: an API model reads them unless the person switched it off (Settings > Models > "Read pictures with this model") or its server says it cannot; a local model reads them when it was loaded with Read pictures (on by default). `src/lib/pictures.ts` is the one answer used by the composer and by Send; the agent route declares image input from the same flag.
+
+## Turn guard (`turn-guard.mjs`)
+
+A turn that keeps failing the same way is stopped by the app, never left to the model. Seen on a search-heavy `/plan`: every web search was refused, the model searched again and rewrote its plan after each one until the context reached 100%, then the turn ended with no answer and no message.
+
+- **Counted, from what the turn shows:** web searches that failed in a row (3), searches in one turn (10 in a plan turn, 25 otherwise), a plan turn that starts its numbered list from `1.` again (4 times), and a context of 93% or more (the Harness's own compaction did not keep up).
+- **Stopped the way Stop stops** (`session/cancel`, helpers first) but ended as a normal turn (`done`, not cancelled, no error card), so the plan the model had written is still proposed. The plan card carries the reason (`plan.caution`); any other turn ends with one `delta` frame that has `own: true` and `key` (the English sentence, translated by the page; `GUARD_NOTES` are in the interface catalog in all eight languages). Each sentence says what happened and gives one next step.
+- **Compaction:** after a guard stop (and after a turn the model server refused because the context was full) the bridge asks the Harness for `/compact` on that session, so the next message has room. Best effort and logged.
+- **Never silent:** a turn that ends (`completed` or `max-tokens`) with no answer text gets "I ran out of room in this chat..." when the last request used 85% of the window or more, otherwise "I stopped without writing an answer..." (not when tool cards were shown, not after Stop, not after an error, which says why by itself). Goal runs have their own ending lines and are not guarded.
+- Tests: `tests/agent-turn-guard.test.mjs` (counting, always; end to end with the real Harness, the scripted model's `searchloop` and `bloat` scripts and `searchMock: 'limited'` on the bridge, which runs the real search code on a pretend web that refuses, no network).

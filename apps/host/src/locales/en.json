@@ -1,5 +1,11 @@
 {
   "s0001": "% PCIe",
+  "s7331": "Results come from DuckDuckGo, or from Bing when DuckDuckGo is busy. You do not need an account or a key.",
+  "s7321": "Web search is limited right now, so I stopped searching and went on with what I have. Try again in a minute, or add a search key in Settings → Tools → Web search.",
+  "s7322": "I searched a lot and stopped so this chat does not fill up. This is what I have so far. Tell me what to look into next.",
+  "s7323": "I kept rewriting the plan, so I stopped here with the latest version. Tell me what to change, or approve it.",
+  "s7324": "I ran out of room in this chat, so I stopped. Strata is summarising the older messages to make space. Say “continue” to go on, or start a new chat.",
+  "s7325": "I stopped without writing an answer. Send your message again, or say “continue”.",
   "s7301": "Type /loop, how often, then what to do. For example: /loop 10m check whether the build passes. Add \"stop after 3 answers\" to end it by itself. Use /loop stop to stop.",
   "s7302": "Say what to do each time, not only when to stop.",
   "s7303": "The loop is done: it ran {0} times, as you asked. Type /loop to start another.",

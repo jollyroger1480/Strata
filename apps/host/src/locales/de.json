@@ -1,5 +1,11 @@
 {
   "s0001": "% PCIe",
+  "s7331": "Die Ergebnisse kommen von DuckDuckGo, oder von Bing, wenn DuckDuckGo ausgelastet ist. Sie brauchen kein Konto und keinen Schlüssel.",
+  "s7321": "Die Websuche ist gerade eingeschränkt, deshalb habe ich die Suche beendet und mit dem weitergemacht, was ich habe. Versuchen Sie es in einer Minute erneut oder fügen Sie unter Einstellungen → Tools → Websuche einen Suchschlüssel hinzu.",
+  "s7322": "Ich habe viel gesucht und aufgehört, damit dieser Chat nicht überläuft. Das ist mein Stand bisher. Sagen Sie mir, was ich als Nächstes nachschlagen soll.",
+  "s7323": "Ich habe den Plan immer wieder umgeschrieben und höre hier mit der letzten Fassung auf. Sagen Sie mir, was ich ändern soll, oder genehmigen Sie ihn.",
+  "s7324": "In diesem Chat ist mir der Platz ausgegangen, deshalb habe ich angehalten. Strata fasst die älteren Nachrichten zusammen, um Platz zu schaffen. Schreiben Sie „weiter“, um fortzufahren, oder starten Sie einen neuen Chat.",
+  "s7325": "Ich habe angehalten, ohne eine Antwort zu schreiben. Senden Sie Ihre Nachricht erneut oder schreiben Sie „weiter“.",
   "s7301": "Tippen Sie /loop, wie oft und dann, was zu tun ist. Zum Beispiel: /loop 10m prüfe, ob der Build besteht. Mit „stop after 3 answers“ endet es von selbst. Mit /loop stop halten Sie es an.",
   "s7302": "Sagen Sie, was jedes Mal zu tun ist, nicht nur, wann es endet.",
   "s7303": "Die Schleife ist fertig: Sie lief {0}-mal, wie gewünscht. Mit /loop starten Sie eine neue.",
