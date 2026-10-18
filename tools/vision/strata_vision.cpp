@@ -129,7 +129,8 @@ int main(int argc, char** argv) {
     if (!gpu && !fa_given && ggml_cpu_has_avx512()) fa = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cp.flash_attn_type = fa;
     // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
-    if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);
+    // (at most 16: a 256-thread server does not need 128 encoder threads; --threads overrides)
+    if (threads <= 0 && !gpu) threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency() / 2));
     if (threads > 0) cp.n_threads = threads;
     if (max_tokens > 0) cp.image_max_tokens = max_tokens;
     if (min_tokens > 0) cp.image_min_tokens = min_tokens;
