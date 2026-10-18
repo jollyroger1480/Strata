@@ -855,7 +855,8 @@ fn run_embedded() {
                 eprintln!("[strata] {e}");
                 Box::<dyn std::error::Error>::from(e)
             })?;
-            open_window(app, port)?;
+            let shell_token = handle.state::<ShutdownToken>().0.lock().unwrap().clone().unwrap_or_default();
+            open_window(app, port, &shell_token)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -873,13 +874,17 @@ fn run_embedded() {
 }
 
 /// The one window, on the host's own origin so the page and its API share an origin exactly as the browser build does.
-fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+#[cfg_attr(windows, allow(unused_variables))]
+fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    // The shell's own file-drop handler is off: with it on, Windows hands a dropped file to the shell and the page never sees it, so pictures
-    // could not be dropped on the chat (QA report 1, item 4). With it off the page gets ordinary drag and drop events (apps/host DropZone), the
-    // same as in a browser, on every system.
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0).disable_drag_drop_handler();
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    // Dropping pictures on the chat (QA report 1, item 4). Windows: the shell's own file-drop handler is off, because with it on the system hands
+    // the dropped file to the shell and the page never sees it; with it off the page gets ordinary drag and drop events (apps/host DropZone), as
+    // in a browser. Linux and macOS: the page gets the drag events but WebKit gives it no files, so the handler stays on and the shell passes the
+    // drop on (see drop_script and hand_over_drop below).
+    #[cfg(windows)]
+    let builder = builder.disable_drag_drop_handler();
     // WebKitGTK (2.50 to 2.52 at least) dereferences a null pointer in AcceleratedBackingStore::update in its UI process when a page calls
     // document.startViewTransition (the web process asks the UI process to enter accelerated compositing, and the backing store is not
     // there). The page itself does not call it on that engine (apps/host/src/lib/router.ts), and this line keeps any other script from doing
@@ -888,8 +893,62 @@ fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Er
     let builder = builder.initialization_script(
         "try { Object.defineProperty(Document.prototype, 'startViewTransition', { value: undefined, configurable: true, writable: true }); } catch (e) {}",
     );
-    builder.build()?;
+    #[cfg_attr(windows, allow(unused_variables))]
+    let window = builder.build()?;
+    #[cfg(not(windows))]
+    {
+        let target = window.clone();
+        let token = shell_token.to_string();
+        window.on_webview_event(move |event| {
+            if let tauri::WebviewEvent::DragDrop(drag) = event {
+                match drag {
+                    tauri::DragDropEvent::Enter { .. } => { let _ = target.eval(&drag_script("enter")); }
+                    tauri::DragDropEvent::Leave => { let _ = target.eval(&drag_script("leave")); }
+                    tauri::DragDropEvent::Drop { paths, .. } => {
+                        let _ = target.eval(&drag_script("leave"));
+                        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                        hand_over_drop(target.clone(), port, token.clone(), paths);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
     Ok(())
+}
+
+/// The script that tells the page a file drag is over the window (`state` is "enter" or "leave"); the page shows its drop box (apps/host DropZone).
+#[cfg_attr(windows, allow(dead_code))]
+fn drag_script(state: &str) -> String {
+    format!("window.dispatchEvent(new CustomEvent('strata:native-drag', {{ detail: '{state}' }}));")
+}
+
+/// The script that tells the page which dropped files the host holds for it (`files_json` is the host's own JSON array of { id, name, type, size }).
+#[cfg_attr(windows, allow(dead_code))]
+fn drop_script(files_json: &str) -> String {
+    format!("window.dispatchEvent(new CustomEvent('strata:native-drop', {{ detail: {files_json} }}));")
+}
+
+/// The files of one drop, by path, to the host (which reads them and keeps each for the page to fetch once); then the page is told.
+/// Off the window's own thread, so the window never waits for a big picture to be read.
+#[cfg(not(windows))]
+fn hand_over_drop(window: tauri::WebviewWindow, port: u16, token: String, paths: Vec<String>) {
+    std::thread::spawn(move || {
+        let body = serde_json::json!({ "paths": paths }).to_string();
+        let answer = http_request_body(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/app/drop"),
+            &[("x-strata-shutdown", token.as_str()), ("content-type", "application/json")],
+            Some(&body),
+        );
+        let files = match answer {
+            Ok((status, text)) if status.contains(" 200") => serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("files").cloned()),
+            Ok((status, _)) => { eprintln!("[strata] the host did not take the dropped files: {status}"); None }
+            Err(e) => { eprintln!("[strata] the dropped files could not be handed to the host: {e}"); None }
+        };
+        let json = files.map(|f| f.to_string()).unwrap_or_else(|| "[]".to_string());
+        let _ = window.eval(&drop_script(&json));
+    });
 }
 
 /// Linux window process: shows the page of the host the shell started and registers the app updater with it. It starts no host and
@@ -937,7 +996,7 @@ fn run_window_process() -> ! {
                     eprintln!("[strata] the app updater could not be registered with the host: {e}");
                 }
             }
-            open_window(app, port)
+            open_window(app, port, &token)
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -953,6 +1012,15 @@ fn run_window_process() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scripts_the_shell_sends_the_page_for_a_file_drop() {
+        assert_eq!(drag_script("enter"), "window.dispatchEvent(new CustomEvent('strata:native-drag', { detail: 'enter' }));");
+        let files = r#"[{"id":"a","name":"x.png","type":"image/png","size":3}]"#;
+        let script = drop_script(files);
+        assert!(script.starts_with("window.dispatchEvent(new CustomEvent('strata:native-drop', { detail: [{"));
+        assert!(script.contains("x.png") && script.ends_with("}));"));
+    }
 
     #[test]
     fn the_window_origin_is_stable_unless_the_port_is_taken() {

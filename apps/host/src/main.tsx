@@ -4,9 +4,12 @@ import './styles/kit/tokens.css';
 import './styles/kit/components.css';
 import './styles/app.css';
 import { App } from './app/App';
+import { installDropGuard } from './components/DropZone';
 
 const el = document.getElementById('root');
 if (!el) throw new Error('#root missing');
+
+installDropGuard();
 
 createRoot(el).render(
   <StrictMode>
