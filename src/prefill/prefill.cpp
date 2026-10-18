@@ -3047,7 +3047,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
-            if (l == std::max<int64_t>(LB, 1) && !ple_land()) return false;   // the PLE rows, read from layer 1 on
+            if (l == std::max<int64_t>(LB, 1)) {   // the PLE rows, read from layer 1 on (a wait for the SSD read of the first chunk lands on "ple")
+                pt.mark(kPfPle, cs);
+                if (!ple_land()) return false;
+            }
             // ---- the PLE block at layer 1, token by token (its conv reads the previous tokens' rows)
             if (l == 1 && ple_on && ple_batch) {
                 // the whole chunk at once, in sub-batches carved from the idle scratch region: the key and value
