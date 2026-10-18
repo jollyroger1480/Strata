@@ -3187,5 +3187,6 @@
   "s3191": "„gpu“ muss eine Grafikkartennummer wie 0 oder eine Liste wie [0, 1] sein.",
   "s3192": "Zeile {0}: {1}",
   "s3193": "In deiner Einstellungsdatei steckt ein Fehler, deshalb wurde das Modell nicht gestartet.",
-  "s3194": "Öffne die Einstellungsdatei unter „Experteneinstellungen“, behebe die unter „Details“ gezeigte Zeile und lade das Modell dann erneut."
+  "s3194": "Öffne die Einstellungsdatei unter „Experteneinstellungen“, behebe die unter „Details“ gezeigte Zeile und lade das Modell dann erneut.",
+  "s3195": "Aktualisiere die Engine (Einstellungen, Engine, „Engine aktualisieren“) und versuche es dann erneut."
 }

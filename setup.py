@@ -300,9 +300,13 @@ FP4LOCAL_ENGINE = (0, 1, 45)
 
 # agentionai's Gyro files (Qwen3.8-Flash-Next with trellis-coded, Hadamard-rotated experts, TQ2_T / TQK6 / TQK7): one
 # GGUF per size, the n-gram table inside it (hence the 58 / 92 GB downloads for 27.6 / 35 GB of memory).  The engine
-# reads them from 0.1.45 on (the split release) (ported from agentionai/Strata rc2, MIT); the sizes and SHA-256 are the Hub's LFS pointers
+# reads them from 0.1.45.1 on: the experts are native_experts.txt v5 (Hadamard-folded, hadamard.txt), which the engine reads since the
+# APR port (commit f47b0385f, 2026-10-02, first in the 0.2.0 line).  The released 0.1.45 engine reads only up to v4 and refuses a
+# Gyro pack, so 0.1.45 is NOT enough: 0.1.45.1 is the first engine package built after the reader was merged (checked: the
+# "native_experts.txt v5 declares Hadamard-folded experts" message is in every 0.1.45.1+ strata binary and in no 0.1.45 release one).
+# (ported from agentionai/Strata rc2, MIT); the sizes and SHA-256 are the Hub's LFS pointers
 # of the revision pinned in HF_REVISIONS.  The model's license is Qwen's.
-GYRO_ENGINE = (0, 1, 45)
+GYRO_ENGINE = (0, 1, 45, 1)
 GYRO_FILES = {
     "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf":
         (58487015808, "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87"),

@@ -3187,5 +3187,6 @@
   "s3191": "«gpu» deve ser o número de uma placa de vídeo, como 0, ou uma lista como [0, 1].",
   "s3192": "Linha {0}: {1}",
   "s3193": "Seu arquivo de configurações tem um erro, então o modelo não foi iniciado.",
-  "s3194": "Abra o arquivo de configurações em «Configurações avançadas», corrija a linha mostrada em «Detalhes» e carregue o modelo novamente."
+  "s3194": "Abra o arquivo de configurações em «Configurações avançadas», corrija a linha mostrada em «Detalhes» e carregue o modelo novamente.",
+  "s3195": "Atualize o mecanismo (Configurações, Mecanismo, «Atualizar mecanismo») e tente novamente."
 }

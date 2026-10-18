@@ -3187,5 +3187,6 @@
   "s3191": "\"gpu\" must be a graphics card number such as 0, or a list such as [0, 1].",
   "s3192": "Line {0}: {1}",
   "s3193": "Your settings file has a mistake, so the model was not started.",
-  "s3194": "Open the settings file under Expert settings, fix the line shown under Details, then load the model again."
+  "s3194": "Open the settings file under Expert settings, fix the line shown under Details, then load the model again.",
+  "s3195": "Update the engine (Settings, Engine, Update engine), then try again."
 }

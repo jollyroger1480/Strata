@@ -3187,5 +3187,6 @@
   "s3191": "«gpu» debe ser el número de una tarjeta gráfica, como 0, o una lista como [0, 1].",
   "s3192": "Línea {0}: {1}",
   "s3193": "Tu archivo de ajustes tiene un error, así que el modelo no se ha iniciado.",
-  "s3194": "Abre el archivo de ajustes en «Ajustes expertos», corrige la línea que aparece en «Detalles» y vuelve a cargar el modelo."
+  "s3194": "Abre el archivo de ajustes en «Ajustes expertos», corrige la línea que aparece en «Detalles» y vuelve a cargar el modelo.",
+  "s3195": "Actualiza el motor (Ajustes, Motor, «Actualizar motor») y vuelve a intentarlo."
 }
