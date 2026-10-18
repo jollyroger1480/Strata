@@ -104,7 +104,10 @@ export function useSurfaceFocus(
       target?.focus();
     };
     frame = requestAnimationFrame(attempt);
-    return () => cancelAnimationFrame(frame);
+    // A page that is not being painted (a window that is covered or in the background) holds animation frames back, and then focus would stay
+    // on whatever opened the surface, behind it (QA F03). A timer is not held back, so it moves focus in if the frame did not.
+    const fallback = setTimeout(() => { const el = ref.current; if (el && !el.contains(document.activeElement) && isTopSurface(el)) attempt(); }, 80);
+    return () => { cancelAnimationFrame(frame); clearTimeout(fallback); };
   }, [open, ref, initial]);
 
   // Keep Tab inside while open.
