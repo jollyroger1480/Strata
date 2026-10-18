@@ -25,6 +25,7 @@ import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
 import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
+import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
@@ -298,6 +299,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const tracker = new DeliverableTracker(workspacePath);
     try { tracker.snapshot(); } catch { /* a folder that cannot be read has no deliverables */ }
     const groups = new ActivityGroups({ emit: raw });
+    const skills = new SkillsUsed({ emit: raw, info: skillInfoFrom(skillsDir()) });
     const emit = frame => {
       if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (hideDeltas) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
@@ -308,6 +310,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         raw(frame);
         if (made) raw(made);
         groups.card(frame.tool, made);
+        skills.card(frame.tool);
         return;
       }
       raw(frame);
@@ -497,6 +500,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         case 'turn/end':
           turn.parentOpen = false;
           armSettle();
+          break;
+        // The first turn of a prompt may have started before this follow stream attached (no turn/start seen): any step of the parent is proof that it is
+        // still working. Without this a helper that finished while the parent was still answering ended the run early ("The agent turn was interrupted").
+        case 'step/start':
+          if (!turn.parentOpen) { turn.parentOpen = true; clearTimeout(turn.settleTimer); }
           break;
         case 'tool/call':
           if (d.name === 'subagent' || d.name === 'subagent_fork') turn.subagentCalls.set(d.callId, parseArgs(d.arguments));

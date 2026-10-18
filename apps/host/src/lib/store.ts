@@ -4,7 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
-import { appendText, mergeDeliverable, readDeliverable, readGroup, upsertGroup } from './deliverables';
+import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
@@ -12,6 +12,9 @@ import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
+import { pictureStatus } from './pictures';
+import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
+import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
@@ -1065,6 +1068,13 @@ export function createPreviewExamples() {
   go('chat', session.id);
 }
 
+/** "Continue in a new chat" on a task: a new chat whose first message is the task's findings, what it did and its files (src/lib/task-handover.ts). */
+export function continueTaskInNewChat(task: Task) {
+  const session = newSession();
+  go('chat', session.id);
+  void sendMessage(taskHandoverMessage(task), { title: taskHandoverTitle(task), markdown: true });
+}
+
 export function selectSession(id: string) {
   set({ activeSession: id });
   markRead(id);
@@ -1504,7 +1514,7 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string } = {}) {
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
   if (state.streaming) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
@@ -1525,8 +1535,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     else startTimeSkipDemo(demoPrompt);
     return;
   }
-  const imageTarget=nativeState()?.instances.find(i=>i.id===nativeState()?.defaultId);const remoteApi=state.remoteModel?state.providers?.connections.find(c=>c.id===state.remoteModel!.connectionId)?.models.find(m=>m.id===state.remoteModel!.modelId):null;const canSendPictures=state.remoteModel?remoteApi?.reads===true:imageTarget?.status==='ready'&&imageTarget.vision;
-  if(pendingChatPhotos(state.activeSession).length&&!canSendPictures){pushToast('error','This model cannot read pictures',state.remoteModel?'Open Settings > Models, edit this connection and tick "This model reads pictures" if it does, or choose another model. You can also remove the attachments.':'Switch to a model that reads pictures (turn on Read pictures in Models), or remove the attachments.');return;}
+  const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
+  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
   if(!body&&!resume&&!planStart)return;
@@ -1534,7 +1544,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   let sessionId = state.activeSession;
   if (!sessionId) sessionId = newSession().id;
 
-  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}) };
+  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
   let assistantId = uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
@@ -1566,7 +1576,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume && !planStart ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (body.length>48?body.slice(0,47).trimEnd()+'…':body)) : s.title,
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));
@@ -1593,7 +1603,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         sessionId,
         ...(planStart ? { planId: planStart } : {}),
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
-        history:await Promise.all(prior.map(async(m,index)=>{const included=canSendPictures?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
+        history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
@@ -1659,6 +1669,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
+        } else if (type === 'skills-used') {
+          const skills = readSkills(frame);
+          if (skills.length) patchAssistant(m => ({ ...m, skills }));
         } else if (type === 'activity-group') {
           const group = readGroup(frame);
           if (group) patchAssistant(m => ({ ...m, blocks: upsertGroup(m.blocks ?? (m.content ? appendText(undefined, m.content) : undefined), group) }));

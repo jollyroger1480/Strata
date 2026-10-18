@@ -7443,6 +7443,8 @@ textarea {
 .act__live { width: 6px; height: 6px; border-radius: 50%; background: var(--st-accent); animation: plan-glow 1.8s ease-out infinite; }
 .act__thumb { width: 44px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--st-line); cursor: pointer; }
 .act__files { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; }
+.act__skill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--st-ink-soft); }
+.act__skill .small { margin-left: 6px; }
 .act__files button { display: inline-flex; align-items: center; gap: 8px; padding: 4px 0; border: 0; background: transparent; color: var(--st-ink-soft); font: inherit; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .act__live, .fcard__chev, .act__chev { animation: none; transition: none; } }
 

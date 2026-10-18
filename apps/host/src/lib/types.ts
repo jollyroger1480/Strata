@@ -125,7 +125,7 @@ export interface ImageModelLibrary {
 }
 
 export type ModelProtocol = 'openai-chat' | 'openai-responses' | 'anthropic';
-export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null }
+export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null; /** The provider says the model can think (OpenRouter's supported_parameters): the Reasoning menu then works. */ reasoning?: boolean | null; thinks?: boolean | null }
 export interface ModelProviderPreset { id: string; name: string; baseUrl: string; protocol: ModelProtocol; baseUrlHint?: string }
 export interface ModelConnection {
   id: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
@@ -314,6 +314,8 @@ export interface MonitorState {
 }
 
 export interface ChatMessage {
+  /** The person's message is written with Markdown (a task handover: bold headings and lists), so the bubble draws it as such. */
+  markdown?: boolean;
   photos?:import('./chat-photos').ChatPhoto[];
   /** Reply came from a saved API connection, rather than the local engine. */
   remoteModel?: boolean;
@@ -322,6 +324,8 @@ export interface ChatMessage {
   planId?: string;
   /** The reply in the order it came: text and grouped activity lines (round 8, item 12). Absent on older replies. */
   blocks?: import('./deliverables').MessageBlock[];
+  /** The saved skills this reply used (the line under the answer), in the order they were loaded. */
+  skills?: { name: string; description: string }[];
   /** Files the assistant made or changed in this reply, one card each. */
   deliverables?: import('./deliverables').Deliverable[];
   /** A line from the app itself (for example from /loop), never sent to the model. */

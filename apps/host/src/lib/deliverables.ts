@@ -37,6 +37,16 @@ export function readGroup(raw: unknown): ActivityGroup | null {
   return { id: g.id, closed: g.closed === true, line: typeof g.line === 'string' ? g.line : '', added: num(g.added), removed: num(g.removed), files };
 }
 
+/** The `skills-used` frame: the skills this reply used, each with the name the person gave it and a one-line description. */
+export function readSkills(raw: unknown): { name: string; description: string }[] {
+  const list = (raw as { skills?: unknown } | null)?.skills;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap(x => {
+    const s = x as Record<string, unknown>;
+    return typeof s?.name === 'string' && s.name ? [{ name: s.name, description: typeof s.description === 'string' ? s.description : '' }] : [];
+  }).slice(0, 20);
+}
+
 /** Add streamed text to the reply's ordered pieces: it continues the last text piece, or starts a new one after an activity line. */
 export function appendText(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
   const list = blocks ?? [], last = list.at(-1);

@@ -18,6 +18,7 @@ export function createAgentTaskRunner({ agent, choice, workspace }) {
     const chatId = `task:${task.id}`;
     const cards = new Map();
     let text = '', failure = null;
+    const files = new Map();
     const stop = () => void agent.stop(chatId).catch(() => {});
     signal?.addEventListener('abort', stop, { once: true });
     try {
@@ -26,6 +27,7 @@ export function createAgentTaskRunner({ agent, choice, workspace }) {
         onFrame: frame => {
           if (frame.type === 'delta') text += frame.text ?? '';
           else if (frame.type === 'error') failure = frame.message;
+          else if (frame.type === 'deliverable' && frame.abs && files.size < 30) files.set(frame.abs, { name: frame.name ?? frame.path, path: frame.abs });
           else if (frame.type === 'agent-tool') {
             cards.set(frame.tool.id, { ...(cards.get(frame.tool.id) ?? {}), ...frame.tool });
             if (frame.tool.state === 'proposed') void agent.approve({ chatId, callId: frame.tool.id, decision: 'deny' }).catch(() => {});
@@ -35,6 +37,6 @@ export function createAgentTaskRunner({ agent, choice, workspace }) {
     } finally { signal?.removeEventListener('abort', stop); agent.forget(chatId); }
     signal?.throwIfAborted();
     if (failure) throw new Error(failure);
-    return taskReport({ text, cards: [...cards.values()] });
+    return { ...taskReport({ text, cards: [...cards.values()] }), files: [...files.values()] };
   };
 }

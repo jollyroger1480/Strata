@@ -9,6 +9,7 @@
  *   3. a local model (unless --skip-local): Download and prepare with Read pictures ON, load, and a picture through the app's own chat.
  *
  *   node pics-e2e.mjs --install <node/ host/ control/> --components <engine components> --work <scratch> --image shapes.png \
+ *   Also: --silent <url> (a server whose model list says nothing about pictures: ON by default), --agent (the same picture through the agent; needs a Harness)
  *        --vlm http://127.0.0.1:18090/v1 --vlm-model smolvlm --text-only http://127.0.0.1:18091/v1 [--skip-local --family qwen --model IQ3_XXS --data <folder> --device cpu]
  */
 import { spawn } from 'node:child_process';
@@ -121,20 +122,28 @@ async function main() {
     record('a server without a picture reader is known not to read pictures', t.m?.reads === false, JSON.stringify(t.m));
     const refused = await chat({ remoteModel: { connectionId: t.c.id, modelId: 'plain' } });
     console.log(`    refusal: ${JSON.stringify(refused.message)}`);
-    record('a picture for it is refused in plain words that say how to fix it', refused.status === 409 && /This model reads pictures/.test(refused.message ?? '') && /Settings/.test(refused.message ?? ''), `${refused.status}`);
+    record('a picture for it is refused in plain words that say how to fix it', refused.status === 409 && /Read pictures with this model/.test(refused.message ?? '') && /Settings/.test(refused.message ?? ''), `${refused.status}`);
     const ticked = await saveApi('Text only server', args['text-only'], [{ id: 'plain', name: 'Plain model', vision: true }]);
     const after = (await call('/api/model-providers')).body.connections.find(x => x.name === 'Text only server');
-    record('ticking "This model reads pictures" is saved and makes the model read pictures', after?.models[0]?.vision === true && after?.models[0]?.reads === true, JSON.stringify(after?.models[0]));
+    record('ticking "Read pictures with this model" is saved and makes the model read pictures', after?.models[0]?.vision === true && after?.models[0]?.reads === true, JSON.stringify(after?.models[0]));
     const through = await chat({ remoteModel: { connectionId: after.id, modelId: 'plain' } });
-    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200 && (through.error ?? '') !== '' ? /untick/.test(through.error) : through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
+    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200 && (through.error ?? '') !== '' ? /turn off/.test(through.error) : through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
   }
 
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: false }]);
   const off = await readsAfter('Small picture model', smol, false);
   const notRead = await chat({ remoteModel: { connectionId: off.c.id, modelId: smol } });
-  record('a model that does not read pictures refuses them and says where to change it', notRead.status === 409 && /does not read pictures/.test(notRead.message ?? ''), `${notRead.status} ${notRead.message ?? ''}`);
+  record('a model switched OFF refuses pictures and says where to turn them on again', notRead.status === 409 && /not to read pictures/.test(notRead.message ?? '') && /Settings/.test(notRead.message ?? ''), `${notRead.status} ${notRead.message ?? ''}`);
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: null }]);
 
+  // unknown is ON by default: a server whose list and /props say nothing is sent the picture
+  if (args.silent) {
+    await saveApi('Silent server', args.silent, [{ id: 'quiet', name: 'Quiet model' }]);
+    const q = await readsAfter('Silent server', 'quiet', true, 8);
+    record('a server that says nothing about pictures is ON by default', q.m?.reads === true && q.m?.vision === null, JSON.stringify(q.m));
+    const sentQuiet = await chat({ remoteModel: { connectionId: q.c.id, modelId: 'quiet' } });
+    record('and the picture is sent to it (not refused)', sentQuiet.status === 200, `${sentQuiet.status} ${sentQuiet.message ?? sentQuiet.error ?? ''}`);
+  }
   await saveApi('Other style', 'https://api.anthropic.com/v1', [{ id: 'claude-x', name: 'Claude' }], 'anthropic');
   const other = (await call('/api/model-providers')).body.connections.find(x => x.name === 'Other style');
   const style = await chat({ remoteModel: { connectionId: other.id, modelId: 'claude-x' } });
@@ -153,10 +162,11 @@ async function main() {
   const refreshed = (await call('/api/native?refresh=1')).body;
   const model = refreshed.installed?.models?.find(m => [m.id, m.model, m.tag].some(x => String(x ?? '').toLowerCase() === want));
   record('the model is prepared with its picture reader', !!model?.visionPrepared, JSON.stringify({ ready: model?.ready, visionPrepared: model?.visionPrepared }));
-  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? want, vision: device } });
+  const load = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? want } });
   const loaded = await waitJob(load.body.id, 900);
   const instance = loaded.state.instances[0];
   record('the model loads with the picture reader', loaded.job.state === 'done' && instance?.status === 'ready' && instance?.vision === true, `${loaded.job.state} ${loaded.job.error ?? ''} vision=${instance?.vision}`);
+  record('the model loaded with pictures ON without being asked per load (default)', instance?.vision === true, '');
   const t0 = Date.now();
   let local = { status: 0 };
   for (let i = 0; i < 2 && !(local.text ?? '').trim(); i++) local = await chat({ nativeModelId: instance?.id, maxTokens: 4096 });
@@ -164,7 +174,23 @@ async function main() {
   const low = (local.text ?? '').toLowerCase();
   record('the local model answers about the picture (names the shapes)', local.status === 200 && /red|circle/.test(low) && /blue|square/.test(low) && /green|triangle/.test(low), `status=${local.status} err=${local.error ?? ''}`);
   record('the local model reads STRATA 42', low.includes('42'));
-  const unloaded = await call(`/api/native/instances/${instance?.id}/unload`, 'POST', {});
+  // the same picture through the agent (the Harness route must declare image input: the "does not declare image input" error of the tester)
+  if (args.agent) {   // needs a Harness beside the host (the installed layout has one; a bare test box does not)
+    const t1 = Date.now(); let a = { status: 0 };
+    for (let i = 0; i < 2 && !/red|circle|square|triangle/.test((a.text ?? '').toLowerCase()); i++) a = await chat({ nativeModelId: instance?.id, agent: true, sessionId: 'pics-agent-' + i, mode: 'plan', maxTokens: 4096 });
+    console.log(`    answer through the agent (${Math.round((Date.now() - t1) / 1000)} s): ${JSON.stringify((a.text ?? a.message ?? '').slice(0, 300))}`);
+    record('the agent route reads the picture too', a.status === 200 && /red|circle|square|triangle/.test((a.text ?? '').toLowerCase()) && !/does not declare image input/.test(a.text ?? ''), `status=${a.status} err=${a.error ?? ''}`);
+  }
+  // OFF: loading with Read pictures off refuses a picture in plain words and says what to do
+  await call(`/api/native/instances/${instance?.id}/unload`, 'POST', {});
+  const loadOff = await call('/api/native/operations', 'POST', { kind: 'load', args: { model: model?.model ?? want, vision: 'no' } });
+  const loadedOff = await waitJob(loadOff.body.id, 900);
+  const off2 = loadedOff.state.instances[0];
+  record('loaded with Read pictures OFF', loadedOff.job.state === 'done' && off2?.vision === false, `${loadedOff.job.state} vision=${off2?.vision}`);
+  const refusedLocal = await chat({ nativeModelId: off2?.id, maxTokens: 64 });
+  console.log(`    refusal: ${JSON.stringify(refusedLocal.message)}`);
+  record('a picture for the OFF model is refused with a next step', refusedLocal.status === 409 && /Read pictures/.test(refusedLocal.message ?? '') && /Models/.test(refusedLocal.message ?? ''), `${refusedLocal.status}`);
+  const unloaded = await call(`/api/native/instances/${off2?.id}/unload`, 'POST', {});
   record('unload', unloaded.status === 200, unloaded.status);
 }
 try { await main(); } catch (e) { record('run', false, e.stack ?? e); }

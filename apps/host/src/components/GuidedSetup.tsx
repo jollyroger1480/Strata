@@ -27,7 +27,7 @@ export function GuidedSetup() {
     const initialFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family));
     const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation?.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
     const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
-    const [vision, setVision] = useState(saved?.vision ?? false), [directory, setDirectory] = useState(saved?.directory ?? '');
+    const [vision, setVision] = useState(saved?.vision ?? true), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
     const [installJobId, setInstallJobId] = useState(saved?.installJobId ?? ''), [tuneJobId, setTuneJobId] = useState(saved?.tuneJobId ?? '');
     const [plan, setPlan] = useState<Record<string, any> | null>(null), [tour, setTour] = useState(0), [folderOpen, setFolderOpen] = useState(false);
@@ -93,7 +93,7 @@ export function GuidedSetup() {
             setError(e instanceof Error ? e.message : String(e));
         }
     }
-    function chooseNative(family: string, size: string) { setFamily(family); setSize(size); setVision(false); setPlan(null); setError(''); }
+    function chooseNative(family: string, size: string) { setFamily(family); setSize(size); setVision(true); setPlan(null); setError(''); }
     useEffect(() => { titleRef.current?.focus({ preventScroll: true }); titleRef.current?.closest('.setupmodal__surface')?.scrollTo({ top: 0 }); }, [step]);
     useEffect(() => {
         if (step < 2 || leaving.current)

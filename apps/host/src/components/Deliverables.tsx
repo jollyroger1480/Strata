@@ -55,6 +55,23 @@ export function EditedFiles({ files, sessionId, onPreview }: { files: Deliverabl
   </div>;
 }
 
+/**
+ * The saved skills an answer used, as one quiet line under the answer in the same style as the activity line ("Ran 2 commands, read a file"):
+ * "Used 2 skills: Weekly report, Brand voice"; opened, each skill with its one-line description.
+ */
+export function SkillsUsed({ skills }: { skills: { name: string; description: string }[] }) {
+  const [open, setOpen] = useState(false);
+  if (!skills.length) return null;
+  const names = skills.map(s => s.name).join(', ');
+  return <div className="act" data-open={open || undefined}>
+    <button type="button" className="act__line" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+      <Icon name="skills" size={15}/><span>{skills.length === 1 ? tr('Used 1 skill: {0}', [names]) : tr('Used {0} skills: {1}', [skills.length, names])}</span>
+      <Icon name="chevron" size={14} className="act__chev"/>
+    </button>
+    {open ? <ul className="act__files">{skills.map(s => <li key={s.name}><span className="act__skill"><Icon name="skills" size={14}/>{s.name}{s.description ? <span className="small muted">{s.description}</span> : null}</span></li>)}</ul> : null}
+  </div>;
+}
+
 /** A run of tool use between two pieces of text, as one quiet line: "Ran 2 commands, read monitor.png", with a thumbnail when it touched a picture. */
 export function ActivityLine({ group, sessionId, onPreview }: { group: ActivityGroup; sessionId: string; onPreview: (a: PreviewArtifact) => void }) {
   const [open, setOpen] = useState(false);

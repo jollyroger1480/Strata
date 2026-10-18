@@ -41,11 +41,11 @@ test('a llama-server started with --mmproj says so in /props, next to /v1, and t
   assert.deepEqual(seen, ['/v1/models', '/props']);
 });
 
-test('a text-only server, and an unreachable one, count as not reading pictures', async () => {
+test('a text-only server counts as not reading pictures; an unreachable one is unknown (pictures stay on by default)', async () => {
   const text = createVisionProbe({ fetcher: answer({ '/v1/models': { data: [{ id: 'm' }] }, '/props': { modalities: { vision: false } } }) });
   assert.equal(await text.check({ id: 'c', baseUrl: 'http://h/v1' }, 'm'), false);
   const down = createVisionProbe({ fetcher: async () => { throw new Error('refused'); } });
-  assert.equal(await down.check({ id: 'c', baseUrl: 'http://h/v1' }, 'm'), false);
+  assert.equal(await down.check({ id: 'c', baseUrl: 'http://h/v1' }, 'm'), null);
 });
 
 test('a provider list that names image input is believed without asking /props', async () => {

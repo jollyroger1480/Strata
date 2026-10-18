@@ -19,6 +19,24 @@ export function modelReadsPictures(row) {
   return null;
 }
 
+/**
+ * Does a model list row say the model can think (reasoning)? OpenRouter lists `supported_parameters` per model: `reasoning` or
+ * `include_reasoning` in it means the model takes a reasoning effort. True / false / null (the row does not say).
+ */
+export function modelSupportsReasoning(row) {
+  const list = row?.supported_parameters ?? row?.supportedParameters;
+  if (!Array.isArray(list)) return null;
+  return list.some(x => /^(include_)?reasoning$/i.test(String(x)));
+}
+
+/**
+ * Pictures are ON by default (owner rule): a model whose server does not say either way is sent pictures; only an explicit "no" (the person's
+ * own switch, or the server's own list or /props) turns them off.
+ */
+export function readsPicturesByDefault(model, asked) {
+  return effectiveVision(model, asked) ?? true;
+}
+
 /** The effective answer for a saved model: what the person ticked, else what the server said (undefined: never asked). */
 export function effectiveVision(model, asked) {
   if (model?.vision === true) return true;
@@ -32,26 +50,29 @@ export function createVisionProbe({ fetcher = fetch, now = Date.now } = {}) {
   return {
     /** Last known answer for a model (true / false), or undefined when never asked. */
     known: (conn, modelId) => { const e = cache.get(keyOf(conn, modelId)); return e ? e.value : undefined; },
-    /** Ask now (at most once per TTL per model). */
+    /** Whether the model takes a reasoning effort, as its server's list said (true / false), null when it did not say, undefined when never asked. */
+    knownThinks: (conn, modelId) => { const e = cache.get(keyOf(conn, modelId)); return e ? e.thinks : undefined; },
+    /** Ask now (at most once per TTL per model). Answers true / false / null (the server did not say). */
     async check(conn, modelId) {
       const k = keyOf(conn, modelId); const hit = cache.get(k);
       if (hit && now() - hit.at < TTL_MS) return hit.value;
-      let value = false;
+      let value = null, thinks = null;
       const base = String(conn.baseUrl).replace(/\/+$/, '');
       const headers = conn.apiKey ? { authorization: `Bearer ${conn.apiKey}` } : {};
       const get = async path => { const res = await fetcher(base + path, { headers, signal: AbortSignal.timeout(4000) }); return res.ok ? res.json() : null; };
       try {
         const list = (await get('/models'))?.data ?? [];
         const row = list.find(m => m?.id === modelId) ?? (list.length === 1 ? list[0] : null);
-        value = modelReadsPictures(row) === true;
-        if (!value && modelReadsPictures(row) !== false) {            // the list did not say: a llama-server tells in /props (next to /v1, not under it)
+        value = modelReadsPictures(row);
+        thinks = modelSupportsReasoning(row);
+        if (value === null) {            // the list did not say: a llama-server tells in /props (next to /v1, not under it)
           try {
             const props = await (async () => { const res = await fetcher(base.replace(/\/v1$/, '') + '/props', { headers, signal: AbortSignal.timeout(4000) }); return res.ok ? res.json() : null; })();
-            value = props?.modalities?.vision === true;
+            value = props?.modalities?.vision === true ? true : props?.modalities?.vision === false ? false : null;
           } catch { /* no /props: not a llama-server */ }
         }
-      } catch { value = false; }
-      cache.set(k, { at: now(), value });
+      } catch { value = null; }
+      cache.set(k, { at: now(), value, thinks });
       return value;
     },
   };
