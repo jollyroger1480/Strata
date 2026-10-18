@@ -1,28 +1,39 @@
 /**
- * Web search with no account and no key: DuckDuckGo's own web-page search results.
+ * Web search with no account and no key: DuckDuckGo's own web-page search results, with Bing's plain result page as the second source.
  *
  * The Harness has three search backends and all of them need a paid service key. This is the fourth: it asks DuckDuckGo's plain
  * HTML search page the way a browser does and reads the result list out of the page. It is the default for the agent's
  * `web_search` tool; the person can switch to a keyed service in Settings -> Tools.
  *
- * Being polite is part of the design:
- *   - an ordinary browser User-Agent and the page's own request shape (nothing hidden, nothing faked beyond the User-Agent);
- *   - at most one request every 1.5 s and 20 a minute from this program, with the same query answered from a 10 minute cache;
- *   - a 15 s time limit, no retries in a loop; when DuckDuckGo asks for a human check or refuses, the answer says so in plain
- *     words and the model is told to carry on without search.
- * Results come from DuckDuckGo; they are not ranked or filtered here.
+ * Being polite is part of the design, because DuckDuckGo refuses a program that asks too fast (2026-10-18, a Linux box: two searches in
+ * 1.2 s were answered, the third got HTTP 202 "anomaly" and every DuckDuckGo page then refused for minutes):
+ *   - an ordinary browser User-Agent and the page's own request shape (Referer, Origin, Sec-Fetch-*; nothing hidden);
+ *   - one request at a time per source, 2.5 to 4 s apart (random, so it does not look like a clock), at most 8 a minute;
+ *   - the same question is answered from a session cache (30 minutes), so a model that repeats itself costs nothing;
+ *   - when a source refuses (HTTP 202/403/429 or a challenge page) it is left alone for a cooldown that doubles every time it refuses
+ *     again (1, 2, 4 ... up to 10 minutes; a Retry-After header is honoured) instead of being asked again, which only extends a block;
+ *   - a refused DuckDuckGo page is not followed by the lite page (same refusal, one more strike): the next source is tried instead;
+ *   - a timeout or a server error gets one retry after a short pause, then the next source;
+ *   - when every source refuses the answer is one plain sentence that also tells the model not to retry (see LIMITED_MESSAGE).
+ * Results come from DuckDuckGo or Bing; they are not ranked or filtered here.
  *
  * Nothing in this file touches the Harness, so it can be tested alone. `strata-search.mjs` is the plugin that registers it.
  */
+import { BING_URL, bingLooksBlocked, parseBingResults } from './web-search-bing.mjs';
 
 export const DDG_PROVIDER_ID = 'strata-duckduckgo';
 
 const HTML_URL = 'https://html.duckduckgo.com/html/';
 const LITE_URL = 'https://lite.duckduckgo.com/lite/';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const CACHE_MS = 10 * 60 * 1000;
-const MIN_GAP_MS = 1500;
-const PER_MINUTE = 20;
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const CACHE_MS = 30 * 60 * 1000;
+const CACHE_SIZE = 120;
+const GAP_MS = 2500;
+const JITTER_MS = 1500;
+const PER_MINUTE = 8;
+const COOLDOWN_MS = 60_000;
+const COOLDOWN_MAX_MS = 10 * 60_000;
+const RETRY_PAUSE_MS = 1500;
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'", '#x27': "'", '#x2F': '/' };
 const decode = text => String(text).replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, key) => {
@@ -106,83 +117,148 @@ export function looksBlocked(status, html) {
     && !/class="[^"]*\bresult__a\b/.test(html);
 }
 
+
 export class SearchUnavailable extends Error {
   constructor(message, code = 'WEB_PROVIDER_ERROR', options) { super(message, options); this.name = 'WebError'; this.code = code; }
 }
 
-export const BLOCKED_MESSAGE = 'DuckDuckGo is limiting searches from this computer right now. Try again in a few minutes, or add a search key in Settings, Tools.';
+/** The one plain sentence for the person. The words "Settings → Tools → Web search" are where the key goes in the app. */
+export const LIMITED_SENTENCE = 'Web search is limited right now. Try again in a minute, or add a search key (Exa, Perplexity or DeepSeek) in Settings → Tools → Web search.';
+/** What the tool answers: the sentence, then what the model should do (it must not keep searching). */
+export const BLOCKED_MESSAGE = `${LIMITED_SENTENCE} Do not retry this search: go on with what you know and tell the person, in one plain sentence, that web search was limited.`;
+export const UNREACHABLE_MESSAGE = 'The search could not reach the internet. Check the connection and try again. Do not retry this search now: go on with what you know and say that search was unavailable.';
 
-/**
- * @param {{fetch?: typeof fetch, now?: () => number, sleep?: (ms: number) => Promise<void>}} [deps]
- */
-export function createDuckDuckGoSearch({ fetch: fetchImpl = globalThis.fetch, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
-  const cache = new Map();
-  const starts = [];
-  let last = 0;
-  let chain = Promise.resolve();
-
-  /** One request at a time, spaced out, and at most PER_MINUTE a minute. */
-  function turn(signal) {
-    const run = chain.then(async () => {
+/** One request at a time, spaced out with a little randomness, and at most PER_MINUTE a minute. */
+class Pacer {
+  constructor({ now, sleep, random, gap = GAP_MS, jitter = JITTER_MS, perMinute = PER_MINUTE }) {
+    Object.assign(this, { now, sleep, random, gap, jitter, perMinute });
+    this.starts = []; this.last = 0; this.chain = Promise.resolve();
+  }
+  turn(signal) {
+    const run = this.chain.then(async () => {
+      const spacing = this.gap + Math.floor(this.random() * this.jitter);
       for (;;) {
-        signal?.throwIfAborted();
-        const t = now();
-        while (starts.length && t - starts[0] > 60_000) starts.shift();
-        const wait = Math.max(MIN_GAP_MS - (t - last), starts.length >= PER_MINUTE ? 60_000 - (t - starts[0]) : 0);
+        if (signal?.aborted) throw new SearchUnavailable('The search was cancelled.', 'WEB_ABORTED');
+        const t = this.now();
+        while (this.starts.length && t - this.starts[0] > 60_000) this.starts.shift();
+        const wait = this.last ? Math.max(spacing - (t - this.last), this.starts.length >= this.perMinute ? 60_000 - (t - this.starts[0]) : 0) : 0;
         if (wait <= 0) break;
-        if (wait > 30_000) throw new SearchUnavailable('Too many searches in a short time. Try again in a minute.', 'WEB_RATE_LIMITED');
-        await sleep(wait);
+        if (wait > 30_000) throw new SearchUnavailable(LIMITED_SENTENCE, 'WEB_RATE_LIMITED');
+        await this.sleep(wait);
       }
-      last = now();
-      starts.push(last);
+      this.last = this.now();
+      this.starts.push(this.last);
     });
-    chain = run.catch(() => {});
+    this.chain = run.catch(() => {});
     return run;
   }
+}
 
-  async function ask(url, query, signal) {
+const REFUSED = Symbol('refused');
+const retryAfterMs = res => {
+  const v = Number(res?.headers?.get?.('retry-after'));
+  return Number.isFinite(v) && v > 0 ? Math.min(v * 1000, COOLDOWN_MAX_MS) : 0;
+};
+const serverError = status => status >= 500 && status < 600;
+const queryKey = query => query.toLowerCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * @param {{fetch?: typeof fetch, now?: () => number, sleep?: (ms: number) => Promise<void>, random?: () => number}} [deps]
+ */
+export function createDuckDuckGoSearch({ fetch: fetchImpl = globalThis.fetch, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), random = Math.random } = {}) {
+  const cache = new Map();
+
+  /** A source: its pacing, and what to do after it refuses. */
+  const source = (id, name) => ({ id, name, pacer: new Pacer({ now, sleep, random }), blockedUntil: 0, strikes: 0, refusals: 0 });
+  const ddg = source('duckduckgo', 'DuckDuckGo');
+  const bing = source('bing', 'Bing');
+  const refuse = (s, res) => {
+    s.strikes += 1; s.refusals += 1;
+    s.blockedUntil = now() + Math.max(retryAfterMs(res), Math.min(COOLDOWN_MS * 2 ** (s.strikes - 1), COOLDOWN_MAX_MS));
+  };
+  const accepted = s => { s.strikes = 0; s.blockedUntil = 0; };
+
+  const headers = (origin, extra = {}) => ({
+    'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'accept-language': 'en-US,en;q=0.9',
+    'upgrade-insecure-requests': '1', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'same-origin', 'sec-fetch-user': '?1',
+    ...(origin ? { referer: `${origin}/`, origin } : {}), ...extra,
+  });
+
+  async function get(url, init, signal) {
     const timeout = AbortSignal.timeout(15_000);
-    const res = await fetchImpl(url, {
-      method: 'POST', redirect: 'follow',
-      headers: { 'user-agent': USER_AGENT, 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en-US,en;q=0.8' },
-      body: new URLSearchParams({ q: query, b: '' }).toString(),
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-    });
-    const html = await res.text();
-    return { status: res.status, html };
+    const res = await fetchImpl(url, { redirect: 'follow', ...init, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    return { res, status: res.status, html: await res.text() };
+  }
+
+  /** One page request with one retry after a pause for a timeout, a network error or a server error. Throws SearchUnavailable only for cancel. */
+  async function ask(s, makeRequest, signal) {
+    let failure;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await s.pacer.turn(signal);
+      try {
+        const page = await get(...makeRequest(), signal);
+        if (!serverError(page.status)) return page;
+        failure = new Error(`HTTP ${page.status}`);
+      } catch (error) {
+        if (signal?.aborted) throw new SearchUnavailable('The search was cancelled.', 'WEB_ABORTED', { cause: error });
+        failure = error;
+      }
+      if (attempt === 0) await sleep(RETRY_PAUSE_MS + Math.floor(random() * 1000));
+    }
+    return { failure };
+  }
+
+  async function searchDuckDuckGo(query, signal) {
+    const form = new URLSearchParams({ q: query, b: '', kl: 'wt-wt', df: '' }).toString();
+    const post = (url, origin) => () => [url, { method: 'POST', headers: headers(origin, { 'content-type': 'application/x-www-form-urlencoded' }), body: form }];
+    let reachedOnce = false;
+    for (const [url, origin, parse] of [[HTML_URL, 'https://html.duckduckgo.com', parseHtmlResults], [LITE_URL, 'https://lite.duckduckgo.com', parseLiteResults]]) {
+      const page = await ask(ddg, post(url, origin), signal);
+      if (page.failure) return { failure: page.failure };
+      reachedOnce = true;
+      // A refusal on the first page is a refusal for the whole address: the lite page would only add one more strike.
+      if (looksBlocked(page.status, page.html)) { refuse(ddg, page.res); return { refused: true }; }
+      const sources = parse(page.html);
+      if (sources.length) { accepted(ddg); return { sources }; }
+    }
+    if (reachedOnce) accepted(ddg);
+    return { sources: [] };
+  }
+
+  async function searchBing(query, signal) {
+    const url = `${BING_URL}?${new URLSearchParams({ q: query, setlang: 'en' })}`;
+    const page = await ask(bing, () => [url, { method: 'GET', headers: headers(null) }], signal);
+    if (page.failure) return { failure: page.failure };
+    if (bingLooksBlocked(page.status, page.html)) { refuse(bing, page.res); return { refused: true }; }
+    accepted(bing);
+    return { sources: parseBingResults(page.html) };
   }
 
   return {
     id: DDG_PROVIDER_ID,
     available: () => typeof fetchImpl === 'function',
+    /** What happened so far, for tests and for the status line in the app's log. */
+    status: () => ({ duckduckgo: { strikes: ddg.strikes, refusals: ddg.refusals, blockedForMs: Math.max(0, ddg.blockedUntil - now()) }, bing: { strikes: bing.strikes, refusals: bing.refusals, blockedForMs: Math.max(0, bing.blockedUntil - now()) }, cached: cache.size }),
     async search(request, signal) {
       const query = String(request.query ?? '').trim().slice(0, 400);
       if (!query) throw new SearchUnavailable('Type what to search for.', 'WEB_PROVIDER_ERROR');
-      const key = query.toLowerCase();
+      const key = queryKey(query);
+      const want = request.maxResults ?? 10;
       const hit = cache.get(key);
-      if (hit && now() - hit.at < CACHE_MS) return { sources: hit.sources.slice(0, request.maxResults ?? 10), truncated: false };
-      let sources = [];
-      let blocked = false;
-      for (const [url, parse] of [[HTML_URL, parseHtmlResults], [LITE_URL, parseLiteResults]]) {
-        await turn(signal);
-        let page;
-        try { page = await ask(url, query, signal); }
-        catch (error) {
-          if (signal?.aborted) throw new SearchUnavailable('The search was cancelled.', 'WEB_ABORTED', { cause: error });
-          if (error?.name === 'TimeoutError') throw new SearchUnavailable('The search took too long. Try again.', 'WEB_TIMEOUT', { cause: error });
-          throw new SearchUnavailable('The search could not reach DuckDuckGo. Check the internet connection and try again.', 'WEB_PROVIDER_ERROR', { cause: error });
-        }
-        if (looksBlocked(page.status, page.html)) { blocked = true; continue; }
-        sources = parse(page.html);
-        if (sources.length) { blocked = false; break; }
+      if (hit && now() - hit.at < CACHE_MS) return { sources: hit.sources.slice(0, want), truncated: false };
+      let limited = false, unreachable = false;
+      for (const [s, run] of [[ddg, searchDuckDuckGo], [bing, searchBing]]) {
+        if (s.blockedUntil > now()) { limited = true; continue; }    // asked again too soon: that only extends a block
+        const result = await run(query, signal);
+        if (result.refused) { limited = true; continue; }
+        if (result.failure) { unreachable = true; continue; }
+        if (!result.sources.length) return { sources: [], truncated: false };      // a real search with no results is an answer, not an error
+        cache.set(key, { at: now(), sources: result.sources });
+        if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
+        return { sources: result.sources.slice(0, want), truncated: false };
       }
-      if (!sources.length) {
-        if (blocked) throw new SearchUnavailable(BLOCKED_MESSAGE, 'WEB_RATE_LIMITED');
-        return { sources: [], truncated: false };          // a real search with no results is an answer, not an error
-      }
-      cache.set(key, { at: now(), sources });
-      if (cache.size > 60) cache.delete(cache.keys().next().value);
-      return { sources: sources.slice(0, request.maxResults ?? 10), truncated: false };
+      if (limited) throw new SearchUnavailable(BLOCKED_MESSAGE, 'WEB_RATE_LIMITED');
+      throw new SearchUnavailable(unreachable ? UNREACHABLE_MESSAGE : BLOCKED_MESSAGE, unreachable ? 'WEB_PROVIDER_ERROR' : 'WEB_RATE_LIMITED');
     },
   };
 }

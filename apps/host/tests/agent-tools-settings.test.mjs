@@ -186,12 +186,13 @@ test('search: a human check or a refusal is told in plain words, and a real sear
   assert.equal(looksBlocked(200, '<div class="anomaly-modal">Unfortunately, bots use DuckDuckGo too</div>'), true);
   assert.equal(looksBlocked(200, HTML), false);
   const sleeps = [];
-  const blocked = createDuckDuckGoSearch({ fetch: async () => new Response('<html>captcha anomaly-modal</html>', { status: 200 }), sleep: async ms => { sleeps.push(ms); } });
+  const tick = () => { let t = 1_000_000; return { now: () => t, sleep: async ms => { sleeps.push(ms); t += ms; } }; };
+  const blocked = createDuckDuckGoSearch({ ...tick(), fetch: async () => new Response('<html>captcha anomaly-modal</html>', { status: 200 }) });
   await assert.rejects(blocked.search({ query: 'x' }), e => e.message === BLOCKED_MESSAGE && e.code === 'WEB_RATE_LIMITED');
-  const empty = createDuckDuckGoSearch({ fetch: async () => new Response('<html><body>No results.</body></html>', { status: 200 }), sleep: async () => {} });
+  const empty = createDuckDuckGoSearch({ ...tick(), fetch: async () => new Response('<html><body>No results.</body></html>', { status: 200 }) });
   assert.deepEqual(await empty.search({ query: 'zzzz' }), { sources: [], truncated: false });
-  const offline = createDuckDuckGoSearch({ fetch: async () => { throw new TypeError('fetch failed'); }, sleep: async () => {} });
-  await assert.rejects(offline.search({ query: 'x' }), /could not reach DuckDuckGo/);
+  const offline = createDuckDuckGoSearch({ ...tick(), fetch: async () => { throw new TypeError('fetch failed'); } });
+  await assert.rejects(offline.search({ query: 'x' }), /could not reach the internet/);
 });
 
 test('search: polite by design: one request at a time, spaced out, a minute limit, and the same query is answered from a short cache', async () => {
