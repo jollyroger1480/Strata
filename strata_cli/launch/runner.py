@@ -192,6 +192,9 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     else:
         cfg.pop("api_key", None)
     cfg.setdefault("exe", "component:strata-engine")
+    cfg["open_browser"] = False                              # strata launch never opens a browser by itself (only `--open` does, after the start)
+    if isinstance(cfg.get("args"), list):
+        cfg["args"] = [a for a in cfg["args"] if a != "--open"]
     if log:
         cfg["log"] = log
     apply_cards(cfg, gpus)

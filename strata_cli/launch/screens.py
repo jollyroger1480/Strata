@@ -1286,7 +1286,16 @@ class SaveScreen(Base):
         self.query_one("#summary", Static).update(t)
 
     def explain(self) -> Text:
-        return Text("Press Enter on the first choice to save and start. The first start may download the model and tune; the monitor opens when it is serving.", style=MUTE)
+        st = self.ctx.model_state()
+        if st.remaining_gb < 0.05:
+            fetch = "Nothing needs to be downloaded."
+        elif st.only_helpers:
+            fetch = "The model is already downloaded; Strata fetches " + st._names() + "."        # noqa: SLF001
+        else:
+            fetch = f"Strata downloads about {st.remaining_gb:.0f} GB first."
+        tune = " It tunes first." if self.ctx.settings.tune != "skip" else ""
+        return Text(f"Press Enter on the first choice to save and start. {fetch}{tune} The Strata monitor opens in this window when it is serving; "
+                    "no web page opens by itself.", style=MUTE)
 
     def action_rename(self) -> None:
         self.query_one("#name", Input).focus()

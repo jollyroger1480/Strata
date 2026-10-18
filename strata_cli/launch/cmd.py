@@ -103,6 +103,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
+    o.add_argument("--open", action="store_true", help="open the server's web page in your browser once it is serving (nothing opens a browser without this)")
     o.add_argument("--yes", action="store_true", help="do not ask questions (for one: whether to download the model on a computer with no engine yet)")
     o.add_argument("--plan", action="store_true", help="show what would happen and exit; nothing is changed")
     o.add_argument("--feed", metavar="URL|DIR", help="where the signed update feed (engine downloads) is; default: STRATA_UPDATE_FEED or the project's")
@@ -355,6 +356,15 @@ def _ask_yes(title: str, text: str) -> bool:
     return answer in ("", "y", "yes")
 
 
+def open_page(url: str) -> bool:
+    """Open the server's page in the browser. Only ever called for an explicit --open (or the monitor's b key)."""
+    try:
+        import webbrowser
+        return bool(webbrowser.open(url))
+    except Exception:                                        # noqa: BLE001 - no browser here: the address is printed anyway
+        return False
+
+
 def _tui(run, *args, **kw) -> int:
     """Open the screens. An error of the screens themselves ends with a plain sentence and a non-zero exit code, never a traceback and exit 0
     (tester report T02)."""
@@ -496,7 +506,7 @@ def run_launch(a: argparse.Namespace) -> int:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
             from strata_cli.launch import app
-            return _tui(app.run_tui, None, catalog=catalog, feed=a.feed)
+            return _tui(app.run_tui, None, catalog=catalog, feed=a.feed, open_page=bool(a.open))
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
         s, notes = apply_defaults(s, catalog)
@@ -534,7 +544,7 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"[!] {fw}")
         if interactive and have_choices:
             from strata_cli.launch import app
-            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset))
+            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open))
         try:
             result = runner.run()
         except LaunchError as e:
@@ -571,6 +581,8 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in result.notices:
             _say(f"[!] {n}")
         local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
+        if a.open and local:
+            open_page(local)
         if result.key and os.name == "nt":
             _say(f"  Watch it:    $env:STRATA_API_KEY = strata launch --show-key; strata monitor --url {local} --credential-env STRATA_API_KEY")
         elif result.key:

@@ -402,7 +402,7 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
 
 
 def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None, feed: str | None = None, auto_run: bool = False,
-            save: bool = False) -> int:
+            save: bool = False, open_page: bool = False) -> int:
     """Open the launch screens. `settings` given and `auto_run`: skip the questions and go straight to the run."""
     catalog = catalog or Catalog()
     print("Looking at this computer…", flush=True)
@@ -433,4 +433,8 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
     if not result.serving:
         print(result.final_text)
         return 0
-    return run_monitor(_info_for(result, ctx.settings))
+    info = _info_for(result, ctx.settings)
+    if open_page:                                            # only with an explicit --open: nothing else opens a browser
+        from strata_cli.launch.cmd import open_page as open_in_browser
+        open_in_browser(info["url"])
+    return run_monitor(info)
