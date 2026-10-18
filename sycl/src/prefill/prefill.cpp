@@ -241,6 +241,7 @@ inline int ring_slots(size_t T) {
 // 151-b70: the fused int8 DPAS expert products (prefill/esimd_moe.dp.cpp, Battlemage).  STRATA_PREFILL_MMQ=1 (or STRATA_PF_I8=1) turns
 // them on for the layers whose experts are IQ3_S gate/up + IQ4_NL down, STRATA_PREFILL_MMQ=0 keeps the FP16 path; off by default
 // until the owner has the quality check (the activations are quantized, so the bits differ from the FP16 path).
+static_assert(strata::kernels::kXmxGroupMax <= strata::prefill::i8::kMaxGroup, "the int8 path holds the grouped XMX path's experts: its Layout must be at least as big");
 inline int i8_mode() {
     static const int v = [] {
         const char* e = std::getenv("STRATA_PREFILL_MMQ");

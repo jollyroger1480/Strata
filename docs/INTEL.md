@@ -922,3 +922,20 @@ The output tokens are identical in all runs. Quality (teacher-forced KL against 
 2e-4 nats, p99 6e-3, top-1 99.7%, perplexity ratio 1.0004; a `--prefill 8192` chunk moves the first-token distribution by 1e-2 to 3e-2
 for comparison. At more than ~130 rows per expert (a chunk of 8,192 tokens or more) the int8 chain stops winning because every row block
 decodes the weights again (1.03x at 194 rows against 1.4-1.9x at 60): use `auto`.
+
+### Arc Pro B70, what else was measured on the prompt path (2026-10-18, branch f-151-b70)
+
+All on the 4,095-token IQ3_S prompt, 32K config, `--prefill 4096`, fixed flags, 3-4 interleaved rounds with a noise arm (prefill tok/s,
+medians, output tokens identical in every arm):
+
+| change | result |
+|---|---|
+| `STRATA_GDN_XE=1` (variant 6, the sub-group recurrence that is the default on Alchemist; bit-identical) | 1,251 -> 1,207 (-3.5%): stays off on Battlemage |
+| `STRATA_PROMPT_ATTN_XMX=1` / `=32` (the joint_matrix prompt attention, 64- / 32-cell chunks) | 1,258 -> 952 / 913 (-24% / -27%): stays opt-in |
+| QSA prompt attention, probabilities stored `[cell][head]` and read as three vectors per cell in the value phase (`STRATA_ATTN_RS=2`, now the default; first-token logits md5 equal at 4K and 16K) | 1,254 -> 1,265 (+0.9%, 3 of 3 rounds) |
+| the same plus a 16-shuffle reduce-scatter of the 12 heads' score sums (`STRATA_ATTN_RS=1`; also bit-exact) | 1,254 -> 1,236 (-1.5%): the score phase is not shuffle bound |
+| int8 expert groups of 24 or 32 experts instead of 16 | 1,416 -> 1,420 / 1,416: no effect |
+| K-quant / Q5_1 / Q8_0 multi-entry decode kernels (`STRATA_KQ_SPLIT`, on by default; bit-identical to `=0`), `native_grouped_parity --kqbench 16`, synthetic UD-Q4_K_XL-shaped experts | 1 token: 76.4 vs 75.0 us (-1.8%); 2 tokens: 122.5 vs 135.9 us (+10%); 4 tokens (an MTP window): 202.6 vs 233 us (+13%); Q6_K 4 tokens 387 vs 485 (+20%), Q8_0 290 vs 341 (+15%) |
+
+The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
+G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
