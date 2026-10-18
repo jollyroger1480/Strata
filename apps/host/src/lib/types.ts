@@ -314,6 +314,8 @@ export interface MonitorState {
 }
 
 export interface ChatMessage {
+  /** The person's message is written with Markdown (a task handover: bold headings and lists), so the bubble draws it as such. */
+  markdown?: boolean;
   photos?:import('./chat-photos').ChatPhoto[];
   /** Reply came from a saved API connection, rather than the local engine. */
   remoteModel?: boolean;

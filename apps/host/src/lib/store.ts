@@ -1071,9 +1071,8 @@ export function createPreviewExamples() {
 /** "Continue in a new chat" on a task: a new chat whose first message is the task's findings, what it did and its files (src/lib/task-handover.ts). */
 export function continueTaskInNewChat(task: Task) {
   const session = newSession();
-  patchSession(session.id, s => ({ ...s, title: taskHandoverTitle(task), defaultTitle: false }));
   go('chat', session.id);
-  void sendMessage(taskHandoverMessage(task));
+  void sendMessage(taskHandoverMessage(task), { title: taskHandoverTitle(task), markdown: true });
 }
 
 export function selectSession(id: string) {
@@ -1515,7 +1514,7 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string } = {}) {
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
   if (state.streaming) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
@@ -1545,7 +1544,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   let sessionId = state.activeSession;
   if (!sessionId) sessionId = newSession().id;
 
-  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}) };
+  const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
   let assistantId = uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
@@ -1577,7 +1576,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume && !planStart ? (body.length>48?body.slice(0,47).trimEnd()+'…':body) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (body.length>48?body.slice(0,47).trimEnd()+'…':body)) : s.title,
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));

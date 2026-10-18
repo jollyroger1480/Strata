@@ -590,7 +590,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     if (m.role === 'user') {
         return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
-        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.content}</div>
+        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink}/> : m.content}</div>
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">

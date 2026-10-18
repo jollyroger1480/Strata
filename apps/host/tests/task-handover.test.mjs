@@ -57,3 +57,12 @@ test('a scheduled run keeps the files the agent made, and a later failed run doe
   await service.execute(saved.id);
   assert.equal(service.list()[0].status, 'error'); assert.deepEqual(service.list()[0].files, []);
 });
+
+test('a long run keeps the first steps, shortened, and says how many more', () => {
+  setTranslationLanguage('en');
+  const steps = Array.from({ length: 14 }, (_, i) => `Step ${i + 1} ${'x'.repeat(300)}`);
+  const text = taskHandoverMessage({ ...task, output: `Done.\n\n---\n\n**What it did**\n\n${steps.map(s => `- ${s}`).join('\n')}`, files: [] });
+  const lines = text.split('\n').filter(l => l.startsWith('- '));
+  assert.equal(lines.length, 11); assert.ok(lines.slice(0, 10).every(l => l.length <= 162 && l.endsWith('…')));
+  assert.equal(lines[10], '- …and 4 more steps');
+});
