@@ -72,12 +72,13 @@ cat > "$STAGE/BUILD.json" <<EOJ
 {"version": "$PKGVER", "source": "f-amd-vision $COMMIT", "variant": "$V", "archs": [$ARCHJSON], "portable": true, "vision": "gpu", "vision_cpu": "strata-vision", "vision_gpu": "strata-vision-hip", "vision_archs": [$ARCHJSON]}
 EOJ
 # the libraries the engine and the GPU reader load (the CPU reader needs only the system's), collected from the build outputs
+DATA=(--data "$LIBW/lib/rocblas/library=rocblas/library" --data "$LIBW/lib/hipblaslt/library=hipblaslt/library" --data-arch "$DATAARCH")
 for b in "$OUT/b/strata" "$OUT/bh/bin/strata-vision-hip"; do
   python3 packaging/collect_libs.py --binary "$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" --search "$CORE/lib/llvm/lib" \
     --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "$STAGE" \
-    --data "$LIBW/lib/rocblas/library=rocblas/library" --data "$LIBW/lib/hipblaslt/library=hipblaslt/library" --data-arch "$DATAARCH" \
-    >> "$OUT/collect.log" 2>&1
+    "${DATA[@]}" >> "$OUT/collect.log" 2>&1
   st "collected for $(basename "$b") rc=$?"
+  DATA=()                                              # the kernel data once
 done
 cp "$OUT/b/strata" "$OUT/bv/bin/strata-vision" "$OUT/bh/bin/strata-vision-hip" "$STAGE/"
 for f in "$STAGE"/*.so "$STAGE"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"; done
