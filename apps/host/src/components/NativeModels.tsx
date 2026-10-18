@@ -84,7 +84,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     // A card a loaded model already uses (a second model on it usually does not fit): said on its row, and not the pre-selected one while another is free.
     const usedBy = (cards: number[]) => (native?.instances ?? []).filter(i => i.status !== 'error' && i.model !== selectedSize?.id && i.gpus.some(g => cards.includes(g))).map(i => i.label);
     const cardOptions = selectedSize?.gpu_options && selectedSize.gpu_options.options.length >= 2 ? selectedSize.gpu_options : null;
-    const activeCards = cardOptions ? (cardOptions.options.find(o => o.key === cardsKey) ?? (multiple ? cardOptions.options.find(o => o.recommended && !usedBy(o.cards).length) ?? cardOptions.options.find(o => !usedBy(o.cards).length) : undefined) ?? cardOptions.options.find(o => o.recommended) ?? cardOptions.options[0]) : null;
+    const loadedCards = loadedSelected ? cardOptions?.options.find(o => o.cards.length === loadedSelected.gpus.length && o.cards.every(c => loadedSelected.gpus.includes(c))) : undefined;
+    const activeCards = cardOptions ? (cardOptions.options.find(o => o.key === cardsKey) ?? loadedCards ?? (multiple ? cardOptions.options.find(o => o.recommended && !usedBy(o.cards).length) ?? cardOptions.options.find(o => !usedBy(o.cards).length) : undefined) ?? cardOptions.options.find(o => o.recommended) ?? cardOptions.options[0]) : null;
     const cardsGpus: number[] = activeCards?.cards ?? [];
     const chosenCards = expert && gpus.length ? gpus : cardsGpus;
     const fitHardware = { ram_gb: pcRam ? Math.max(0, pcRam - keptRam) : pcRam, vram_gb: Math.max(0, pcVram - keptVramOn(chosenCards)) };

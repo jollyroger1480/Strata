@@ -59,7 +59,10 @@ export function Sidebar({ containerRef }: {
     const current = library?.variants.find(v => v.id === library.loaded);
     const native = useNative(), nativeCurrent = native?.instances.find(i => i.id === native.defaultId);
     const modelName = nativeCurrent?.label ?? (current?.local ? current.name : current?.family) ?? tr('No model loaded');
-    const modelQuant = nativeCurrent?.apiModelId ?? current?.quant ?? tr('View model versions');
+    // The version from the catalog and the card it runs on ("Q2_0 · GPU 2"), not the file id.
+    const nativeSize = nativeCurrent ? native?.catalog?.families.flatMap(f => f.sizes).find(s => s.id === nativeCurrent.model) : undefined;
+    const nativeSecond = nativeCurrent ? [nativeSize?.model ?? nativeCurrent.model.toUpperCase(), nativeCurrent.gpus.length ? nativeCurrent.gpus.map(g => `GPU ${g + 1}`).join(' + ') : ''].filter(Boolean).join(' · ') : null;
+    const modelQuant = nativeSecond ?? current?.quant ?? tr('View model versions');
     const phase = nativeCurrent ? (nativeCurrent.status === 'ready' ? nativeCurrent.phase : nativeCurrent.status) : monitor?.phase ?? 'idle';
     const status = phase === 'unavailable' ? 'Status unavailable' : phase === 'error' ? 'Error' : phase === 'loading' ? 'Loading' : !current && !nativeCurrent ? 'No model loaded' : phase === 'reading' ? 'Reading prompt' : phase === 'thinking' ? 'Thinking' : phase === 'generating' ? 'Generating' : 'Ready';
     const menuSession = sessions.find(s => s.id === menuId);
