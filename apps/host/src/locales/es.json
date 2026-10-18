@@ -3188,5 +3188,9 @@
   "s3192": "Línea {0}: {1}",
   "s3193": "Tu archivo de ajustes tiene un error, así que el modelo no se ha iniciado.",
   "s3194": "Abre el archivo de ajustes en «Ajustes expertos», corrige la línea que aparece en «Detalles» y vuelve a cargar el modelo.",
-  "s3195": "Actualiza el motor (Ajustes, Motor, «Actualizar motor») y vuelve a intentarlo."
+  "s3195": "Actualiza el motor (Ajustes, Motor, «Actualizar motor») y vuelve a intentarlo.",
+  "s3196": "Ya lo usa {0}",
+  "s3197": "Detén el chat que sigue usando este modelo, o responde a su pregunta pendiente, y vuelve a intentarlo.",
+  "s3198": "Otro modelo en la misma tarjeta gráfica no dejó espacio para este.",
+  "s3199": "Cárgalo en otra GPU, o descarga primero el otro modelo."
 }

@@ -223,6 +223,9 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
   const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,label:entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
+  /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
+  const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
+  const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
   let proc=null,started=null,retried=null;
   if(packaged){
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
@@ -235,6 +238,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     /* A settings, profile or run file an elevated run made can be closed to this user: repair the access in Strata's own folders and start again (this is not the memory try below). */
     const isAccess=e=>/PermissionError|access is denied|EACCES/i.test(String(e?.message??'')+JSON.stringify(e?.output??''));
     if(isAccess(error)&&typeof control.repairAccess==='function'&&job.state==='running'){await control.repairAccess();append(id,'Strata repaired access to its own files; starting again.');try{await startWith(cfg);started=Promise.resolve();error=null;}catch(again){error=again;}}
+    if(error&&sharedSentence&&!isAccess(error)){instance.status='error';instance.error=sharedSentence;emit();throw new Error(sharedSentence);}
     if(error){const said=humanStartError(error);
     if(isAccess(error)){instance.status='error';instance.error=said;emit();throw new Error(said);}   // access errors are not memory stops: no safer retry
     /* ONE automatic second try in all, never saved, never repeated (args.retrySafer false turns it off): with a safer memory setting when the

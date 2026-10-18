@@ -15,6 +15,7 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
+  { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
   { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
   { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },
   { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },

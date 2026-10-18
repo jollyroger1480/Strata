@@ -3188,5 +3188,9 @@
   "s3192": "Linha {0}: {1}",
   "s3193": "Seu arquivo de configurações tem um erro, então o modelo não foi iniciado.",
   "s3194": "Abra o arquivo de configurações em «Configurações avançadas», corrija a linha mostrada em «Detalhes» e carregue o modelo novamente.",
-  "s3195": "Atualize o mecanismo (Configurações, Mecanismo, «Atualizar mecanismo») e tente novamente."
+  "s3195": "Atualize o mecanismo (Configurações, Mecanismo, «Atualizar mecanismo») e tente novamente.",
+  "s3196": "Já em uso por {0}",
+  "s3197": "Pare o chat que ainda usa este modelo, ou responda à pergunta pendente dele, e tente novamente.",
+  "s3198": "Outro modelo na mesma placa de vídeo não deixou espaço para este.",
+  "s3199": "Carregue-o em outra GPU ou descarregue primeiro o outro modelo."
 }
