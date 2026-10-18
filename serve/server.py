@@ -544,13 +544,18 @@ def cpu_isa_words() -> tuple:
     return f"{model or 'this CPU'} ({have})", missing
 
 
-def start_exit_note(rc: int | None) -> str:
+def start_exit_note(rc: int | None, exe=None) -> str:
     """The sentence the start error carries about how the engine process ended (the engine log is silent when the
     system ends it): "" without a status, else a line, with the CPU's AVX flags after an illegal instruction."""
     words = engine_exit_words(rc)
     if not words:
         return ""
     note = f"\nthe engine process ended: {words}"
+    try:                                            # 0xC0000135: say which DLL (the loader prints nothing)
+        from serve.loader_diag import missing_note
+        note += missing_note(rc, exe)
+    except Exception:
+        pass
     if rc is not None and ((rc < 0 and os.name != "nt" and -rc == int(getattr(signal, "SIGILL", 4))) or
                            (rc & 0xFFFFFFFF) == 0xC000001D):
         isa, missing = cpu_isa_words()
@@ -1053,7 +1058,7 @@ class StrataEngine:
                    "the engine exited before it was ready")
             # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
             # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
-            note = "" if timed_out else start_exit_note(self.proc.returncode)
+            note = "" if timed_out else start_exit_note(self.proc.returncode, exe)
             tail = start_log_tail(log, log_start)
             lines = [x for x in tail.split("\n")[2:] if x.strip()]
             if tail and lines and all(x.strip().startswith("[strata]") for x in lines):
