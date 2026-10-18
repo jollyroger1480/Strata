@@ -434,7 +434,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     1,990 at 4,210 (+17.1%), medians 1,571 -> 2,064 and a 1.27x geometric mean over those three. decode
     89.8 -> 86.9 tok/s, unchanged. `STRATA_SELECT_WMMA=1` on top changed nothing at those lengths (2,026 tok/s);
     its +1.5% is a 16K/262K-ctx number. `hip_prompt_attn_wmma` passes on that card.
-  - `STRATA_HIP_WMMA=auto` (f-151-amd): the same kernel, chosen per call: on a gfx12 card with int8 KV and a prompt batch of
+  - `STRATA_HIP_WMMA=auto`: the same kernel, chosen per call: on a gfx12 card with int8 KV and a prompt batch of
     `STRATA_HIP_WMMA_MIN_Q` (64) or more queries it runs the matrix-core kernel, everything else the FP32 one (`=1` forces it
     on every call, `=0` or unset keeps the FP32 kernel; the default has not moved). A launch error switches the matrix-core
     kernel off for the rest of the process and the FP32 kernel runs (before, the engine exited). Kernel timing on an R9700

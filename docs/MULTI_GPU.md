@@ -117,6 +117,10 @@ helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
 `STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+On two Radeon AI PRO R9700 (each limited to 16 GB with `--vram-reserve-mib 17084`, Q2_0 pack, layer split auto, 5 interleaved pairs,
+noise arm within 0.2%), `STRATA_PREFILL_HELP=1` gave prompt tok/s without -> with: 700 tokens 638 -> 672 (x1.053, 5/5), 1.5K 839 -> 809
+(x0.964), 3K 1,105 -> 929 (x0.840), 6K 1,284 -> 1,211 (x0.943): the PCIe 4.0 x16 links of this box (28.4 GB/s each) make the share lose
+from 1.5K tokens up, so it stays off (`STRATA_PREFILL_HELP_FRAC` was not tuned for it).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
