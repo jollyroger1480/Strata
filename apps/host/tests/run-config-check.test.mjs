@@ -118,3 +118,7 @@ test('every issue sentence exists in all eight languages and keeps its slots', a
   }
   setTranslationLanguage('en');
 });
+
+test('the notes the app itself writes into the file (ui_resource_baseline, ui_vision_device, ...) are not reported', () => {
+  assert.deepEqual(checkRunConfig('{"ui_resource_baseline": {"parallel": 2}, "ui_vision_device": "cpu", "ui_resource_profile": "work"}'), { ok: true, issues: [] });
+});

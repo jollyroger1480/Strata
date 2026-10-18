@@ -81,7 +81,7 @@ export function checkRunConfig(text, { known = KNOWN_KEYS } = {}) {
   }
   const fields = new Map(NATIVE_FIELDS.map(f => [f.id, f]));
   for (const [key, value] of Object.entries(config)) {
-    if (!known.has(key)) {
+    if (!known.has(key) && !key.startsWith('ui_')) {   // ui_* are the app's own notes in the file (resource profile, picture device)
       const near = nearestKey(key, known);
       add('warning', near ? 'unknown-key-near' : 'unknown-key', key, { key, near: near ?? '' }, `"${key}" is not a setting Strata reads, so it is ignored.${near ? ` Did you mean "${near}"?` : ''}`);
       continue;
