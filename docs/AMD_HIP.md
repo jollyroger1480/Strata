@@ -543,6 +543,45 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   against 2.42 s on its CPU). It has not run on an RDNA3 card (gfx1100-gfx1102) or on Windows with an AMD card.
 - **Not validated:** long contexts beyond 16K, answer-quality benchmarks.
 
+## Integrated GPUs (mini PCs)
+
+On a Radeon that shares the computer's memory (the Ryzen mini PCs: Radeon 780M / 760M `gfx1103`, 890M / 880M `gfx1150`,
+Strix Halo `gfx1151`) the engine turns on the matrix-core prompt set by default. It picks this from the device's own
+"integrated" flag and the architecture, not from the name: a discrete card (an RX 7900 XTX `gfx1100`, an R9700 `gfx1201`, any other)
+never gets it, and neither does a computer that also holds a discrete card next to the iGPU. The engine prints one line at
+start-up that names what it set.
+
+| Switch | What it does |
+|---|---|
+| `STRATA_HIP_WMMA=1` | the prompt attention on the matrix cores (needs `--kv int8`) |
+| `STRATA_PF_GEMM=1` | the prompt's FP16 projections on the 128 x 256 WMMA GEMM |
+| `STRATA_PA_FAST=1` | the prompt attention with single FP16 q and p |
+| `STRATA_SELECT_WMMA=1` | the block scorer on the matrix cores |
+| `STRATA_HC_UPMIX=1` | the hyper-connection up projection with its epilogue |
+
+**Why.** The dense projections are 63% of a prompt's GPU time on a 12-CU iGPU (the experts only 16%), and they are what these
+switches speed up. Radeon 780M (P2006, Ryzen 7 255, Q2_0, `--kv int8`, 4K prompt, one run each; 148-amd): 109.5 tok/s with
+none of them, 214.7 with the first four (+96%), 233 with `STRATA_HC_UPMIX` as well (+111%); decode is the same (16.6 against 17-19
+tok/s, inside the run-to-run noise). The prompt switches do not touch the decode kernels.
+
+**What it costs.** They round differently from the old path (another summation order, half-precision intermediates), so the answers
+differ in the last bits. Measured on an R9700 with the same kernels (Q2_0): teacher-forced KL 0.0003 (28 prompts) / 0.0014 (eight
+~6K-token documents), and the task sets inside their run-to-run noise.
+
+**Turning it off.** Each switch keeps `=0` as its off switch (`STRATA_HC_UPMIX=0`); `STRATA_IGPU_DEFAULTS=0` turns the whole
+set off. A switch you set yourself, to anything, is never overridden. Put them in the server config's `env`, or in the shell.
+
+**Windows.** The same code applies and the set is on there too, but it has not been tested on Windows (there was no Windows iGPU
+machine to run it on); the start-up line says so. Report a problem with `STRATA_IGPU_DEFAULTS=0` as the first thing to try.
+
+**Strix Halo (`gfx1151`).** Its exact speed switches are separate and unchanged ([STRIX_HALO.md](STRIX_HALO.md)); the five above
+were already its "maintainers' fast configuration". The default was measured on the 780M only.
+
+**The 780M resets its GPU.** On the 780M's current Ubuntu firmware (gc 11.0.1 MES) a GPU reset can follow when the kernel evicts the
+process's GPU queues while a prompt kernel is running ([RADEON_780M.md](RADEON_780M.md), `notes-minipc.md`). `STRATA_ARENA_PIN_GIB=none`
+(experimental) leaves the expert arena unregistered, so that the kernel's page migration has no GPU mapping to invalidate;
+the experts then reach the GPU by copy. It is not the default and has not been validated.
+
 ## Community-validated cards
 
 Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a

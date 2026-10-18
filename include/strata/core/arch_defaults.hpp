@@ -5,7 +5,8 @@
 // 4K / 32K / 64K and on four models, and a bitwise harness per kernel.  They are therefore on by default on that
 // architecture and nowhere else: a CUDA build and every other HIP architecture run the code they always ran.
 // Switches that change bits (STRATA_PF_GEMM, STRATA_PF_FUSED, STRATA_HC_UPMIX, STRATA_PA_FAST, STRATA_HIP_WMMA,
-// STRATA_SELECT_WMMA, STRATA_HC_Q8: rounding-level, KL-gated) stay opt-in; docs/STRIX_HALO.md lists them.
+// STRATA_SELECT_WMMA, STRATA_HC_Q8: rounding-level, KL-gated) stay opt-in in THIS table; docs/STRIX_HALO.md lists them.  Five of them
+// (HIP_WMMA, PF_GEMM, PA_FAST, SELECT_WMMA, HC_UPMIX) are on by default on an integrated Radeon through igpu_default_env() below.
 //
 // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
 #pragma once

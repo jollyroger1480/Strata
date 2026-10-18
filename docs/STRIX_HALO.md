@@ -96,7 +96,9 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH` | the GDN step over four blocks per head, activation images written by their producers, the PLE key / value projections of a verify window at once |
 | `STRATA_SH_STREAM=1` | the shared expert on a second stream beside the routed experts. It is off by default on other AMD cards (#816), but it pays on gfx1151: decode +1.8% (UD-IQ4_XS) and +6.7% (UD-Q4_K_XL) at 8K |
 
-## 5. What is not on by default (it changes bits)
+## 5. What is not on by default (it changes bits), and the five that are
+
+**Since the integrated-GPU defaults, five of the switches below are on by default on a Strix Halo (any integrated Radeon, [AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"): `STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`.** Each keeps `=0` as its off switch and `STRATA_IGPU_DEFAULTS=0` turns the five off. The default was measured on a Radeon 780M; on the Strix Halo these five are the maintainers' earlier fast configuration. `STRATA_PF_FUSED`, `STRATA_HC_Q8`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in.
 
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
 intermediate), so they are opt-in and the maintainers gate them with KL against the default (`STRATA_PF_SWITCH_MIN_T=4096` keeps
