@@ -759,6 +759,17 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
+### Prompt speed on Alchemist: the grouped XMX expert launch is the default (0.1.48, `STRATA_PF_XMX`)
+
+The A750's prompt path decodes and multiplies a group of experts in one fused launch on the XMX units (`STRATA_PF_XMX=2`, `sycl/src/prefill/xmx_moe.dp.cpp`)
+instead of dequantizing each expert to FP16 and calling oneMKL. It is the default on Alchemist cards; `STRATA_PF_XMX=0` turns it off and `=1` is the
+variant that dequantizes first and runs one grouped XMX GEMM per product. Battlemage keeps the old path (the same kernels are 7-11% slower there).
+Measured on the A750 (IQ3_XXS, default flags, interleaved rounds against the run before): a 1K-token prompt 35.1 -> 46.4 tok/s, 2K 61.7 -> 83.1, 4K 79.3 -> 110.4
+(+39%, 5 of 5 rounds), 6K 66.3 -> 114.8; decode unchanged (18.7 tok/s), the same number of cache slots. It rounds differently from the FP16 path:
+teacher-forced KL against the default over 6,006 forced tokens 0.0002 (the default against itself: 0.0001; with the default PCIe share the A750's own run-to-run noise
+is 0.012), first-token KL 0.0017 (floor 0.0005), top-1 agreement 99.7%. HumanEval (every 2nd, 82) 73, 69 and 74 for the mode and two default runs, reasoning 21 / 23 / 22 of
+30, a 35-question Chinese/Japanese/Korean set 35/35 in all, needles at 2K-6K 9/9, an 8K-context tool-call agent 6/6.
+
 ## Not done
 
 - Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
