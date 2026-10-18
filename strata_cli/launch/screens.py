@@ -820,7 +820,10 @@ class PicturesScreen(Base):
 
     def explain(self) -> Text:
         vram = self.ctx.computer.main_vram_gb
-        extra = ("a 0.9 GB download. On a card under 24 GB the picture reader runs on the CPU (a few seconds per picture, nothing "
+        amd = any(str(g.get("vendor")) == "amd" for g in self.ctx.computer.usable_gpus)
+        extra = ("a 0.9 GB download. On your AMD card the picture reader runs on the graphics card (about 1 GB of its memory, under a second "
+                 "per picture) and starts on the processor by itself if it cannot." if amd and self.reader() != "missing" else
+                 "a 0.9 GB download. On a card under 24 GB the picture reader runs on the CPU (a few seconds per picture, nothing "
                  "taken from the graphics card). On a bigger card it runs on the GPU and keeps about 1.4 GB free, costing a few % of text speed."
                  if vram < 24 else "a 0.9 GB download, and about 1.4 GB of graphics memory kept free for the picture reader (text is a few % slower).")
         if not self.supported:

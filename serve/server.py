@@ -66,6 +66,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from strata_control import engine_component  # noqa: E402
+from strata_control import vision_reader  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -2490,18 +2491,13 @@ class Vision:
         return Path(tempfile.mkdtemp(prefix="strata-vision-"))
 
     def __init__(self, cfg: dict, log=None, env: dict | None = None, lazy: bool = False):
-        absolute = lambda p: os.path.abspath(p) if os.path.dirname(str(p)) else p   # the encoder runs in its own dir (#480)  # noqa: E731
-        args = [absolute(cfg["exe"]), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
-        if cfg.get("gpu"):
-            args.append("--gpu")
-        if cfg.get("threads"):
-            args += ["--threads", str(cfg["threads"])]
-        if cfg.get("max_tokens"):
-            args += ["--max-tokens", str(cfg["max_tokens"])]
-        if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
-            args += ["--min-tokens", str(cfg["min_tokens"])]
+        args = self.reader_args(cfg)
         self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
+        # AMD: the GPU reader (strata-vision-hip) has the CPU reader (strata-vision, same program, no GPU runtime) to
+        # fall back on when it does not start; _start switches to it by itself
+        cpu = vision_reader.cpu_fallback(cfg)
+        self.fallback = (self.reader_args(cpu), log, env) if cpu else None
         self.proc = None
         self.stopped = True
         self.lock = threading.Lock()
@@ -2515,7 +2511,36 @@ class Vision:
         if not lazy and not self.elastic:
             self._start()
 
+    @staticmethod
+    def reader_args(cfg: dict) -> list:
+        absolute = lambda p: os.path.abspath(p) if os.path.dirname(str(p)) else p   # the encoder runs in its own dir (#480)  # noqa: E731
+        args = [absolute(cfg["exe"]), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
+        if cfg.get("gpu"):
+            args.append("--gpu")
+        if cfg.get("threads"):
+            args += ["--threads", str(cfg["threads"])]
+        if cfg.get("max_tokens"):
+            args += ["--max-tokens", str(cfg["max_tokens"])]
+        if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
+            args += ["--min-tokens", str(cfg["min_tokens"])]
+        return args
+
     def _start(self):
+        """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
+        load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
+        and no question."""
+        try:
+            self._start_reader()
+        except (RuntimeError, OSError) as e:
+            fallback = getattr(self, "fallback", None)
+            if fallback is None:
+                raise
+            why = " ".join(str(e).split())[:240]
+            print(f"[strata] the GPU picture reader did not start ({why}); pictures are read on the CPU", flush=True)
+            self.spawn, self.fallback = fallback, None
+            self._start_reader()
+
+    def _start_reader(self):
         args, log, env = self.spawn
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
         self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
