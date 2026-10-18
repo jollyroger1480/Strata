@@ -59,10 +59,10 @@ export function createTaskService({ read, write, run, notify = () => {}, now = D
     const t = find(id); if (t.status === 'running') return;
     if (t.archived) throw new Error('Restore this task first.');
     const controller = new AbortController(); controllers.set(id, controller);
-    t.status = 'running'; t.lastRunAt = new Date(now()).toISOString(); t.error = null;
+    t.status = 'running'; t.lastRunAt = new Date(now()).toISOString(); t.error = null; t.files = [];
     t.nextRunAt = t.enabled ? nextRun(t, now()) : null; save();
     const timeout = setTimeout(() => controller.abort(), timeoutMs); timeout.unref?.();
-    try { const result = await run(t, controller.signal); t.output = result.text.slice(0, 100000); t.demo = result.demo; t.attention = result.attention ?? null; t.status = 'done'; }
+    try { const result = await run(t, controller.signal); t.output = result.text.slice(0, 100000); t.demo = result.demo; t.attention = result.attention ?? null; t.files = Array.isArray(result.files) ? result.files.slice(0, 30) : []; t.status = 'done'; }
     catch (e) { t.status = controller.signal.aborted ? 'cancelled' : 'error'; t.error = controller.signal.aborted ? 'Run stopped.' : String(e.message ?? e); }
     finally { clearTimeout(timeout); controllers.delete(id); save(); try { notify(t); } catch { /* a notification is a courtesy */ } }
   }

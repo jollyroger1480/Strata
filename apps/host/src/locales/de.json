@@ -3162,5 +3162,16 @@
   "s3166": "Lade zuerst ein Modell, das Bilder lesen kann, und füge dann das Bild hinzu.",
   "s3167": "Dieses Modell wurde ohne Bilderkennung gestartet. Öffne Modelle, schalte „Bilder lesen“ ein und lade es erneut.",
   "s3168": "Dieses Modell kann keine Bilder lesen. Wähle ein Modell, das Bilder lesen kann, oder entferne das Bild.",
-  "s3169": "Es ist in der Vorschau geöffnet."
+  "s3169": "Es ist in der Vorschau geöffnet.",
+  "s3170": "1 Skill verwendet: {0}",
+  "s3171": "{0} Skills verwendet: {1}",
+  "s3172": "In neuem Chat fortsetzen",
+  "s3173": "Weiter mit der Aufgabe „{0}“",
+  "s3174": "(lief {0}, abgeschlossen).",
+  "s3175": "(lief {0}, nicht abgeschlossen).",
+  "s3176": "Was sie gefunden hat",
+  "s3177": "Braucht deine Aufmerksamkeit",
+  "s3178": "Was sie getan hat",
+  "s3179": "Dateien",
+  "s3180": "Bitte hilf mir, von hier aus weiterzumachen."
 }

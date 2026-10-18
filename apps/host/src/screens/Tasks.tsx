@@ -6,7 +6,7 @@ import { Btn, Dialog, Icon, IconBtn, Select, ErrorNotice } from '../components/u
 import { Markdown } from '../components/Markdown';
 import { Screen } from '../components/layout';
 import { api } from '../lib/client';
-import { pushToast, useStore } from '../lib/store';
+import { continueTaskInNewChat, pushToast, useStore } from '../lib/store';
 import { blankTask as blank, type Task } from '../lib/tasks';
 import { TaskEditor } from '../components/TaskEditor';
 import { TaskDetail } from '../components/TaskDetail';
@@ -71,6 +71,7 @@ export function TasksScreen() {
       <IconBtn name={currentTask.enabled ? 'pause' : 'play'} title={tr(currentTask.enabled ? "Pause {0}" : "Resume {0}", [currentTask.title])} disabled={pending || currentTask.status === 'running' || !!currentTask.archived} onClick={() => void action(() => api.patch(`/api/tasks/${currentTask.id}`, { enabled: !currentTask.enabled }))}/>
       <IconBtn name="trash" title={tr("Delete {0}", [currentTask.title])} disabled={pending || !!currentTask.archived} onClick={() => setRemoveTask(true)}/>
       <Btn icon="pencil" disabled={pending || currentTask.status === 'running'} onClick={() => open(currentTask)}>{tr("Edit")}</Btn>
+      {tr(currentTask.lastRunAt || currentTask.output || currentTask.error ? <Btn icon="chat" disabled={pending || currentTask.status === 'running'} onClick={() => continueTaskInNewChat(currentTask)}>{tr("Continue in a new chat")}</Btn> : null)}
       <Btn variant="primary" icon={currentTask.status === 'running' ? 'stop' : 'bolt'} disabled={pending || !loaded && currentTask.status !== 'running'} onClick={() => void action(() => api.post(`/api/tasks/${currentTask.id}/${currentTask.status === 'running' ? 'stop' : 'run'}`))}>{tr(currentTask.status === 'running' ? 'Stop' : 'Run now')}</Btn>
     </div> : null;
     return <Screen title={currentTask ? <span className="sr-only">{currentTask.title}</span> : "Tasks"} sub={currentTask ? undefined : "Run a prompt on a schedule, or whenever you need it."} actions={currentTask ? taskHeader : <div className="tasks-actions"><input className="st-input tasks-search" type="search" aria-label={tr("Search tasks")} placeholder={tr("Search tasks…")} value={query} onChange={e => setQuery(e.target.value)}/><Select ariaLabel={tr("Sort tasks")} value={sort} options={[{ value: 'next', label: 'Next run' }, { value: 'name', label: 'Name' }]} onChange={setSort}/><IconBtn name="plus" title={tr("New task")} onClick={() => open(blank())}/></div>}>

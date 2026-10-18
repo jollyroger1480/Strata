@@ -3162,5 +3162,16 @@
   "s3166": "Load a model that reads pictures first, then add the picture.",
   "s3167": "This model was started without picture reading. Open Models, turn on Read pictures and load it again.",
   "s3168": "This model cannot read pictures. Choose a model that reads pictures, or remove the picture.",
-  "s3169": "It is open in preview."
+  "s3169": "It is open in preview.",
+  "s3170": "Used 1 skill: {0}",
+  "s3171": "Used {0} skills: {1}",
+  "s3172": "Continue in a new chat",
+  "s3173": "Continuing from the task “{0}”",
+  "s3174": "(ran {0}, finished).",
+  "s3175": "(ran {0}, did not finish).",
+  "s3176": "What it found",
+  "s3177": "Needs your attention",
+  "s3178": "What it did",
+  "s3179": "Files",
+  "s3180": "Please help me take it from here."
 }

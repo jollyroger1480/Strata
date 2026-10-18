@@ -4,7 +4,7 @@ import { updateAgent } from './agents';
 import { LOOP_MAX_RUNS, LOOP_USAGE, loopEvery, parseLoop, type LoopCommand } from './loop';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { applyGoalFrame } from './goal';
-import { appendText, mergeDeliverable, readDeliverable, readGroup, upsertGroup } from './deliverables';
+import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
@@ -13,6 +13,8 @@ import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { nativeState } from './native';
 import { pictureStatus } from './pictures';
+import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
+import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
@@ -1066,6 +1068,14 @@ export function createPreviewExamples() {
   go('chat', session.id);
 }
 
+/** "Continue in a new chat" on a task: a new chat whose first message is the task's findings, what it did and its files (src/lib/task-handover.ts). */
+export function continueTaskInNewChat(task: Task) {
+  const session = newSession();
+  patchSession(session.id, s => ({ ...s, title: taskHandoverTitle(task), defaultTitle: false }));
+  go('chat', session.id);
+  void sendMessage(taskHandoverMessage(task));
+}
+
 export function selectSession(id: string) {
   set({ activeSession: id });
   markRead(id);
@@ -1660,6 +1670,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
+        } else if (type === 'skills-used') {
+          const skills = readSkills(frame);
+          if (skills.length) patchAssistant(m => ({ ...m, skills }));
         } else if (type === 'activity-group') {
           const group = readGroup(frame);
           if (group) patchAssistant(m => ({ ...m, blocks: upsertGroup(m.blocks ?? (m.content ? appendText(undefined, m.content) : undefined), group) }));

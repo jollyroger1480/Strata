@@ -26,6 +26,7 @@
  *   SCRIPT:goalstep                 one goal round: get_goal, then update_goal complete, then a short closing text
  *   SCRIPT:planreply                a reply ending with a numbered plan of three steps (each step's text carries SCRIPT:goalstep)
  *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
+ *   SCRIPT:multi <json>             {"calls":[[tool,args],...],"say":"final text"}: all the calls in one reply, then the text once their results are in
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
  */
@@ -157,6 +158,15 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       let callArgs = {};
       try { callArgs = JSON.parse(at < 0 ? '{}' : args.slice(at + 1).replace(/\s+#\d+.*$/, '')); } catch { /* an unparsable script argument is a test bug; send no arguments */ }
       return toolCall(at < 0 ? args : args.slice(0, at), callArgs);
+    }
+    if (name === 'multi') {
+      let cfg = {};
+      try { cfg = JSON.parse(args.trim()); } catch { /* a test bug: no calls */ }
+      if (toolMessages.length) return say([String(cfg.say ?? 'Done.')]);
+      send({ role: 'assistant', content: '', reasoning_content: 'I will use the tools.' });
+      await delay(chunkDelayMs);
+      (cfg.calls ?? []).forEach(([tool, callArgs], i) => send({ tool_calls: [{ index: i, id: `call_${requests.length}_${i}`, type: 'function', function: { name: tool, arguments: JSON.stringify(callArgs ?? {}) } }] }));
+      return finish('tool_calls', 20);
     }
     if (name === 'spawn') {
       // A settlement notice (or any later user-role message) after this prompt already got its tool round: just answer.

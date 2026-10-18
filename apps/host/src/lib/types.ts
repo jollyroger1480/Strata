@@ -322,6 +322,8 @@ export interface ChatMessage {
   planId?: string;
   /** The reply in the order it came: text and grouped activity lines (round 8, item 12). Absent on older replies. */
   blocks?: import('./deliverables').MessageBlock[];
+  /** The saved skills this reply used (the line under the answer), in the order they were loaded. */
+  skills?: { name: string; description: string }[];
   /** Files the assistant made or changed in this reply, one card each. */
   deliverables?: import('./deliverables').Deliverable[];
   /** A line from the app itself (for example from /loop), never sent to the model. */

@@ -3162,5 +3162,16 @@
   "s3166": "Carregue primeiro um modelo que leia imagens e depois adicione a imagem.",
   "s3167": "Este modelo foi iniciado sem leitura de imagens. Abra Modelos, ative «Ler imagens» e carregue-o novamente.",
   "s3168": "Este modelo não consegue ler imagens. Escolha um modelo que leia imagens ou remova a imagem.",
-  "s3169": "Ela está aberta na visualização."
+  "s3169": "Ela está aberta na visualização.",
+  "s3170": "Usou 1 habilidade: {0}",
+  "s3171": "Usou {0} habilidades: {1}",
+  "s3172": "Continuar em um novo chat",
+  "s3173": "Continuando a partir da tarefa “{0}”",
+  "s3174": "(executada em {0}, concluída).",
+  "s3175": "(executada em {0}, não terminou).",
+  "s3176": "O que encontrou",
+  "s3177": "Precisa da sua atenção",
+  "s3178": "O que fez",
+  "s3179": "Arquivos",
+  "s3180": "Por favor, ajude-me a continuar daqui."
 }
