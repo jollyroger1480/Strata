@@ -15,7 +15,7 @@ WHAT YOU NEED
 * Ubuntu 22.04 or newer (22.04, 24.04 and 26.04 are what it was built for), or Fedora 44. 64-bit, on a normal desktop session.
 * An NVIDIA graphics card, RTX 20 series or newer (built and checked for RTX 30 cards; the RTX 40 and RTX 50 series are inside too).
   If the computer also has AMD or Intel graphics (for example a Ryzen with built-in graphics), Strata ignores them and uses the NVIDIA card.
-* The NVIDIA driver, version 580 or newer (best). Version 575 or newer works too.
+* The NVIDIA driver, version 580.65 or newer (the CUDA 13 engine in this file needs it).
   To see yours, open a terminal and type:   nvidia-smi    - the number next to "Driver Version" is it.
   If the driver is older, Strata tells you in one line which version to install. To install a newer one:
     Ubuntu:  open "Software & Updates" > "Additional Drivers", or run:  sudo ubuntu-drivers install   and restart.
