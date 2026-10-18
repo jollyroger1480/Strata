@@ -293,6 +293,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(split_rules_test PRIVATE include)
   add_test(NAME split_rules_test COMMAND split_rules_test)
 
+  # the prompt planner's host-memory model (#2824): header-only, no GPU
+  add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
+  target_include_directories(prefill_plan_test PRIVATE include)
+  add_test(NAME prefill_plan_test COMMAND prefill_plan_test)
+
   # the default CPU prefill share is not armed when every expert is resident (#1595): header-only rule, no GPU
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
