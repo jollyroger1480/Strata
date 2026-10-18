@@ -61,6 +61,9 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// 149-cold: this job's own layout (null: the layer's) - the GGUF read in place, where gate / up / down are three
+    /// tensors: `blob` is the gate rows and the offsets reach the expert's up and down rows in the mapping.
+    const NativeFmt* fmt = nullptr;
 };
 
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
