@@ -5511,19 +5511,32 @@ int main(int argc, char** argv) {
                                      "(%s)\n", why.c_str());
         }
 #endif
-        // Linux I/O path (opt in): whole-blob preads instead of page faults, and the predicted experts of the next
-        // layers read ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch)
-        if (const char* v = std::getenv("STRATA_IO_PREFETCH"); v != nullptr && std::atoi(v) != 0) {
+        // Linux I/O path: whole-blob preads instead of page faults, and the predicted experts of the next layers read
+        // ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch).  0.2.0: on by
+        // default on Linux, with the decode gate (STRATA_IO_PF_GATE) and zero-copy page-cached experts
+        // (STRATA_COLD_OVERLAP=4); STRATA_IO_PREFETCH=0 / STRATA_IO_PF_GATE=0 / STRATA_COLD_OVERLAP=0 turn them off.
+        // the defaults are for the GGUF read in place (what was measured); an experts.bin pack keeps them off unless set
+        const char* io_pf_env = std::getenv("STRATA_IO_PREFETCH");
+        const bool io_pf_default = (io_pf_env == nullptr || io_pf_env[0] == '\0') && src.linux_file_defaults();
+        if (io_pf_default || (io_pf_env != nullptr && std::atoi(io_pf_env) != 0)) {
             const char* th = std::getenv("STRATA_IO_PF_THREADS");
             src.set_io_prefetch(true, th != nullptr ? std::atoi(th) : 0);
-            if (src.io_prefetch())
+            if (src.io_prefetch() && io_pf_default) {
+                const char* cv = std::getenv("STRATA_COLD_OVERLAP");
+                std::fprintf(stderr, "strata generate: file tier (Linux defaults, the GGUF read in place): page-cached experts "
+                                     "computed from the mapping (STRATA_COLD_OVERLAP=%s), io prefetch with whole-blob preads on %s I/O threads, "
+                                     "the decode's read-ahead %s; off: STRATA_COLD_OVERLAP=0, STRATA_IO_PREFETCH=0, "
+                                     "STRATA_IO_PF_GATE=0\n", cv != nullptr && cv[0] != '\0' ? cv : "4", th != nullptr ? th : "8",
+                             src.gate_on() ? "only while the page cache has room for it and it pays (STRATA_IO_PF_GATE=1)"
+                                           : "always (STRATA_IO_PF_GATE=0)");
+            } else if (src.io_prefetch())
                 std::fprintf(stderr, "strata generate: file tier io prefetch ON (STRATA_IO_PREFETCH=1): whole-blob preads, "
-                                     "the layer's uncached experts and the predicted ones read by %s I/O threads (STRATA_IO_PF_THREADS, default 8)\n",
-                             th != nullptr ? th : "8");
+                                     "the layer's uncached experts and the predicted ones read by %s I/O threads (STRATA_IO_PF_THREADS, default 8)%s\n",
+                             th != nullptr ? th : "8", src.gate_on() ? "; the decode's read-ahead gated (STRATA_IO_PF_GATE=0: always)" : "");
             if (src.io_prefetch() && src.io_sched())
                 std::fprintf(stderr, "strata generate: io prefetch scheduling ON (STRATA_IO_PF_SCHED=1): a deadline per read, "
                                      "confidence admission (STRATA_IO_PF_MINCONF), a per-window byte budget (STRATA_IO_PF_BUDGET_MB / _FRAC)\n");
-            if (!src.io_prefetch())
+            if (!src.io_prefetch() && !io_pf_default)
                 std::fprintf(stderr, "strata generate: STRATA_IO_PREFETCH=1 is not available here (Linux mapped file tier "
                                      "only, not with unbuffered reads); the file tier reads as before\n");
             if (src.io_prefetch()) {   // recommend, never force: the engine runs as asked
@@ -10991,6 +11004,7 @@ int main(int argc, char** argv) {
         int64_t ba_window = 0, bt_adapt_rounds = 0, bt_adapt_swaps = 0;
         double bt_adapt_wait = 0;
         bool in_prompt_read = false;   // batch_step runs between a prompt's chunks: the adaptive tier stands still then
+        double serve_adapt_drain_ms = 0.0;   // 149: the request's wait for the adaptive round in flight
         int64_t bt_a_rounds0 = 0, bt_a_swapped0 = 0;   // the asynchronous tier's counters when the timed windows began
         Clock::time_point bt_start = Clock::now();
         const char* batch_telemetry_env = std::getenv("STRATA_BATCH_TELEMETRY");
@@ -13544,7 +13558,11 @@ int main(int argc, char** argv) {
                 return true;
             };
             apply_pending(true);
-            if (!adapt_tick(true)) {   // --adapt-async: the round in flight lands before the prompt lends any slot
+            const auto drain_t0 = Clock::now();
+            const bool drained_ok = adapt_tick(true);
+            // 149: how long the request waited for the adaptive round still in flight (in the prompt's time)
+            serve_adapt_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - drain_t0).count();
+            if (!drained_ok) {   // --adapt-async: the round in flight lands before the prompt lends any slot
                 std::printf("ERR an adaptive refill failed\n");
                 return 1;
             }
@@ -15111,6 +15129,9 @@ int main(int argc, char** argv) {
                          prompt_ms > 0 ? 1000.0 * read_n / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
+            if (serve_adapt_drain_ms >= 1.0)
+                std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
+                             serve_adapt_drain_ms);
             // the VRAM share of the experts the pool looked up while decoding; experts it sent over PCIe for the GPU
             // to read (--pcie-frac) are in neither count - #588: so that share is said beside it (raising --pcie-frac
             // raises the hit rate while the PCIe reads may make the decode slower)
@@ -15191,6 +15212,12 @@ int main(int argc, char** argv) {
                                      (unsigned long long) (ic.pf_dropped - ic_prev.pf_dropped),
                                      (double) (ic.crit_us - ic_prev.crit_us) / 1e3,
                                      (unsigned long long) (ic.crit_n - ic_prev.crit_n));
+                    if (src.io_prefetch() && src.gate_on())   // 149 STRATA_IO_PF_GATE: the decode's held share, the gate
+                        std::fprintf(stderr, "; decode gate: cache room %.2f of the experts, read-ahead used %.0f%%, page cache "
+                                             "held %.0f%% of the decode's reads (EWMA), %s, closed in %lld windows so far, %lld flips",
+                                     src.gate_ratio(), 100.0 * src.gate_useful(), 100.0 * std::max(0.0, src.gate_held()),
+                                     src.gate_open() ? "open" : "closed", (long long) src.gate_closed_windows(),
+                                     (long long) src.gate_flips());
                     if (src.io_prefetch())   // 149-prefetch: bytes read ahead, of them used before their demand; the scheduler's drops
                         std::fprintf(stderr, "; read ahead %.1f MB, %.1f MB of it used; %llu late, %llu not admitted (confidence), "
                                              "%llu (budget %.0f MB/window)",
@@ -15206,7 +15233,8 @@ int main(int argc, char** argv) {
                     fb_prev = fb;
                 }
             }
-            if (drive.d.cold_mode != 0) {   // 149-cold STRATA_COLD_OVERLAP: this request's layers that had a blob to read
+            static const bool cold_log = std::getenv("STRATA_COLD_OVERLAP") != nullptr || std::getenv("STRATA_IO_STATS") != nullptr;
+            if (drive.d.cold_mode != 0 && cold_log) {   // 149-cold STRATA_COLD_OVERLAP: this request's layers that had a blob to read
                 static strata::core::ExpertDispatch cp;
                 const strata::core::ExpertDispatch& c = drive.d;
                 const double nl = (double) std::max<int64_t>(1, c.cold_layers - cp.cold_layers);

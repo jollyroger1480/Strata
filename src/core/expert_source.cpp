@@ -75,10 +75,12 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
     bytes = 0;
     if (!stat.valid) return false;
 
-    // memory.stat's inactive_file can race memory.current, so bound it to charged usage first.
-    uint64_t reclaimable = std::min(stat.inactive_file, stat.current);
+    // memory.stat's counters can race memory.current, so bound them to charged usage first.  The whole clean page
+    // cache is reclaimable (149: MemAvailable counts active file pages too); the kernel keeps a low-watermark share.
+    uint64_t reclaimable = std::min(std::max(stat.file, stat.inactive_file), stat.current);
     reclaimable = stat.file_dirty >= reclaimable ? 0 : reclaimable - stat.file_dirty;
     reclaimable = stat.file_writeback >= reclaimable ? 0 : reclaimable - stat.file_writeback;
+    reclaimable -= std::min(reclaimable / 2, limit / 64);
 
     // Reclaiming clean file pages reduces usage; saturating subtraction also handles a transient over-limit read.
     const uint64_t usage_after_reclaim = stat.current - reclaimable;
@@ -291,7 +293,7 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
     std::ifstream input(path / "memory.stat");
     if (!input) return false;
 
-    bool inactive_file = false, file_dirty = false, file_writeback = false;
+    bool inactive_file = false, file_dirty = false, file_writeback = false, file = false;
     std::string line;
     while (std::getline(input, line)) {
         std::istringstream fields(line);
@@ -313,6 +315,10 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
             if (file_writeback) return false;
             file_writeback = true;
             stat.file_writeback = value;
+        } else if (key == "file") {   // 149: optional (every v2 kernel has it); 0 = inactive_file alone
+            if (file) return false;
+            file = true;
+            stat.file = value;
         }
     }
     if (!input.eof() || !inactive_file || !file_dirty || !file_writeback) return false;
@@ -702,7 +708,7 @@ void FileExpertSource::io_window_tick() {
 // the queue's fill against the window budget (a busy drive takes only the surer guesses); the window's speculative bytes
 // stay within the budget; each job carries the layer clock by which it must have started (else the worker drops it).
 void FileExpertSource::warm_scored(int64_t layer, const int64_t* experts, const float* conf, int64_t n, int ahead) {
-    if (!io_sched_ || !io_pf_ || !direct_.empty() || !io_ahead_) { warm(layer, experts, n); return; }
+    if (!io_sched_ || !io_pf_ || !direct_.empty() || !io_ahead_ || !gate_open()) { warm(layer, experts, n); return; }
     if (n <= 0 || layer < 0 || layer >= n_layers_) return;
     const uint64_t bytes = layer_blob_bytes_[(size_t) layer];
     const uint64_t deadline = io_epoch_.load(std::memory_order_relaxed) + (uint64_t) std::max(1, ahead);
@@ -771,6 +777,11 @@ void FileExpertSource::set_io_prefetch(bool on, int threads) {
         if (const char* m = std::getenv("STRATA_IO_PF_BUDGET_MB")) io_budget_fixed_ = (uint64_t) std::max(0.0, std::atof(m) * 1048576.0);
         if (const char* m = std::getenv("STRATA_IO_PF_BUDGET_FRAC")) io_budget_frac_ = std::clamp(std::atof(m), 0.01, 4.0);
         if (const char* m = std::getenv("STRATA_IO_PF_TARGET")) io_target_ = std::clamp(std::atof(m), 0.0, 1.0);
+        gate_on_ = true;   // 0.2.0: the decode gate comes with io prefetch; STRATA_IO_PF_GATE=0 turns it off
+        if (const char* m = std::getenv("STRATA_IO_PF_GATE"); m != nullptr && m[0] != '\0') gate_on_ = std::atoi(m) != 0;
+        if (const char* m = std::getenv("STRATA_IO_PF_GATE_LO")) gate_lo_ = std::clamp(std::atof(m), 0.0, 1.0);
+        if (const char* m = std::getenv("STRATA_IO_PF_GATE_HI")) gate_hi_ = std::clamp(std::atof(m), gate_lo_, 1.0);
+        if (const char* m = std::getenv("STRATA_IO_PF_GATE_USEFUL")) gate_min_useful_ = std::clamp(std::atof(m), 0.0, 1.0);
     }
     if (!pf_mark_) {
         pf_mark_.reset(new std::atomic<uint8_t>[(size_t) (n_layers_ * n_expert_)]);
@@ -1364,7 +1375,12 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
             const uint64_t res = resident_in(sp[i].p, sp[i].n);
             io_cached_.fetch_add(res, std::memory_order_relaxed);
             io_uncached_.fetch_add(sp[i].n - res, std::memory_order_relaxed);
-            if (io_pf_ && res < sp[i].n && sp[i].fd >= 0) {
+            const bool dec = in_decode();
+            if (gate_on_ && dec) {
+                gate_c_.fetch_add(res, std::memory_order_relaxed);
+                gate_u_.fetch_add(sp[i].n - res, std::memory_order_relaxed);
+            }
+            if (io_pf_ && res < sp[i].n && sp[i].fd >= 0 && !(dec && !gate_open())) {
                 const auto t0 = std::chrono::steady_clock::now();
                 const bool ok = pread_full(sp[i].fd, dst + sp[i].at, sp[i].n, sp[i].off);
                 io_pread_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
@@ -1504,6 +1520,110 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
     stage_of_[key] = v;
     fill = true;
     return false;
+}
+
+// 149 STRATA_IO_PF_GATE: whether this thread reads for the decode (the dispatch's thread, and the fetch threads it starts)
+namespace { thread_local bool tl_decode = false; }
+FileExpertSource::DecodeScope::DecodeScope() : prev(tl_decode) { tl_decode = true; }
+FileExpertSource::DecodeScope::~DecodeScope() { tl_decode = prev; }
+bool FileExpertSource::in_decode() { return tl_decode; }
+
+// once a decode window: the share of the window's demand bytes the page cache held, an EWMA, and the gate's state
+void FileExpertSource::gate_tick() {
+    if (!gate_on_) return;
+    const uint64_t c = gate_c_.load(std::memory_order_relaxed), u = gate_u_.load(std::memory_order_relaxed);
+    const uint64_t dc = c - gate_prev_c_, du = u - gate_prev_u_;
+    gate_prev_c_ = c;
+    gate_prev_u_ = u;
+    if (dc + du < (64ull << 20)) {   // too few bytes read this window to judge; the state stays
+        if (!gate_open_.load(std::memory_order_relaxed)) ++gate_closed_w_;
+        return;
+    }
+    const double h = (double) dc / (double) (dc + du);
+    gate_ewma_ = gate_ewma_ < 0.0 ? h : 0.8 * gate_ewma_ + 0.2 * h;   // reported only
+    if (!gate_open_.load(std::memory_order_relaxed)) ++gate_closed_w_;
+}
+
+namespace {
+// The room the page cache has for the experts: in a memory-limited cgroup (v2; the tightest limit of the group and its
+// ancestors) the limit less what is not page cache (the group's memory.current - its "file" pages); otherwise
+// MemAvailable (free + reclaimable cache).  0 when unknown.
+uint64_t gate_cache_room() {
+#if defined(__linux__)
+    auto read_u64 = [](const std::string& path, uint64_t& v) {
+        std::ifstream f(path);
+        std::string s;
+        if (!(f >> s) || s == "max") return false;
+        v = std::strtoull(s.c_str(), nullptr, 10);
+        return v > 0;
+    };
+    std::string rel;
+    {
+        std::ifstream g("/proc/self/cgroup");
+        std::string line;
+        while (std::getline(g, line))
+            if (line.rfind("0::", 0) == 0) { rel = line.substr(3); break; }
+    }
+    uint64_t best = 0;
+    if (!rel.empty()) {
+        const std::string base = "/sys/fs/cgroup";
+        for (std::string at = rel;; ) {
+            const std::string dir = base + (at == "/" ? std::string() : at);
+            uint64_t mx = 0, cur = 0, file = 0;
+            if (read_u64(dir + "/memory.max", mx) && read_u64(dir + "/memory.current", cur)) {
+                std::ifstream st(dir + "/memory.stat");
+                std::string k;
+                uint64_t v = 0;
+                while (st >> k >> v)
+                    if (k == "file") { file = v; break; }
+                const uint64_t used = cur > file ? cur - file : 0;
+                const uint64_t room = mx > used ? mx - used : 0;
+                if (best == 0 || room < best) best = room;
+            }
+            if (at.empty() || at == "/") break;
+            const size_t cut = at.find_last_of('/');
+            at = cut == 0 || cut == std::string::npos ? std::string("/") : at.substr(0, cut);
+        }
+    }
+    if (best > 0) return best;
+    std::ifstream info("/proc/meminfo");
+    std::stringstream text;
+    text << info.rdbuf();
+    return detail::meminfo_bytes(text.str(), "MemAvailable");
+#else
+    return 0;
+#endif
+}
+}
+
+void FileExpertSource::gate_capacity() {
+    if (!gate_on_ || (gate_win_++ % 16) != 0) return;
+    const uint64_t total = expert_bytes(), room = gate_cache_room();
+    if (total == 0 || room == 0) return;   // unknown: the state stays
+    gate_ratio_ = (double) room / (double) total;
+    // and the read-ahead must pay: the share of its bytes a layer then used, over these 16 windows (64 MB at least read
+    // ahead to judge).  Below STRATA_IO_PF_GATE_USEFUL (0.10) it closes (a RAM tier holds what it would read: an 18 GiB
+    // RAM tier, 0% used, -9..-15% decode); closed for that reason, it opens again for a probe every 256 windows.
+    const uint64_t pf = io_pf_bytes_.load(std::memory_order_relaxed), used = io_pf_used_bytes_.load(std::memory_order_relaxed);
+    const uint64_t dpf = pf - gate_prev_pf_, dused = used - gate_prev_used_;
+    gate_prev_pf_ = pf;
+    gate_prev_used_ = used;
+    if (dpf >= (64ull << 20)) gate_useful_ = (double) dused / (double) dpf;
+    const bool open = gate_open_.load(std::memory_order_relaxed);
+    const bool room_ok = open ? gate_ratio_ >= gate_lo_ : gate_ratio_ > gate_hi_;
+    bool want = room_ok;
+    // too little to read ahead (< 128 MB in 16 windows: the RAM and VRAM tiers hold what is predicted) costs the look-ahead's
+    // second layer and the I/O threads for nothing (an 18 GiB RAM tier: 2.5 GB read ahead in a run, -9..-16% decode)
+    if (room_ok && open && gate_win_ > 16 && (dpf < (128ull << 20) || gate_useful_ < gate_min_useful_)) {
+        want = false;
+        gate_useless_ = true;
+        gate_useless_since_ = gate_win_;
+    } else if (room_ok && !open && gate_useless_) {
+        want = gate_win_ - gate_useless_since_ >= 256;   // the probe
+        if (want) gate_useless_ = false;
+    }
+    if (!room_ok) gate_useless_ = false;
+    if (want != open) { gate_open_.store(want, std::memory_order_relaxed); ++gate_flips_; }
 }
 
 // Fills buffer `v` (reserved by claim_stage) outside the lock, then publishes it.
@@ -1702,7 +1822,11 @@ int64_t FileExpertSource::prefetch_begin(int64_t layer, const int64_t* experts, 
     prefetch_end();
     async_todo_.clear();
     async_fill_us_ = 0;
-    static const int mode = [] { const char* v = std::getenv("STRATA_COLD_OVERLAP"); return v != nullptr ? std::atoi(v) : 0; }();
+    static const int mode_env = [] {   // as the dispatch reads it (0.2.0: unset = 4 for the GGUF read in place on Linux)
+        const char* v = std::getenv("STRATA_COLD_OVERLAP");
+        return v == nullptr || v[0] == '\0' ? -1 : std::atoi(v);
+    }();
+    const int mode = mode_env >= 0 ? mode_env : (linux_file_defaults() ? 4 : 0);
     claim_todo(layer, experts, n, async_todo_, pending, mode >= 3);
     if (mode == 4) {   // zero-copy only: the blobs that must be read are read here, as `prefetch` reads them
         const auto t0 = std::chrono::steady_clock::now();
@@ -1723,7 +1847,9 @@ int64_t FileExpertSource::prefetch_begin(int64_t layer, const int64_t* experts, 
     async_next_.store(0, std::memory_order_relaxed);
     async_end_ns_.store(0, std::memory_order_relaxed);
     const bool direct = !direct_.empty();
-    auto work = [this, direct] {
+    const bool dec = tl_decode;
+    auto work = [this, direct, dec] {
+        tl_decode = dec;
         const std::vector<Fill>& todo = async_todo_;
         if (direct) {
             for (size_t at; (at = async_next_.fetch_add(16)) < todo.size();) {
@@ -1780,6 +1906,7 @@ bool FileExpertSource::zc_roles(int64_t layer, int64_t expert, const uint8_t** p
     if (complement_ready_) file_reads_.fetch_add(1, std::memory_order_relaxed);
     reads_.fetch_add(1, std::memory_order_relaxed);
     if (io_stats_) io_cached_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
+    if (gate_on_ && tl_decode) gate_c_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
     return true;
 }
 
@@ -1881,7 +2008,9 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
 #endif
     // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full
     std::atomic<size_t> next{0};
+    const bool dec = tl_decode;
     auto work = [&] {
+        tl_decode = dec;
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
             (void) fill_stage(todo[i].v, todo[i].layer, todo[i].e, todo[i].dst);
     };
@@ -2467,7 +2596,7 @@ void FileExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
             continue;                                                    // in the RAM copy
         if (warm_stamp_) warm_stamp_[index].store(stamp, std::memory_order_relaxed);
         warm_count_.fetch_add(1, std::memory_order_relaxed);
-        if (io_pf_ && direct_.empty()) {   // read it ahead with pread on the I/O threads (instead of an madvise hint)
+        if (io_pf_ && direct_.empty() && gate_open()) {   // read it ahead with pread on the I/O threads (instead of an madvise hint)
             if (io_ahead_) io_enqueue(layer, e, true);
             continue;
         }
@@ -2667,7 +2796,8 @@ void RouterLookahead::run() {
         }
         const auto t0 = std::chrono::steady_clock::now();
         const int64_t layer0 = layer;
-        for (int dj = 0; dj < depth_ && layer0 + dj < (int64_t) routers_.size(); ++dj) {
+        const int depth = src_ != nullptr && !src_->read_ahead_open() ? 1 : depth_;   // 149: the gate closed
+        for (int dj = 0; dj < depth && layer0 + dj < (int64_t) routers_.size(); ++dj) {
         layer = layer0 + dj;
         want.clear();
         wconf.clear();
@@ -2780,6 +2910,7 @@ void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k)
         }
     }
     if (new_window && io_sched_) io_window_tick();
+    if (new_window && gate_on_ && tl_decode) { gate_capacity(); gate_tick(); }
 }
 
 bool FileExpertSource::transient(int64_t layer, int64_t expert) const {
@@ -4248,12 +4379,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (ptrace) { std::fprintf(stderr, "pool trace: layer %lld %s %lld\n", (long long) d.layers, what, a); std::fflush(stderr); }
     };
     const auto c0 = std::chrono::steady_clock::now();
-    // 149-cold STRATA_COLD_OVERLAP: 0 off (default), 1 overlap, 2 measure only, 3 overlap + zero-copy, 4 zero-copy only
+    const FileExpertSource::DecodeScope decode_scope;   // 149 STRATA_IO_PF_GATE: this thread reads for the decode
+    // 149-cold STRATA_COLD_OVERLAP: 0 off, 1 overlap, 2 measure only, 3 overlap + zero-copy, 4 zero-copy only.
+    // 0.2.0: unset, 4 for the GGUF read in place on Linux (zero-copy needs the page cache's residency query), else 0
     static const int cold_env = [] {
         const char* v = std::getenv("STRATA_COLD_OVERLAP");
-        return v == nullptr ? 0 : std::clamp(std::atoi(v), 0, 4);
+        return v == nullptr || v[0] == '\0' ? -1 : std::clamp(std::atoi(v), 0, 4);
     }();
-    d.cold_mode = cold_env;
+    d.cold_mode = cold_env >= 0 ? cold_env : (d.src != nullptr && d.src->linux_file_defaults() ? 4 : 0);
     pt("begin");
     d.src->begin_layer(d.layers, ids, n_tok * k);
     pt("begun");
