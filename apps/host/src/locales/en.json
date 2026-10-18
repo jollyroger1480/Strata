@@ -3143,5 +3143,13 @@
   "s3147": "The folder chooser could not open. Install zenity or kdialog to pick a folder, or type the path.",
   "s3148": "Type the folder path",
   "s3149": "Folder path",
-  "s3150": "/home/you/Documents"
+  "s3150": "/home/you/Documents",
+  "s3151": "Quit Strata",
+  "s3152": "Quit Strata?",
+  "s3153": "This stops the model and ends Strata. Your chats and files stay as they are. Closing the browser tab alone would leave Strata running.",
+  "s3154": "Strata has stopped",
+  "s3155": "Strata has stopped. You can close this tab. To use it again, start Strata from its icon.",
+  "s3156": "Strata could not be stopped from here. Run the app with --quit in a terminal, or try again.",
+  "s3157": "Quitting…",
+  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time."
 }

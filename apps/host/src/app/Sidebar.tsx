@@ -7,6 +7,8 @@ import { TaskTree } from './TaskTree';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { FloatingMenu } from '../components/FloatingMenu';
+import { QuitStrataDialog } from '../components/QuitStrata';
+import { useAppMode } from '../lib/app-mode';
 import { href, useLocation, type Route } from '../lib/router';
 import { cx, relTime } from '../lib/format';
 import { useMedia } from '../lib/responsive';
@@ -182,6 +184,8 @@ function MoreMenu({ current }: {
     current: string;
 }) {
     const [open, setOpen] = useState(false);
+    const [quitOpen, setQuitOpen] = useState(false);
+    const appMode = useAppMode();
     const ref = useRef<HTMLButtonElement>(null);
-    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More — Serving and Settings")} aria-haspopup="menu" aria-expanded={open} data-active={['serving', 'settings'].includes(current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(([{ route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const).map(d => <a key={d.route} role="menuitem" className="menu__item" href={href(d.route)} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a>))}</FloatingMenu> : null)}</>;
+    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More — Serving and Settings")} aria-haspopup="menu" aria-expanded={open} data-active={['serving', 'settings'].includes(current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(([{ route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const).map(d => <a key={d.route} role="menuitem" className="menu__item" href={href(d.route)} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a>))}{appMode.canQuit ? <button type="button" role="menuitem" className="menu__item" onClick={() => { setOpen(false); setQuitOpen(true); }}><Icon name="x"/>{tr("Quit Strata")}</button> : null}</FloatingMenu> : null)}<QuitStrataDialog open={quitOpen} onClose={() => setQuitOpen(false)}/></>;
 }

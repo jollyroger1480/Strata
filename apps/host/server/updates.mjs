@@ -73,16 +73,19 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
   const app = report.app ?? {};
   let appNew = app.status === 'available' ? app.offered : null;
   let appNotes = app.notes ?? '';
+  let appCannot = null;   // browser mode: the app window's updater is not running, so the app itself cannot be updated from here
   if (appUpdater) {
     try {
       const verdict = await appUpdater.check();
       appNew = verdict.available ? verdict.version : null;
       appNotes = verdict.notes ?? appNotes;
-    } catch { /* the feed's own view stands */ }
+    } catch (error) {
+      if (error?.code === 'app-update-unavailable' && appUpdater.unavailable) appCannot = appUpdater.unavailable;   // otherwise the feed's own view stands
+    }
   }
   const controlNew = control_.status === 'available' ? control_.offered : null;
-  const strata = { installedVersion: appVersion ?? control_.installed ?? control.version ?? null, canInstall: !!(appNew || controlNew) };
-  if (appNew || controlNew) Object.assign(strata, { status: 'available', latestVersion: appNew ?? controlNew, message: `A new version of Strata is available.${appNotes ? ` ${appNotes}` : ''}` });
+  const strata = { installedVersion: appVersion ?? control_.installed ?? control.version ?? null, canInstall: !!((appNew && !appCannot) || controlNew) };
+  if (appNew || controlNew) Object.assign(strata, { status: 'available', latestVersion: appNew ?? controlNew, message: `A new version of Strata is available.${appNotes ? ` ${appNotes}` : ''}${appNew && appCannot ? ` ${appCannot}` : ''}` });
   else Object.assign(strata, { status: 'current', message: 'Strata is up to date.' });
   return { checkedAt, feed: report.feed, strata, engine: engineView, serving: report.serving ?? [] };
 }

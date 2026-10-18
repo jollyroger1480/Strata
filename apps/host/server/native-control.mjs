@@ -294,7 +294,8 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const notes=[updateSummary(done)];
   if(appUpdater){
    job.summary='Looking for a new version of the app…';emit();
-   const verdict=await appUpdater.check();
+   let verdict;
+   try{verdict=await appUpdater.check();}catch(error){if(error?.code!=='app-update-unavailable')throw error;verdict={available:false};notes.push(appUpdater.unavailable||error.message);}
    if(verdict.available){await appUpdater.install({signal:job.abort.signal,onProgress:p=>{if(p.total){job.summary=`Downloading the app update: ${Math.round(100*p.downloaded/p.total)}%`;job.result={install:{step:job.summary,download:{file:'Strata app',percent:Math.round(100*p.downloaded/p.total)}}};emit();}}});notes.push('The app update is installed. Strata will restart.');}
   }
   return {summary:notes.filter(Boolean).join(' '),result:done};
