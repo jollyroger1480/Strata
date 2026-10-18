@@ -116,6 +116,7 @@ FALLBACK_FAMILIES = {
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
 }
+OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
 GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -474,12 +475,37 @@ class Strata:
     def tables(self):
         s = self.setup_module()
         if s is not None:
-            return s.MODELS, s.FAMILIES, list(s.CONTEXTS), "setup.py"
+            return s.MODELS, {**s.FAMILIES, **self.own_families()}, list(s.CONTEXTS), "setup.py"
         return FALLBACK_MODELS, FALLBACK_FAMILIES, FALLBACK_CONTEXTS, "built-in table (setup.py not importable)"
 
-    @staticmethod
-    def sizes_of(models, family) -> list:
+    def own_families(self) -> dict:
+        """setup.py's OWN_PATH_FAMILIES (Qwen3.6-35B-A3B): families with an engine path of their own.  They are not in FAMILIES
+        (whose entries are Flash-Next files with packs), so the model list used to leave them out and the app's Qwen3.6 page
+        showed no versions at all.  Each is returned as a family entry (title, about, tag, license) of this server's table."""
+        s = self.setup_module()
+        out = {}
+        for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
+            out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
+                      "vision": bool(d.get("vision", True)), "own_path": True}
+        return out
+
+    def own_size(self, family, model) -> dict | None:
+        """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
+        The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
+        d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if not d or model not in d["models"]:
+            return None
+        size_gb = d["sha256"][d["file"].format(q=model)][0] / 1e9
+        return {"about": d["models"][model]["about"], "download_gb": round(size_gb, 1), "ram_gb": d["models"][model]["ram_gb"],
+                # the routed experts are ~93% of the file (setup.own_path_parallel_fits_all); the dense part and buffers ~1 GB more
+                "arena_gb": round(size_gb * 0.93, 1), "vision": bool(d.get("vision", True)),
+                "engine": OWN_PATH_ENGINE, "families": (family,)}
+
+    def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
+        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if own:
+            return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
                       key=lambda m: bool(models[m].get("experimental")))
 
@@ -545,7 +571,7 @@ class Strata:
         except (OSError, ValueError):
             return {}
 
-    def describe_config(self, path: Path) -> dict:
+    def describe_config(self, path: Path, usage: dict | None = None) -> dict:
         cfg = self.read_config(path)
         a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
 
@@ -554,8 +580,12 @@ class Strata:
         tag = path.stem[len("strata-"):]
         missing = [p for p in [cfg.get("exe"), *[x for x in a if isinstance(x, str) and x.endswith(".gguf")]]
                    if not p or not Path(p).exists()]
+        gaps = shard_gaps([x for x in a if isinstance(x, str) and x.endswith(".gguf")])   # a model in parts is whole only with every part
+        missing += gaps
         script = self.root / f"run-{tag}.{'bat' if WIN else 'sh'}"
         vis = cfg.get("vision")
+        own_usage = (usage or self.disk_usage())["models"].get(tag) or {"gb": 0.0, "bytes": 0, "shared_bytes": 0}
+        plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
@@ -563,8 +593,11 @@ class Strata:
                 "gpu": cfg.get("gpu"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
-                "ready": not missing and bool(cfg), "missing_files": missing[:3],
-                "disk_gb": self.removal_plan(path)["gb"], "disk_bytes": self.removal_plan(path)["bytes"],
+                "ready": not missing and bool(cfg), "missing_files": missing[:3], "parts_missing": len(gaps),
+                "disk_gb": own_usage["gb"], "disk_bytes": own_usage["bytes"],
+                "shared_bytes": own_usage["shared_bytes"],
+                # what Delete would remove (files in Strata's own folders that no other model uses); the person's own GGUF folders stay
+                "removable_gb": plan["gb"], "kept_files": len(plan["keep"]),
                 "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))}
 
     # ---- what a model owns on disk (Delete, and the per-model disk usage in Storage)
@@ -575,9 +608,19 @@ class Strata:
         """(the GGUF files, the folders) a run config names: --native/--ple-gguf/... and --pack/--mtp, plus any other .gguf."""
         a = [x for x in (cfg.get("args") or []) if isinstance(x, str)]
         files = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.FILE_FLAGS]
-        files += [Path(x) for x in a if x.lower().endswith(".gguf") and Path(x) not in files]
+        files += [Path(x) for x in a if x.lower().endswith(".gguf")]
         dirs = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.DIR_FLAGS]
-        return files, dirs
+        seen, once = set(), []
+        for f in files:                                 # one file named by several flags is still one file
+            if norm(f) not in seen:
+                seen.add(norm(f))
+                once.append(f)
+        seen_d, once_d = set(), []
+        for d in dirs:
+            if norm(d) not in seen_d:
+                seen_d.add(norm(d))
+                once_d.append(d)
+        return once, once_d
 
     @staticmethod
     def tree_bytes(path: Path) -> int:
@@ -594,6 +637,61 @@ class Strata:
                 except OSError:
                     pass
         return total
+
+    @staticmethod
+    def file_key(path: Path):
+        """What makes two names the same file on disk: device + inode (hard links), else the resolved path."""
+        try:
+            st = os.stat(path)
+            if st.st_ino:
+                return ("ino", st.st_dev, st.st_ino), st.st_size
+            return ("path", str(norm(path))), st.st_size
+        except OSError:
+            return None, 0
+
+    def used_files(self, cfg: dict) -> dict:
+        """Every file a model really uses, from its run config: all parts of a multi-part GGUF (the config names the first), the
+        picture reader, the packs and the draft layer folders.  {file identity: bytes}, wherever they live (the Strata folders or the
+        person's own)."""
+        files, dirs = self.model_paths(cfg)
+        paths = list(files)
+        vis = cfg.get("vision")
+        if isinstance(vis, dict) and isinstance(vis.get("mmproj"), str):
+            paths.append(Path(vis["mmproj"]))
+        for f in list(paths):                           # the other parts of a multi-part file
+            m = SHARD_NAME.match(str(f))
+            if m:
+                paths += [Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)]
+        for d in dirs:
+            for base, _sub, names in os.walk(d):
+                paths += [Path(base) / n for n in names]
+        out = {}
+        for p in paths:
+            if p.is_file():
+                key, size = self.file_key(p)
+                if key is not None:
+                    out[key] = size
+        return out
+
+    def disk_usage(self) -> dict:
+        """What the installed models take on disk, from the real files: each model's own files, the files shared between models
+        (the picture reader, the draft layer) counted ONCE, and the total.  A model's own figure leaves out the shared files and
+        every other model's; rows plus 'shared' add up to the total."""
+        per = {c.stem[len("strata-"):]: self.used_files(self.read_config(c)) for c in self.configs()}
+        owners: dict = {}
+        for files in per.values():
+            for k in files:
+                owners[k] = owners.get(k, 0) + 1
+        models, shared = {}, {}
+        for tag, files in per.items():
+            own = sum(b for k, b in files.items() if owners[k] == 1)
+            models[tag] = {"bytes": own, "gb": round(own / 1e9, 2), "files": len(files),
+                           "shared_bytes": sum(b for k, b in files.items() if owners[k] > 1)}
+            shared.update({k: b for k, b in files.items() if owners[k] > 1})
+        shared_bytes = sum(shared.values())
+        total = sum(m["bytes"] for m in models.values()) + shared_bytes
+        return {"models": models, "shared_bytes": shared_bytes, "shared_gb": round(shared_bytes / 1e9, 2),
+                "total_bytes": total, "total_gb": round(total / 1e9, 2)}
 
     def removal_plan(self, config: Path) -> dict:
         """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
@@ -682,9 +780,11 @@ class Strata:
                                 entry["downloading"] = bool(list(c.glob("*.part")))
                             items.setdefault(sub, []).append(entry)
         mtp = data / "mtp" / "rt" / "experts.bin"
+        usage = self.disk_usage()
         return {"strata_folder": str(self.root), "data_folder": str(data), "data_folder_exists": data.is_dir(),
                 "python_env": self.venv_python().exists(), "engine": self.engine_info(),
-                "models": [self.describe_config(c) for c in self.configs()],
+                "models": [self.describe_config(c, usage) for c in self.configs()],
+                "usage": usage,
                 "downloads": items.get("models", []), "prepared": items.get("packs", []),
                 "draft_layer": mtp.exists()}
 
@@ -964,14 +1064,17 @@ class Strata:
         for f, fd in families.items():
             sizes = []
             for m in self.sizes_of(models, f):
-                d = models[m]
+                own = self.own_size(f, m)
+                d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
                 verdict = None
                 if ram is not None:
                     have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
                     verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
-                        if d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
+                        if own:                         # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
+                            pass
+                        elif d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
                             verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
                         elif d.get("budget"):
                             verdict = (("experimental: " if d.get("experimental") else "")
@@ -986,6 +1089,9 @@ class Strata:
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
+                              # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
+                              # under 24 GB of graphics memory, the GPU reader from 24 GB; the person can switch it per model)
+                              "images_reader": self.images_reader(vram),
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
                               # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
@@ -997,12 +1103,20 @@ class Strata:
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
                               # only with two or more cards that count; "recommended" names the pre-selected option
-                              "gpu_options": self.gpu_options(d, ram, hw)})
+                              "gpu_options": None if own else self.gpu_options(d, ram, hw)})   # Qwen3.6 runs on one card so far
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
         return out
+
+    @staticmethod
+    def images_reader(vram) -> str:
+        try:
+            from strata_control import vision_reader
+            return vision_reader.default_mode(vram) if vram else "cpu"
+        except Exception:                                  # noqa: BLE001
+            return "cpu"
 
     @staticmethod
     def gpu_options(d: dict, ram, hw) -> dict | None:
@@ -1119,12 +1233,112 @@ class Strata:
         return out
 
 
+SHARD_NAME = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+DEFAULT_MMPROJ_BYTES = 907_543_008          # the Flash-Next picture reader (mmproj BF16), when a family does not pin its size
+
+
+def shard_gaps(ggufs) -> list:
+    """The parts of a multi-part GGUF (name-00001-of-00004.gguf) that are not there whole: a missing part, or one still being
+    downloaded (<part>.part).  A config that names only the first part used to look finished with one part of four on disk."""
+    gaps = []
+    for g in ggufs:
+        m = SHARD_NAME.match(str(g))
+        if not m:
+            continue
+        for i in range(1, int(m.group(3)) + 1):
+            sib = Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf")
+            if not sib.is_file() or sib.with_name(sib.name + ".part").exists():
+                gaps.append(str(sib))
+    return gaps
+
+
+def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -> list:
+    """The files setup fetches for one install, with the sizes it can know before the download starts:
+    [{path, bytes|None, role}] where role is "model" (the shards or the pack's files) or "vision" (the picture reader).
+    Empty when the setup module cannot say (the caller then falls back to the folder scan)."""
+    out = []
+    try:
+        own = (getattr(S, "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if own:                                         # Qwen3.6: the GGUF and the picture reader in the model's folder
+            folder = Path(models_dir) / (own["tag"] + model)
+            name = own["file"].format(q=model)
+            out.append({"path": str(folder / name), "bytes": own["sha256"][name][0], "role": "model"})
+            if vision:
+                out.append({"path": str(folder / own["mmproj"]), "bytes": own["sha256"][own["mmproj"]][0], "role": "vision"})
+            return out
+        fam, d = S.FAMILIES[family], S.MODELS[model]
+        if d.get("repo"):                               # NVFP4: a ready-made pack, many files with pinned sizes
+            for f in S.ready_needed(model, Path(models_dir)):
+                out.append({"path": str(S.ready_where(Path(models_dir), f)), "bytes": f[4], "role": "model"})
+        else:
+            folder = Path(models_dir) / (fam.get("tag", "") + model)
+            for i in range(1, S.model_shards(fam, model) + 1):
+                out.append({"path": str(folder / S.model_file(fam, model, i)), "bytes": None, "role": "model"})
+        if vision:                                      # beside the model folders, not inside them (setup step 5)
+            size = (fam.get("mmproj_sha256") or (None,))[0] or DEFAULT_MMPROJ_BYTES
+            out.append({"path": str(Path(models_dir) / fam.get("mmproj", S.MMPROJ)), "bytes": size, "role": "vision"})
+    except Exception:                                   # noqa: BLE001 - progress is a convenience: never break the install
+        return []
+    return out
+
+
+def files_progress(prog: dict, job: dict, files: list) -> dict:
+    """One honest download figure for a model in parts: every part counted (finished, partial, waiting), the picture reader as a part
+    of its own, and a part list the screen can name ("part 2 of 4").  The finished state needs EVERY part: a first shard that is whole
+    does not make the model downloaded."""
+    log = prog.get("download") or {}
+    cur_gb = float(log.get("total_gb") or 0)
+    rows = []
+    for f in files:
+        p = Path(f["path"])
+        part = p.with_name(p.name + ".part")
+        try:
+            if part.is_file():
+                state, have = "downloading", part.stat().st_size
+            elif p.is_file():
+                state, have = "done", p.stat().st_size
+            else:
+                state, have = "waiting", 0
+        except OSError:
+            state, have = "waiting", 0
+        total = f.get("bytes") or (have if state == "done" else 0)
+        if state == "downloading" and not total and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
+            total = int(cur_gb * 1e9)
+        rows.append({"role": f.get("role", "model"), "state": state, "have": have, "total": max(total, have)})
+    plan_total = float(job.get("total_gb") or 0) * 1e9
+    parts = []
+    for role, name in (("model", "Model files"), ("vision", "Picture reader")):
+        mine = [r for r in rows if r["role"] == role]
+        if not mine:
+            continue
+        have = sum(r["have"] for r in mine)
+        known = sum(r["total"] for r in mine)
+        total = known if all(r["total"] for r in mine) else max(plan_total if role == "model" else 0, known, have)
+        k = sum(1 for r in mine if r["state"] == "done")
+        state = "done" if k == len(mine) else "downloading" if any(r["state"] == "downloading" for r in mine) or k else "waiting"
+        parts.append({"kind": role, "name": name, "state": state, "done_gb": round(min(have, total) / 1e9, 3),
+                      "total_gb": round(total / 1e9, 3), "files_done": k, "files_total": len(mine)})
+    total_gb = sum(x["total_gb"] for x in parts)
+    done_gb = min(sum(x["done_gb"] for x in parts), total_gb)
+    active = next((x for x in parts if x["state"] != "done"), parts[-1] if parts else None)
+    if active and active["state"] == "waiting" and any(x["state"] == "done" for x in parts):
+        active = dict(active, state="downloading")
+    prog["download"] = {"file": "picture reader" if active and active["kind"] == "vision" else "model files",
+                        "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3),
+                        "remaining_gb": round(max(0.0, total_gb - done_gb), 3),
+                        "percent": min(99, int(100 * done_gb / total_gb)) if total_gb else 0}
+    prog["parts"] = parts
+    return prog
+
+
 def combined_progress(prog: dict, job: dict) -> dict:
     """One total for the whole model: the bytes of all its files (finished, partial and the one in flight, read from the
     model's folder) over the download size, instead of each file's own 0-100% (a two-file model went 70 GB -> 0 -> up
     again). Only while the download step runs; later steps are not a download."""
     folder, total = job.get("folder"), job.get("total_gb")
     step = str(prog.get("step") or "")
+    if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
+        return files_progress(prog, job, job["files"])
     if not folder or not total or not step.startswith("5/"):
         prog.pop("download", None)
         return prog
@@ -1589,9 +1803,12 @@ class Tools:
         elif family is None:
             fams = [f for f in families if model in s.sizes_of(models, f)]
             family = "qwen" if "qwen" in fams else fams[0]
+        if family not in families:
+            raise ToolError(f"unknown family {family}; the families: {', '.join(families)}")
         sizes = s.sizes_of(models, family)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
+        md = s.own_size(family, model) or models[model]   # Qwen3.6-35B-A3B: its sizes are not in setup's MODELS
         mac = bool(hw.get("mac"))
         if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
             if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
@@ -1602,10 +1819,10 @@ class Tools:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-            if models[model].get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
+            if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
                                                 s.setup_module().unsloth_budget(model, hw.get("ram_gb") or 0.0)):
                 context = 8192 if vram < 14 else 32768
-        if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
+        if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is not None and backend == "hip" and vision != "no":
             # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
@@ -1621,7 +1838,7 @@ class Tools:
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
-        need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
@@ -1631,8 +1848,11 @@ class Tools:
                 "--vision", vision or "no"]
         if family in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
+        own = bool(s.own_families().get(family))
         for flag, v in (("--kv", kv), ("--gpu", gpu), ("--gpus", gpus), ("--low-ram", low_ram), ("--port", port),
                         ("--data-dir", str(target) if data_dir else None)):
+            if own and flag in ("--kv", "--low-ram"):      # Flash-Next settings: Qwen3.6's engine path does not use them (setup would warn)
+                continue
             if v is not None:
                 args += [flag, str(v)]
         if gguf_dir:
@@ -1645,11 +1865,11 @@ class Tools:
         fit = None
         ram = hw.get("ram_gb")
         if ram is not None:
-            need_ram = models[model]["ram_gb"]
+            need_ram = md["ram_gb"]
             fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
-                "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
+                "context": context, "images": vision or "no", "download_gb": md["download_gb"],
                 "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "model_folder": str(have_dir),
                 "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
@@ -1661,7 +1881,7 @@ class Tools:
                             "the options (finished steps are skipped)")
         if families[family].get("license"):
             plan["license"] = families[family]["license"]
-        if families[family].get("experimental") or models[model].get("experimental"):
+        if families[family].get("experimental") or md.get("experimental"):
             plan["experimental"] = True
         return plan, args
 
@@ -1687,8 +1907,13 @@ class Tools:
         ident = proc_identity(p.pid)
         if ident is None and p.poll() and s.state("install-result").get("job") != job_id:
             raise ToolError("setup did not start: " + " | ".join(read_tail(log_path, 5)))
+        folder = plan.get("model_folder")
+        files = []
+        if s.setup_module() is not None and folder:     # every file of this install, for a progress that counts all the parts
+            files = expected_files(s.setup_module(), plan["family"], plan["model"], Path(folder).parent,
+                                   plan.get("images") in ("yes", "gpu", "cpu"))
         s.save_state("install", {"job": job_id, "pid": p.pid, "ident": ident, "log": str(log_path),
-                                 "model": plan["model"], "family": plan["family"], "folder": plan.get("model_folder"),
+                                 "model": plan["model"], "family": plan["family"], "folder": folder, "files": files,
                                  "total_gb": plan.get("download_gb"),
                                  "started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": args})
         return {"summary": f"Install of {plan['title']} started in the background (about 20-90 minutes, mostly the "

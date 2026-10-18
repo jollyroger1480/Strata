@@ -21,7 +21,9 @@ test('item 1: downloaded models get a short name, family and quantization', asyn
   assert.equal(nativeShortName('unsloth-ud-q4_k_xl'), 'Unsloth UD-Q4_K_XL');
   assert.equal(nativeShortName('gyro-gyro-s'), 'Gyro-S');
   assert.equal(nativeShortName('coder-iq1_m'), 'Coder IQ1_M');
-  assert.equal(nativeShortName('nvfp4-nvfp4'), 'NVFP4 NVFP4');
+  assert.equal(nativeShortName('nvfp4-nvfp4'), 'NVFP4 (Strata’s version)');
+  assert.equal(nativeShortName('nvfp4-nvfp4-nvidia'), 'NVFP4 (NVIDIA’s version)');
+  assert.equal(nativeShortName('nvfp4-nvfp4-qad'), 'NVFP4 (NVIDIA, trained for FP4)');
   const storage = await read('components/SettingsStorage.tsx');
   assert.match(storage, /title=\{m\.model_name \|\| m\.model\}/, 'the full name is the tooltip');
 });

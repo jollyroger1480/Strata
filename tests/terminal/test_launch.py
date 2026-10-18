@@ -295,12 +295,14 @@ class SetupArgs(unittest.TestCase):
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", **kw)
             return Runner(s, catalog=cat).setup_args()
 
-    def test_pictures_default_on_the_card_for_nvidia_and_amd_and_on_the_cpu_for_the_rest(self):
+    def test_pictures_default_on_the_cpu_reader_under_24_gb_and_the_gpu_reader_from_24_gb_on_every_make(self):
         from tests.terminal.launch_support import HW_12 as NV
-        amd = {**NV, "gpus": [{"index": 0, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "usable": True, "vendor": "amd"}]}
-        intel = {**NV, "gpus": [{"index": 0, "name": "Intel Arc B580", "vram_gb": 12.0, "usable": True, "vendor": "intel"}]}
+        card = lambda name, gb, vendor: {**NV, "gpus": [{"index": 0, "name": name, "vram_gb": gb, "usable": True, "vendor": vendor}]}   # noqa: E731
+        amd = card("AMD Radeon RX 9070 XT", 16.0, "amd")
+        intel = card("Intel Arc B580", 12.0, "intel")
         with Home():
-            for hw, want in ((NV, "gpu"), (amd, "gpu"), (intel, "cpu")):
+            for hw, want in ((NV, "cpu"), (amd, "cpu"), (intel, "cpu"), (card("NVIDIA GeForce RTX 4090", 24.0, "nvidia"), "gpu"),
+                             (card("AMD Radeon AI PRO R9700", 32.0, "amd"), "gpu")):
                 cat = catalog(hw)
                 r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768), catalog=cat)
                 self.assertEqual(r.setup_args()[r.setup_args().index("--vision") + 1], want, hw["gpus"][0]["vendor"])
@@ -329,7 +331,9 @@ class SetupArgs(unittest.TestCase):
         with Home():
             cat = catalog(HW_12)
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), cat)
-            self.assertEqual(s.vision, "gpu")
+            self.assertEqual(s.vision, "cpu")                                 # a 12 GB card: pictures ON, read on the CPU
+            s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="gpu"), cat)
+            self.assertEqual(s.vision, "gpu")                                 # what was asked for is kept
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="off"), cat)
             self.assertEqual(s.vision, "off")
 

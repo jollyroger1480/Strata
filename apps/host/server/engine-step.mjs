@@ -75,8 +75,11 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
     const modelRemaining = Number.isFinite(model?.remaining_gb) ? model.remaining_gb : null;
     const active = !['done', 'current', 'skipped', 'failed'].includes(part.state);
     const engineRemaining = active || part.state === 'done' ? Math.max(0, part.total_gb - part.done_gb) : 0;
+    /* The install knows its files (strata_mcp files_progress): the model's parts and the picture reader, each counted. Without that, one
+       model part from the combined figures. The engine is added either way. */
+    const own = Array.isArray(install.parts) && install.parts.some(p => p?.kind === 'model') ? install.parts.filter(p => p?.kind !== 'engine') : null;
     const parts = [
-      { kind: 'model', name: model?.file ?? install.model ?? 'Model', state: install.running === false ? 'done' : 'downloading', done_gb: modelDone ?? 0, total_gb: round((modelDone ?? 0) + (modelRemaining ?? 0)) },
+      ...(own ?? [{ kind: 'model', name: model?.file ?? install.model ?? 'Model', state: install.running === false ? 'done' : 'downloading', done_gb: modelDone ?? 0, total_gb: round((modelDone ?? 0) + (modelRemaining ?? 0)) }]),
       { ...part },
     ];
     const merged = { ...install, engine: { ...part }, parts };

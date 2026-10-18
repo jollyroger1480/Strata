@@ -424,10 +424,10 @@ class PicturesParallelTuning(Base):
             self.assertIn("No pictures", t)
             self.assertIn("Pictures are on by default", flat(app))
             self.assertIn("0.9 GB download", t)
-            self.assertIn("graphics memory kept free", flat(app))     # the NVIDIA reader runs on the card
+            self.assertIn("runs on the CPU", flat(app))               # a 12 GB card: the CPU reader (the GPU one from 24 GB)
             self.assertEqual(app.screen.menu().index, 1)              # "Yes" is preselected
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.vision, "gpu")
+            self.assertEqual(ctx.settings.vision, "cpu")
             self.assertIn("How many requests at the same time?", text_of(app))
         self.run_app(case)
 

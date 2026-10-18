@@ -214,9 +214,9 @@ class SetupControlStep(unittest.TestCase):
             except SystemExit as e:
                 return e, out.getvalue()
 
-    def test_wrong_family_stops_before_the_download_when_nobody_said_go_on(self):
+    def test_wrong_family_stops_before_the_download_for_launch(self):
         exc = ec.EngineMissing("nothing matched", Path("/c"), notice=WRONG_FAMILY)
-        res, out = self.step(exc, {})
+        res, out = self.step(exc, {"STRATA_NEED_ENGINE": "1"})
         self.assertIsInstance(res, SystemExit)
         self.assertIn("Ask for the RX 9000 build.", out)
         self.assertIn("nothing was downloaded", out)
@@ -229,6 +229,20 @@ class SetupControlStep(unittest.TestCase):
         self.assertIn("The model is downloaded and prepared now", out)
 
     def test_no_engine_for_launch_still_stops_setup_when_run_on_its_own(self):
+        res, out = self.step(ec.EngineMissing("the component folder holds no engine package", Path("/c")), {"STRATA_NEED_ENGINE": "1"})
+        self.assertIsInstance(res, SystemExit)
+
+    def test_the_app_with_a_wrong_family_engine_warns_and_still_downloads(self):
+        """Owner decision 2026-10-18: the app downloads the model anyway and warns (its card says so)."""
+        env = {k: v for k, v in os.environ.items() if k != "STRATA_NEED_ENGINE"}
+        exc = ec.EngineMissing("nothing matched", Path("/c"), notice=WRONG_FAMILY)
+        with mock.patch.dict(os.environ, env, clear=True):
+            res, out = self.step(exc, {})
+        self.assertNotIsInstance(res, SystemExit)
+        self.assertIn("Ask for the RX 9000 build.", out)
+        self.assertIn("The model is downloaded and prepared now", out)
+
+    def test_no_engine_stops_before_the_download_for_launch(self):
         res, out = self.step(ec.EngineMissing("the component folder holds no engine package", Path("/c")), {"STRATA_NEED_ENGINE": "1"})
         self.assertIsInstance(res, SystemExit)
 

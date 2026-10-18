@@ -51,7 +51,12 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
+- **Pictures:** on by default; the reader is the CPU one under 24 GB of VRAM and the GPU one from 24 GB (the same rule for every make, `strata_control/vision_reader.py`); `--vision gpu` / `--vision cpu` switch it. The engine package carries two picture readers: `strata-vision-hip`, which reads a picture on the
+  card (llama.cpp's HIP backend; about 1.4 GiB of VRAM, measured on an R9700: 0.06 s for a 260-token picture and 0.4 s for 972
+  tokens, against 3.1 s and 14 s on the CPU), and `strata-vision`, the CPU reader. If the GPU reader cannot start (the card is
+  not one it was built for, the HIP runtime does not load, the card is busy) the server starts the CPU reader by itself and
+  prints one line; nothing is asked. `--vision cpu` picks the CPU reader on purpose.
+- **Limits for now:** Setup does not offer the tuning
   (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
@@ -84,8 +89,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** one card per model (`--gpus` is Linux-only for now), no calibration.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -260,7 +264,7 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
 compositor fails with "Failed to pin framebuffer with error -12".
 
-The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder for now (`--vision cpu`).
+The installer supports this backend (see "Install with setup" above). Pictures are read on the card (`strata-vision-hip`) when the engine has it, else on the CPU (`strata-vision`).
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
 **Opt-in switches for RDNA2 prompts and hangs (0.1.40, off by default):** `STRATA_DENSE_MMQ=1` (#820, HIP) runs the

@@ -53,3 +53,22 @@ export function installProgress(install: InstallParts | undefined): { done_gb: n
   if (d && Number.isFinite(d.done_gb) && Number.isFinite(d.total_gb)) return { done_gb: d.done_gb!, total_gb: d.total_gb!, remaining_gb: Number.isFinite(d.remaining_gb) ? d.remaining_gb! : Math.max(0, d.total_gb! - d.done_gb!), percent: d.percent ?? 0, file: d.file };
   return undefined;
 }
+
+/** Which part of a multi-part install is being fetched now: the model's parts (with "part 2 of 4"), the picture reader or the engine. */
+export interface InstallStage { kind: 'model' | 'vision' | 'engine' | 'other'; index?: number; count?: number }
+export function installStage(install: { parts?: { kind?: string; state?: string; files_done?: number; files_total?: number }[]; running?: boolean } | undefined): InstallStage | undefined {
+  const parts = install?.parts ?? [];
+  const now = parts.find(p => p.state === 'downloading') ?? parts.find(p => !['done', 'current', 'skipped', 'failed'].includes(p.state ?? ''));
+  if (!now) return undefined;
+  const kind = now.kind === 'model' || now.kind === 'vision' || now.kind === 'engine' ? now.kind : 'other';
+  const count = Number(now.files_total) > 1 ? Number(now.files_total) : undefined;
+  return { kind, ...(count ? { index: Math.min(count, Number(now.files_done ?? 0) + 1), count } : {}) };
+}
+/** The sentence for it, in plain words. */
+export function stageText(stage: InstallStage | undefined): string {
+  if (!stage) return tr('Downloading model files…');
+  if (stage.kind === 'vision') return tr('Downloading the picture reader…');
+  if (stage.kind === 'engine') return tr('Downloading the engine for this PC…');
+  if (stage.count && stage.index) return tr('Downloading model files · part {0} of {1}', [stage.index, stage.count]);
+  return tr('Downloading model files…');
+}

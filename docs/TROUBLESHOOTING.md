@@ -133,7 +133,8 @@ setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 1
 **Pictures are refused, or slow.**
 "this server was started without the vision encoder": the model was set up for text only - run setup again with
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
-(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
+(NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the GPU reader is the default; if it cannot start, the server
+prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with the CPU reader.
 
 ## AMD cards
 

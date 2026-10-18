@@ -312,7 +312,10 @@ class Catalog:
         vram = comp.main_vram_gb
         rec = self.recommendation(hw)
         out: list[ModelRow] = []
+        own = self.strata.own_families()                # Qwen3.6 is listed for the app; the Terminal's launch list is Flash-Next's
         for fam in self.strata.model_table(hw):
+            if fam["family"] in own:
+                continue
             for size in fam["sizes"]:
                 f = fit_on(size, hw.get("ram_gb"), vram)
                 cat, words = verdict(size.get("on_this_pc"))
@@ -410,15 +413,19 @@ class Catalog:
             exe = None
         if not exe:
             return "unknown"
-        folder = Path(str(exe)).parent
-        return "present" if any((folder / n).is_file() for n in ("strata-vision", "strata-vision.exe")) else "missing"
+        from strata_control import vision_reader as VR
+        found = VR.find(Path(str(exe)).parent, os.name == "nt")
+        return "present" if (found["cpu"] or found["gpu"]) else "missing"
 
     def picture_default(self, images: bool) -> str:
         """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the
-        reader on the graphics card for the CUDA and HIP builds and on the CPU for the others."""
+        reader the one rule of strata_control/vision_reader.py gives: the CPU reader under 24 GB of graphics memory, the GPU reader from 24 GB,
+        on every make of card (owner decision 2026-10-18). Without a usable graphics card there is nothing to read on: the CPU reader."""
+        from strata_control import vision_reader as VR
         if not images or self.reader_state() == "missing":
             return "off"
-        return "gpu" if self.engine_backend() in ("cuda", "hip") else "cpu"
+        vram = self.computer().main_vram_gb
+        return VR.default_mode(vram) if vram > 0 else "cpu"      # a Mac (unified memory) or no card: nothing to keep free, the CPU reader
 
     # ---- installed models
     def installed_configs(self) -> list[dict]:

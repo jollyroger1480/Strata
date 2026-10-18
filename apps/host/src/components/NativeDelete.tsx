@@ -14,7 +14,9 @@ export function NativeDeleteDialog({ id, onClose }: { id: string | null; onClose
     const label = (() => { const sizes = nativeCatalogModels(native?.catalog?.families ?? []).flatMap(f => f.sizes); const v = sizes.find(s => s.id === id); return v ? `${catalogVersionLabel(v)} · ${v.model}` : entry?.model_name ?? id ?? ''; })();
     const running = !!native?.instances.some(i => i.model === id);
     const busy = !!native?.jobs.some(j => j.state === 'running');
-    const gb = entry?.diskGb ?? 0;
+    const size = entry?.diskGb ?? 0, gb = entry?.removableGb ?? size;
+    // Files in the person's own folder (an adopted GGUF) stay where they are: only the entry is removed.
+    const keepsFiles = entry?.removableGb === 0 && size > 0;
     function close() { if (!pending) { onClose(); setError(''); } }
     async function remove() {
         setPending(true);
@@ -36,8 +38,8 @@ export function NativeDeleteDialog({ id, onClose }: { id: string | null; onClose
         finally { setPending(false); }
     }
     return <Dialog open={!!id} compact title={tr("Delete this version?")} onClose={close} actions={<><Btn disabled={pending} onClick={close}>{tr("Keep version")}</Btn><Btn variant="danger" disabled={pending || busy || !entry} onClick={() => void remove()}>{tr(pending ? 'Working…' : 'Delete version')}</Btn></>}>
-      <p>{tr(label)}{tr(gb ? ` · ${sizeGb(gb)}` : '')}</p>
-      {tr(entry ? <p className="small muted storage-delete-note">{tr('Remove {0} GB of downloaded files. You can download this version again.', [gb ? gb.toFixed(1) : '0'])}{tr(running ? ' ' : '')}{tr(running ? 'The running model will be unloaded and its files deleted.' : '')}</p> : <p className="small muted">{tr("This version is no longer downloaded.")}</p>)}
+      <p>{tr(label)}{tr(size ? ` · ${sizeGb(size)}` : '')}</p>
+      {tr(!entry ? <p className="small muted">{tr("This version is no longer downloaded.")}</p> : <p className="small muted storage-delete-note">{keepsFiles ? tr('These files are in your own folder, so they stay there. Only the entry in Strata is removed.') : tr('Remove {0} GB of downloaded files. You can download this version again.', [gb ? gb.toFixed(1) : '0'])}{tr(running ? ' ' : '')}{tr(running ? (keepsFiles ? 'The running model will be unloaded.' : 'The running model will be unloaded and its files deleted.') : '')}</p>)}
       {tr(error ? <ErrorNotice message={error}/> : null)}
     </Dialog>;
 }

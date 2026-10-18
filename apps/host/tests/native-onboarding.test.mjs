@@ -145,6 +145,10 @@ test('runtime vision checks prepared files, validates mode, and leaves the sourc
  assert.equal(runtimeVision(config,'cpu').gpu,false);
  assert.equal(runtimeVision(config,'yes').mmproj,config.vision.mmproj);
  assert.deepEqual(config,before);
+ const amd={vision:{exe:'/e/strata-vision-hip',cpu_exe:'/e/strata-vision',mmproj:'/m.gguf',gpu:true}};
+ assert.deepEqual(runtimeVision(amd,'cpu'),{exe:'/e/strata-vision',mmproj:'/m.gguf',gpu:false});
+ assert.equal(runtimeVision(amd,'gpu').exe,'/e/strata-vision-hip');assert.equal(runtimeVision(amd,'gpu').cpu_exe,'/e/strata-vision');
+ assert.equal(runtimeVision(amd,'yes').gpu,true);
  assert.throws(()=>runtimeVision({},'yes'),/Prepare/);
  assert.throws(()=>runtimeVision(config,'invalid'),/picture reading/);
 });
