@@ -7027,7 +7027,7 @@ textarea {
 .version-row.is-on { background: var(--st-surface-2); }
 .version-row__name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .version-row__name svg { color: var(--st-accent-text); margin-right: 6px; vertical-align: -2px; }
-.version-row__title { display: inline-flex; align-items: baseline; gap: 0; max-width: 100%; }
+.version-row__title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .version-row__note { display: block; margin-top: 1px; font-size: var(--st-fs-xs); white-space: normal; line-height: 1.35; }
 .version-row__have, .version-trigger .version-row__have { margin-left: 8px; padding: 1px 8px; border-radius: var(--st-r-pill); background: var(--st-accent-tint); color: var(--st-accent-text); font-size: var(--st-fs-xs); font-weight: 700; white-space: nowrap; }
 .version-row__ssd { margin-left: 10px; font-size: var(--st-fs-xs); color: var(--st-warn-text); }

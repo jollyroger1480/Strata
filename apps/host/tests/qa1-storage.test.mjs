@@ -27,7 +27,7 @@ test('O01: the route uses that plan and the screen asks for an unload only when 
 
 test('F02: Settings -> Storage has ONE Downloaded models list and one total, with the shared files as a line of their own', async () => {
   const screen = await readFile(new URL('../src/components/SettingsStorage.tsx', import.meta.url), 'utf8');
-  assert.equal((screen.match(/<Field label=\{tr\("Downloaded models"\)\}/g) ?? []).length, 1, 'no second section that contradicts the first');
+  assert.equal((screen.match(/<Field wide label=\{tr\("Downloaded models"\)\}/g) ?? []).length, 1, 'no second section that contradicts the first');
   assert.match(screen, /totalGb/);
   assert.match(screen, /Shared files/);
   assert.match(screen, /No downloaded models/);
