@@ -117,27 +117,21 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+#ifdef STRATA_VISION_HIP
     if (gpu) {
-        // Starting the backends prints the GPU line; with --gpu and no GPU, mtmd would quietly use the CPU, and a card
-        // the HIP build has no code for would abort at its first kernel.  Both end here with a line the server reads
-        // (it then starts the CPU reader).
+        // The AMD GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
+        // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
+        // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
         bool have_gpu = false;
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
             have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
         }
         if (!have_gpu) {
-            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n",
-#ifdef STRATA_VISION_HIP
-                        STRATA_VISION_HIP_ARCHS
-#else
-                        "none"
-#endif
-            );
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_HIP_ARCHS);
             std::fflush(stdout);
             return 3;
         }
-#ifdef STRATA_VISION_HIP
         const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
         if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
             !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
@@ -146,8 +140,8 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
             return 3;
         }
-#endif
     }
+#endif
 
     const auto load_t0 = std::chrono::steady_clock::now();
 #if !defined(_WIN32) && !defined(__APPLE__)   // macOS has no posix_fadvise
