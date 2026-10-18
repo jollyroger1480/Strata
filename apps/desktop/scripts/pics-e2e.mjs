@@ -54,7 +54,7 @@ async function chat(extra, message = QUESTION) {
     if (!line.trim()) continue;
     let f; try { f = JSON.parse(line); } catch { continue; }
     if (f.type === 'error') error = f.message ?? 'error';
-    else if (typeof f.text === 'string' && f.type !== 'reasoning' && f.type !== 'thinking') text += f.text;
+    else if (typeof f.text === 'string' && f.type === 'delta') text += f.text;
   }
   return { status: 200, text, error };
 }
@@ -131,7 +131,7 @@ async function main() {
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: false }]);
   const off = await readsAfter('Small picture model', smol, false);
   const notRead = await chat({ remoteModel: { connectionId: off.c.id, modelId: smol } });
-  record('a model set not to read pictures refuses them and says where to change it', notRead.status === 409 && /set not to read pictures/.test(notRead.message ?? ''), `${notRead.status} ${notRead.message ?? ''}`);
+  record('a model that does not read pictures refuses them and says where to change it', notRead.status === 409 && /does not read pictures/.test(notRead.message ?? ''), `${notRead.status} ${notRead.message ?? ''}`);
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: null }]);
 
   await saveApi('Other style', 'https://api.anthropic.com/v1', [{ id: 'claude-x', name: 'Claude' }], 'anthropic');

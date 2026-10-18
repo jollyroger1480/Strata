@@ -142,9 +142,10 @@ async function pictureRefusal(connection, model) {
   if (connection.protocol !== 'openai-chat') return `Pictures can only be sent to model APIs that use the OpenAI chat style. "${connection.name}" uses a different style, so the picture stays in the preview. Add the model through an OpenAI-compatible address (a /v1 address) to send pictures.`;
   const answer = effectiveVision(model, await visionProbe.check(connection, model.id));
   if (answer === true) return null;
+  const fix = `open Settings → Models, edit "${connection.name}" and tick "This model reads pictures"`;
   return answer === false
-    ? `"${model.name}" is set not to read pictures. If it does, open Settings \u2192 Models, edit "${connection.name}" and tick "This model reads pictures".`
-    : `Strata cannot tell that "${model.name}" reads pictures. If it is a picture-reading model, open Settings \u2192 Models, edit "${connection.name}" and tick "This model reads pictures". Otherwise choose a model that reads pictures.`;
+    ? `"${model.name}" does not read pictures, as far as its server says (a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`
+    : `Strata cannot tell that "${model.name}" reads pictures. If it does, ${fix}. Otherwise choose a model that reads pictures.`;
 }
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
