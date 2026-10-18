@@ -65,9 +65,14 @@ struct CgroupMemoryStat {
     uint64_t file_dirty = 0;
     uint64_t file_writeback = 0;
     bool valid = false;
+    uint64_t file = 0;   ///< 149: memory.stat "file" (active + inactive page cache); 0 when not reported
 };
 
-/// Calculate additional bytes under a finite cgroup limit after reclaiming only clean inactive file cache.
+/// Calculate additional bytes under a finite cgroup limit after reclaiming the group's clean page cache, as
+/// MemAvailable counts it on a bare host: every clean file page (active and inactive: memory.stat "file", else
+/// inactive_file), less a low-watermark share the kernel keeps (min(half the clean cache, limit / 64)).  A process
+/// whose own reads (a GPU cache fill, a read-ahead) left gigabytes of active cache in its group was judged short of
+/// RAM before (149: 1.2 GiB "available" of a 32 GiB group, the file tier then switched to unbuffered reads).
 /// Returns false when the required memory.stat counters were unavailable.
 bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes);
 
@@ -252,6 +257,8 @@ public:
         return got;
     }
     virtual void prefetch_end() {}
+    /// 149 STRATA_IO_PF_GATE: whether the decode's read-ahead runs now (the look-ahead then predicts one layer, not two)
+    virtual bool read_ahead_open() const { return true; }
     /// 149-cold STRATA_COLD_OVERLAP=3: the last prefetch_begin left this expert unstaged because the page cache holds
     /// all of it (the GGUF read in place): its gate, up and down rows in the mapping.  False: ask `blob`.
     virtual bool zc_roles(int64_t layer, int64_t expert, const uint8_t** p) { (void) layer; (void) expert; (void) p; return false; }
@@ -969,6 +976,42 @@ private:
     void claim_todo(int64_t layer, const int64_t* experts, int64_t n, std::vector<Fill>& todo, uint8_t* pending,
                     bool zc = false);
     std::vector<int64_t> zc_keys_;   ///< 149-cold mode 3: the keys the last prefetch_begin left in the mapping
+public:
+    /// 149 STRATA_IO_PF_GATE=1 (with STRATA_IO_PREFETCH=1): the decode's read-ahead and its pread demand reads run only
+    /// while the page cache can hold enough of the file tier: (the memory available, cgroup limits included, + the
+    /// file-tier bytes cached now) / the experts' bytes, checked every 16 decode windows; it closes below
+    /// STRATA_IO_PF_GATE_LO 0.55 and opens above STRATA_IO_PF_GATE_HI 0.65.  Closed, the decode reads as without io
+    /// prefetch; the prompt path is not gated.  (A held share at demand would not do: the read-ahead itself raises it.)
+    /// `DecodeScope` marks the decode thread (and the fetch threads it starts).
+    double gate_ratio() const { return gate_ratio_; }
+    struct DecodeScope {
+        bool prev;
+        DecodeScope();
+        ~DecodeScope();
+    };
+    static bool in_decode();
+    bool gate_open() const { return !gate_on_ || gate_open_.load(std::memory_order_relaxed); }
+    bool read_ahead_open() const override { return gate_open(); }
+    bool gate_on() const { return gate_on_; }
+    double gate_held() const { return gate_ewma_; }
+    int64_t gate_closed_windows() const { return gate_closed_w_; }
+    int64_t gate_flips() const { return gate_flips_; }
+private:
+    void gate_tick();
+    void gate_capacity();
+    bool gate_on_ = false;
+    double gate_lo_ = 0.55, gate_hi_ = 0.65, gate_ewma_ = -1.0, gate_ratio_ = -1.0;
+    int64_t gate_win_ = 0, gate_useless_since_ = 0;
+    uint64_t gate_prev_pf_ = 0, gate_prev_used_ = 0;
+    double gate_useful_ = 1.0, gate_min_useful_ = 0.10;
+    bool gate_useless_ = false;
+public:
+    double gate_useful() const { return gate_useful_; }
+private:
+    std::atomic<bool> gate_open_{true};
+    mutable std::atomic<uint64_t> gate_c_{0}, gate_u_{0};
+    uint64_t gate_prev_c_ = 0, gate_prev_u_ = 0;
+    int64_t gate_closed_w_ = 0, gate_flips_ = 0;
     std::vector<Fill> async_todo_;
     std::vector<std::thread> async_th_;
     std::atomic<size_t> async_next_{0};
