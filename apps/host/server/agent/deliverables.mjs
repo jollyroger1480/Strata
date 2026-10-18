@@ -11,7 +11,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const SKIP_DIR = /^(?:\.|node_modules$|__pycache__$|\$)/;
 const MAX_FILES = 4000, MAX_TEXT = 200_000, MAX_TOTAL = 24_000_000, BUDGET_MS = 1500;
@@ -40,14 +40,37 @@ export function lineDelta(before, after) {
   return { added, removed };
 }
 
+/** A file made or changed this long before the turn started still counts (clock rounding on some file systems). */
+const START_SLACK_MS = 2000;
+const same = process.platform === 'win32' || process.platform === 'darwin' ? p => p.toLowerCase() : p => p;
+/** True when `child` is `parent` or inside it. */
+export function isWithin(parent, child) {
+  const rel = relative(same(resolve(parent)), same(resolve(child)));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 export class DeliverableTracker {
-  constructor(root, { now = Date.now } = {}) {
+  /**
+   * `exclude`: folders that are never searched when they lie inside the chat's folder (the app, the engine and its components, AppData,
+   * temp). `forbid`: folders the chat's own folder must not be, or be inside (the app, the engine and its components): then nothing is
+   * tracked at all. The turn only reports files the turn itself wrote: an explicit file-tool call, or (for scripts) a file whose modified
+   * or creation time is after the turn started.
+   */
+  constructor(root, { now = Date.now, exclude = [], forbid = [] } = {}) {
     this.root = root ? resolve(root) : null;
     this.now = now;
+    if (this.root && forbid.filter(Boolean).some(p => isWithin(p, this.root))) this.root = null;
+    // only the folders that lie inside the chat's folder matter for the search
+    this.exclude = this.root ? [...exclude, ...forbid].filter(Boolean).map(p => resolve(p)).filter(p => p !== this.root && isWithin(this.root, p)) : [];
+    this.startedAt = Date.now();
     this.before = new Map();   // rel path -> { size, mtimeMs, lines|null }
     this.sent = new Map();     // rel path -> signature of what was last reported
     this.truncated = false;
   }
+
+  #snapshotting = false;
+  /** A folder inside the chat's folder that is never searched. */
+  #excluded(full) { return this.exclude.some(p => isWithin(p, full)); }
 
   #walk(fn) {
     if (!this.root) return;
@@ -55,9 +78,9 @@ export class DeliverableTracker {
     const walk = dir => {
       let entries; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
-        if (count >= MAX_FILES || this.now() - t0 > BUDGET_MS) { this.truncated = true; return; }
+        if (count >= MAX_FILES || this.now() - t0 > BUDGET_MS) { this.truncated = true; if (this.#snapshotting) this.snapshotTruncated = true; return; }
         const full = join(dir, e.name);
-        if (e.isDirectory()) { if (!SKIP_DIR.test(e.name)) walk(full); }
+        if (e.isDirectory()) { if (!SKIP_DIR.test(e.name) && !this.#excluded(full)) walk(full); }
         else if (e.isFile()) { count += 1; fn(full); }
       }
     };
@@ -71,12 +94,13 @@ export class DeliverableTracker {
 
   /** Remember what the folder holds now. */
   snapshot() {
-    this.before.clear(); this.bytes = 0;
+    this.before.clear(); this.bytes = 0; this.startedAt = Date.now(); this.snapshotTruncated = false; this.#snapshotting = true;
     this.#walk(full => {
       let st; try { st = statSync(full); } catch { return; }
       const rel = relative(this.root, full).split(sep).join('/');
       this.before.set(rel, { size: st.size, mtimeMs: st.mtimeMs, lines: this.#read(full, st.size, fileType(rel)) });
     });
+    this.#snapshotting = false;
   }
 
   /** The deliverable for one path now, compared with the snapshot (and the last report), or null when nothing changed. */
@@ -84,7 +108,7 @@ export class DeliverableTracker {
     if (!this.root) return null;
     const full = resolve(this.root, String(rawPath ?? ''));
     const rel = relative(this.root, full).split(sep).join('/');
-    if (!rel || rel.startsWith('..') || rel.split('/').some(seg => SKIP_DIR.test(seg))) return null;
+    if (!rel || rel.startsWith('..') || isAbsolute(rel) || rel.split('/').some(seg => SKIP_DIR.test(seg)) || this.#excluded(dirname(full))) return null;
     let st; try { st = statSync(full); } catch { return null; }
     if (!st.isFile()) return null;
     const old = this.before.get(rel);
@@ -102,10 +126,21 @@ export class DeliverableTracker {
     return { type: 'deliverable', path: rel, abs: full, name: basename(rel), kind: type, status: old ? 'changed' : 'created', size: st.size, lines: lines ? lines.length : null, added, removed };
   }
 
-  /** Files the tools did not announce (a script wrote them): everything new or changed since the snapshot and not yet reported. */
+  /**
+   * Files the tools did not announce (a script wrote them): what was made or changed since the snapshot and not yet reported. A file only
+   * counts when its modified or creation time is after the turn started, so a folder the snapshot could not finish (it stops after
+   * MAX_FILES files or BUDGET_MS) never turns the rest of the folder into "new files" (the 308 CUDA headers of the QA report).
+   */
   sweep() {
     const out = [];
-    this.#walk(full => { const d = this.check(relative(this.root, full)); if (d) out.push(d); });
+    const since = this.startedAt - START_SLACK_MS;
+    this.#walk(full => {
+      let st; try { st = statSync(full); } catch { return; }
+      // modified during the turn; or created during it (a copy that kept its old modified time), which is only certain when the first look saw the whole folder
+      const fresh = st.mtimeMs >= since || (!this.snapshotTruncated && (st.birthtimeMs || 0) >= since);
+      if (!fresh) return;
+      const d = this.check(relative(this.root, full)); if (d) out.push(d);
+    });
     return out;
   }
 }

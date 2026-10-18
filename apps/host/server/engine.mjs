@@ -247,7 +247,7 @@ export async function validate(draft = {}) {
   if (typeof beginner.readImages !== 'boolean' || beginner.readImages) addError('readImages', 'image input is not supported by this host.');
   const limits = {
     'sample.temp': [0, 2], 'sample.topP': [0, 1], 'sample.topK': [0, 10000], 'sample.repeat': [0.5, 3],
-    'sample.seed': [-1, 2147483647], 'perf.threads': [1, 1024], 'perf.batch': [1, 65536],
+    'sample.seed': [-1, 2147483647], 'sample.maxTokens': [0, 1048576], 'perf.threads': [1, 1024], 'perf.batch': [1, 65536],
     'perf.draftDepth': [1, 64], 'mem.expertCache': [0, 10000], 'server.port': [1, 65535],
     'server.parallel': [1, 64], 'server.queue': [0, 10000], 'server.timeout': [1, 86400],
     'adv.rope': [0.01, 100], 'adv.ropeBase': [1, 1000000000],

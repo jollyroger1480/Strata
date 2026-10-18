@@ -876,7 +876,10 @@ fn run_embedded() {
 fn open_window(app: &tauri::App, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    // The shell's own file-drop handler is off: with it on, Windows hands a dropped file to the shell and the page never sees it, so pictures
+    // could not be dropped on the chat (QA report 1, item 4). With it off the page gets ordinary drag and drop events (apps/host DropZone), the
+    // same as in a browser, on every system.
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0).disable_drag_drop_handler();
     // WebKitGTK (2.50 to 2.52 at least) dereferences a null pointer in AcceleratedBackingStore::update in its UI process when a page calls
     // document.startViewTransition (the web process asks the UI process to enter accelerated compositing, and the backing store is not
     // there). The page itself does not call it on that engine (apps/host/src/lib/router.ts), and this line keeps any other script from doing

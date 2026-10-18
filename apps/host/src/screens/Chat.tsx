@@ -33,7 +33,7 @@ import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
-import { scrollBehavior } from '../lib/responsive';
+import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
 import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { getSlashCommands } from '../lib/commands';
@@ -265,12 +265,18 @@ export function ChatScreen() {
         // would fight the follow-the-stream effect above.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id]);
+    // The box grows with the draft but never past 30% of the window, and scrolls inside after that, so Send and the toolbar stay on screen (QA F08).
     useEffect(() => {
-        const el = textarea.current;
-        if (!el)
-            return;
-        el.style.height = 'auto';
-        el.style.height = `${Math.min(200, el.scrollHeight)}px`;
+        const fit = () => {
+            const el = textarea.current;
+            if (!el)
+                return;
+            el.style.height = 'auto';
+            el.style.height = `${Math.min(composerCap(window.innerHeight), el.scrollHeight)}px`;
+        };
+        fit();
+        window.addEventListener('resize', fit);
+        return () => window.removeEventListener('resize', fit);
     }, [draft]);
     /** Hands a rewound prompt back to the composer so it can be changed. */
     function editPrompt(text: string) {

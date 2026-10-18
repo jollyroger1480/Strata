@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Btn, Dialog, Empty, Icon, IconBtn, Select, ErrorNotice } from '../components/ui';
 import { Screen } from '../components/layout';
 import { api } from '../lib/client';
-import { postWithFolderFallback } from '../lib/folder-pick';
+import { pageIsOnThisComputer, postWithFolderFallback } from '../lib/folder-pick';
 import { editSkill, loadSkills, toggleSkill, useStore } from '../lib/store';
 import type { Skill } from '../lib/types';
 export function SkillsScreen() {
@@ -32,6 +32,9 @@ export function SkillsScreen() {
         }
     }
     async function add() {
+        // The folder window opens on the computer that runs Strata. From a page on another computer there is nothing to see, so say so instead of waiting.
+        if (!pageIsOnThisComputer(window.location.hostname))
+            throw new Error(tr("Adding a skill opens a folder window on the computer that runs Strata. Open Strata on that computer to add one."));
         const result = await postWithFolderFallback<{
             cancelled?: boolean;
             added?: string;
@@ -55,7 +58,7 @@ export function SkillsScreen() {
         if (!editing)
             return;
         if (!editing.id) {
-            await api.post('/api/skills', { name: editing.name.trim(), description: editing.description.trim(), body: editing.body ?? '' });
+            await api.post('/api/skills', { name: editing.name.trim(), description: editing.description.trim(), body: editing.body ?? '', enabled: editing.enabled, triggers: triggers.split(',').map(t => t.trim()).filter(Boolean) });
             await loadSkills();
             setEditing(null);
             return;
