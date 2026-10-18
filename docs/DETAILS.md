@@ -270,7 +270,8 @@ engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) w
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
 **Linux file tier, 0.2.0 defaults (zero-copy page-cached experts, io prefetch, the decode gate):** when experts are read
-from the files (a GGUF read in place, `--mmap-experts`, or an `experts.bin` file tier), Linux now runs three things by default.
+from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default (an
+`experts.bin` pack, such as the NVFP4 ones, keeps them off unless you set them: not measured there yet).
 (1) **Zero-copy** (`STRATA_COLD_OVERLAP=4`): an expert of a GGUF read in place whose three tensors' pages are all in the page
 cache (mincore) is computed straight from the mapping; before, every such expert was first assembled into a staging buffer
 (a copy of ~1.5 MB per Q2_0 expert, on the decode's critical path). Same bytes, same rows, same output (identity gates
