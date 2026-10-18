@@ -682,7 +682,15 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("Did you mean 'Office'", err)
 
     def test_vision_is_turned_off_for_a_model_without_pictures(self):
-        p = self.plan("--model", "nvfp4-qad", "--vision", "on")
+        # every catalog model reads pictures now (Gyro and NVFP4-QAD too): a row that does not stands in for a future one
+        import dataclasses
+        real_rows = Catalog.rows
+
+        def rows(self, *args, **kwargs):
+            return [dataclasses.replace(r, images=False) if r.model == "Gyro-S" else r for r in real_rows(self, *args, **kwargs)]
+
+        with mock.patch.object(Catalog, "rows", rows):
+            p = self.plan("--model", "gyro-s", "--vision", "on")
         self.assertEqual(p["settings"]["vision"], "off")
         self.assertTrue(any("cannot read pictures" in w for w in p["warnings"]))
 

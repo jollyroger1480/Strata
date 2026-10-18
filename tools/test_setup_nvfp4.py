@@ -105,7 +105,7 @@ class Family(unittest.TestCase):
         for m in names:
             d = setup.MODELS[m]
             self.assertTrue(d["nvidia_only"])
-            self.assertEqual(d["vision"], m != "NVFP4-QAD")   # the prepared QAD model: text first
+            self.assertIs(d["vision"], True)   # the shared encoder reads pictures for every NVFP4 model (QAD: dense.gguf is the text model)
             self.assertRegex(d["license"], "Licen[sc]e|Agreement")
             self.assertEqual(d["engine"], setup.FP4LOCAL_ENGINE if m == "NVFP4-QAD" else setup.NVFP4_ENGINE)
 
@@ -146,6 +146,61 @@ class PreparedModel(unittest.TestCase):
                 self.assertFalse(setup.prepared_done("NVFP4-QAD", Path(t)))
             (d / marks[-1]).write_text("x")
             self.assertTrue(setup.prepared_done("NVFP4-QAD", Path(t)))
+
+
+class PreparedWithoutCheckpoint(unittest.TestCase):
+    """A prepared NVFP4-QAD model needs none of the checkpoint's 95 GB of safetensors: the engine reads the prepared files."""
+
+    def prepare(self, models: Path) -> None:
+        d = setup.prepared_dir("NVFP4-QAD", models)
+        d.mkdir(parents=True)
+        for m in ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done"):
+            (d / m).write_text("x")
+
+    def write_small_files(self, models: Path) -> None:
+        for f in setup.ready_files("NVFP4-QAD"):
+            if f[3].startswith("tensors/"):
+                continue
+            dst = setup.ready_where(models, f)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(b"x")
+            dst.with_name(dst.name + ".done").write_text(f"sha256 {f[5]}")
+
+    def test_prepared_model_does_not_need_the_tensors(self):
+        with tempfile.TemporaryDirectory() as t:
+            models = Path(t)
+            self.prepare(models)
+            needed = setup.ready_needed("NVFP4-QAD", models)
+            self.assertTrue(needed)
+            self.assertFalse([f for f in needed if f[3].startswith("tensors/")])
+            self.assertIn("config.json", {f[3] for f in needed})
+
+    def test_unprepared_model_still_needs_the_tensors(self):
+        with tempfile.TemporaryDirectory() as t:
+            needed = setup.ready_needed("NVFP4-QAD", Path(t))
+            self.assertEqual(len(needed), len(setup.ready_files("NVFP4-QAD")))
+            self.assertEqual(sum(1 for f in needed if f[3].startswith("tensors/model-")), 21)
+
+    def test_a_model_that_is_not_prepared_by_this_pc_keeps_all_its_files(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(len(setup.ready_needed("NVFP4", Path(t))), len(setup.ready_files("NVFP4")))
+
+    def test_ready_fetch_downloads_nothing_for_a_prepared_model_without_tensors(self):
+        with tempfile.TemporaryDirectory() as t:
+            models = Path(t)
+            self.prepare(models)
+            self.write_small_files(models)
+            with mock.patch.object(setup, "download", side_effect=AssertionError("downloaded")) as dl:
+                setup.ready_fetch("NVFP4-QAD", models)
+            dl.assert_not_called()
+
+    def test_ready_fetch_wants_the_tensors_of_an_unprepared_model(self):
+        with tempfile.TemporaryDirectory() as t:
+            models = Path(t)
+            self.write_small_files(models)
+            with mock.patch.object(setup, "download", side_effect=RuntimeError("would download")):
+                with self.assertRaises(RuntimeError):
+                    setup.ready_fetch("NVFP4-QAD", models)
 
 
 class MockedInstall(unittest.TestCase):
@@ -204,6 +259,15 @@ class MockedInstall(unittest.TestCase):
         self.assertTrue(self.flag(a, "--mtp").endswith(base + "/mtp/rt"))   # NVIDIA's own draft layer, not Qwen's
         self.assertIn("NVIDIA Open Model Agreement", out)
         self.assertIn("turned into a Strata pack on this PC", out)
+
+    def test_qad_reads_pictures_with_its_prepared_dense_gguf(self):
+        code, out, cfg, _ = self.run_install("128GB-1x24GB", "NVFP4-QAD", extra_argv=["--vision", "gpu"])
+        self.assertEqual(code, 0, out[-2500:])
+        v = cfg["vision"]
+        self.assertTrue(v["model"].endswith("nvidia--Qwen3.8-Flash-Next-FP4-Local/prepared/dense.gguf"))
+        self.assertTrue(v["mmproj"].endswith("/mmproj-Qwen3.8-Flash-Next-BF16.gguf"))
+        self.assertIn("--vision", cfg["args"])
+        self.assertNotIn("images are not available", out)
 
     def test_96gb_keeps_every_expert_in_ram_64gb_takes_the_ram_budget(self):
         code, out, cfg, _ = self.run_install("96GB-1x16GB")    # 68 GB of experts + 10 GB beside them fit 95.8
