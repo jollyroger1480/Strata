@@ -65,3 +65,11 @@ test('O02: the screenshot Download button saves the picture and then says so', a
   assert.match(source, /downloadSnapshot\(data\);\n\s+pushToast\('success'/);
   assert.match(source, /pushToast\('error', tr\('The screenshot was not saved'\)/);
 });
+
+test('item 1: the desktop window leaves file drops to the page, and the drop box is animated', async () => {
+  const rust = await readFile(new URL('../../desktop/src-tauri/src/main.rs', import.meta.url), 'utf8');
+  assert.match(rust, /\.min_inner_size\(900\.0, 600\.0\)\.disable_drag_drop_handler\(\);/);
+  const css = await readFile(new URL('../src/styles/app.css', import.meta.url), 'utf8');
+  assert.match(css, /\.dropzone \{ animation: dropzone-in/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{ \.dropzone/);
+});
