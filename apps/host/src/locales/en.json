@@ -3197,5 +3197,6 @@
   "s3201": "cloudflared is already running for other tunnels (PIDs {0}).",
   "s3202": "Strata’s tunnel for this address is already running (PID {0}).",
   "s3203": "Strata’s tunnel for this address is already running.",
-  "s3204": "Stop it first, or use it as it is, then connect again here."
+  "s3204": "Stop it first, or use it as it is, then connect again here.",
+  "s3205": "Models that stay loaded use about {0} GB of RAM and {1} GB of this card’s memory."
 }

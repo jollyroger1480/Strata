@@ -26,4 +26,4 @@ export function scopedMonitor(live:MonitorState|null,runtime:RuntimeModels|null,
     totals:{...live.totals,tokensIn:count('tokensIn'),tokensOut:count('tokensOut'),requests:done.length,cachedTokens:0,uncachedTokens:count('tokensIn'),promptMs:undefined,decodeMs:undefined,avgTps:0}
   };
 }
-export const instanceLabel=(i:RuntimeModel)=>`${i.family} · ${i.name}${i.memory.context>0?` · ${i.memory.context/1024}K`:""}`;
+export const instanceLabel=(i:RuntimeModel)=>`${i.family}${i.family.toLowerCase().endsWith(i.name.toLowerCase())?"":` · ${i.name}`}${i.memory.context>0?` · ${i.memory.context/1024}K`:""}`;

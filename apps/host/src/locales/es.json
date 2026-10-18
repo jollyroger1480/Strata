@@ -3197,5 +3197,6 @@
   "s3201": "cloudflared ya se está ejecutando para otros túneles (PID {0}).",
   "s3202": "El túnel de Strata para esta dirección ya se está ejecutando (PID {0}).",
   "s3203": "El túnel de Strata para esta dirección ya se está ejecutando.",
-  "s3204": "Deténlo primero, o úsalo tal como está, y vuelve a conectar aquí."
+  "s3204": "Deténlo primero, o úsalo tal como está, y vuelve a conectar aquí.",
+  "s3205": "Los modelos que siguen cargados usan unos {0} GB de RAM y {1} GB de la memoria de esta tarjeta."
 }

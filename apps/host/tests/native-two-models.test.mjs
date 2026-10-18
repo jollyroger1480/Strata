@@ -35,3 +35,35 @@ test('a model that failed to start is not offered in the chat model picker', asy
   const picker = await readFile(new URL('../src/components/ChatModelPicker.tsx', import.meta.url), 'utf8');
   assert.equal((picker.match(/native\?\.instances\.filter\(i => i\.status !== 'error'\)\.map/g) ?? []).length, 2);
 });
+
+import { friendlyModelName } from '../server/model-names.mjs';
+test('a loaded model is named from the catalog (family and version), the file id only as a fallback', async () => {
+  const catalog = { families: [{ title: 'Qwen3.8-Flash-Next', sizes: [{ id: 'q2_0', model: 'Q2_0' }] }, { title: 'Qwen3.8-Flash-Next (Gyro)', sizes: [{ id: 'gyro-gyro-s', model: 'Gyro-S' }] }] };
+  assert.equal(friendlyModelName(catalog, 'q2_0'), 'Qwen3.8-Flash-Next Q2_0');
+  assert.equal(friendlyModelName(catalog, 'gyro-gyro-s'), 'Qwen3.8-Flash-Next Gyro-S');
+  assert.equal(friendlyModelName(catalog, 'nope'), null);
+  assert.equal(friendlyModelName(null, 'q2_0'), null);
+  const f = nativeFixture();
+  try {
+    await f.control.refresh(true);
+    const done = await finishJob(f.control, f.control.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(done.state, 'done', done.error);
+    assert.equal(f.control.state().instances[0].label, 'Qwen3.8-Flash-Next IQ2_XS');
+  } finally { await f.cleanup(); }
+});
+
+test('card names use the GPU numbering of the other screens, and the fit figures subtract the models that stay loaded', async () => {
+  const models = await readFile(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
+  assert.ok(models.includes('(GPU ${Number(n) + 1})') && models.includes('text.replace(/\\(card (\\d+)\\)/g'));
+  assert.match(models, /<strong>\{gpuNumbers\(o\.label\)\}<\/strong>/);
+  assert.match(models, /const keptModels = expert && multiple/);
+  assert.match(models, /inUse=\{keptModels\.length \?/);
+  const card = await readFile(new URL('../src/components/PcFitCard.tsx', import.meta.url), 'utf8');
+  assert.match(card, /total=\{freeVram\}/);
+  assert.match(card, /total=\{freeRam\}/);
+  // the arithmetic itself
+  const text = 'fits: needs 44 GB of the 273 GB available.';
+  const gone = Math.round(14 + 27);
+  assert.equal(text.replace(/of the (\d+) GB available/, (_m, n) => `of the ${Math.max(0, Number(n) - gone)} GB available`), 'fits: needs 44 GB of the 232 GB available.');
+  assert.equal('RX 9070 (card 0) + RAM'.replace(/\(card (\d+)\)/g, (_m, n) => `(GPU ${Number(n) + 1})`), 'RX 9070 (GPU 1) + RAM');
+});
