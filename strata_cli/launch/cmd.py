@@ -605,15 +605,16 @@ def run_connect(a: argparse.Namespace) -> int:
     from strata_cli.launch import access, harness
     machine = a.output == "json"
     if not a.harness:
-        rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status} for h in harness.HARNESSES]
+        rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status, "vendor_tested": h.tested or None} for h in harness.HARNESSES]
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "harnesses": rows}))
         else:
-            _say(f"{'App':<20}{'Works with':<22}Status")
+            _say(f"{'App':<20}{'Works with':<22}Vendor tested")
             for r in rows:
                 _say(f"{r['id']:<20}{r['speaks']:<22}{r['status']}")
             _say("")
-            _say("Show one: strata connect opencode        Write it for you: strata connect opencode --write")
+            _say("Vendor tested is the app version its maker tested the setup with, not a check of your server.")
+            _say("Check your server: strata connect opencode --check        Show one: strata connect opencode        Write it: strata connect opencode --write")
         return 0
     h = harness.find(a.harness)
     if h is None:
@@ -631,10 +632,30 @@ def run_connect(a: argparse.Namespace) -> int:
     out = harness.render(h, tgt)
     shown_key = key if a.show_key else None
     if machine:
-        print(json.dumps({"schema_version": 1, "ok": True, **{k: (harness.mask(v, key) if isinstance(v, str) else v) for k, v in out.items()
-                                                              if k != "files"},
-                          "files": [{**f, "text": harness.mask(f["text"], key)} for f in out["files"]]}))
-        return 0
+        payload = {"schema_version": 1, "ok": True, **{k: (harness.mask(v, key) if isinstance(v, str) else v) for k, v in out.items()
+                                                       if k != "files"},
+                   "files": [{**f, "text": harness.mask(f["text"], key)} for f in out["files"]],
+                   "vendor_tested": h.tested or None}
+        if not a.check:
+            print(json.dumps(payload))
+            return 0
+        # --check runs the same two checks as the plain-words output (one prompt, one tool call, the way this app sends them) and the answer
+        # says what they found: "ok" is true only when both worked, and the exit code is 1 when one failed or the server cannot be reached.
+        from strata_cli.launch import check
+        results = check.run_checks(h.id if not h.built_in else "opencode", tgt.url, key, tgt.model)
+        passed = all(r.ok for r in results)
+        payload["checks"] = [{"name": r.name, "ok": r.ok, "detail": r.detail, "seconds": round(r.seconds, 1)} for r in results]
+        payload["checked_server"] = tgt.url
+        payload["ok"] = passed
+        if not passed:
+            reached = any(r.ok for r in results)
+            payload["error"] = {"code": 1, "message": ("The server answered, but the app's prompt or tool call did not work: "
+                                                       + "; ".join(f"{r.name}: {r.detail}" for r in results if not r.ok))
+                                if reached else
+                                "The server could not be reached or did not answer the check: "
+                                + "; ".join(f"{r.name}: {r.detail}" for r in results if not r.ok)}
+        print(json.dumps(payload))
+        return 0 if passed else 1
     _say(f"{h.title}  ({h.speaks}; {h.status})")
     if not info.get("running") and not a.url:
         _say("[!] No running Strata server was found, so this uses the default address. Start one with: strata launch")
