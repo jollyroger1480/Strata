@@ -145,6 +145,23 @@ def split_likely_short(arena_gb: float, vram_gbs: list) -> bool:
     return arena_gb > 0 and total > 0 and arena_gb > SPLIT_SHORT_FRACTION * total
 
 
+PREFILL_BMG_MIN_GB = 24.0   # a Battlemage card with this much VRAM runs the prompt in 8,192-token chunks (to_sycl)
+
+
+def recommended_prefill(vram_gb: float, ctx: int, driver: str = "xe", devid: str = "") -> tuple:
+    """(chunk size, one plain line saying why or "").  4096 everywhere (to_sycl's old rule), except a Battlemage card (xe
+    driver, not an A-series) with 24 GB or more and a context over 32K, where the prompt borrows cache slots: 8192.
+    Measured on the Arc Pro B70 (IQ3_S, 128K context, setup's flags, 2 interleaved rounds): a 16K prompt 1,222 -> 1,347-1,362
+    tok/s (+10-11%), a 32K prompt 1,187 -> 1,361-1,383 (+15-16%), the same 32 greedy tokens, the same 11,795 cache slots (the
+    lent slots are refilled after the prompt), decode after it unchanged (38 tok/s).  With the 32K context (own prompt
+    buffers) a bigger chunk takes 1,400 cache slots from the decode (-9..-16% decode for +20% prompt), so that stays 4096."""
+    bmg = driver != "i915" and devid not in ALCHEMIST_IDS and devid in INTEL_ARC
+    if bmg and vram_gb >= PREFILL_BMG_MIN_GB and ctx > 32768:
+        return 8192, ("prompt reading: chunks of 8,192 tokens on this Arc (the prompt borrows cache slots, so decode keeps all "
+                      "of them): 10-16% faster on 16K-32K prompts than 4,096 (change --prefill in the config to pick another)")
+    return 4096, ""
+
+
 def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, driver: str = "xe",
             devid: str = "") -> dict:
     """setup's config (written for its HIP path) -> the SYCL port's: the container's paths, experts streamed from the
@@ -198,10 +215,13 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     else:
         args += ["--stream-experts", "--vram-reserve-mib", reserve]
     if ctx > 32768 or vram_gb >= 24:                    # long contexts: 4096-token chunks keep the prompt buffers small; a
-        drop(args, "--prefill", True)                   # 24 GB+ card with part of the experts in the RAM mirror streams those
-        args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
-                                                        # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
-                                                        # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
+        # 24 GB+ card with part of the experts in the RAM mirror streams those over PCIe once per chunk, so fewer, bigger
+        # chunks read the prompt faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token chunks 618 tok/s, 4,096: 1,002;
+        # docs/INTEL.md); it costs ~700 cache slots.  A Battlemage card with the prompt borrowing cache slots reads 8,192.
+        # A chunk size the user already put in the config is kept: this is a recommendation, not a rule.
+        if flag(args, "--prefill") in (None, "auto", "2048", "4096", "8192"):
+            drop(args, "--prefill", True)
+            args += ["--prefill", str(recommended_prefill(vram_gb, ctx, driver, devid)[0])]
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
@@ -325,6 +345,11 @@ def install(argv) -> None:
             S.warn(f"{model} on this Arc computes the experts the card does not hold on the CPU (about {need} GB of "
                    f"weights; this PC has {real_ram:.0f} GB of RAM): the start will be slow or fail - a smaller model "
                    "(--model) fits better (docs/INTEL.md)")
+        if flag(cfg["args"], "--prefill") == "8192":
+            why = recommended_prefill(sel["vram_gb"], int(flag(cfg["args"], "--max-context") or 32768), sel["driver"],
+                                      sel.get("devid", ""))[1]
+            if why:
+                S.say("  " + why)
         Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         script = write(model, cfg_path, port, open_browser)
         script.write_text(script.read_text().replace(str(ROOT / "serve" / "server.py"), str(SERVER)))

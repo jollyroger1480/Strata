@@ -881,3 +881,21 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
 | decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle |
 | prefill | 149 tok/s on a 2,701-token prompt; 424 tok/s on a 104,798-token prompt at 131k context |
 | quality | correct code on every test; matches the NVIDIA path token for token in spirit, not measured |
+
+## Arc Pro B70: `--prefill 8192` in the long-context config (2026-10-18, branch f-151-b70)
+
+`setup_intel.py` now recommends 8,192-token prompt chunks for a Battlemage card with 24 GB or more when the context is over 32K (the
+prompt borrows cache slots; `recommended_prefill()`), 4,096 everywhere else, and it keeps a chunk size you put in the config.
+Arc Pro B70, IQ3_S, setup's 128K flags (`--kv-resident 32768 --vram-reserve-mib 2048`), `--pcie-frac 0 --adapt-every 0`, 2 rounds,
+32 greedy tokens after the prompt (identical in every run):
+
+| prompt | `--prefill 4096` | `--prefill 8192` | cache slots | decode after |
+|---|---|---|---|---|
+| 16K | 1,222 tok/s | 1,347-1,362 (+10-11%) | 11,795 both | 33-38 / 38 |
+| 32K | 1,187 | 1,361-1,383 (+15-16%) | 11,794-11,795 both | 35 / 38.6 |
+
+The lent slots are refilled after the prompt, so the bigger chunk costs the decode nothing. First-token logits against 4096
+(`STRATA_DUMP_FIRST_LOGITS`, whole vocabulary): KL 1.1e-2 nats at 16K and 3.0e-2 at 32K, top-1 the same, largest logit
+difference 1.0 (the chunk boundary moves where the QSA block selection is made, so a different chunk size is not bit-identical;
+two runs of the same size are, KL 0). With the 32K context (own prompt buffers, no borrowing) a bigger chunk is +20% on a 16K
+prompt (1,236 -> 1,478-1,482) but takes 1,397 cache slots (10,926 -> 9,529) and decode after it falls 9-16%, so 4,096 stays there.
