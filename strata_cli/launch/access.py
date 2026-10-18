@@ -63,15 +63,102 @@ def _is_private(address: str) -> bool:
     return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127)
 
 
-def find_cloudflared() -> str | None:
-    found = shutil.which("cloudflared")
-    if found:
-        return found
-    for guess in ("/usr/local/bin/cloudflared", "/opt/homebrew/bin/cloudflared", r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
-                  r"C:\Program Files\cloudflared\cloudflared.exe"):
-        if Path(guess).is_file():
-            return guess
+CLOUDFLARED_MIN = (2022, 1, 0)   # the quick-tunnel flags and the "Registered tunnel connection" line Strata waits for
+_cf_seen: dict[tuple[str, float], str | None] = {}
+
+
+def _cloudflared_places() -> list[str]:
+    """Where a cloudflared might be: STRATA_CLOUDFLARED if set, then PATH, then the usual install places."""
+    explicit = os.environ.get("STRATA_CLOUDFLARED", "").strip()
+    if explicit:
+        return [explicit]
+    name = "cloudflared.exe" if WINDOWS else "cloudflared"
+    out: list[str] = []
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if d.strip():
+            out.append(str(Path(d.strip().strip('"')) / name))
+    home = Path.home()
+    if WINDOWS:
+        env = os.environ
+        for root in (env.get("ProgramFiles", r"C:\Program Files"), env.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
+            out.append(str(Path(root) / "cloudflared" / name))
+        if env.get("LOCALAPPDATA"):
+            out.append(str(Path(env["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links" / name))
+        out.append(str(Path(env.get("ProgramData", r"C:\ProgramData")) / "chocolatey" / "bin" / name))
+        out.append(str(home / "scoop" / "shims" / name))
+    else:
+        for d in ("/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/snap/bin",
+                  str(home / ".local" / "bin"), str(home / "bin")):
+            out.append(str(Path(d) / name))
+    seen: set[str] = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def cloudflared_version(path: str) -> str | None:
+    """`cloudflared --version` of this file as 'YYYY.M.P', '' when it runs but prints no version, None when it does not run."""
+    try:
+        key = (path, os.stat(path).st_mtime)
+    except OSError:
+        return None
+    if key in _cf_seen:
+        return _cf_seen[key]
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if WINDOWS else 0)
+        text = (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError):
+        _cf_seen[key] = None
+        return None
+    m = re.search(r"(\d{4})\.(\d{1,2})\.(\d{1,3})", text)
+    ok = r.returncode == 0 and ("cloudflared" in text.lower() or bool(m))
+    _cf_seen[key] = (".".join(m.groups()) if m else "") if ok else None
+    return _cf_seen[key]
+
+
+def _cf_new_enough(version: str) -> bool:
+    if not version:
+        return True                      # a custom build with no readable version is not refused
+    return tuple(int(x) for x in version.split(".")) >= CLOUDFLARED_MIN
+
+
+def cloudflared_info() -> dict | None:
+    """The cloudflared Strata would use: {'path', 'version'}, found on PATH or in the usual places and new enough."""
+    for place in _cloudflared_places():
+        if not os.path.isfile(place) or (not WINDOWS and not os.access(place, os.X_OK)):
+            continue
+        version = cloudflared_version(place)
+        if version is not None and _cf_new_enough(version):
+            return {"path": place, "version": version}
     return None
+
+
+def find_cloudflared() -> str | None:
+    info = cloudflared_info()
+    return info["path"] if info else None
+
+
+def cloudflared_running(exclude: tuple[int, ...] = ()) -> str | None:
+    """'service' or 'process' when a cloudflared that is not in `exclude` already runs on this computer, else None."""
+    try:
+        if WINDOWS:
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared.exe", "/NH", "/FO", "CSV"], capture_output=True,
+                                 text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            pids = [int(p) for p in re.findall(r'"cloudflared\.exe","(\d+)"', out, re.I)]
+        else:
+            out = subprocess.run(["pgrep", "-x", "cloudflared"], capture_output=True, text=True, timeout=5).stdout
+            pids = [int(p) for p in out.split() if p.isdigit()]
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not [p for p in pids if p not in exclude]:
+        return None
+    try:
+        if sys.platform.startswith("linux"):
+            active = subprocess.run(["systemctl", "is-active", "cloudflared"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if active == "active":
+                return "service"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "process"
 
 
 def find_tailscale() -> str | None:
@@ -242,6 +329,10 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
     existing = tunnel_info(name)
     if existing and existing.get("url") and existing.get("port") == port:
         return existing["url"], "The tunnel was already running."
+    other = cloudflared_running(exclude=(int(existing["pid"]),) if existing else ())
+    if other:
+        return None, ("Cloudflare’s connector is already running on this computer" + (" as a system service" if other == "service" else "") +
+                      ", so Strata did not start a second one. Stop it first (or use its tunnel as it is), then connect again here.")
     stop_tunnel(name)
     log = _state_dir() / f"{Path(name).name}.tunnel.log"
     argv = [exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"]

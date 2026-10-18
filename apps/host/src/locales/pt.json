@@ -3151,5 +3151,15 @@
   "s3155": "O Strata parou. Pode fechar este separador. Para o usar de novo, inicie o Strata a partir do seu ícone.",
   "s3156": "Não foi possível parar o Strata a partir daqui. Execute a app com --quit num terminal ou tente novamente.",
   "s3157": "A sair…",
-  "s3158": "A descompactar o motor que veio com a app. Na primeira vez leva cerca de um minuto."
+  "s3158": "A descompactar o motor que veio com a app. Na primeira vez leva cerca de um minuto.",
+  "s3159": "Em uso: {0}",
+  "s3160": "Instalado · cloudflared {0}",
+  "s3161": "O conector da Cloudflare já está em execução neste computador como serviço do sistema, por isso o Strata não iniciou um segundo. Pare esse serviço primeiro (ou use o túnel dele como está) e conecte novamente aqui.",
+  "s3162": "O conector da Cloudflare (cloudflared) já está em execução neste computador, por isso o Strata não iniciou um segundo. Feche-o primeiro (ou use o túnel dele como está) e conecte novamente aqui.",
+  "s3163": "O Strata não encontrou o conector da Cloudflare (cloudflared) neste computador.",
+  "s3164": "Instale o cloudflared (com o gerenciador de pacotes ou pelo site da Cloudflare) e depois toque em «Tentar configurar novamente». O Strata o encontra no PATH e nos locais habituais.",
+  "s3165": "O conector da Cloudflare deste computador é muito antigo.",
+  "s3166": "Atualize o cloudflared para uma versão mais nova e depois toque em «Tentar configurar novamente».",
+  "s3167": "O arquivo encontrado como cloudflared não foi executado.",
+  "s3168": "Reinstale o cloudflared e depois toque em «Tentar configurar novamente»."
 }

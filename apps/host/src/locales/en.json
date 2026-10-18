@@ -3151,5 +3151,15 @@
   "s3155": "Strata has stopped. You can close this tab. To use it again, start Strata from its icon.",
   "s3156": "Strata could not be stopped from here. Run the app with --quit in a terminal, or try again.",
   "s3157": "Quitting…",
-  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time."
+  "s3158": "Unpacking the engine that came with the app. This takes about a minute the first time.",
+  "s3159": "Using {0}",
+  "s3160": "Installed · cloudflared {0}",
+  "s3161": "Cloudflare’s connector is already running on this computer as a system service, so Strata did not start a second one. Stop that service first (or use its tunnel as it is), then connect again here.",
+  "s3162": "Cloudflare’s connector (cloudflared) is already running on this computer, so Strata did not start a second one. Close it first (or use its tunnel as it is), then connect again here.",
+  "s3163": "Strata could not find Cloudflare’s connector (cloudflared) on this computer.",
+  "s3164": "Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.",
+  "s3165": "The Cloudflare connector on this computer is too old.",
+  "s3166": "Update cloudflared to a newer version, then press Retry setup.",
+  "s3167": "The file found as cloudflared did not run.",
+  "s3168": "Reinstall cloudflared, then press Retry setup."
 }

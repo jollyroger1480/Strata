@@ -3151,5 +3151,15 @@
   "s3155": "Strata wurde beendet. Du kannst diesen Tab schließen. Um es wieder zu nutzen, starte Strata über sein Symbol.",
   "s3156": "Strata konnte von hier aus nicht beendet werden. Starte die App im Terminal mit --quit oder versuche es erneut.",
   "s3157": "Wird beendet …",
-  "s3158": "Die mit der App gelieferte Engine wird entpackt. Beim ersten Start dauert das etwa eine Minute."
+  "s3158": "Die mit der App gelieferte Engine wird entpackt. Beim ersten Start dauert das etwa eine Minute.",
+  "s3159": "Verwendet wird: {0}",
+  "s3160": "Installiert · cloudflared {0}",
+  "s3161": "Der Cloudflare-Connector läuft auf diesem Computer bereits als Systemdienst, deshalb hat Strata keinen zweiten gestartet. Beende zuerst diesen Dienst (oder nutze seinen Tunnel, wie er ist) und verbinde dich dann hier erneut.",
+  "s3162": "Der Cloudflare-Connector (cloudflared) läuft auf diesem Computer bereits, deshalb hat Strata keinen zweiten gestartet. Beende ihn zuerst (oder nutze seinen Tunnel, wie er ist) und verbinde dich dann hier erneut.",
+  "s3163": "Strata hat den Cloudflare-Connector (cloudflared) auf diesem Computer nicht gefunden.",
+  "s3164": "Installiere cloudflared (mit deiner Paketverwaltung oder von der Cloudflare-Website) und drücke dann „Einrichtung erneut versuchen“. Strata findet es im PATH und an den üblichen Orten.",
+  "s3165": "Der Cloudflare-Connector auf diesem Computer ist zu alt.",
+  "s3166": "Aktualisiere cloudflared auf eine neuere Version und drücke dann „Einrichtung erneut versuchen“.",
+  "s3167": "Die als cloudflared gefundene Datei ließ sich nicht ausführen.",
+  "s3168": "Installiere cloudflared neu und drücke dann „Einrichtung erneut versuchen“."
 }

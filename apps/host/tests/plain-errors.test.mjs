@@ -9,6 +9,9 @@ const built = await build({ stdin: { contents: "export * from './src/lib/plain-e
 const { plainFailure, plainFailureText, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 
 const cases = [
+  ['The Cloudflare connector (cloudflared) is not installed here, and the app never downloads it while it runs. Install it from the optional connector component.', 'connector-missing', /could not find Cloudflare’s connector/],
+  ['The cloudflared at /usr/bin/cloudflared is version 2021.3.0, which is too old. Strata needs 2022.1.0 or newer. Update cloudflared, then retry.', 'connector-old', /connector on this computer is too old/],
+  ['The file at /x/cloudflared did not run as cloudflared. Reinstall cloudflared, then retry.', 'connector-broken', /did not run/],
   ['server_exited', 'start-failed', /model stopped while starting\./],
   ['server_exited (exit code 0xC0000135)', 'dll-missing', /program files is missing/],
   ['server_exited (exit code 0xC000007B)', 'dll-bad', /does not fit this computer or is damaged/],

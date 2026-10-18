@@ -3151,5 +3151,15 @@
   "s3155": "Strata se ha detenido. Puedes cerrar esta pestaña. Para volver a usarlo, inicia Strata desde su icono.",
   "s3156": "No se pudo detener Strata desde aquí. Ejecuta la app con --quit en una terminal o inténtalo de nuevo.",
   "s3157": "Saliendo…",
-  "s3158": "Se está descomprimiendo el motor incluido con la app. La primera vez tarda aproximadamente un minuto."
+  "s3158": "Se está descomprimiendo el motor incluido con la app. La primera vez tarda aproximadamente un minuto.",
+  "s3159": "En uso: {0}",
+  "s3160": "Instalado · cloudflared {0}",
+  "s3161": "El conector de Cloudflare ya se está ejecutando en este equipo como servicio del sistema, así que Strata no ha iniciado un segundo. Detén primero ese servicio (o usa su túnel tal como está) y vuelve a conectar aquí.",
+  "s3162": "El conector de Cloudflare (cloudflared) ya se está ejecutando en este equipo, así que Strata no ha iniciado un segundo. Ciérralo primero (o usa su túnel tal como está) y vuelve a conectar aquí.",
+  "s3163": "Strata no encontró el conector de Cloudflare (cloudflared) en este equipo.",
+  "s3164": "Instala cloudflared (con tu gestor de paquetes o desde el sitio web de Cloudflare) y pulsa «Reintentar configuración». Strata lo encuentra en el PATH y en los lugares habituales.",
+  "s3165": "El conector de Cloudflare de este equipo es demasiado antiguo.",
+  "s3166": "Actualiza cloudflared a una versión más reciente y pulsa «Reintentar configuración».",
+  "s3167": "El archivo encontrado como cloudflared no se pudo ejecutar.",
+  "s3168": "Reinstala cloudflared y pulsa «Reintentar configuración»."
 }

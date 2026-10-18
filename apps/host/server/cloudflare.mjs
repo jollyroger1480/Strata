@@ -1,18 +1,23 @@
 /** A supervised Cloudflare connector with a private, inference-only origin. */
 import { spawn } from 'node:child_process';
 import { probe, which } from './util.mjs';
+import { describeConnector, runningMessage } from './cloudflared-find.mjs';
 
 export function tunnelHostname(value) {
   const hostname = String(value ?? '').trim().toLowerCase();
   if (hostname.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new Error('Enter a hostname such as ai.example.com, without https:// or a path.');
   return hostname;
 }
-export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}, launch = spawn, locate = async () => process.platform === 'win32' ? (await probe('where.exe', ['cloudflared'])).split(/\r?\n/)[0] || null : which('cloudflared'), prepareConnector = null, timeoutMs = 45000 }) {
-  let binary = null, child = null, timer = null, busy = false, generation = 0;
+export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}, launch = spawn, locate = async () => process.platform === 'win32' ? (await probe('where.exe', ['cloudflared'])).split(/\r?\n/)[0] || null : which('cloudflared'), prepareConnector = null, connectorInfo = () => null, findRunning = async () => ({ running: false, kind: null, pids: [] }), timeoutMs = 45000 }) {
+  let binary = null, other = null, child = null, timer = null, busy = false, generation = 0;
   let value = { status: 'idle', mode: null, url: null, error: null };
-  const state = () => ({ ...value, installed: !!binary, originUrl });
+  const state = () => {
+    const info = binary ? connectorInfo() : null;
+    return { ...value, installed: !!binary, originUrl, connector: info ? { path: info.path, version: info.version, source: info.source, label: info.label, summary: describeConnector(info) } : null, external: other?.running ? { kind: other.kind, message: runningMessage(other) } : null };
+  };
   const update = patch => { value = { ...value, ...patch }; changed(state()); };
-  async function inspect() { binary = await locate(); changed(state()); return state(); }
+  async function lookForOther() { try { other = await findRunning({ exclude: [child?.pid] }); } catch { other = null; } return other; }
+  async function inspect() { binary = await locate(); await lookForOther(); changed(state()); return state(); }
   async function prepare() {
     if (busy) throw new Error('Connector setup is already in progress.');
     busy = true;
@@ -54,6 +59,8 @@ export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}
       binary = await locate();
       if (!binary && prepareConnector) binary = await prepareConnector();
       if (!binary) throw new Error('The connector could not be prepared automatically. Retry connector setup.');
+      // A cloudflared that is already running here (a system service, or one the person started) is never doubled up.
+      if ((await lookForOther())?.running) throw new Error(runningMessage(other));
       await origin.start();
       // Tokens never appear in command arguments, logs, saved settings, or API responses.
       const env = { ...process.env };

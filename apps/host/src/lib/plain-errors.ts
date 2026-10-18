@@ -15,6 +15,9 @@ const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% 
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
+  { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },
+  { kind: 'connector-old', match: /cloudflared at .* is version .* too old/i, message: 'The Cloudflare connector on this computer is too old.', next: 'Update cloudflared to a newer version, then press Retry setup.' },
+  { kind: 'connector-broken', match: /did not run as cloudflared/i, message: 'The file found as cloudflared did not run.', next: 'Reinstall cloudflared, then press Retry setup.' },
   { kind: 'picture-reading', match: /vision files|picture reading/i, message: 'Picture reading isn’t available for this model.', next: 'Turn off picture reading and try again.' },
   { kind: 'access', match: /PermissionError|access is denied|can.t open its settings file/i, message: 'Strata can’t open its settings file.', next: 'Run Strata once as yourself (not as administrator) or press Repair.' },
   // A start that died: the exit code or the engine's own last line says why. Say "low on memory" only when that evidence is there
