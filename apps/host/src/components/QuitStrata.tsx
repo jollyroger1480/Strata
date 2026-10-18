@@ -18,7 +18,7 @@ export function QuitStrataDialog({ open, onClose }: { open: boolean; onClose: ()
     } catch { setState('failed'); }
   }
   const stopped = state === 'stopped';
-  return <Dialog open={open} compact title={tr(stopped ? "Strata has stopped" : "Quit Strata?")} onClose={stopped ? () => {} : onClose}
+  return <Dialog open={open} compact title={tr(stopped ? "Strata has stopped" : "Quit Strata?")} onClose={state === 'stopping' ? () => {} : onClose}
     actions={stopped ? undefined : <><Btn onClick={onClose} disabled={state === 'stopping'}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={state === 'stopping'} onClick={() => void quit()}>{tr(state === 'stopping' ? "Quitting…" : "Quit Strata")}</Btn></>}>
     <p className="small" role="status">{tr(stopped
       ? "Strata has stopped. You can close this tab. To use it again, start Strata from its icon."
