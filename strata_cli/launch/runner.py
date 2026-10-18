@@ -150,6 +150,38 @@ def files_present(cfg: dict) -> list[str]:
     return missing
 
 
+def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
+    """A copy of the installed run config with this launch's context, memory format and picture choice on its engine command, so the command
+    the Advanced step shows is the one these choices run (the installed config only holds the choices it was installed with). Only the command
+    preview and the comparison use this; the start itself goes through setup, which writes the same values."""
+    import copy
+    cfg = copy.deepcopy(cfg)
+    args = [str(a) for a in cfg.get("args") or []]
+
+    def put(flag: str, value: str) -> None:
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                args[i + 1] = value
+                return
+            args.insert(i + 1, value)
+        else:
+            args.extend([flag, value])
+
+    if s.context:
+        put("--max-context", str(int(s.context)))
+    kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
+    if "--kv" in args or s.kv:
+        put("--kv", kv)
+    if s.vision == "off":
+        args = [a for a in args if a != "--vision"]
+        cfg.pop("vision", None)                              # the picture reader's own settings: the server adds --vision for them
+    elif s.vision and "--vision" not in args:
+        args.append("--vision")
+    cfg["args"] = args
+    return cfg
+
+
 def apply_cards(cfg: dict, gpus: list[int] | None) -> None:
     """The graphics cards of THIS launch go into its run config, whatever card the model was installed with (no reinstall): one card is a number,
     several are a list with the automatic layer split. None: the installed config's own choice stays."""
