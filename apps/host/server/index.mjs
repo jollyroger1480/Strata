@@ -540,7 +540,8 @@ async function runRemoteTurn({ selection, message, history, images = [], onFrame
     serving.finish(entry.id, { tokensOut: result.tokensOut, durationMs: Date.now() - started });
     return result;
   } catch (err) {
-    const message = requestSignal.aborted ? 'Request cancelled. Partial output is preserved.' : err.name === 'TimeoutError' ? 'The model API timed out. Try again.' : err.message;
+    const refusedPicture = images.length && /HTTP [45]\d\d/.test(String(err.message)) ? ' If this model does not read pictures, untick "This model reads pictures" in Settings → Models (edit this connection), or choose a model that does.' : '';
+    const message = requestSignal.aborted ? 'Request cancelled. Partial output is preserved.' : err.name === 'TimeoutError' ? 'The model API timed out. Try again.' : err.message + refusedPicture;
     if (entry) serving.finish(entry.id, { durationMs: Date.now() - started, error: message });
     onFrame({ type: 'error', message, requestId: entry?.id });
     return { error: message };

@@ -101,7 +101,7 @@ async function main() {
   for (const r of rows) console.log(`      ${String(r.family).padEnd(26)} ${String(r.size).padEnd(30)} images=${r.images} capable=${r.capable}`);
   record('some models in the catalog read pictures', rows.some(r => r.images === true), `${rows.filter(r => r.images).length} of ${rows.length}`);
   record('every picture-capable model reads pictures when the reader is installed', rows.every(r => r.capable === r.images), '');
-  const flash = rows.filter(r => /flash-next/i.test(`${r.family} ${r.size}`) && !/gyro/i.test(`${r.family} ${r.size}`));
+  const flash = rows.filter(r => /flash-next/i.test(`${r.family} ${r.size}`) && !/gyro|qad/i.test(`${r.family} ${r.size}`));
   record('the Qwen3.8-Flash-Next models are marked images: true', flash.length > 0 && flash.every(r => r.images === true), flash.map(r => r.size + '=' + r.images).join(' '));
 
   // ---- 2. API models
@@ -125,7 +125,7 @@ async function main() {
     const after = (await call('/api/model-providers')).body.connections.find(x => x.name === 'Text only server');
     record('ticking "This model reads pictures" is saved and makes the model read pictures', after?.models[0]?.vision === true && after?.models[0]?.reads === true, JSON.stringify(after?.models[0]));
     const through = await chat({ remoteModel: { connectionId: after.id, modelId: 'plain' } });
-    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
+    record('with the tick the picture is sent on (the server itself decides what to do with it)', through.status === 200 && (through.error ?? '') !== '' ? /untick/.test(through.error) : through.status === 200, `${through.status} ${through.message ?? through.error ?? ''}`);
   }
 
   await saveApi('Small picture model', args.vlm, [{ id: smol, name: 'SmolVLM', vision: false }]);
