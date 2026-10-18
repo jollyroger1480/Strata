@@ -45,6 +45,12 @@ struct PrefillStats {
 namespace strata::core { class MtpDrafter; }
 namespace strata::prefill {
 
+/// HIP: one tiny BF16 and one tiny FP16 product on a private handle, so the first prompt does not pay hipBLAS's one-time
+/// library loads (about 2.5 s on an R9700); once per device, later calls wait for the first and return.  Safe to call from a
+/// thread before the expert arena loads.  STRATA_PREFILL_WARM=0 makes it a no-op.  Nothing on CUDA / SYCL.
+void warm_gemm_libraries(int device);
+
+
 class Prefill {
 public:
     /// E-9: the draft layer's K/V for prompt cells [cell0, cell0 + n) from their final residual rows `R_rows`

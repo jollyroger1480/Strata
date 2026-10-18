@@ -340,6 +340,14 @@ move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case rea
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
   and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off.
+  On HIP (ROCm 6+) it runs through hipMemAddressReserve / hipMemCreate / hipMemMap (2 MiB chunks; the card must report
+  virtual memory management, `STRATA_HIP_VMM=0` turns it off); until then every AMD card printed "--kv-grow is off".
+  Radeon AI PRO R9700 with `--vram-reserve-mib 17084` (a 16 GB card), Q2_0 pack, `--max-context 196608`, 5 interleaved pairs:
+  expert-cache slots 6,213 -> 7,968 and decode 96.3 -> 98.5 tok/s (x1.023, 5/5; the noise arm read x0.999); at
+  `--max-context 262144` the default engine finds no VRAM left for the cache on that budget and does not start, `--kv-grow`
+  starts with 7,877 slots (94.4 tok/s). Prompts of 20K and 60K tokens through the growing K/V read as fast as without it
+  (x1.002, x1.001) and gave identical answers. At contexts up to 128K the K/V is small and nothing changes; it pays on cards of
+  about 24 GB or less with contexts of 128K and more.
 - `--host-core last` (or `STRATA_HOST_CORE=last`, Windows): the host thread runs on the last physical core and the
   workers take the first. Windows sends a GPU's interrupts to the first core, where a host spinning on the GPU's flags
   waits for them (`--host-core first` is the default; the startup log names the cores). It leaves a hybrid CPU as it

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2176,32 +2177,61 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 }
 
 // gfx12 (RDNA4): on by default (148-amd; STRATA_HIP_WMMA=0 turns it off).  gfx11 (RDNA3 / RDNA3.5): only on request
-// (STRATA_HIP_WMMA=1).  The output differs from the old kernel's in its last bits (FP32-level accuracy, another summation
-// order): teacher-forced KL against the old kernel 0.0003 (28 prompts) / 0.0014 (8 long documents) on an R9700.
-bool hip_wmma_usable() {
-    static const int env = [] {   // -1 unset, 0 off, 1 on
+// (STRATA_HIP_WMMA=1).  STRATA_HIP_WMMA=auto (151-amd) takes the matrix-core kernel on a gfx12 card for a batch of
+// STRATA_HIP_WMMA_MIN_Q (64) or more queries and keeps the FP32 kernel for smaller calls.  The output differs from the
+// old kernel's in its last bits (FP32-level accuracy, another summation order): teacher-forced KL against the old kernel
+// 0.0003 (28 prompts) / 0.0014 (8 long documents) on an R9700.  A launch that fails switches the path off for the rest of
+// the process (the caller then runs the FP32 kernel) instead of ending it.
+int hip_wmma_mode_env() {   // -1 unset (the arch default), 0 off, 1 forced, 2 auto
+    static const int mode = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e == nullptr || e[0] == '\0' ? -1 : (e[0] == '1' ? 1 : 0);
+        if (e == nullptr || e[0] == '\0') return -1;
+        if (e[0] == '1') return 1;
+        if (!std::strcmp(e, "auto")) return 2;
+        return 0;
     }();
-    if (env == 0) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx12, 2 other, 3 gfx11 matrix cores
-    int dev = 0;
-    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
+    return mode;
+}
+std::atomic<bool> g_wmma_failed{false};
+// the device's class: 1 gfx11 matrix-core part, 2 gfx12 (RDNA4), 3 anything else
+int hip_wmma_arch(int dev) {
+    static int arch[64] = {};
+    if (dev < 0 || dev >= 64) return 3;
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
-        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 1
-                    : strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ? 3 : 2;
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return 3; }
+        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 2
+                    : strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ? 1 : 3;
+        const int mode = hip_wmma_mode_env();
         static bool told = false;
-        if (!told && (env == 1 || arch[dev] == 1)) {
+        if (!told && (mode >= 1 || arch[dev] == 2)) {
             told = true;
-            const bool on = arch[dev] == 1 || (arch[dev] == 3 && env == 1);
-            std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", env == 1 ? "STRATA_HIP_WMMA: " : "",
-                         on ? "on" : "unavailable", prop.gcnArchName,
-                         env == 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
+            const bool on = arch[dev] == 2 || (arch[dev] == 1 && mode >= 1);
+            std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", mode >= 1 ? "STRATA_HIP_WMMA: " : "",
+                         !on ? "unavailable" : (mode == 2 ? "chosen per call" : "on"), prop.gcnArchName,
+                         mode >= 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
         }
     }
-    return arch[dev] == 1 || (arch[dev] == 3 && env == 1);
+    return arch[dev];
+}
+// auto: where the matrix-core kernel beats the FP32 one.  Measured on the R9700 (gfx1201) only; the gfx11 parts take
+// it only when forced with =1.
+bool hip_wmma_auto_pick(int arch, int64_t n_q, int64_t cap) {
+    if (arch != 2) return false;
+    static const int64_t min_q = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_Q"); return e ? (int64_t) std::atoll(e) : (int64_t) 64; }();
+    static const int64_t min_cap = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_CAP"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
+    return n_q >= min_q && cap >= min_cap;
+}
+bool hip_wmma_usable(int64_t n_q, int64_t cap) {
+    const int mode = hip_wmma_mode_env();
+    if (mode == 0 || g_wmma_failed.load(std::memory_order_relaxed)) return false;
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int arch = hip_wmma_arch(dev);
+    if (arch == 3) return false;
+    if (mode == 1) return true;
+    if (mode == 2) return hip_wmma_auto_pick(arch, n_q, cap);
+    return arch == 2;   // unset: the gfx12 default
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
@@ -2222,8 +2252,9 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s\n", cudaGetErrorString(e));
-        std::exit(1);
+        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s; the FP32 prompt attention runs from here on\n", cudaGetErrorString(e));
+        g_wmma_failed.store(true);
+        return false;
     }
     return true;
 }
@@ -2286,14 +2317,18 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
 #endif
 }
 void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
-
-bool qsa_hip_wmma_active() {
+bool qsa_prompt_attn_matrix_cores_requested() {
 #if defined(__HIPCC__)
-    return hip_wmma_usable();
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int mode = hip_wmma_mode_env(), arch = hip_wmma_arch(dev);
+    return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || arch == 2);
 #else
     return false;
 #endif
 }
+
+bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
@@ -2335,7 +2370,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
-        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable())
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     return false;
 #endif

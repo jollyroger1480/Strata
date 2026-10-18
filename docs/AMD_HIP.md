@@ -440,6 +440,26 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     (default 156 and 156), reasoning 25/30 (24 and 26), agent 6/6, needles at 32K and 125K x three depths 6/6, CJK 8/8, tool calls 5/5. Prompt speed,
     interleaved pairs on a quiet R9700, Q2_0 32 GB: see the 148-amd table below. The first-token KL against the FP16 prompt path cannot rank it (0.0296 against 0.0280 for the old
     kernel, a paired difference of +0.0016 +- 0.0026): on a 2-bit pack any change of the prompt numerics, even `--prefill 4096`, moves the first token by about 0.025.
+  - `STRATA_HIP_WMMA=auto`: the same kernel, chosen per call: on a gfx12 card with int8 KV and a prompt batch of
+    `STRATA_HIP_WMMA_MIN_Q` (64) or more queries it runs the matrix-core kernel, everything else the FP32 one (`=1` forces it
+    on every call and on gfx11, `=0` keeps the FP32 kernel; unset is the gfx12 default above: the matrix-core kernel on every call). A launch error switches the matrix-core
+    kernel off for the rest of the process and the FP32 kernel runs (before, the engine exited). Kernel timing on an R9700
+    (`hip_prompt_attn_wmma`, context 1.5K-32K, 64-2,048 queries): 6.9-8.4x the FP32 kernel at every shape, error against FP64
+    3e-6 of the output scale (FP32: 2e-6). Engine, Q2_0 pack, 6 interleaved pairs, equal slots, fixed flags
+    (`--pcie-frac 0 --adapt-every 0`, `STRATA_PREFILL_CPU_SHARE=0`, `STRATA_ROUTE_TAIL_SKIP=0`): 20K prompt x1.46 (`=1`) /
+    x1.54 (`auto`), 4K x1.33 / x1.34 (6/6 pairs; the noise arm of that run read +6.4-6.9%, so read them as +40-50% and
+    +30%); the 8-token answers were the default's in every run.
+  - The first prompt after a start pays two one-time hipBLAS library loads (the first BF16 product 1.2 s, the first FP16
+    product 1.0 s on an R9700 with the gfx120X wheel's hipBLASLt 1.2.0; `STRATA_COLD_TRACE=1` times the first 80 dense
+    projections to show them). The engine now runs one tiny BF16 and one tiny FP16 product on a thread of its own while the
+    expert arena loads, so the first request does not carry them (`STRATA_PREFILL_WARM=0` turns it off; the outputs go to
+    scratch buffers, nothing changes; start-up time is the same, the arena load takes longer than the thread). First
+    721-token prompt after the 33-token warm request, 5 interleaved pairs: 154 -> 673 tok/s. The next 4K prompt reads
+    ~1,090 tok/s either way (the "cold" first-prompt numbers above are about this).
+  - Ship status of `tools/hip/gfx1201-hipblaslt-*.txt`: the gfx120X wheel's hipBLASLt is 1.2.0 (version number 100200); the
+    tables here are 100202 and 100500, so the engine says "version mismatch ... using hipBLASEx" and runs plain hipBLAS. A
+    table tuned on the R9700 for 100200 (32 rows, `tune_hipblaslt`) measured within noise end to end (20K prompt x1.035 vs
+    a noise arm x1.031), so none is shipped: the dense projections are ~10% of a 20K prompt here.
   - The prompt path's QSA top-k picks its kernel by the blocks a query actually has, not the cache's capacity (#337,
     bsorensen110): the same ids, on by default with AMD (NVIDIA keeps its capacity rule: there the 64K prompts read
     1-3% slower with it). `STRATA_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
