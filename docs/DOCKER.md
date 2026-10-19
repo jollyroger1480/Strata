@@ -25,8 +25,9 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 | AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.1-rocm-gfx1151` | the `amdgpu` kernel driver |
 | Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.1-sycl` (only for a release that carries the Intel engine package; otherwise [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
-Size of the images (measured on the 0.1.45 packages; the current ones may differ a little): `cuda13` 640 MB download / 2.0 GB on disk, `cuda12`
-845 MB / 2.6 GB, `rocm-gfx120x` 505 MB / 2.2 GB, `rocm-gfx110x` 330 MB / 1.6 GB, `sycl` 450 MB / 1.9 GB. The model comes on top, on the first start.
+Size of the images on disk (built from the engine packages of the 0.2.0-beta release): `cuda13` 2.2 GB, `cuda12` 2.9 GB, `rocm-gfx120x` 2.8 GB,
+`rocm-gfx110x` 2.4 GB, `rocm-gfx1151` 1.5 GB; the download is about a third of that (measured on the 0.1.45 packages: `cuda13` 640 MB, `cuda12` 845 MB,
+`rocm-gfx120x` 505 MB, `rocm-gfx110x` 330 MB, `sycl` 450 MB). The model comes on top, on the first start.
 
 Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or newer and the card is an RTX; otherwise `cuda12`.
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
@@ -318,7 +319,14 @@ The images run on the runner without a graphics card, so the card checks (`docke
 
 ## Tested
 
-2026-10-17, images built from the 0.1.45 engine packages (images from the 0.2.0 packages have not been run on a card), on real cards: NVIDIA RTX 3060 (`cuda13`
+2026-10-19, images built from the engine packages of the 0.2.0-beta release (engine 0.1.45.3), fetched and checked against the signed feed by
+`docker/fetch-engines.py` (the packages are the ones `strata update` installs). `cuda13` and `cuda12` ran on one RTX A4000 (driver 580) with the same
+checks as below (`docker/smoke-test.sh`): all passed, serving 111-161 s after `docker run` with the prepared files, `docker stop` took 4 s with exit
+code 0, the card's memory was free again, and the second start reused the saved preset. `rocm-gfx120x`, `rocm-gfx110x` and `rocm-gfx1151` were built
+and passed the package and library checks; on a computer without an AMD card the `rocm-gfx120x` container says in plain words that the engine does
+not match the card and exits with code 3. `rocm-gfx110x` and `rocm-gfx1151` (Strix Halo) have not run on a card.
+
+2026-10-17, images built from the 0.1.45 engine packages, on real cards: NVIDIA RTX 3060 (`cuda13`
 and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
 refuses a request without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works,
 `docker stop` ends it with exit code 0 and the graphics memory is free again, and a second start reuses the saved preset.

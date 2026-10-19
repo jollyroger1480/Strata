@@ -53,7 +53,7 @@ fi
 own_ctx=""
 if [ -z "$ctx" ]; then ctx=$(mktemp -d "${TMPDIR:-/tmp}/strata-docker-ctx.XXXXXX"); own_ctx=1; fi
 mkdir -p "$ctx/terminal-src" "$ctx/engine" "$ctx/docker"
-cleanup() { [ -n "$own_ctx" ] && [ -z "$ctxonly" ] && rm -rf "$ctx"; }
+cleanup() { if [ -n "$own_ctx" ] && [ -z "$ctxonly" ]; then rm -rf "$ctx"; fi; }
 trap cleanup EXIT
 
 # 1. the Terminal's sources: exactly what packaging/package_terminal.py copies (the working tree, so local edits are in the image)

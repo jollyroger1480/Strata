@@ -57,7 +57,7 @@ PY=${PYTHON:-python3}
 own_work=""
 if [ -z "$work" ]; then work=$(mktemp -d "${TMPDIR:-/tmp}/strata-docker-pkgs.XXXXXX"); own_work=1; fi
 mkdir -p "$work"
-cleanup() { [ -n "$own_work" ] && rm -rf "$work"; }
+cleanup() { if [ -n "$own_work" ]; then rm -rf "$work"; fi; }
 trap cleanup EXIT
 
 built=""

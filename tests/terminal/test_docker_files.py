@@ -28,6 +28,24 @@ class Scripts(unittest.TestCase):
         r = subprocess.run(["bash", "-n", str(DOCKER / "smoke-test.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    @unittest.skipIf(SH is None or shutil.which("tar") is None, "needs sh and tar")
+    def test_build_script_exits_zero_after_assembling_a_context(self):
+        """--ctx-only stops after the context is made (no docker needed). The EXIT trap once returned 1 there, so a good run reported failure."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp) / "pkg"
+            pkg.mkdir()
+            (pkg / "engine-component.json").write_text('{"entrypoint": "strata"}', encoding="utf-8")
+            (pkg / "strata").write_text("#!/bin/sh\n", encoding="utf-8")
+            (pkg / "strata").chmod(0o755)
+            ctx = Path(tmp) / "ctx"
+            r = subprocess.run([SH, str(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", str(pkg), "--ctx", str(ctx), "--ctx-only"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((ctx / "Dockerfile").is_file())
+            self.assertTrue((ctx / "terminal-src" / "docs" / "TERMINAL_LAUNCH.md").is_file())
+            self.assertTrue((ctx / "engine" / "pkg" / "engine-component.json").is_file())
+
     def test_scripts_use_unix_line_ends(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):
             self.assertNotIn(b"\r", (DOCKER / name).read_bytes(), name)       # build.sh strips CR for a CRLF checkout, the files themselves stay LF
