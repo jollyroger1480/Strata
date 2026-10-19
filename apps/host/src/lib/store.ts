@@ -1526,6 +1526,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   }
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
   if (state.connection === 'live') {
+    // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
+    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
     const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
     if (why) { pushToast('info', why.title, why.message); return; }
   }
