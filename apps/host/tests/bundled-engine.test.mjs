@@ -126,3 +126,27 @@ test('an older driver gets only the build it can run; a driver below both gets t
     assert.deepEqual(readdirSync(v.engine).sort(), [n12, n13].sort());
   } finally { t.cleanup(); u.cleanup(); v.cleanup(); }
 });
+
+// The app update (latest.json) is built without engine-bundle (tauri.update.conf.json), so one update fits every installer variant.
+test('an engine-less app update (no engine-bundle folder, or one holding only .gitignore) leaves the installed engines exactly as they are', async () => {
+  const t = setup();
+  try {
+    const amd = makePackage(t.engine, '0.1.45.3', { platform: 'windows-x86_64', backend: 'hip', variant: 'rx9070' });
+    const before = readFileSync(join(t.engine, amd, 'engine-component.json'), 'utf8');
+    assert.equal((await installBundledEngine({ bundleDir: join(t.base, 'no-such-engine-bundle'), components: t.components })).action, 'none');
+    writeFileSync(join(t.bundle, '.gitignore'), '*\n!.gitignore\n');
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, platform: 'windows-x86_64' })).action, 'none');
+    assert.deepEqual(readdirSync(t.engine), [amd]);
+    assert.equal(readFileSync(join(t.engine, amd, 'engine-component.json'), 'utf8'), before);
+  } finally { t.cleanup(); }
+});
+
+test('why the update carries no engine: a CUDA installer on an AMD PC would copy its CUDA engine beside the AMD one (no NVIDIA driver to filter by)', async () => {
+  const t = setup();
+  try {
+    const amd = makePackage(t.engine, '0.1.45.3', { platform: 'windows-x86_64', backend: 'hip', variant: 'rx9070' });
+    const cuda = makePackage(t.bundle, '0.1.45.3', { platform: 'windows-x86_64', variant: 'cuda13', minDriver: '580.65' });
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, driver: null })).action, 'installed');
+    assert.deepEqual(readdirSync(t.engine).sort(), [amd, cuda].sort(), 'the AMD engine stays; a useless CUDA engine is added');
+  } finally { t.cleanup(); }
+});
