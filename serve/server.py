@@ -102,6 +102,24 @@ def popen(what: str, args: list, role: str = "engine", **kw):
 ENGINE_QUIT_WAIT_S, ENGINE_TERM_WAIT_S, ENGINE_KILL_WAIT_S = 20, 5, 20
 
 
+def rttime_limit_note() -> str:
+    """#3238: Linux only. A hard RLIMIT_RTTIME that is not unlimited (PipeWire's client module sets it to 0 when rtkit is
+    missing; every program started from that desktop inherits it) makes the kernel SIGKILL a process as soon as it
+    checks a thread with an armed CPU timer, with no OOM kill and no message. Returns one sentence naming the cause and
+    the fix, or "" when the limit is unlimited, the platform has no such limit or it cannot be read."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_RTTIME)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return ""
+    if hard == resource.RLIM_INFINITY:
+        return ""
+    return (f"This session has a real-time CPU limit (RLIMIT_RTTIME hard limit {hard}; the desktop's audio system sets "
+            "it to 0 when rtkit is not installed). Linux can then end a program with signal 9 for no visible reason. "
+            "Install rtkit, or start Strata outside the desktop session's limits, for example: "
+            "systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...")
+
+
 def end_leftover_engines(exe: str) -> None:
     """Before an engine starts: end the ones a lost server left running (strata_control/procs.py). Only a process
     this install recorded whose starter is gone, or an orphan of exactly this executable running --serve, and only
@@ -1198,6 +1216,11 @@ class StrataEngine:
         if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
             return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
                     "report it at github.com/Niko1221/Strata/issues with the log.")
+        rt_note = rttime_limit_note() if rc == -9 else ""
+        if rt_note:                                       # #3238: the kernel killed it, but not for RAM
+            return ("The engine was ended by signal 9. " + rt_note + " If dmesg (sudo dmesg | grep -i -E 'killed "
+                    "process|out of memory') shows an out-of-memory kill instead, close other programs or use a smaller "
+                    "model (Q2_0 / IQ2_XS).")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -7609,6 +7632,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
+        print("[strata] WARNING: " + _rt, flush=True)
     global OPENS_BROWSER
     OPENS_BROWSER = bool(a.open)
     # Every ordinary way of being asked to stop takes Ctrl+C's path (QUIT to the engine, then exit): SIGTERM (#96 docker

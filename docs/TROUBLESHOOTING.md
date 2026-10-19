@@ -140,6 +140,9 @@ Your PC is out of free RAM. Close other programs, or pick a smaller size (Q2_0 o
 Usually not enough RAM (on Linux the system then stops the engine). Just send your message again: Strata starts the
 engine by itself. If it keeps happening, close other programs or pick a smaller size.
 
+**On Linux the engine stops with "exit code -9", but nothing ran out of RAM.**
+Check `ulimit -R`. If it prints 0 (or any number), the desktop session sets a real-time CPU limit: the audio system (PipeWire) does that when rtkit is not installed, and every program started from the desktop inherits it. The kernel can then end a program with signal 9 and no message. Install `rtkit`, or start Strata outside the session's limits, for example `systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...`. Strata prints a warning at start when it sees this limit.
+
 **It says the prompt exceeds the context.**
 The conversation is longer than the context you chose. Start a new chat, or run `SETUP.bat` and pick more
 context.
