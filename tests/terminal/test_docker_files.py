@@ -111,8 +111,10 @@ class Document(unittest.TestCase):
                           ("docker-compose.intel.yml", "0.2.0-sycl")):
             self.assertIn(tag, (DOCKER / "compose" / name).read_text(encoding="utf-8"))
 
-    def test_the_owner_decision_is_marked(self):
-        self.assertIn("TODO(owner)", (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8"))
+    def test_the_user_doc_says_images_are_not_published(self):
+        doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
+        self.assertNotIn("TODO(owner)", doc)
+        self.assertIn("Ready-made images are not available yet", doc)
 
 
 if __name__ == "__main__":
