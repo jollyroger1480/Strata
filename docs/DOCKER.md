@@ -24,16 +24,15 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 | AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.0-rocm-gfx110x` | the `amdgpu` kernel driver |
 | Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.0-sycl` | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
-Size of the images (0.1.45 packages as measured; the 0.2.0 ones will differ a little): `cuda13` 640 MB download / 2.0 GB on disk, `cuda12`
+Size of the images (0.1.45 packages as measured; 0.2.0 ones may differ a little): `cuda13` 640 MB download / 2.0 GB on disk, `cuda12`
 845 MB / 2.6 GB, `rocm-gfx120x` 505 MB / 2.2 GB, `rocm-gfx110x` 330 MB / 1.6 GB, `sycl` 450 MB / 1.9 GB. The model comes on top, on the first start.
 
 Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or newer and the card is an RTX; otherwise `cuda12`.
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
 
-TODO(owner): where the images are published (registry and names). The plan, to decide at the 0.2.0 release:
-`ghcr.io/niko1221/strata:0.2.0-cuda13`, `:0.2.0-cuda12`, `:0.2.0-rocm-gfx120x`, `:0.2.0-rocm-gfx110x`, `:0.2.0-sycl`, plus a
-moving `:cuda13` / `:cuda12` / `:rocm-gfx120x` / `:rocm-gfx110x` / `:sycl` per card for "the newest". Until then,
-[build them yourself](#build-it-yourself); the examples below use the plan's names.
+**Ready-made images are not available yet.** No image has been published, so [build one yourself](#build-it-yourself) (one command
+per card, from the engine package). The examples below name the images `ghcr.io/niko1221/strata:0.2.0-cuda13` and so on, after the
+tags in the table; if you built the image yourself, use the tag you gave it (for example `strata:0.2.0-cuda13`) in their place.
 
 ## One command per card
 
@@ -187,7 +186,7 @@ The health check asks `GET /v1/models` with the key. During the first download t
 ## Updating
 
 ```sh
-docker pull ghcr.io/niko1221/strata:0.2.0-cuda13      # the new tag (TODO(owner): registry)
+docker pull ghcr.io/niko1221/strata:0.2.0-cuda13      # the new tag (not available yet; with a self-built image, build it again instead)
 docker stop strata && docker rm strata
 # run the same docker run command again with the new tag (compose: docker compose pull && docker compose up -d)
 ```
@@ -260,8 +259,8 @@ the old model folder. The container name, the volume and the port can stay as th
 
 ## Build it yourself
 
-You do not need to: the engine packages are published with the release. If you want to build the images (for a computer without
-registry access, or after changing Strata), you need an engine package folder (made by `packaging/package_engine.py`, or fetched
+Until ready-made images are available this is the way to get one, and it stays the way for a computer without
+registry access or after changing Strata. You need an engine package folder (made by `packaging/package_engine.py`, or fetched
 by `strata update` into a components folder) and Docker on Linux:
 
 ```sh
@@ -284,7 +283,7 @@ builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then p
 
 ## Tested
 
-2026-10-17, images built from the 0.1.45 engine packages (the 0.2.0 packages are not cut yet), on real cards: NVIDIA RTX 3060 (`cuda13`
+2026-10-17, images built from the 0.1.45 engine packages (images from the 0.2.0 packages have not been run on a card), on real cards: NVIDIA RTX 3060 (`cuda13`
 and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
 refuses a request without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works,
 `docker stop` ends it with exit code 0 and the graphics memory is free again, and a second start reuses the saved preset.

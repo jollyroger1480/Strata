@@ -5,7 +5,7 @@ labels: ["question"]
 body:
   - type: markdown
     value: |
-      Not sure how to do something, or want to share numbers from your machine? Ask here.
+      Not sure how to do something, or want to share numbers from your machine? Ask here. To share a full benchmark, see [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md#share-a-benchmark).
   - type: textarea
     id: question
     attributes:
@@ -13,6 +13,13 @@ body:
       description: What you're trying to do. Include your version, GPU, and OS if it affects the answer.
     validations:
       required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: What you already did and where you got stuck.
+    validations:
+      required: false
   - type: textarea
     id: numbers
     attributes:

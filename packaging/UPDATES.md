@@ -104,7 +104,7 @@ Then, in git, once, in the commit that ships the first signed release:
 * the Tauri public key into `apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and into `update_keys.json` as `app_minisign_public`
   (the Terminal verifies the app installer with it).
 
-Until then `update_keys.json` is empty and every feed is refused with "this build trusts no update key": a build with no key cannot install anything.
+A build whose `update_keys.json` has no key refuses every feed with "this build trusts no update key": it cannot install anything, which is why the keys go into the release commit.
 A key rotation is a release that carries both public keys; the old private key signs that release, the new one signs the next.
 
 ## Releasing (when the owner says go)
@@ -116,12 +116,13 @@ A key rotation is a release that carries both public keys; the old private key s
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json <tauri latest.json>
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
-Where the feed is hosted (GitHub release assets, a static host, ...) is the owner's decision; the default address in
-`strata_cli/update_cmd.py` is a placeholder until then, and nothing in this tree uploads anything.
+The feed is hosted as the assets of the latest GitHub release of Niko1221/Strata. `strata update` reads
+`https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json` (with `strata-feed.json.sig` beside it; this is the default in `strata_cli/update_cmd.py`),
+`install.sh` and `install.ps1` use the same folder, and the app updater reads `.../latest/download/latest.json`. `--feed URL|DIR` or `STRATA_FEED` points a PC at another feed, for example a local test feed. Nothing in this tree uploads anything.
 
 ## Testing locally
 
 Everything above runs against a folder or a loopback server: `tests/terminal/test_update_feed.py` (signatures, hashes, downgrades, selection),
 `tests/terminal/test_updater.py` (end to end against a loopback HTTP feed with stub engines: update, test-start, switch; a failing test start
 keeps the old engine; an interrupted download resumes; rollback; Control; the app installer's minisign check), `apps/host/tests/component-updates.test.mjs`
-(the Settings buttons). For a real engine on a box: `phaseA-tests/split/s6/` (prepare + driver).
+(the Settings buttons). For a real engine on a box, build a package with `packaging/package_engine.py`, serve it from a local feed made by `packaging/make_local_feed.py`, and run `strata update --feed` against it.

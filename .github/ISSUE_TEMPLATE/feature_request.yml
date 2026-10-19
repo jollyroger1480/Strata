@@ -5,14 +5,21 @@ labels: ["enhancement"]
 body:
   - type: markdown
     value: |
-      Explain what you want in plain language.
+      Explain what you want in plain language. For a large feature, a change to a default or a refactor, please agree the scope here first. Read [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md).
   - type: textarea
     id: idea
     attributes:
       label: What do you want to do?
-      description: Describe the goal rather than the implementation. If there's a workaround you use today, mention it.
+      description: Describe the goal rather than the implementation. Say who needs it and why.
     validations:
       required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What do you do today instead?
+      description: The workaround you use now, if there is one.
+    validations:
+      required: false
   - type: markdown
     value: |
-      All of this counts: model and architecture support, the server and API, the web app, multi-GPU and layer split, images and vision, MCP servers, setup and installation, and performance.
+      All of this counts: model and architecture support, the server and API, the app and the Terminal, multi-GPU and layer split, images and vision, MCP servers, setup and installation, and performance.
