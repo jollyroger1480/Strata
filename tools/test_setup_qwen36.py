@@ -112,7 +112,7 @@ class InstallOwnPath(unittest.TestCase):
                    mock.patch.object(setup, "engine_step", engine_step),
                    mock.patch.object(setup, "engine_families", lambda e: self.families),
                    mock.patch.object(setup, "run", lambda cmd, **k: self.calls.append(("run", cmd))),
-                   mock.patch.object(setup, "data_folder", lambda d: (self.root / "data", [])),
+                   mock.patch.object(setup, "data_folder", lambda d, *a, **k: (self.root / "data", [])),
                    mock.patch.object(setup, "write_setup_config", write_cfg),
                    mock.patch.object(setup, "write_run_script", lambda tag, p, port, o=True: self.root / f"run-{tag}.sh"),
                    mock.patch.object(setup, "recommend_pool_workers", lambda a: a),
