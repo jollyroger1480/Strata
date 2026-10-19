@@ -31,6 +31,22 @@ and the notarytool profile (`strata-notary`); `SIGN_ID` and `NOTARY_PROFILE` ove
 
 A trial run that signs ad-hoc and sends nothing to Apple: add `--dry-run` (no certificate needed).
 
+## The in-app update file (release builds only)
+
+The app updates itself on a Mac from `Strata.app.tar.gz`, not from the dmg. The one `tauri build` makes holds the app before this script signs it, so it must
+not be published. For a release build add `--updater-archive`:
+
+       bash sign-and-notarize.sh Strata.dmg --updater-archive
+
+After the app is signed, notarised and stapled, the script packs it into `signed/Strata.app.tar.gz` (the `.app` folder at the root of a gzip tar, like Tauri's own),
+unpacks it again in a scratch folder and runs `codesign --verify --deep --strict`, `stapler validate` and `spctl` on the unpacked copy. The archive is **not signed with the Tauri
+updater key** here: that key never goes near the Mac, and the Mac needs no node. Copy `Strata.app.tar.gz` to the release PC and, there:
+
+       npx tauri signer sign -f <path to tauri-updater.key> Strata.app.tar.gz
+       python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version V --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
+
+`set-app-platform` refuses a signature that does not verify for these exact bytes, then records the url, signature, SHA-256 and size. Full release order: `packaging/UPDATES.md`, "Releasing".
+
 ## What it does
 
 1. Copies the `.app` out of the dmg into a temporary folder (the original is never changed).

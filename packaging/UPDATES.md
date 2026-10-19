@@ -117,9 +117,33 @@ A key rotation is a release that carries both public keys; the old private key s
     python packaging/feed_tool.py pack-control <control bundle folder> --version V --platform P --out RELEASE/control
     # the app installers carry the engine out of the box: fill apps/desktop/src-tauri/resources/engine-bundle/<package folder> with the signed
     # engine packages first (the tester builds do the same); tauri.conf.json lists that folder as a resource for every build
-    TAURI_SIGNING_PRIVATE_KEY=<path to tauri-updater.key> npx tauri build --config src-tauri/tauri.release.conf.json   # signed installers + latest.json inputs
-    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json <tauri latest.json>
+    TAURI_SIGNING_PRIVATE_KEY=<path to tauri-updater.key> npx tauri build --config src-tauri/tauri.release.conf.json   # installers + their .sig files (one build per OS)
+    # Mac only, on the Mac that holds the Developer ID certificate (see "The Mac app" below); the .app.tar.gz that tauri build made is NOT used:
+    bash packaging/mac/sign-and-notarize.sh <Strata.dmg> --updater-archive      # writes signed/Strata.dmg (notarised) and signed/Strata.app.tar.gz
+    # on the release PC, per app installer (this is also the step that makes the Tauri updater json; tauri build does not write latest.json):
+    npx tauri signer sign -f <path to tauri-updater.key> signed/Strata.app.tar.gz    # asks for the key password; writes Strata.app.tar.gz.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version V --archive signed/Strata.app.tar.gz --sig signed/Strata.app.tar.gz.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version V --archive <setup .exe> --sig <setup .exe.sig>
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64 --version V --archive <.AppImage> --sig <.AppImage.sig>
+    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
+
+### The Mac app
+
+`tauri build` signs its installers with the Tauri key before anything else touches them. On a Mac that is too early: `sign-and-notarize.sh` then re-signs every
+Mach-O in the app with the Developer ID and notarises and staples it, which changes the bytes. The `Strata.app.tar.gz` and `.sig` that `tauri build` wrote hold the
+**unsigned, un-notarised** app, and the updater would install exactly that on a user's Mac. So the in-app Mac update is built from the finished app instead:
+
+1. `sign-and-notarize.sh <dmg> --updater-archive` (on the Mac) packs the signed, notarised, stapled `.app` into `Strata.app.tar.gz` (the app folder at the root, the layout
+   Tauri's bundler makes), unpacks it again and checks `codesign`, the staple and `spctl`. It never reads the Tauri key.
+2. Move the `.tar.gz` to the release PC and sign it there with `npx tauri signer sign -f <key> Strata.app.tar.gz` (or `TAURI_SIGNING_PRIVATE_KEY_PATH` and the password variable).
+   The key stays on the PC and in the owner's safe storage; nothing in this tree reads or stores it, and the Mac needs no node and no key.
+3. `feed_tool.py set-app-platform` checks that signature against the public key in `tauri.conf.json` over the exact archive bytes, checks the archive holds `<Name>.app` at its root,
+   and writes `url`, `signature`, `sha256` and `size` of the darwin entry. A signature that was made for the pre-notarisation file does not verify, so it cannot be published by mistake.
+4. `build-feed --app-json` and `verify-feed` as above. Upload the notarised `Strata.dmg`, `Strata.app.tar.gz`, and the `latest.json` from the feed folder (`app/latest.json`).
+
+The Windows installer and the Linux AppImage need no extra step: their `.sig` files from `tauri build` are the ones to pass to `set-app-platform`. Re-signing the Mac app after the archive
+was made (a second `sign-and-notarize.sh` run) makes a new archive: sign and add it again.
 
 The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
 `https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`

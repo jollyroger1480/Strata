@@ -208,6 +208,68 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     return document
 
 
+TAURI_TARGET_NAMES = tuple(feedmod.TAURI_TARGETS.values()) + ("linux-aarch64",)
+
+
+def _default_app_pubkey() -> str:
+    conf = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
+    return json.loads(conf.read_text(encoding="utf-8"))["plugins"]["updater"]["pubkey"]
+
+
+def _check_mac_archive(archive: Path) -> None:
+    """A Mac updater archive is a gzip tar with exactly one top-level ``<Name>.app`` folder (what Tauri's bundler makes)."""
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            tops = {m.name.lstrip("./").split("/", 1)[0] for m in tar.getmembers() if m.name.lstrip("./")}
+            names = set(tar.getnames())
+    except (tarfile.TarError, OSError) as exc:
+        raise SystemExit(f"{archive.name} is not a readable .tar.gz ({exc})")
+    if len(tops) != 1 or not next(iter(tops)).endswith(".app"):
+        raise SystemExit(f"{archive.name} must hold one <Name>.app folder at its root; found {sorted(tops)[:5]}")
+    app = next(iter(tops))
+    if not any(n.lstrip("./") == f"{app}/Contents/Info.plist" for n in names):
+        raise SystemExit(f"{archive.name} has no {app}/Contents/Info.plist")
+
+
+def set_app_platform(app_json: Path, *, target: str, archive: Path, signature_file: Path, url: str, version: str | None = None,
+                     notes: str | None = None, pub_date: str | None = None, pubkey: str | None = None,
+                     now: dt.datetime | None = None) -> dict:
+    """Add or replace one platform in the Tauri updater JSON (the file ``build-feed --app-json`` takes; it becomes ``latest.json``).
+
+    The ``.sig`` is made by ``npx tauri signer sign`` (or by ``tauri build`` for the Windows / Linux installers) and is only READ here;
+    this tool never touches the Tauri private key. It is checked against the public key in ``tauri.conf.json`` (or ``pubkey``) over the
+    exact archive bytes, so a signature of an older or unsigned file, or one from another key, is refused before it can be published.
+    ``sha256`` and ``size`` are taken from the archive."""
+    if target not in TAURI_TARGET_NAMES:
+        raise SystemExit(f"unknown target {target!r}; use one of {', '.join(TAURI_TARGET_NAMES)}")
+    archive, signature_file = Path(archive), Path(signature_file)
+    if target.startswith("darwin-"):
+        _check_mac_archive(archive)
+    signature = signature_file.read_text(encoding="utf-8").strip()
+    try:
+        with archive.open("rb") as stream:
+            signing.minisign_verify(pubkey or _default_app_pubkey(), signature, iter(lambda: stream.read(1 << 20), b""))
+    except signing.SignatureError as exc:
+        raise SystemExit(f"{signature_file.name} does not verify for {archive.name}: {exc}")
+    document: dict = {}
+    if Path(app_json).exists():
+        document = json.loads(Path(app_json).read_text(encoding="utf-8"))
+    if version:
+        if document.get("version") not in (None, version):
+            raise SystemExit(f"{app_json} is for version {document['version']}, not {version}")
+        document["version"] = version
+    if not document.get("version"):
+        raise SystemExit("a new app json needs --version")
+    document.setdefault("notes", notes or "")
+    if notes:
+        document["notes"] = notes
+    document["pub_date"] = pub_date or document.get("pub_date") or (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document.setdefault("platforms", {})[target] = {"url": url, "signature": signature, "sha256": _sha256(archive),
+                                                    "size": archive.stat().st_size}
+    Path(app_json).write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+    return document["platforms"][target]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -237,6 +299,16 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--control", type=Path)
     bf.add_argument("--app-json", type=Path)
     bf.add_argument("--expires-days", type=int)
+    sa = sub.add_parser("set-app-platform", help="add one signed app installer to the Tauri updater json")
+    sa.add_argument("--app-json", type=Path, required=True, help="the file to create or patch (what build-feed --app-json takes)")
+    sa.add_argument("--target", required=True, help="darwin-aarch64, darwin-x86_64, windows-x86_64 or linux-x86_64")
+    sa.add_argument("--archive", type=Path, required=True)
+    sa.add_argument("--sig", type=Path, required=True, help="the .sig file made by tauri signer sign")
+    sa.add_argument("--url", help="where the archive is published (default: the latest GitHub release)")
+    sa.add_argument("--version")
+    sa.add_argument("--notes")
+    sa.add_argument("--pub-date")
+    sa.add_argument("--pubkey", help="the Tauri public key (default: tauri.conf.json plugins.updater.pubkey)")
     vf = sub.add_parser("verify-feed")
     vf.add_argument("source")
     vf.add_argument("--pub", type=Path, required=True)
@@ -258,6 +330,11 @@ def main(argv: list[str] | None = None) -> int:
                          control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days)
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
               f"control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
+    elif a.cmd == "set-app-platform":
+        url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
+        entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,
+                                 notes=a.notes, pub_date=a.pub_date, pubkey=a.pubkey)
+        print(f"{a.app_json}: {a.target} -> {entry['url']} ({entry['size']} bytes, sha256 {entry['sha256'][:16]}..., signature verified)")
     elif a.cmd == "verify-feed":
         trusted = signing.load_trusted_keys(a.pub, environ={})
         loaded = feedmod.fetch(a.source, trusted)

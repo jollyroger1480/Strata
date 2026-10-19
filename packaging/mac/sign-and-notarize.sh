@@ -2,7 +2,7 @@
 # Sign the Strata Mac app (dmg or .app) and, optionally, the Mac Terminal archive with the owner's Developer ID, then notarise
 # them with Apple, so macOS opens them without the "damaged" / "unidentified developer" warning.
 #
-#   bash sign-and-notarize.sh <Strata-tester-mac.dmg | Strata.app> [--terminal <Strata-Terminal-Mac.zip>] [--out DIR] [--dry-run]
+#   bash sign-and-notarize.sh <Strata-tester-mac.dmg | Strata.app> [--terminal <Strata-Terminal-Mac.zip>] [--updater-archive] [--out DIR] [--dry-run]
 #   bash sign-and-notarize.sh --terminal <Strata-Terminal-Mac.zip>            # the Terminal archive alone
 #
 # This script runs on the OWNER'S Mac, where the certificate "Developer ID Application: Niko Veit (79LR4R7RSC)" is in the Keychain and the
@@ -30,6 +30,11 @@
 #   6. notarises the .app, staples it, rebuilds the dmg (same layout as apps/desktop/scripts/make-dmg.sh), signs the dmg, notarises the dmg,
 #      staples it, spctl -a -t open --context context:primary-signature -vv;
 #   7. Terminal archive: signs every Mach-O inside, re-zips, notarises the zip (a zip cannot be stapled: see the note at the end).
+#   8. --updater-archive (opt-in, needs the app input): packs the signed, notarised, stapled .app into Strata.app.tar.gz, the file Tauri's in-app
+#      updater downloads on a Mac (Strata.app at the root of the archive), and checks it by unpacking it again. The archive is NOT signed with the
+#      Tauri updater key here: this script never touches that key. Sign it on the PC (npx tauri signer sign) and put it in the update file with
+#      packaging/feed_tool.py set-app-platform (see packaging/UPDATES.md). Any Strata.app.tar.gz / .sig that `tauri build` made earlier holds the
+#      UNSIGNED app and must not be published.
 set -u
 set -o pipefail
 
@@ -38,7 +43,7 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-strata-notary}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENT_NODE_SRC="$HERE/entitlements-node.plist"
 
-INPUT=""; TERMINAL=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0
+INPUT=""; TERMINAL=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0; UPDATER_ARCHIVE=0
 WORK=""
 LOG=""
 declare -a RESULTS=()
@@ -58,12 +63,14 @@ while [ $# -gt 0 ]; do
     --dry-run)     DRY=1; shift ;;
     --keep-work)   KEEP=1; shift ;;
     --sign-nested) SIGN_NESTED=1; shift ;;
+    --updater-archive) UPDATER_ARCHIVE=1; shift ;;
     -h|--help)     usage 0 ;;
     -*)            echo "unknown option: $1" >&2; usage ;;
     *)             if [ -z "$INPUT" ]; then INPUT="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
   esac
 done
 [ -n "$INPUT" ] || [ -n "$TERMINAL" ] || usage
+if [ "$UPDATER_ARCHIVE" -eq 1 ] && [ -z "$INPUT" ]; then echo "--updater-archive needs the app (a .dmg or .app) as the input" >&2; usage; fi
 
 # ----------------------------------------------------------------------------------------------------------------- output helpers
 say() { printf '%s\n' "$*"; [ -z "$LOG" ] || printf '%s\n' "$*" >>"$LOG"; }
@@ -552,6 +559,34 @@ process_app() {
     hdiutil detach "$mnt" >/dev/null 2>&1 || hdiutil detach "$mnt" -force >/dev/null 2>&1
   fi
   deliver "$out_dmg" "$INPUT"
+  if [ "$UPDATER_ARCHIVE" -eq 1 ]; then make_updater_archive "$bundle_real"; fi
+}
+
+make_updater_archive() {   # the finished (signed, stapled) .app
+  local app=$1 name chk top out
+  name="$(basename "$app" .app).app.tar.gz"
+  out="$WORK/final/$name"
+  rm -f "$out"
+  # the layout Tauri's bundler makes and its updater unpacks: the .app folder at the root of a gzip tar, nothing else
+  # (COPYFILE_DISABLE keeps AppleDouble "._" files out; tar keeps symlinks and permissions)
+  ( cd "$(dirname "$app")" && COPYFILE_DISABLE=1 tar -czf "$out" "$(basename "$app")" ) || fail "pack the updater archive" "tar failed"
+  chk="$WORK/updater-check"; rm -rf "$chk"; mkdir -p "$chk"
+  tar -xzf "$out" -C "$chk" || fail "check the updater archive" "tar cannot unpack it"
+  top="$(ls -A "$chk")"
+  [ "$top" = "$(basename "$app")" ] || fail "check the updater archive" "the archive root holds '$top', not just $(basename "$app")"
+  find "$chk" -name '._*' | grep -q . && fail "check the updater archive" "AppleDouble files in the archive"
+  if logged codesign --verify --deep --strict "$chk/$top"; then rec OK "updater archive: the unpacked app verifies"
+  else fail "updater archive" "codesign --verify failed on the unpacked app"; fi
+  if [ "$DRY" -eq 0 ]; then
+    logged xcrun stapler validate "$chk/$top" || fail "updater archive" "the unpacked app has no valid notarisation ticket"
+    if spctl -a -vvv -t exec "$chk/$top" >>"$LOG" 2>&1; then rec OK "updater archive: spctl accepts the unpacked app" "Notarized Developer ID"
+    else fail "updater archive" "Gatekeeper rejects the unpacked app"; fi
+  else
+    rec INFO "updater archive: notarisation checks" "skipped in a dry run"
+  fi
+  rm -rf "$chk"
+  rec OK "pack the updater archive" "$name"
+  deliver "$out" "$INPUT"
 }
 
 build_dmg() {   # app out.dmg volname
