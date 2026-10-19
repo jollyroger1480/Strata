@@ -353,7 +353,7 @@ Strata のデータフォルダにある `strata-<model>.json`（[場所](docs/I
 - **ポート 8080 はすでに使われていると表示される。** Strata がすでに動いています。ウィンドウを探してください。
 
 そのほかの問題と対処法は [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) にあります。それでも解決しない場合は、
-[issue](https://github.com/Niko1221/Strata/issues) を作成してください。アプリでは、**設定、エンジン、診断、ログを表示、ログを保存**で作られるファイルを添付します。
+[issue](https://github.com/Niko1221/Strata/issues) を作成してください。アプリでは、**設定、エンジン、診断、ログを見る、ログを保存**で作られるファイルを添付します。
 ターミナルでは、`strata doctor` の出力を貼り付けます。ソースから動かしている場合は、Strata フォルダの `strata-<model>.log` を添付してください。
 セキュリティ上の問題は、非公開で報告してください: [SECURITY.md](SECURITY.md)。
 

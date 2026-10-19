@@ -33,7 +33,7 @@ agentes de programação. Suas conversas e arquivos ficam no seu PC.
 - **Gratuito.** Licença MIT, sem conta, sem nuvem.
 - **Privado.** Sem telemetria. O que o Strata baixa, quando usa a internet e como confere os downloads está em [docs/SAFETY.md](docs/SAFETY.md).
 
-Versão 0.2.0-beta · engine 0.1.45.3
+Versão 0.2.0-beta · mecanismo 0.1.45.3
 
 ## O que você precisa
 
@@ -47,7 +47,7 @@ memória unificada. Mais memória permite um modelo maior ou mais rápido.
 | --- | --- |
 | **NVIDIA** GeForce RTX série 20, 30, 40, 50 (12 GB ou mais) | Instale o app ou o Terminal. |
 | **AMD** Radeon RX 6800 e mais novas, Radeon AI PRO R9700 (12 GB ou mais) | [Placas AMD](docs/AMD_HIP.md) |
-| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [engine Intel](docs/INTEL.md) |
+| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [mecanismo Intel](docs/INTEL.md) |
 | **Mac com Apple Silicon** (M1 ou mais novo, macOS 15 ou mais novo) | [Mac](docs/MAC.md) |
 | **AMD Ryzen AI Max (Strix Halo)** e outros sistemas de memória unificada | [Strix Halo](docs/STRIX_HALO.md) |
 | Placas e processadores mais antigos | [GPUs antigas](docs/OLDER_GPUS.md), [CPUs antigas](docs/INSTALL.md#older-cpus-experimental) |
@@ -63,11 +63,11 @@ placas NVIDIA e AMD. Lista completa: [docs/INSTALL.md](docs/INSTALL.md#what-you-
 
 ## Instalação
 
-Escolha uma opção. Todas iniciam a mesma engine e usam os mesmos modelos.
+Escolha uma opção. Todas iniciam o mesmo mecanismo e usam os mesmos modelos.
 
 ### Opção A: o app Strata
 
-O jeito mais fácil. O app já traz a engine: instale, escolha um modelo e converse. Baixe o arquivo para o seu sistema e a sua
+O jeito mais fácil. O app já traz o mecanismo: instale, escolha um modelo e converse. Baixe o arquivo para o seu sistema e a sua
 placa de vídeo na [página de releases](https://github.com/Niko1221/Strata/releases/latest). Não sabe qual? Veja a explicação
 logo abaixo da tabela.
 
@@ -95,7 +95,7 @@ Depois:
 - **Mac:** abra o `.dmg` e arraste o Strata para Aplicativos.
 
 Na primeira tela, o app lê o seu PC e recomenda um modelo que caiba nele. Clique em instalar. O modelo é um download grande
-(cerca de 40 a 70 GB) e continua de onde parou se for interrompido. Fechar a janela encerra o Strata e a engine.
+(cerca de 40 a 70 GB) e continua de onde parou se for interrompido. Fechar a janela encerra o Strata e o mecanismo.
 
 ### Opção B: o Terminal (uma linha)
 
@@ -120,7 +120,7 @@ administrador. No Windows, abra uma nova janela do terminal depois. Então inici
 strata launch
 ```
 
-Ele faz uma pergunta por vez: modelo, contexto, imagens, quem pode se conectar. Depois baixa a engine para a sua placa de vídeo
+Ele faz uma pergunta por vez: modelo, contexto, imagens, quem pode se conectar. Depois baixa o mecanismo para a sua placa de vídeo
 (assinada e testada antes do uso) e o modelo, e começa a servir. Em scripts e agentes de IA, use flags:
 
 ```sh
@@ -207,7 +207,7 @@ Medido numa placa AMD de 16 GB (RX 9070 XT, Ryzen 9 3900X, 47 GB de RAM):
 | **Coder** | `██████░░░░░░` 44 tokens/s | `██████░░░░░░` 1.420 tokens/s |
 
 As barras usam a mesma escala nas duas tabelas. Uma placa com mais VRAM é mais rápida: uma RTX 3090 (24 GB) deve escrever cerca de 100 a 140
-tokens por segundo. A versão da engine por trás de cada número está em [DETAILS.md](docs/DETAILS.md#speed-measured).
+tokens por segundo. A versão do mecanismo por trás de cada número está em [DETAILS.md](docs/DETAILS.md#speed-measured).
 
 ## Como usar
 
@@ -234,8 +234,8 @@ strata launch --plan --model q2_0              # mostra o que aconteceria; nada 
 strata launch --status                         # o que está sendo servido agora
 strata launch --stop                           # para o serviço
 strata monitor --url http://127.0.0.1:8080     # acompanha velocidade, GPU, memória e requisições
-strata update --check                          # há uma engine nova? (strata update instala)
-strata doctor                                  # confere os arquivos da engine instalada
+strata update --check                          # há um mecanismo novo? (strata update instala)
+strata doctor                                  # confere os arquivos do mecanismo instalada
 ```
 
 `strata --help` lista tudo. Iniciar e servir nunca baixam nada. Só a instalação, o `strata launch` (quando você
@@ -288,11 +288,11 @@ porque ocupa cerca de 1,4 GB que o modelo usaria de outra forma. O Mac ainda nã
 **Windows:** dê dois cliques em `START-HERE.bat`. **Linux:** execute `./setup.sh` na pasta do Strata.
 
 **Mac (Apple Silicon, macOS 15 ou mais novo):** instale uma vez as Command Line Tools da Apple com `xcode-select --install`
-(o Xcode em si não é necessário). Abra o Terminal na pasta do Strata e execute `./setup.sh`. Ele compila a engine do Mac no seu
+(o Xcode em si não é necessário). Abra o Terminal na pasta do Strata e execute `./setup.sh`. Ele compila o mecanismo do Mac no seu
 Mac (cerca de 7 minutos), faz as mesmas perguntas, baixa o modelo e inicia. Da próxima vez, `./setup.sh` inicia
 na hora. Qual tamanho cabe no seu Mac: [docs/MAC.md](docs/MAC.md).
 
-O instalador encontra a sua placa e configura a engine certa. Ele pergunta qual modelo e tamanho, quanto contexto (quanto texto
+O instalador encontra a sua placa e configura o mecanismo certo. Ele pergunta qual modelo e tamanho, quanto contexto (quanto texto
 o modelo mantém em mente) e se deve ler imagens. Pressione Enter para aceitar a resposta recomendada. Depois ele baixa o
 modelo (cerca de 70 GB) e inicia. Se o download parar, execute de novo e ele continua. O navegador abre a página do Strata em
 `http://127.0.0.1:8080`.
@@ -355,15 +355,15 @@ A explicação mais longa: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Cada pa
   travado depois de 10 minutos? Reinicie o PC, feche outros programas e tente de novo, ou escolha um tamanho menor.
 - **Parou durante o download ou a instalação.** Abra o app ou o `strata launch` de novo, ou execute `START-HERE.bat` (ou
   `./setup.sh`) outra vez. Ele continua de onde parou.
-- **Está muito lento, a luz do disco não para de piscar, ou aparece "o engine parou inesperadamente".** O seu PC não tem
+- **Está muito lento, a luz do disco não para de piscar, ou aparece "o mecanismo parou inesperadamente".** O seu PC não tem
   RAM livre suficiente. Feche outros programas (os navegadores usam muita), ou escolha um tamanho menor, como Q2_0 ou IQ2_XS.
-- **Diz que não há engine para este PC.** No app, abra **Configurações, Engine** e clique em **Atualizar engine**. No
-  Terminal, execute `strata update`. O `strata doctor` mostra quais arquivos da engine estão instalados.
+- **Diz que não há mecanismo para este PC.** No app, abra **Configurações, Mecanismo** e clique em **Atualizar mecanismo**. No
+  Terminal, execute `strata update`. O `strata doctor` mostra quais arquivos do mecanismo estão instalados.
 - **Diz que a porta 8080 já está em uso.** O Strata já está rodando. Procure a janela dele.
 
 Mais problemas e soluções: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Ainda sem resolver? Abra uma
-[issue](https://github.com/Niko1221/Strata/issues). No app, anexe o arquivo de **Configurações, Engine, Diagnóstico, Ver
-logs, Salvar logs**. No Terminal, cole a saída de `strata doctor`. Se estiver rodando pelo código-fonte, anexe o `strata-<model>.log` da pasta do
+[issue](https://github.com/Niko1221/Strata/issues). No app, anexe o arquivo de **Configurações, Mecanismo, Diagnóstico, Ver
+registros, Salvar logs**. No Terminal, cole a saída de `strata doctor`. Se estiver rodando pelo código-fonte, anexe o `strata-<model>.log` da pasta do
 Strata. Para um problema de segurança, informe em particular: [SECURITY.md](SECURITY.md).
 
 ## Créditos e licença
