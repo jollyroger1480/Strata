@@ -3,9 +3,17 @@ packages' engine-component.json), and what `feed.select_engine` hands each kind 
 reach every installer variant by card, so the app update can stay engine-less (tauri.update.conf.json)."""
 from __future__ import annotations
 
+import os
+import sys
+import tarfile
+import tempfile
 import unittest
+from pathlib import Path
 
 from strata_control import feed as feedmod
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packaging"))
+import feed_tool  # noqa: E402
 
 V = "0.1.45.3"
 SM_NEW = ("sm_75", "sm_86", "sm_89", "sm_120", "compute_120")                       # the CUDA 13 packages
@@ -81,6 +89,25 @@ class ReleaseSelection(unittest.TestCase):
     def test_the_platform_decides_first(self):
         self.assertIsNone(self.pick(pc("macos-arm64", "cuda", "590.10", ["sm_86"]))[0])
         self.assertEqual(self.pick(pc("macos-arm64", "metal"))[0], ("macos-arm64", "metal", ""))
+
+
+class PackedOnWindows(unittest.TestCase):
+    def test_programs_are_recognised_by_their_header_so_a_linux_package_packed_on_windows_keeps_them_executable(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "strata-vision").write_bytes(b"\x7fELF\x02\x01" + bytes(20))
+            (root / "libx.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + bytes(20))
+            (root / "run.sh").write_bytes(b"#!/bin/sh\n")
+            (root / "BUILD.json").write_text("{}")
+            (root / "kernel.hsaco").write_bytes(b"\x00\x01\x02\x03")
+            names = ("strata-vision", "libx.dylib", "run.sh", "BUILD.json", "kernel.hsaco")
+            self.assertEqual([feed_tool._is_native_executable(root / n) for n in names], [True, True, True, False, False])
+            if os.name == "nt":                     # the owner's release PC: the archive is what matters
+                archive = root / "a.tar.gz"
+                feed_tool._write_archive([(n, root / n) for n in ("strata-vision", "BUILD.json")], archive, "tar.gz", None)
+                with tarfile.open(archive) as tar:
+                    modes = {m.name: m.mode for m in tar.getmembers()}
+                self.assertEqual(modes, {"strata-vision": 0o755, "BUILD.json": 0o644})
 
 
 if __name__ == "__main__":

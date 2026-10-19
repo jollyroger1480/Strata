@@ -94,11 +94,25 @@ def sign_package(folder: Path, key: dict) -> str:
     return _sha256(path)
 
 
+_NATIVE_MAGIC = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xcf", b"#!")      # ELF, Mach-O (64-bit, fat), script
+
+
+def _is_native_executable(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(4)
+    except OSError:
+        return False
+    return any(head.startswith(m) for m in _NATIVE_MAGIC)
+
+
 def _mode(path: Path, rel: str, entrypoint: str | None) -> int:
     if rel == entrypoint:
         return 0o755
     try:
-        return 0o755 if path.stat().st_mode & stat.S_IXUSR and os.name != "nt" else 0o644
+        if os.name == "nt":                       # a Linux / Mac package packed on Windows has no execute bits: take them from the file's own header
+            return 0o755 if _is_native_executable(path) else 0o644
+        return 0o755 if path.stat().st_mode & stat.S_IXUSR else 0o644
     except OSError:
         return 0o644
 
