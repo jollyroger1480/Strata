@@ -519,6 +519,17 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     scratch buffers, nothing changes; start-up time is the same, the arena load takes longer than the thread). First
     721-token prompt after the 33-token warm request, 5 interleaved pairs: 154 -> 673 tok/s. The next 4K prompt reads
     ~1,090 tok/s either way (the "cold" first-prompt numbers above are about this).
+  - **Fast and slow starts (the "bimodal" prompt speed, found in 0.2.1).** On an R9700 / RX 9000 under Linux about half of
+    the fresh starts with MTP read prompts 10-23% slower than the others (p620, Q2_0: 4K 1,980 vs 2,290 tok/s, 20K 2,480 vs
+    2,770; decode was never affected). The cause is where the kernel's scheduler puts the process's GPU queues. The prompt
+    path has two busy queues, the compute stream and the stream that copies experts to the card (about 31,000 copies and
+    event hand-offs per 4K prompt). The runtime opens its queues in the order the loader threads reach them, which changes
+    every start; when both busy queues land on the same compute pipe of the card (the card has two for this process), every
+    hand-off waits for a queue switch. The engine now opens five queues (four at normal priority, one at the highest) one
+    after the other on the main thread before any other thread starts (`STRATA_HIP_QUEUE_PRIME=0` turns it off; any other
+    value is a list of `n` / `h` letters for tests). gfx1200 and gfx1201 on Linux only; nothing else changes (the answers
+    are identical). Not clocks, not memory placement (read speed over the expert cache was 637-640 GB/s in both kinds of
+    start), not CPU placement, not the MTP stream itself.
   - Ship status of `tools/hip/gfx1201-hipblaslt-*.txt`: the gfx120X wheel's hipBLASLt is 1.2.0 (version number 100200); the
     tables here are 100202 and 100500, so the engine says "version mismatch ... using hipBLASEx" and runs plain hipBLAS. A
     table tuned on the R9700 for 100200 (32 rows, `tune_hipblaslt`) measured within noise end to end (20K prompt x1.035 vs
