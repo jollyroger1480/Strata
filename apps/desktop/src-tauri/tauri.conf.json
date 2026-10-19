@@ -35,7 +35,8 @@
       "../../host/package.json": "host/package.json",
       "resources/node": "node",
       "resources/control": "control",
-      "resources/harness": "harness"
+      "resources/harness": "harness",
+      "resources/engine-bundle": "engine-bundle"
     },
     "linux": {
       "appimage": {
@@ -43,7 +44,7 @@
       }
     },
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "15.0",
       "entitlements": "entitlements.plist"
     },
     "createUpdaterArtifacts": false,

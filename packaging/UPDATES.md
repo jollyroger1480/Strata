@@ -115,7 +115,9 @@ A key rotation is a release that carries both public keys; the old private key s
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine
     python packaging/feed_tool.py pack-control <control bundle folder> --version V --platform P --out RELEASE/control
-    TAURI_SIGNING_PRIVATE_KEY=<key> npx tauri build --config tauri.release.conf.json         # makes the signed installers
+    # the app installers carry the engine out of the box: fill apps/desktop/src-tauri/resources/engine-bundle/<package folder> with the signed
+    # engine packages first (the tester builds do the same); tauri.conf.json lists that folder as a resource for every build
+    TAURI_SIGNING_PRIVATE_KEY=<path to tauri-updater.key> npx tauri build --config src-tauri/tauri.release.conf.json   # signed installers + latest.json inputs
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json <tauri latest.json>
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
