@@ -225,9 +225,9 @@ class ModelStep(Base):
             for col in ("Model", "Download", "Needs (RAM + VRAM)", "On this computer"):
                 self.assertIn(col, t)
             self.assertIn("IQ3_XXS", t)
-            line = next(l for l in t.splitlines() if "IQ3_XXS" in l and "Qwen3.8-Flash-Next IQ3_XXS" in l)
-            self.assertIn("76 GB", line)                              # setup.py's download_gb 75.8
-            self.assertIn("44 GB", line)                              # the app's figure: experts 42.9 + 1 GB, RAM + VRAM together
+            line = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S" in l)     # 64 GB + 12 GB: the 64 GB tier
+            self.assertIn("84 GB", line)                              # setup.py's download_gb 83.6
+            self.assertIn("51 GB", line)                              # the app's figure: experts 50.3 + 1 GB, RAM + VRAM together
             self.assertIn("(recommended)", line)
             self.assertIn("› ", line)                                 # the cursor starts on the recommendation
             self.assertIn("too big (can still try)", t)          # NVFP4: a warning, not a block
@@ -238,7 +238,7 @@ class ModelStep(Base):
 
     def test_choosing_a_model_and_going_on(self):
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "up", "up", "enter")
+            await press(pilot, "enter", "up", "up", "up", "enter")
             self.assertEqual((ctx.settings.family, ctx.settings.model), ("qwen", "Q2_0"))
             self.assertIn("Where should the model files be stored?", text_of(app))
         self.run_app(case)
@@ -304,7 +304,7 @@ class FolderStep(Base):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Where should the model files be stored?", t)
-            self.assertIn("Not downloaded yet: about 76 GB", t)
+            self.assertIn("Not downloaded yet: about 84 GB", t)
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
@@ -542,7 +542,7 @@ class AdvancedStep(Base):
             self.assertIn("[experimental]", t)
             self.assertIn("+ Add a setting by name", t)
             self.assertIn("Command that will run", t)
-            self.assertIn("Same as: strata launch --model iq3_xxs", t)
+            self.assertIn("Same as: strata launch --model iq3_s", t)
         self.run_app(case, ctx=ctx)
 
     def test_edit_a_value_then_reset_it(self):
@@ -730,14 +730,14 @@ class SaveAndRun(Base):
             await press(pilot, *("enter",) * 7, "n", "enter")
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
-            self.assertIn("Qwen3.8-Flash-Next IQ3_XXS", t)
+            self.assertIn("Qwen3.8-Flash-Next IQ3_S", t)
             self.assertIn("32K, memory int8", t)
             self.assertIn("quick (about 20 min)", t)
             self.assertIn("This computer only, port 8080", t)
             await press(pilot, "enter")                               # Save as a preset and launch
             await pilot.pause(0.8)
-            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_XXS 32K"])
-            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_XXS 32K")
+            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 32K"])
+            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 32K")
             self.assertIsNotNone(app.result)
         self.run_app(case)
 
