@@ -222,10 +222,13 @@ A busca é o único recurso que envia algo para fora do seu PC: os termos da pes
 
 Para rodar dois modelos, ative **Executar vários modelos** e dê a cada modelo a sua própria placa da mesma marca.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>O <b>Monitor</b> do app Strata (à esquerda) enquanto um agente de programação escreve o jardim de pagodes do vídeo (à direita)</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>Um chat no app Strata: o agente escreveu um pequeno jardim de pagode em voxels em um único arquivo HTML, e a página abre na pré-visualização ao lado da conversa</sub></p>
 
 ### No Terminal
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub><code>strata monitor</code> enquanto o modelo responde: velocidade, GPU, memória e as solicitações recentes</sub></p>
 
 ```sh
 strata launch                                  # telas guiadas: modelo, contexto, imagens, acesso e depois servir

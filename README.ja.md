@@ -219,10 +219,13 @@ Gyro は NVIDIA と AMD のカードで動きます（AMD は実験的）。Inte
 
 2つのモデルを動かすには、**複数のモデルを実行**をオンにして、それぞれのモデルに同じメーカーのカードを1枚ずつ割り当てます。
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>Strata アプリの<b>モニター</b>（左）と、動画の塔の庭園をコーディングエージェントが書いているところ（右）</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>Strata アプリでのチャット。エージェントが小さなボクセルの塔の庭を 1 つの HTML ファイルとして書き、そのページが会話の横のプレビューで開きます</sub></p>
 
 ### ターミナルで
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub>モデルが返信を書いている間の <code>strata monitor</code>。速度、GPU、メモリ、最近のリクエストが表示されます</sub></p>
 
 ```sh
 strata launch                                  # ガイド付きの画面: モデル、コンテキスト、画像、アクセス、そして開始

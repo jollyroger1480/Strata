@@ -218,10 +218,13 @@ Gyro 可在 NVIDIA 和 AMD 显卡上运行（AMD 为实验性支持），不支�
 
 要同时运行两个模型，请打开**运行多个模型**，并为每个模型分配同一品牌的单独一张显卡。
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>Strata 应用的<b>监控</b>（左），右边是编程智能体正在写视频里的宝塔花园</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>Strata 应用中的一次对话：智能体用一个 HTML 文件写出了一个小型体素宝塔花园，页面在对话旁的预览中打开</sub></p>
 
 ### 在终端里
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub>模型回复时的 <code>strata monitor</code>：速度、GPU、内存和最近的请求</sub></p>
 
 ```sh
 strata launch                                  # 引导界面：模型、上下文、图片、访问方式，然后开始服务

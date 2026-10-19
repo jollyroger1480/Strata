@@ -230,10 +230,13 @@ Suchschlüssel hinzufügen. Die Suche ist die einzige Funktion, die etwas von de
 Um zwei Modelle auszuführen, schalte **Mehrere Modelle ausführen** ein und gib jedem Modell eine eigene Karte desselben
 Herstellers.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>Der <b>Monitor</b> der Strata-App (links), während ein Coding-Agent den Pagodengarten aus dem Video schreibt (rechts)</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>Ein Chat in der Strata-App: Der Agent hat einen kleinen Voxel-Pagodengarten als eine HTML-Datei geschrieben, und die Seite öffnet sich in der Vorschau neben dem Gespräch</sub></p>
 
 ### Im Terminal
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub><code>strata monitor</code>, während das Modell antwortet: Geschwindigkeit, GPU, Speicher und die letzten Anfragen</sub></p>
 
 ```sh
 strata launch                                  # guided screens: model, context, pictures, access, then serve

@@ -228,10 +228,13 @@ Herramientas**. La búsqueda es la única función que envía algo fuera de tu P
 
 Para ejecutar dos modelos, activa **Ejecutar varios modelos** y dale a cada modelo su propia tarjeta de la misma marca.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>El <b>Monitor</b> de la aplicación Strata (a la izquierda) mientras un agente de programación escribe el jardín de pagodas del vídeo (a la derecha)</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>Un chat en la app de Strata: el agente escribió un pequeño jardín de pagoda de vóxeles en un solo archivo HTML, y la página se abre en la vista previa junto a la conversación</sub></p>
 
 ### En la Terminal
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub><code>strata monitor</code> mientras el modelo responde: velocidad, GPU, memoria y las últimas solicitudes</sub></p>
 
 ```sh
 strata launch                                  # guided screens: model, context, pictures, access, then serve
