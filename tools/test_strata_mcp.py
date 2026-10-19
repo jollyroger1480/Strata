@@ -754,6 +754,7 @@ class MixedGraphics(unittest.TestCase):
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
 
+    @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
     def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
         s = M.Strata(HERE.parent)
         S = s.setup_module()
