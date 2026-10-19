@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
             std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
 #elif defined(STRATA_VISION_METAL)
             std::printf("strata-vision metal\n");
+#elif defined(STRATA_VISION_SYCL)
+            std::printf("strata-vision sycl (Intel GPU)\n");
 #else
             std::printf("strata-vision\n");
 #endif
@@ -139,9 +141,14 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
-#ifdef STRATA_VISION_HIP
+#if defined(STRATA_VISION_HIP) || defined(STRATA_VISION_SYCL)
+#ifdef STRATA_VISION_SYCL
+#define STRATA_VISION_BUILT_FOR "Intel GPUs"
+#else
+#define STRATA_VISION_BUILT_FOR STRATA_VISION_HIP_ARCHS
+#endif
     if (gpu) {
-        // The AMD GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
+        // The AMD / Intel GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
         // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
         // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
         bool have_gpu = false;
@@ -150,10 +157,11 @@ int main(int argc, char** argv) {
             have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
         }
         if (!have_gpu) {
-            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_HIP_ARCHS);
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_BUILT_FOR);
             std::fflush(stdout);
             return 3;
         }
+#ifdef STRATA_VISION_HIP
         const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
         if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
             !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
@@ -162,6 +170,7 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
             return 3;
         }
+#endif
     }
 #endif
 #ifdef STRATA_VISION_METAL
