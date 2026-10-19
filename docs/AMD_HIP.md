@@ -805,6 +805,11 @@ ninja -C build-906 strata
 container with `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
 `HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
 
+0.2.1 builds `ninja -C build-906 strata` again (0.1.44 to 0.2.0 stopped at `cublasSgemm` in `src/qwen35/q36_engine.cu`, at
+`cuda.h` in `strata_mmq_w4a4` and at three link errors, #3172 #3271; compiled for gfx906 on ROCm 7.10 with clang 22, all 161 targets,
+not run on a card). The Qwen3.6 family (`qwen35moe`) is not part of the gfx906 build: its engine calls cuBLAS entry points the compat
+layer does not map and its kernels assume 32-lane warps. `strata --families` lists what the binary runs (`qwen4exp`: Qwen3.8-Flash-Next).
+
 **What differs from the CUDA build** (all under `STRATA_HIP_GFX906`; each A/B switch restores the CUDA layout):
 
 | | gfx906 | switch |

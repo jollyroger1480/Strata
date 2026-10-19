@@ -744,7 +744,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata-q36ref PRIVATE strata_kernels strata_warnings ${_strata_gpu_runtime_target})
   # the engine path for the same family (serve protocol, prompt chunks, decode graph): src/qwen35/q36_engine.cu, a
   # library that `strata` switches to for a qwen35moe model (the family switch at the top of its main) and that
-  # strata-q36 wraps on its own
+  # strata-q36 wraps on its own.  Not on gfx906 (#3172, #3271): it calls cuBLAS entry points the wave64 compat layer does
+  # not map (cublasSgemm, cublasGemmStridedBatchedEx) and its kernels assume 32-lane warps; main() guards every use with
+  # STRATA_HAVE_QWEN35, so a gfx906 build links and runs the Qwen3.8 family, and `strata --families` says so
+  if(NOT STRATA_HIP_GFX906)
   add_library(strata_qwen35 STATIC src/qwen35/q36_engine.cu)
   target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target})
@@ -758,6 +761,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata-q36 PRIVATE strata_qwen35 ${_strata_gpu_runtime_target})
   target_link_libraries(strata PRIVATE strata_qwen35)
   target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)
+  endif()
 
   if(STRATA_ENABLE_HIP)
     enable_testing()
@@ -2177,6 +2181,23 @@ if(STRATA_HIP_GFX906)
     file(GLOB _strata_mmq_cu ${_strata_mmq}/*.cu ${_strata_mmq}/template-instances/*.cu)
     list(APPEND _strata_cu ${_strata_mmq_cu})
     target_compile_definitions(strata_mmq PRIVATE GGML_USE_HIP)
+    # #3172: strata_mmq_w4a4 is built from llama.cpp's headers too; without GGML_USE_HIP its common.cuh took the CUDA vendor header
+    # (cuda.h, cuda_bf16.h: not found). Here it only reports that W4A4 (RTX 50's FP4 MMA) is not available.
+    if(TARGET strata_mmq_w4a4)
+      target_compile_definitions(strata_mmq_w4a4 PRIVATE GGML_USE_HIP)
+    endif()
+    # #3271: three more link errors of a 0.1.44+ gfx906 build, all sources that strata_mmq lists but the glob above never saw:
+    # the trellis overlay's quantize.cu and instances (they are generated into the build tree, so the glob missed them: CMake drops a
+    # .cu source whose language is not enabled) and moe_f16_kq.cu, which moe_fused_iq.cu calls (a stub here: no gfx11 device code, so
+    # f16kq::covers() answers false and the int8 kernels run, as on every other card)
+    if(_strata_mmq_tq_overlay)
+      set(_strata_tq_hip ${_strata_tq_overlay_dir}/quantize.cu)
+      foreach(_t tq2_t tqk6 tqk7)
+        list(APPEND _strata_tq_hip ${_strata_tq_overlay_dir}/template-instances/mmq-instance-${_t}.cu)
+      endforeach()
+      list(APPEND _strata_cu ${_strata_tq_hip})
+    endif()
+    target_sources(strata_mmq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_f16_kq.cu)
   endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
 endif()
