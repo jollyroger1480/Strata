@@ -25,6 +25,8 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 normally needs a server, on a normal PC. It chats, writes code, reads pictures and works with your apps and coding
 agents. Your chats and files stay on your PC.
 
+**New here?** Check [what you need](#what-you-need), then [install the app](#option-a-the-strata-app).
+
 - **Runs on a gaming PC.** 32 GB of RAM and graphics memory together is enough to start.
 - **Works with your tools.** It speaks the OpenAI and Anthropic APIs, so Claude Code, Codex CLI, OpenCode and other agents connect to it.
 - **Reads pictures.** They are on by default.
@@ -33,28 +35,70 @@ agents. Your chats and files stay on your PC.
 
 Version 0.2.0-beta · engine 0.1.45.3
 
+## What you need
+
+**You need at least 32 GB of RAM and graphics memory (VRAM) together.** On a Mac or a Ryzen AI Max, that is the unified
+memory. More memory gives a bigger model or a faster one.
+
+- A 32 GB PC with a 12-16 GB card runs the Coder.
+- 64 GB of RAM runs every size.
+
+| Your computer | Details |
+| --- | --- |
+| **NVIDIA** GeForce RTX 20, 30, 40, 50 series (12 GB or more) | Install the app or the Terminal. |
+| **AMD** Radeon RX 6800 and newer, Radeon AI PRO R9700 (12 GB or more) | [AMD cards](docs/AMD_HIP.md) |
+| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [Intel engine](docs/INTEL.md) |
+| **Apple Silicon Mac** (M1 or newer, macOS 15 or newer) | [Mac](docs/MAC.md) |
+| **AMD Ryzen AI Max (Strix Halo)** and other unified-memory systems | [Strix Halo](docs/STRIX_HALO.md) |
+| Older cards and processors | [Older GPUs](docs/OLDER_GPUS.md), [Older CPUs](docs/INSTALL.md#older-cpus-experimental) |
+
+Also needed:
+
+- about 80 GB of free disk (an SSD makes the first start much faster)
+- Windows 10 / 11, Linux or macOS
+- a current graphics driver
+
+Two or three cards of the same make can share a model ([multi-GPU](docs/MULTI_GPU.md)). Strata never splits a model across
+NVIDIA and AMD cards. Full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+
 ## Install
 
-Pick your system. Each option starts the same engine and uses the same models.
+Pick one option. They all start the same engine and use the same models.
 
 ### Option A: the Strata app
 
-The app has the engine inside. Install it, pick a model, chat. Download from the
-[releases page](https://github.com/Niko1221/Strata/releases/latest). The page says which installer fits which graphics card
-(NVIDIA or AMD).
+The easiest way. The app has the engine inside: install it, pick a model, chat. Download the file for your system and
+graphics card from the [releases page](https://github.com/Niko1221/Strata/releases/latest). Not sure which one? Use the
+"If you are unsure" column.
 
-| System | Download | Then |
+| System | Your graphics card | File to download |
 | --- | --- | --- |
-| **Windows 10 / 11** | the `.exe` installer | Run it. It installs for your user and needs no administrator rights. If Windows says "Windows protected your PC", the installer is not code-signed yet: choose **More info**, then **Run anyway**. |
-| **Linux** | the `.AppImage` | `chmod +x` the file and start it. It needs FUSE 2: `sudo apt install libfuse2` (Ubuntu 22.04) or `libfuse2t64` (Ubuntu 24.04 and newer). |
-| **Mac** (Apple Silicon, macOS 15 or newer) | the `.dmg` | Open it and drag Strata onto Applications. If macOS says the app is "damaged", see [docs/MAC.md](docs/MAC.md). |
+| **Windows 10 / 11** | NVIDIA RTX, driver 580 or newer | [`Strata-0.2.0-beta-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda13.exe) |
+| | NVIDIA, older card or driver older than 580 | [`Strata-0.2.0-beta-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda12.exe) |
+| | AMD Radeon | [`Strata-0.2.0-beta-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip.exe) |
+| **Linux** | NVIDIA RTX, driver 580 or newer | [`Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA, older card or driver older than 580 | [`Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | [`Strata-0.2.0-beta-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx9070.AppImage) |
+| | AMD Radeon RX 7000 series | [`Strata-0.2.0-beta-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx7900.AppImage) |
+| **Mac** (Apple Silicon, macOS 15 or newer) | built in | [`Strata-0.2.0-beta-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-mac.dmg) |
+
+**If you are unsure:** for NVIDIA, take `cuda13` if your driver is version 580 or newer, otherwise `cuda12`. `cuda12` is
+for older cards and older drivers. The `hip` and `amd` files are for AMD cards.
+
+Then:
+
+- **Windows:** run the `.exe`. It installs for your user and needs no administrator rights. If Windows says "Windows
+  protected your PC", choose **More info**, then **Run anyway** (the installer is not code-signed yet).
+- **Linux:** make the file runnable (`chmod +x`) and start it. It needs FUSE 2: `sudo apt install libfuse2` (Ubuntu 22.04)
+  or `libfuse2t64` (Ubuntu 24.04 and newer).
+- **Mac:** open the `.dmg` and drag Strata onto Applications.
 
 On the first screen the app reads your PC and recommends a model that fits. Press install. The model is a big download
 (about 40-70 GB) and continues where it stopped if it is interrupted. Closing the window stops Strata and the engine.
 
 ### Option B: the Terminal (one line)
 
-The Terminal is the `strata` command. It is the way for scripts, servers and AI agents.
+The Terminal is the `strata` command, for scripts, servers and AI agents.
 
 Linux and Mac:
 
@@ -96,26 +140,7 @@ Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow doc
 It checks your graphics card, RAM and disk, picks the model that fits, installs and starts it, and tells you how to
 connect your apps. AI tools can also install, start and stop Strata through its [MCP server](docs/MCP_SERVER.md).
 
-Prefer to build from the repository? See [Build from source](#build-from-source).
-
-## What you need
-
-**The main rule is at least 32 GB of RAM and graphics memory (VRAM) together.** On a Mac or a Ryzen AI Max, that is the
-unified memory. More memory gives a bigger model or a faster one. A 32 GB PC with a 12-16 GB card runs the
-Coder. 64 GB of RAM runs every size.
-
-| Your computer | Details |
-| --- | --- |
-| **NVIDIA** GeForce RTX 20, 30, 40, 50 series (12 GB or more) | Install the app or the Terminal. |
-| **AMD** Radeon RX 6800 and newer, Radeon AI PRO R9700 (12 GB or more) | [AMD cards](docs/AMD_HIP.md) |
-| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [Intel engine](docs/INTEL.md) |
-| **Apple Silicon Mac** (M1 or newer, macOS 15 or newer) | [Mac](docs/MAC.md) |
-| **AMD Ryzen AI Max (Strix Halo)** and other unified-memory systems | [Strix Halo](docs/STRIX_HALO.md) |
-| Older cards and processors | [Older GPUs](docs/OLDER_GPUS.md), [Older CPUs](docs/INSTALL.md#older-cpus-experimental) |
-
-Also needed: about 80 GB of free disk (an SSD makes the first start much faster), Windows 10 / 11, Linux or macOS, and a
-current graphics driver. Two or three cards of the same make can share a model ([multi-GPU](docs/MULTI_GPU.md)). Strata
-never splits a model across NVIDIA and AMD cards. Full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+Prefer to build it yourself? See [Build from source](#build-from-source).
 
 ## Models
 
@@ -335,7 +360,6 @@ The longer explanation: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Every part
 - **It says there is no engine for this PC.** In the app, open **Settings, Engine** and press **Update engine**. In the
   Terminal, run `strata update`. `strata doctor` shows which engine files are installed.
 - **It says port 8080 is already in use.** Strata is already running. Look for its window.
-- **A Mac says the app is "damaged".** The file is fine. [docs/MAC.md](docs/MAC.md) has the one command.
 
 More problems and fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
 [issue](https://github.com/Niko1221/Strata/issues). In the app, attach the file from **Settings, Engine, Diagnostics, View
