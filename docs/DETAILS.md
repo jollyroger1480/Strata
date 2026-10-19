@@ -634,6 +634,20 @@ with the recommended number at start (`strata cpu pool: warning: ...`). Setup wr
 CPU's, capped the same way, and gives the CPU vision encoder at most 16 threads (`--threads` in the `vision` entry of the
 config changes that).
 
+**Two sockets (community measurements, #3201; the default is the host's socket only).** Two dual-socket boxes gave opposite
+results for workers on both sockets, so measure on yours: `--pool-workers N` with N above one socket's cores, a fresh server
+for each value, the same prompt, decode tok/s from the log. On 2x Xeon Gold 6226 (2x12 cores, 4 of 6 memory channels per socket,
+RTX 3090, IQ4_XS at 262K, about 25% of the experts computed on the CPU) the default (11 workers) gave 52.6 tok/s and 22 workers
+gave 50.3, lower and noisier. On 2x Xeon E5-2670 v2 (AVX only, 2x CMP 50HX, IQ3_XXS at 393K, a 98% VRAM hit rate: the CPU computes
+about 2% of the experts) the default (9 workers) gave 65.5 tok/s and `--pool-workers 19` gave 75.1 (+15%, six runs, 74.9 to 75.1).
+So the cores of the second socket can pay off when the CPU's part of a window is short and its slowest expert sets the pace, and cost
+when the sockets wait for each other's counters. Prompt speed did not change in either. Check the IOMMU too: on a distro kernel
+with it translating every DMA (`cat /sys/kernel/iommu_groups/*/type | sort | uniq -c` shows `DMA-FQ`), pinned host-to-device copies ran at
+7.7 to 9.2 GB/s on PCIe 3.0 x16 and at 12.3 GB/s with `iommu=pt` on the kernel command line, which moved prompt speed by about 30% there.
+A NUMA-aware pool (one slice of workers per socket, each reading its own socket's copy of the CPU experts) gave +10 to +14% on
+the first box in a contributor's branch; it is not in this build. Do not wrap the server in `numactl --cpunodebind` when you test
+workers across sockets: it pins them to one node.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
