@@ -1,5 +1,21 @@
 **0.2.0: Strata is now an app, a Terminal and an engine; installers that carry the engine; pictures on by default on NVIDIA and AMD cards; faster defaults for NVIDIA 12-16 GB cards, AMD RX 9000 / R9700 on Linux and Intel Arc.** Each new default below says whether the answers are identical to 0.1.45 (the identity gate) or change slightly, with the measured difference. Engine package version 0.1.45.3. Update with `strata update` (Terminal), Settings > Update (app), or `UPDATE.bat` / `./update.sh` (source installs).
 
+## Which file to download
+
+| System | Your graphics card | File |
+| --- | --- | --- |
+| Windows 10 / 11 | NVIDIA RTX, driver 580 or newer | `Strata-0.2.0-beta-windows-cuda13.exe` |
+| | NVIDIA, older card or driver older than 580 | `Strata-0.2.0-beta-windows-cuda12.exe` |
+| | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | `Strata-0.2.0-beta-windows-hip.exe` |
+| Linux | NVIDIA RTX, driver 580 or newer | `Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage` |
+| | NVIDIA, older card or driver older than 580 | `Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage` |
+| | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | `Strata-0.2.0-beta-linux-amd-rx9070.AppImage` |
+| | AMD Radeon RX 7000 series | `Strata-0.2.0-beta-linux-amd-rx7900.AppImage` |
+| Mac | Apple silicon, macOS 15 or newer | `Strata-0.2.0-beta-mac.dmg` (signed and notarised by Apple) |
+
+The Terminal installs with one line (below) and picks its engine by itself. The other files in this release are the
+engine and Terminal packages, the signed update feed and the in-app update files; you do not need to download them.
+
 ## What is new
 
 **Three parts that share one engine.**
@@ -12,7 +28,19 @@
 
 **Pictures are on by default on NVIDIA and AMD cards.** The picture reader runs on the CPU for a card under 24 GB (a few seconds per picture, nothing taken from the card) and on the graphics card from 24 GB. NVIDIA, AMD and Intel follow the same rule; `--vision gpu` / `--vision cpu` / off still choose per model. AMD now has a GPU reader with an automatic CPU fallback (the server prints one line when the GPU reader cannot start). Measured on a Radeon AI PRO R9700: a 260-token picture 57 ms on the GPU reader against 3.13 s on the CPU, a 972-token picture 0.40 s against 14.1 s; the GPU reader keeps 1,470 MiB of VRAM. On a Radeon 780M 0.40 s against 2.42 s. Gyro and the NVFP4 models read pictures too (Gyro needs engine 0.1.45.1 or newer). The Mac app has no picture reader yet.
 
-**Models.** Qwen3.6-35B-A3B has its three sizes in the app's catalog; the NVFP4 models have clear names.
+**Models.** Qwen3.6-35B-A3B has its three sizes in the app's catalog; the NVFP4 models have clear names. The app and
+`strata launch` now suggest a model by RAM and graphics memory together: 40 GB, Swift 1.5 IQ2_XS (or Gyro-M, slower);
+48 GB, IQ3_XXS; 64 GB or more, IQ3_S (the original or Swift 1.5). With less memory, low-RAM mode starts by itself and the
+model runs slower.
+
+**Downloads are faster and checked.** Big files come over 8 connections at once (on the test PC 40 MB/s with one
+connection, 77 MB/s with eight) and continue where they stopped. Every model file has a fixed SHA-256 and size, and a
+download stops if the pinned version is gone from Hugging Face. Once a model is downloaded, Strata runs without internet.
+What Strata downloads and when is in `docs/SAFETY.md`.
+
+**The app's chat.** A finished page, document or picture opens in the sidebar by itself (the Open button opens it in your
+browser or default app). A chat without a chosen folder uses `Documents/Strata/Workspace`, so its files open and show in
+their folder. The first message no longer fails while the assistant's tools start, and sending with no model loaded says so.
 
 ## New defaults, with what we measured
 
@@ -46,7 +74,8 @@ Every speed number below is a median of interleaved pairs against the previous d
 
 ## Known limits
 
-- **Mac:** no picture reader yet; macOS 15 or newer; the Mac signing script has been tried with stand-ins for Apple's service, not yet against the real one, so a first-start warning is possible (`packaging/mac/README.md`).
+- **Mac:** no picture reader yet; macOS 15 or newer. The app and the Terminal are signed and notarised by Apple.
+- **Windows:** the installers are not code-signed yet, so Windows shows "Windows protected your PC": choose **More info**, then **Run anyway**.
 - **Windows with an AMD card:** the installer and the GPU picture reader are built, but nothing has run on a real AMD card on Windows. The gfx12 prompt defaults are opt-in there.
 - **AMD RX 7000 (gfx1100-1102) and Strix Halo (gfx1151):** the builds compile; no RX 7000 or Strix Halo card ran them.
 - **Mini PCs with a Radeon 780M / 880M / 890M:** the matrix-core prompt defaults are parked. On the 780M the GPU reset (MES REMOVE_QUEUE) when they were tried; the iGPU keeps its opt-in switches.
