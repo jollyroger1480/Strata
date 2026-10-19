@@ -44,7 +44,7 @@ import * as serving from './serving.mjs';
 import * as store from './store.mjs';
 import * as supervisor from './supervisor.mjs';
 import * as engineInstall from './engine-install.mjs';
-import { detectBackend, currentBackend, streamChat } from './inference.mjs';
+import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
@@ -126,6 +126,16 @@ const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   : Promise.resolve({ action: 'none' });
 let bundledEngineSettled = !(control && !process.env.STRATA_NO_BUNDLED_ENGINE);
 bundledEngine.then(() => { bundledEngineSettled = true; }, () => { bundledEngineSettled = true; });
+/* A build made for another make of graphics card is not unpacked; Control's answer then carries the plain sentence (with the right download) instead of its own. */
+let bundledWrongMake = null;
+bundledEngine.then(result => { if (result?.action === 'wrong-make') { bundledWrongMake = result.notice; console.log(result.notice); } }, () => {});
+if (control) {
+  const engineOf = control.engine.bind(control);
+  control.engine = async (...args) => {
+    const answer = await engineOf(...args);
+    return answer && !answer.usable && bundledWrongMake ? { ...answer, notice: bundledWrongMake, wrongMake: true } : answer;
+  };
+}
 const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
@@ -240,7 +250,9 @@ const backend = await detectBackend({ force: true });
 
 console.log(`strata host  ·  http://${HOST}:${PORT}`);
 console.log(`hardware     ·  ${boot.accelerator.label} / ${boot.accelerator.backend} / ${boot.cpu.cores} cores / ${Math.round(boot.memory.totalGb)} GB`);
-console.log(`inference    ·  ${models.REAL ? (bundledEngineSettled ? backend.name : 'unpacking the bundled engine… (about a minute the first time)') : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
+const printInference = engine => console.log(`inference    ·  ${models.REAL ? inferenceLine({ backend, engine, settled: bundledEngineSettled }) : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
+if (models.REAL && control && backend.kind === 'unavailable' && bundledEngineSettled) void control.engine().catch(() => null).then(printInference);
+else printInference(null);
 console.log(`models dir   ·  ${store.MODELS_DIR}`);
 console.log(`workspace    ·  ${WORKSPACE}`);
 
