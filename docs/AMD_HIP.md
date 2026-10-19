@@ -89,8 +89,8 @@ What was run on real hardware:
 
 - **Checked on every package** (no RX 7000 or Strix Halo card involved): it builds and links; every library the binaries import is in the
   package or belongs to the OS (`packaging/binary_deps.py`); `package_engine.py --verify` passes; the GPU code inside each binary and
-  library lists exactly the architectures above (`llvm-objdump --offloading`); `strata --version` runs in a clean environment; on a
-  gfx1201 card the `rdna3`, `halo` and `rx7900` builds refuse to start with the plain message; the feed picks the right package for each
+  library lists exactly the architectures above (`llvm-objdump --offloading`); `strata --version` runs in a clean environment (on Windows with the package's `rocm\bin` folder on PATH, which Control sets); on a
+  gfx1201 card the Linux `halo` and `rx7900` builds refuse to start with the plain message (the Windows `rdna3` build was not run on an RX 9000 card: there is no Windows AMD machine); the feed picks the right package for each
   architecture (`tests/terminal/test_release_matrix.py`).
 - **Not run by the maintainers:** any model on an RX 7000 card (gfx1100-1102) or a Strix Halo (gfx1151), on either OS. The maintainers have
   no such card.
