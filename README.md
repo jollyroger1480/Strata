@@ -68,14 +68,14 @@ Pick one option. They all start the same engine and use the same models.
 ### Option A: the Strata app
 
 The easiest way. The app has the engine inside: install it, pick a model, chat. Download the file for your system and
-graphics card from the [releases page](https://github.com/Niko1221/Strata/releases/latest). Not sure which one? Use the
-"If you are unsure" column.
+graphics card from the [releases page](https://github.com/Niko1221/Strata/releases/latest). Not sure which one? See the
+line under the table.
 
 | System | Your graphics card | File to download |
 | --- | --- | --- |
 | **Windows 10 / 11** | NVIDIA RTX, driver 580 or newer | [`Strata-0.2.0-beta-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda13.exe) |
 | | NVIDIA, older card or driver older than 580 | [`Strata-0.2.0-beta-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda12.exe) |
-| | AMD Radeon | [`Strata-0.2.0-beta-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip.exe) |
+| | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | [`Strata-0.2.0-beta-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip.exe) |
 | **Linux** | NVIDIA RTX, driver 580 or newer | [`Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage) |
 | | NVIDIA, older card or driver older than 580 | [`Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage) |
 | | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | [`Strata-0.2.0-beta-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx9070.AppImage) |
@@ -83,7 +83,8 @@ graphics card from the [releases page](https://github.com/Niko1221/Strata/releas
 | **Mac** (Apple Silicon, macOS 15 or newer) | built in | [`Strata-0.2.0-beta-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-mac.dmg) |
 
 **If you are unsure:** for NVIDIA, take `cuda13` if your driver is version 580 or newer, otherwise `cuda12`. `cuda12` is
-for older cards and older drivers. The `hip` and `amd` files are for AMD cards.
+for older cards and older drivers. The `hip` and `amd` files are for AMD cards. Other AMD cards (RX 6000, or RX 7000 on
+Windows) have no ready-made app yet: see [AMD cards](docs/AMD_HIP.md).
 
 Then:
 
