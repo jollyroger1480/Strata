@@ -49,6 +49,23 @@ export function saferStart(config,hardware,model,failure){
  if(/0xC0000135|0xC000007B|0xC0000142|0xC000001D|0xC0000005|0xC0000409|0xC0000022|error while loading shared libraries|cannot open shared object file|\bENOENT\b|exit code 127|exit code 139|illegal instruction/i.test(text))return null;
  const ranOut=/out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate|not enough memory|bad_alloc|insufficient memory/i.test(text),first=ranOut?'The first start ran out of memory':'The first start did not finish';
  if(!/server_exited|exited before|died before|engine stopped|pinned-memory-exhausted|mapped staging|out of memory|memory guard|\bkilled\b/i.test(text))return null;
+ // The engine stopped because the GPU's expert cache got no room (a 10 GB card with the app's 20% reserve and pictures on): the engine can shrink its own
+ // reserve only when none was given, and the app always gives one. Ask for less kept free (never under 1024 MiB: below that the driver pages
+ // graphics memory to RAM, #2065) and, when that is not enough, for a shorter context. Never saved.
+ if(/no VRAM (?:is|was) left for the expert cache|needs the profile-filled VRAM expert tier/i.test(text)){
+  const args=[...(config.args??[])],at=args.indexOf('--vram-reserve-mib'),cur=at>=0?Number(args[at+1])||0:Number(config.vram_reserve_mib)||0;
+  const short=Number((text.match(/about (\d+) MiB more than this card has free/)??[])[1])||700,need=short+256;
+  const notes=[];let left=need;
+  if(cur>1024){const next=Math.max(1024,cur-need);left=need-(cur-next);if(next<cur){if(at>=0)args[at+1]=String(next);else args.push('--vram-reserve-mib',String(next));notes.push(`${next} MiB of graphics memory kept free for other programs (was ${cur})`);}}
+  const cx=args.indexOf('--max-context'),ctx=cx>=0?Number(args[cx+1])||0:0,sess=text.match(/takes (\d+) MiB at (\d+) tokens/);
+  if(left>0&&ctx>16384&&sess){
+   const session=Number(sess[1]),tokens=Number(sess[2]);let next=ctx;
+   while(next>16384&&session*(ctx-next)/tokens<left)next=Math.max(16384,Math.floor(next/2));
+   if(next<ctx){args[cx+1]=String(next);notes.push(`a shorter conversation context (${next} tokens, was ${ctx})`);}
+  }
+  if(!notes.length)return null;
+  return {config:{...config,args},words:`This graphics card had no room left for the model's expert cache, so Strata started again with ${notes.join(' and ')}. Nothing is saved; change it in the model's settings if you want it permanently.`,detail:notes.join('; ')};
+ }
  const args=[...(config.args??[])],env={...(config.env??{})};
  const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;
  // Windows lets a program lock only about half the RAM for the graphics card; the engine pins the model's experts up to that.
