@@ -759,7 +759,7 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
-### Prompt speed on Alchemist: the grouped XMX expert launch is the default (0.1.48, `STRATA_PF_XMX`; owner approved 2026-10-18)
+### Prompt speed on Alchemist: the grouped XMX expert launch is the default (engine 0.1.45.3, `STRATA_PF_XMX`)
 
 The A750's prompt path decodes and multiplies a group of experts in one fused launch on the XMX units (`STRATA_PF_XMX=2`, `sycl/src/prefill/xmx_moe.dp.cpp`)
 instead of dequantizing each expert to FP16 and calling oneMKL. It is the default on Alchemist cards; `STRATA_PF_XMX=0` turns it off and `=1` is the
@@ -769,6 +769,23 @@ Measured on the A750 (IQ3_XXS, default flags, interleaved rounds against the run
 teacher-forced KL against the default over 6,006 forced tokens 0.0002 (the default against itself: 0.0001; with the default PCIe share the A750's own run-to-run noise
 is 0.012), first-token KL 0.0017 (floor 0.0005), top-1 agreement 99.7%. HumanEval (every 2nd, 82) 73, 69 and 74 for the mode and two default runs, reasoning 21 / 23 / 22 of
 30, a 35-question Chinese/Japanese/Korean set 35/35 in all, needles at 2K-6K 9/9, an 8K-context tool-call agent 6/6.
+
+### A750: a prompt that never finished is fixed (engine 0.1.45.3, commit `fca3c5958`)
+
+On an Arc A750 some prompts never finished: with default flags a 2,744-token documentation excerpt hung in 6 of 6 runs (the
+thread spun in `sched_yield` inside `libze_intel_gpu` with every engine idle), and the same hang was seen on a 5.3K-token needle prompt. The
+cause: SYCL has no `cudaHostRegister`, so the expert arena is ordinary pageable memory even where the engine calls it
+pinned. Copying a 2.3 MB expert straight out of it went through the Level Zero driver's staging path on the calling thread,
+and on some prompts that call never returned. Now only experts in USM host memory (the `--stream-experts` pinned mirror)
+are copied directly (the answer is remembered per 2 MiB); every other expert goes through the stager's pinned buffers, like
+an unpinned one. **`STRATA_PF_DMA_PAGEABLE=1` restores the old direct copy.**
+
+Checked: the 2,744-token repro finished 3 of 3 times after the fix (0 of 6 before); the first-token logits and the tokens are
+identical old against new on the A750 (1.4K, 2.5K and 4K prompts) and on the Arc Pro B70 (stock config, and without
+`--stream-experts`); speed is unchanged where it did not hang (A750 4K prompt 79.4 against 79.3 tok/s, B70 stock 1,246
+against 1,240), and on the B70 without `--stream-experts` the prompt is faster (680-740 against 77-456 tok/s). The
+regression test is `sycl/tools/test_prompt_deadlock.sh` (the 2,744-token prompt; it times out on the old build and passes on
+the fix).
 
 ## Not done
 

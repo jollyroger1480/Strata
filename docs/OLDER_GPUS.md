@@ -2,8 +2,9 @@
 
 Strata's supported cards are NVIDIA RTX 20 / 30 / 40 / 50 and the AMD cards in [AMD_HIP.md](AMD_HIP.md). The cards
 below run through **opt-in, experimental** paths that community members wrote and measured on their own machines. The
-maintainers have none of these cards: each path is compile-checked and unit-tested here, and the ready-made engines
-and their output stay exactly as they were. Numbers are the reporters' own, on one machine each.
+maintainers have one of these cards, a Tesla P100, and test on it; they have none of the others: each path is
+compile-checked and unit-tested here, and the ready-made engines and their output stay exactly as they were. Numbers are
+the reporters' own, on one machine each, unless the text says the maintainers measured them.
 
 ## Support matrix
 
@@ -94,6 +95,17 @@ FP16 path for BF16 projections is in every build but runs by default only below 
 sums round differently): #540 measured a mean KL of 8.4e-3 on the next-token distribution of 24 code prompts on a V100
 (the same top-1 in 23), the size of other summation-order changes; #655 a worst relative difference of 3.5e-5 per
 product on an RTX 2080 Ti.
+
+### Tesla P100 (sm_60): seven decode switches on by default (engine 0.1.45.3)
+
+On a Tesla P100 the engine now turns on a set of seven switches that change only how the work is scheduled, so the answers
+stay bit for bit the same: `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_SIDE_MIXER=2`, `STRATA_FUSE_WAIT=2`,
+`STRATA_B6_MMVQ_ROWS=1`, `STRATA_FUSE_DECODE=1` and `STRATA_GR_UP75=1`. `STRATA_SM60_PERF=0` turns the whole set off, and a
+switch you set yourself, to any value, is kept. The set is used when every visible card has compute capability 6.0.
+Measured by the maintainers on a Tesla P100 16 GB, IQ3_XXS, default flags, 8 interleaved pairs of fresh engines: decode 36.56
+-> 41.76 tokens/s (+14.2%, faster in 8 of 8 pairs; a run against itself gave 0.975), with the same number of expert-cache
+slots; the identity gate (10 prompts and 4K/20K prompt dumps) is identical with the set on. The full list, the RTX 30 set
+and the per-switch results: [DETAILS.md](DETAILS.md#rtx-30-series-sm_86-and-tesla-p100-sm_60-bitwise-decode-switches-on-by-default).
 
 ### Pascal GP100: a Q8_0 decode kernel (opt-in)
 

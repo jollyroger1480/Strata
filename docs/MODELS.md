@@ -100,7 +100,7 @@ picture, nothing taken from the card) and on the graphics card from 24 GB (about
 picture). The rule is the same for every make of card. `--vision off` (or "No" in the app and in `strata launch`) turns
 pictures off; `--vision cpu` or `--vision gpu` picks the reader. On AMD, `strata-vision-hip` is the card's reader; if it
 cannot start, Strata uses the CPU reader by itself ([AMD_HIP.md](AMD_HIP.md)). **The Mac app and the Mac Terminal have no
-picture reader yet** ([MAC.md](MAC.md)). More: [Images](DETAILS.md#images-vision).
+picture reader yet** ([MAC.md](MAC.md)), and neither does the Intel Arc engine ([INTEL.md](INTEL.md#not-done)). More: [Images](DETAILS.md#images-vision).
 
 ### Qwen3.8-Flash-Next
 

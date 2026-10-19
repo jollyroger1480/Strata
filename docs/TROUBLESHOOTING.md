@@ -183,7 +183,7 @@ reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB
 several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU;
 `--vision gpu` (NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the card's reader is `strata-vision-hip`; if it
 cannot start, the server prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with
-the CPU reader. The Mac app and the Mac Terminal have no picture reader yet.
+the CPU reader. The Mac app, the Mac Terminal and the Intel Arc engine have no picture reader yet.
 
 ## AMD cards
 
