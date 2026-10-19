@@ -1857,8 +1857,10 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, agentTools.removeCustom(customToolRoute[1])); } catch (e) { return error(res, 400, e.message); }
   }
   if (path === '/api/agent/pending' && method === 'GET') {
-    const chat = new URL(req.url, 'http://x').searchParams.get('chatId') ?? '';
-    return json(res, 200, { pending: agent.pendingFor(chat) });
+    const params = new URL(req.url, 'http://x').searchParams;
+    // No chat named: every chat with an approval waiting (the task board lists them without opening each chat).
+    if (!params.has('chatId')) return json(res, 200, { chats: agent.pendingAll() });
+    return json(res, 200, { pending: agent.pendingFor(params.get('chatId') ?? '') });
   }
   /* Approve / Deny a tool the agent asked about. The answer reaches the Harness approval for exactly
      that chat and call; a stale or foreign id is refused. */
