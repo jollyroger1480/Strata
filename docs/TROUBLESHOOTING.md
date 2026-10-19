@@ -6,7 +6,7 @@ error messages, with the older engine fixes, is in the [details](DETAILS.md#trou
 ## The desktop app and the Terminal
 
 **A warning says Strata "couldn't find an engine for this computer".**
-The engine is the part that talks to your graphics card. This is a warning, not a refusal: Strata still downloads the
+The engine is the part that talks to your graphics card. Strata only warns and still downloads the
 model, and the model files stay on your computer, but the model may not run until the right engine is installed. The usual
 reasons are that no engine is installed yet and the update source has none for your card, that the engine found is for
 another make of card, or that the graphics driver is too old. In the app, open Settings, then Engine. In the Terminal, the

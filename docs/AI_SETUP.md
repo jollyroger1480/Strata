@@ -94,8 +94,8 @@ strata launch --plan --model iq2_xs            # what would happen; nothing is c
 strata launch --model iq2_xs --yes --no-tui    # do it: download the engine and the model, start the server
 ```
 
-With `--no-tui` and `--yes` it asks nothing, prints the addresses when the server is ready, and returns. **The server
-keeps running** in the background. `strata launch` with no `--model`, `--preset` or other choice needs a terminal for
+With `--no-tui` and `--yes` it asks nothing, prints the addresses when the server is ready, and returns. The server
+keeps running in the background. `strata launch` with no `--model`, `--preset` or other choice needs a terminal for
 its screens, so an agent always names the model. Add `--output json` for output a script can read.
 
 The flags (all of them, with examples: `strata launch --help`):
@@ -176,7 +176,7 @@ With an API key, add `-H "Authorization: Bearer <key>"`.
 - **Browser:** `http://127.0.0.1:8080` - Chat, a live Monitor, and About (settings and addresses).
 - **Any OpenAI-compatible app or agent:** base URL `http://127.0.0.1:8080/v1`, any API key (or the configured one),
   any model name.
-- **Anthropic-compatible apps:** base URL `http://127.0.0.1:8080`, **without `/v1`**. Those apps add `/v1/messages`
+- **Anthropic-compatible apps:** base URL `http://127.0.0.1:8080`, without `/v1`. Those apps add `/v1/messages`
   themselves.
 - **Codex CLI and other Responses API apps:** `http://127.0.0.1:8080/v1/responses` (stateless; Codex's
   `config.toml`: [DETAILS.md](DETAILS.md#the-responses-api-and-codex-cli)).
@@ -200,7 +200,7 @@ git clone https://github.com/Niko1221/Strata.git
 ```
 
 Without git: download https://github.com/Niko1221/Strata/archive/refs/heads/main.zip and unzip it. Pick a drive with
-enough free space: the model files go to a `Strata-data` folder **next to** the Strata folder (or `--data-dir <path>`
+enough free space: the model files go to a `Strata-data` folder next to the Strata folder (or `--data-dir <path>`
 on another drive). Setup's own check prints the GPU(s), driver, RAM, CPU, free disk and whether this PC can run
 Strata, and installs nothing except Python and the `.venv` it needs to run:
 
@@ -230,7 +230,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
 | `--data-dir PATH` | where the 70-120 GB of model files go |
 | `--port N` | the server port (default 8080) |
-| `--host H --api-key K` | listen beyond this PC; **only together with a key** |
+| `--host H --api-key K` | listen beyond this PC; only together with a key |
 | `--no-start` | install only, do not start the server |
 | `--setup` | install another model or change settings of an installed one |
 | `--check` | only check the PC |

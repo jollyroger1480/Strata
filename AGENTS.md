@@ -14,7 +14,7 @@ or an Apple Silicon Mac. Version 0.2.0-beta, engine 0.1.45.3. It has three parts
 
 ## Installing Strata for a user
 
-Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. The short version, for an agent that has a shell:
+Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For an agent that has a shell, the short version is:
 
 1. Install the Terminal. It needs no administrator rights.
 

@@ -190,8 +190,8 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 - **Images (vision): the source build only.** `./setup.sh` asks "Should the model also read images?" (`--vision yes|no`) and
   builds the picture reader (`strata-vision`) itself. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal
-  the HIP engine's, and text output is unchanged with vision on. No other tests yet. **The app and the Terminal have no
-  picture reader on the Mac yet**: they show models as text only and do not turn pictures on.
+  the HIP engine's, and text output is unchanged with vision on. No other tests yet. The app and the Terminal have no
+  picture reader on the Mac yet. They show models as text only and do not turn pictures on.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).

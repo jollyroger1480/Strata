@@ -94,13 +94,13 @@ Coder. With a small card most experts then come from the SSD and it is much slow
 
 ## The versions
 
-**Pictures.** The versions in setup's menu read pictures, and pictures are **on by default** wherever a model can
+**Pictures.** The versions in setup's menu read pictures, and pictures are on by default wherever a model can
 read them. The picture reader runs on the CPU when the graphics card has less than 24 GB (a few seconds per
 picture, nothing taken from the card) and on the graphics card from 24 GB (about 1-1.4 GB of VRAM; 0.1-0.5 s per
 picture). The rule is the same on NVIDIA and AMD cards. `--vision off` (or "No" in the app and in `strata launch`) turns
 pictures off; `--vision cpu` or `--vision gpu` picks the reader. On AMD, `strata-vision-hip` is the card's reader; if it
-cannot start, Strata uses the CPU reader by itself ([AMD_HIP.md](AMD_HIP.md)). **The Mac app and the Mac Terminal have no
-picture reader yet** ([MAC.md](MAC.md)), and neither does the Intel Arc engine ([INTEL.md](INTEL.md#not-done)). More: [Images](DETAILS.md#images-vision).
+cannot start, Strata uses the CPU reader by itself ([AMD_HIP.md](AMD_HIP.md)). The Mac app and the Mac Terminal have no
+picture reader yet ([MAC.md](MAC.md)), and neither does the Intel Arc engine ([INTEL.md](INTEL.md#not-done)). More: [Images](DETAILS.md#images-vision).
 
 ### Qwen3.8-Flash-Next
 
@@ -173,7 +173,7 @@ experts in a rotated basis. They are the smallest options and never setup's defa
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
 | **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory; decodes about 20% slower than Q2_0 on 12 GB cards |
 
-NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Gyro **reads pictures** (the same rule as above). It needs
+NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Gyro reads pictures (the same rule as above). It needs
 engine 0.1.45.1 or newer; if the engine is older, the app says "This model needs a newer engine" and offers Update
 engine. Gyro gives correct output on RTX 50 cards with engine 0.1.45.3. Details, measurements and credit:
 [GYRO.md](GYRO.md).
@@ -195,7 +195,7 @@ versions of it. The app shows them by who made the weights:
 | **NVFP4 (NVIDIA's version)** | `NVFP4-NVIDIA` | NVIDIA's own NVFP4 checkpoint (plain rounding), converted for Strata. The same size and speed as the first | 128 GB |
 | **NVFP4 (NVIDIA, trained for FP4)** | `NVFP4-QAD` | NVIDIA's retrained 4-bit model, slightly faster on short prompts ([below](#nvfp4-qad)) | 102 GB (+110 GB of disk to prepare) |
 
-All three need about 80 GB of RAM to keep every expert in RAM, run on **NVIDIA cards only**, and read pictures (the
+All three need about 80 GB of RAM to keep every expert in RAM, run on NVIDIA cards only, and read pictures (the
 same rule as above). RTX 50 cards have FP4 tensor cores; other NVIDIA cards run NVFP4 at 8-bit precision. The first two
 need engine 0.1.44 or newer, the third 0.1.45 or newer. Details and measurements: [NVFP4.md](NVFP4.md).
 
