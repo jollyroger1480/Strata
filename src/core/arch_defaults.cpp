@@ -64,13 +64,13 @@ bool igpu_prompt_defaults_arch(const char* gcn_arch) {
            strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
 }
 
-bool igpu_prompt_set_enabled() {
+bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows) {
     const char* off = std::getenv("STRATA_IGPU_DEFAULTS");
     if (off != nullptr && off[0] == '0') return false;
     const char* e = std::getenv("STRATA_IGPU_PROMPT_SET");
     if (e != nullptr && e[0] == '1') return true;
     if (e != nullptr && e[0] == '0') return false;
-    return kIgpuPromptSetDefaultOn;
+    return kIgpuPromptSetDefaultOn && !windows && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
 }
 
 bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on) {
@@ -82,7 +82,12 @@ bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows,
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated) {
     std::vector<std::pair<std::string, std::string>> t;
     if (!integrated || !igpu_prompt_defaults_arch(gcn_arch)) return t;
-    if (!igpu_prompt_set_enabled()) return t;
+#if defined(_WIN32)
+    const bool win = true;
+#else
+    const bool win = false;
+#endif
+    if (!igpu_prompt_set_enabled(gcn_arch, win)) return t;
     // Measured on a Radeon 780M (gfx1103, P2006, Q2_0, notes-153-igpu.md / notes-148-amd.md): prompts 109.5 -> 214.7 tok/s
     // with the first four, 233 with HC_UPMIX, decode unchanged.  Dense projections are 63% of a prompt's GPU time there.
     t = {
@@ -126,7 +131,7 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
         igpu.push_back(kv.first);
     }
     if (!igpu.empty()) {
-        std::fprintf(stderr, "strata: integrated GPU (%s): the matrix-core prompt set is on (about 2x faster prompts on a "
+        std::fprintf(stderr, "strata: integrated GPU (%s): the matrix-core prompt set is on (1.6x to 2x faster prompts on a "
                              "Radeon 780M, the answers differ in the last bits): ", gcn_arch);
         for (size_t i = 0; i < igpu.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", igpu[i].c_str() + 7);
         std::fprintf(stderr, ".  Turn one off with NAME=0 (for example STRATA_HC_UPMIX=0), all of them with STRATA_IGPU_PROMPT_SET=0");

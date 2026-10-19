@@ -25,11 +25,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 /// matrix-core prompt set is offered (opt-in; 021-minipc).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);
 
-/// 021-minipc: the matrix-core prompt set changes bits, so it is OFF by default until the owner approves it.  Flip this constant
-/// (one line) to make it the default of the integrated Radeons; STRATA_IGPU_PROMPT_SET=1 / =0 switches it per run either way,
-/// and STRATA_IGPU_DEFAULTS=0 turns it off whatever the constant says.
-inline constexpr bool kIgpuPromptSetDefaultOn = false;
-bool igpu_prompt_set_enabled();
+/// 021-minipc: the matrix-core prompt set changes bits.  The owner approved it as the DEFAULT of the Radeon 780M only (gfx1103,
+/// integrated, Linux): prompts 1.60x (1K) / 2.03x (4K), decode within 0.1%, greedy ids identical in 6 of 6 pairs (notes-021-minipc.md).
+/// gfx1150 / gfx1151 (no hardware) and Windows keep it off by default.  STRATA_IGPU_PROMPT_SET=1 turns it on for any integrated
+/// arch of igpu_prompt_defaults_arch, STRATA_IGPU_PROMPT_SET=0 (or STRATA_IGPU_DEFAULTS=0) turns it off.
+inline constexpr bool kIgpuPromptSetDefaultOn = true;
+bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows);
 
 /// 021-minipc: UMA mode (the expert arena stays unregistered).  Exact (no bit changes) but NOT a default: measured on the 780M it was
 /// 1-4% slower and did not stop the resets (4 of 20 runs against 1 of 10), so kIgpuUmaArenaDefaultOn is false.  When true it applies

@@ -546,8 +546,8 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 ## Integrated GPUs (mini PCs)
 
 On a Radeon that shares the computer's memory (the Ryzen mini PCs: Radeon 780M / 760M `gfx1103`, 890M / 880M `gfx1150`,
-Strix Halo `gfx1151`) the matrix-core prompt set below is opt-in (`STRATA_IGPU_PROMPT_SET=1`): it changes bits, so it waits for the maintainer's
-decision before it becomes the default. With the opt-in the engine picks the set from the device's own "integrated" flag and
+Strix Halo `gfx1151`) the matrix-core prompt set below is on by default on the Radeon 780M (`gfx1103`, Linux) and opt-in
+(`STRATA_IGPU_PROMPT_SET=1`) on the others: it changes bits, and only the 780M was measured. The engine picks the set from the device's own "integrated" flag and
 the architecture, not from the name: a discrete card (an RX 7900 XTX `gfx1100`, an R9700 `gfx1201`, any other) never gets it,
 and neither does a computer that also holds a discrete card next to the iGPU. The engine prints one line at start-up that names
 what it set.
@@ -560,7 +560,7 @@ what it set.
 | `STRATA_SELECT_WMMA=1` | the block scorer on the matrix cores |
 | `STRATA_HC_UPMIX=1` | the hyper-connection up projection with its epilogue |
 
-**Why.** The dense projections are 63% of a prompt's GPU time on a 12-CU iGPU (the experts only 16%), and they are what these
+**Why.** (148-amd first measurement; 021-minipc repeated it with 6 interleaved pairs: prompt x1.60 at 1K, x2.03 at 4K, decode x0.999, identical greedy ids.) The dense projections are 63% of a prompt's GPU time on a 12-CU iGPU (the experts only 16%), and they are what these
 switches speed up. Radeon 780M (P2006, Ryzen 7 255, Q2_0, `--kv int8`, 4K prompt, one run each; 148-amd): 109.5 tok/s with
 none of them, 214.7 with the first four (+96%), 233 with `STRATA_HC_UPMIX` as well (+111%); decode is the same (16.6 against 17-19
 tok/s, inside the run-to-run noise). The prompt switches do not touch the decode kernels.
@@ -569,7 +569,7 @@ tok/s, inside the run-to-run noise). The prompt switches do not touch the decode
 differ in the last bits. Measured on an R9700 with the same kernels (Q2_0): teacher-forced KL 0.0003 (28 prompts) / 0.0014 (eight
 ~6K-token documents), and the task sets inside their run-to-run noise.
 
-**Turning it on and off.** `STRATA_IGPU_PROMPT_SET=1` turns the whole set on; each switch keeps `=0` as its off switch
+**Turning it on and off.** `STRATA_IGPU_PROMPT_SET=0` turns the whole set off, `=1` turns it on where it is not the default; each switch keeps `=0` as its off switch
 (`STRATA_HC_UPMIX=0`); `STRATA_IGPU_DEFAULTS=0` turns the set off whatever else is set. A switch you set yourself, to anything, is never overridden. Put them in the server config's `env`, or in the shell.
 
 **Windows.** The same code applies, but it has not been tested on Windows (there was no Windows iGPU machine to run it on).

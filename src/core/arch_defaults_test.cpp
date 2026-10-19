@@ -101,18 +101,41 @@ int main() {
     };
     unset("STRATA_IGPU_DEFAULTS");
     unset("STRATA_IGPU_PROMPT_SET");
-    // 021-minipc: the set changes bits, so with nothing set it is OFF everywhere (the owner flips kIgpuPromptSetDefaultOn)
-    CHECK(!kIgpuPromptSetDefaultOn);
-    CHECK(!igpu_prompt_set_enabled());
-    for (const Mock& m : mocks) CHECK(igpu_default_env(m.gcn, m.integrated).empty());
+    // 021-minipc: with nothing set the prompt set is the default of the Radeon 780M only (gfx1103, integrated, not Windows)
+    CHECK(kIgpuPromptSetDefaultOn);
+    CHECK(igpu_prompt_set_enabled("gfx1103", false));
+    CHECK(igpu_prompt_set_enabled("gfx1103:sramecc-:xnack-", false));
+    CHECK(!igpu_prompt_set_enabled("gfx1103", true));        // Windows: not tested
+    for (const char* g : {"gfx1150", "gfx1151", "gfx1100", "gfx1201", "gfx1152", "", "gfx11030"}) CHECK(!igpu_prompt_set_enabled(g, false));
+    CHECK(!igpu_prompt_set_enabled(nullptr, false));
+    for (const Mock& m : mocks) {
+        const bool want = m.expect_on && std::string(m.gcn).rfind("gfx1103", 0) == 0;
+#if defined(_WIN32)
+        CHECK(igpu_default_env(m.gcn, m.integrated).empty());
+#else
+        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (want ? 5u : 0u));
+#endif
+    }
+#if !defined(_WIN32)
     for (const char* k : {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"}) unset(k);
-    CHECK(apply_arch_defaults("gfx1103", true).empty());
-    CHECK(std::getenv("STRATA_HIP_WMMA") == nullptr);
-    // opt-in per run: STRATA_IGPU_PROMPT_SET=1; the rest of the checks below run with it on
-    put("STRATA_IGPU_PROMPT_SET", "1");
-    CHECK(igpu_prompt_set_enabled());
+    CHECK(apply_arch_defaults("gfx1103", true).size() == 5);       // a 780M gets the set with nothing set
+    for (const char* k : {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"}) unset(k);
+    CHECK(apply_arch_defaults("gfx1150", true).empty());           // 880M / 890M: no hardware, stays as it was
+    for (const char* k : {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"}) unset(k);
+#endif
+    // the off switches
+    put("STRATA_IGPU_PROMPT_SET", "0");
+    CHECK(!igpu_prompt_set_enabled("gfx1103", false));
+    CHECK(igpu_default_env("gfx1103", true).empty());
+    unset("STRATA_IGPU_PROMPT_SET");
     put("STRATA_IGPU_DEFAULTS", "0");
-    CHECK(!igpu_prompt_set_enabled());   // the whole-set off switch wins
+    CHECK(!igpu_prompt_set_enabled("gfx1103", false));
+    unset("STRATA_IGPU_DEFAULTS");
+    // opt-in per run for the other arches: STRATA_IGPU_PROMPT_SET=1; the checks below run with it on (every mock arch of the list)
+    put("STRATA_IGPU_PROMPT_SET", "1");
+    CHECK(igpu_prompt_set_enabled("gfx1150", false));
+    put("STRATA_IGPU_DEFAULTS", "0");
+    CHECK(!igpu_prompt_set_enabled("gfx1150", false));   // the whole-set off switch wins
     unset("STRATA_IGPU_DEFAULTS");
     for (const Mock& m : mocks) {
         const auto t = igpu_default_env(m.gcn, m.integrated);

@@ -79,10 +79,19 @@ greedy tokens, 3 of 3 pairs), with the greedy token ids unchanged. They are the 
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
 | `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`, `STRATA_SH_STREAM` | grouped decode experts, butterfly warp sums, fewer launches, the GDN step over four blocks per head, producer-written activation images, batched PLE projections, the shared expert on its own stream |
 
-## 5. The matrix-core prompt set (opt-in on an integrated GPU: `STRATA_IGPU_PROMPT_SET=1`; it changes bits)
+## 5. The matrix-core prompt set (on by default on the 780M; it changes bits)
 
-Opt-in (AMD_HIP.md, "Integrated GPUs"); with `STRATA_IGPU_PROMPT_SET=1` the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`,
-`STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself on an integrated Radeon; `NAME=0` turns one off. `STRATA_PF_FUSED` stays opt-in.
+On by default on the Radeon 780M (`gfx1103`, integrated, Linux; AMD_HIP.md, "Integrated GPUs"): the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`,
+`STRATA_PA_FAST`, `STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself. `STRATA_IGPU_PROMPT_SET=0` turns the whole set off, `NAME=0` one switch. The 880M / 890M
+(`gfx1150`) and Windows keep it off (no hardware / not tested); `STRATA_IGPU_PROMPT_SET=1` turns it on there. `STRATA_PF_FUSED` stays opt-in.
+
+Measured (021-minipc, P2006, Q2_0, fresh engine per run, 10 interleaved rounds, 6 complete pairs): prompt 1K 98.5 -> 157.3 tok/s (x1.60, 6/6 pairs faster),
+4K 115.1 -> 233.3 (x2.03, 6/6), decode 22.02 -> 21.99 (code) and 15.09 -> 15.05 (story) (x0.999), greedy token ids identical in 6 of 6 pairs.
+
+**GPU resets.** The 780M's current Ubuntu firmware (gc 11.0.1 MES) can still reset the GPU now and then, with or without this set: when the kernel moves memory that the
+GPU has registered, the process's queues are evicted, and a kernel that sits in a barrier at that moment never answers. The engine recovers
+("device wedged, but recovered through reset") but the running request fails. In the same runs the default engine crashed 4 of 10 times and the set 0 of 10, so it did
+not add resets. Until AMD fixes the firmware a mini PC may still see them; the engine does not touch the firmware. A newer `linux-firmware` is the thing to try.
 The prompt levers need the table to pay: with the table, the WMMA set
 read 248 tok/s at 4K against 186 without it, and at 32K 272 against 178. No KL was measured on this chip.
 
