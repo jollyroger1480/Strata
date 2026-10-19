@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -917,9 +918,19 @@ class ConnectCommand(unittest.TestCase):
         self.assertIn("backup", out)
 
     def test_write_asks_first_without_yes(self):
-        code, out, err = run_cli(["connect", "opencode", "--write"])
+        # no keyboard: stdin is a pipe whatever the shell that runs the tests is; input() must never be reached
+        pipe = io.StringIO("")
+        with mock.patch.object(sys, "stdin", pipe), mock.patch("builtins.input", side_effect=AssertionError("asked on a pipe")):
+            code, out, err = run_cli(["connect", "opencode", "--write"])
         self.assertEqual(code, 2)
         self.assertIn("asks first", err)
+
+    def test_write_answered_by_nobody_writes_nothing(self):
+        # a terminal whose input ends (Ctrl-D, a closed console) is "no", not a traceback
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), mock.patch("builtins.input", side_effect=EOFError):
+            code, out, err = run_cli(["connect", "opencode", "--write"])
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing was written", out)
 
     def test_built_in_harness_has_nothing_to_write(self):
         code, out, _ = run_cli(["connect", "deepseek-harness", "--write", "--yes"])

@@ -726,7 +726,10 @@ def run_connect(a: argparse.Namespace) -> int:
             if not sys.stdin.isatty():
                 print("strata: --write asks first; run it in a terminal or add --yes.", file=sys.stderr)
                 return 2
-            ans = input("\nWrite these files now? A file that exists is copied to a backup first. [y/N] ").strip().lower()
+            try:
+                ans = input("\nWrite these files now? A file that exists is copied to a backup first. [y/N] ").strip().lower()
+            except EOFError:                                 # the input ended: that is a no
+                ans = ""
             if ans not in ("y", "yes"):
                 _say("Nothing was written.")
                 return 0
