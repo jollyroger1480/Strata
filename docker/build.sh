@@ -58,7 +58,7 @@ trap cleanup EXIT
 
 # 1. the Terminal's sources: exactly what packaging/package_terminal.py copies (the working tree, so local edits are in the image)
 cd "$repo"
-paths="packaging bin strata.py strata_control strata_cli serve requirements.txt requirements-monitor.txt docs/MANAGEMENT_PROTOCOL.md docs/TERMINAL_LAUNCH.md data setup.py ref/load.py CMakeLists.txt"
+paths="packaging bin strata.py strata_control strata_cli serve requirements.txt requirements-monitor.txt docs/MANAGEMENT_PROTOCOL.md docs/TERMINAL_LAUNCH.md data bench/prompts/standard-v1 setup.py ref/load.py CMakeLists.txt"
 if git rev-parse --git-dir >/dev/null 2>&1; then
   # shellcheck disable=SC2086
   { git ls-files -z -- $paths ':(glob)tools/*.py'; } | tar --null -T - -cf - | tar -xf - -C "$ctx/terminal-src"

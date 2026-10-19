@@ -14,18 +14,27 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 DOCKER = ROOT / "docker"
 SH = shutil.which("sh")
+BASH = shutil.which("bash")      # the full path: on Windows a bare "bash" can start the WSL launcher in System32 instead of Git bash
+CYGPATH = shutil.which("cygpath")
+
+
+def sh_path(p) -> str:
+    """The path as the shell reads it. Git bash on Windows wants /c/Users/..., not C:\\Users\\... (tar even takes `C:` for a host)."""
+    if CYGPATH is None:
+        return str(p)
+    return subprocess.run([CYGPATH, "-u", str(p)], capture_output=True, text=True, check=True).stdout.strip()
 
 
 class Scripts(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_shell_scripts_parse(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):
-            r = subprocess.run([SH, "-n", str(DOCKER / name)], capture_output=True, text=True)
+            r = subprocess.run([SH, "-n", sh_path(DOCKER / name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
 
-    @unittest.skipIf(shutil.which("bash") is None, "needs bash")
+    @unittest.skipIf(BASH is None, "needs bash")
     def test_smoke_test_parses_with_bash(self):           # it is a bash script (process substitution), not POSIX sh
-        r = subprocess.run(["bash", "-n", str(DOCKER / "smoke-test.sh")], capture_output=True, text=True)
+        r = subprocess.run([BASH, "-n", sh_path(DOCKER / "smoke-test.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
     @unittest.skipIf(SH is None or shutil.which("tar") is None, "needs sh and tar")
@@ -39,7 +48,7 @@ class Scripts(unittest.TestCase):
             (pkg / "strata").write_text("#!/bin/sh\n", encoding="utf-8")
             (pkg / "strata").chmod(0o755)
             ctx = Path(tmp) / "ctx"
-            r = subprocess.run([SH, str(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", str(pkg), "--ctx", str(ctx), "--ctx-only"],
+            r = subprocess.run([SH, sh_path(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", sh_path(pkg), "--ctx", sh_path(ctx), "--ctx-only"],
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((ctx / "Dockerfile").is_file())
@@ -150,7 +159,7 @@ class Publishing(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_publish_script_parses_and_defaults_to_not_pushing(self):
         path = DOCKER / "publish.sh"
-        self.assertEqual(subprocess.run([SH, "-n", str(path)], capture_output=True, text=True).returncode, 0)
+        self.assertEqual(subprocess.run([SH, "-n", sh_path(path)], capture_output=True, text=True).returncode, 0)
         text = path.read_text(encoding="utf-8")
         self.assertNotIn("\r", text)
         self.assertIn('push=""', text)                      # no --push, no docker push
