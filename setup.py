@@ -571,7 +571,7 @@ ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Ne
 # sizes its expert slots around it and the default reserve (700 MiB) is enough; engines before 0.1.2 need more
 VISION_GPU_SMALL_RESERVE_MIB = 1000    # the tip for images on a <= 12 GB card (the engine's LOW line asked ~1003)
 VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
-          "cpu": {"max_tokens": 300, "reserve_mib": 700}}
+          "cpu": {"max_tokens": 300, "reserve_mib": 0}}      # the CPU reader takes no VRAM: no reserve (serve/server.py adds 700 only for a GPU reader)
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
 HVEXE = "strata-vision-hip.exe" if WIN else "strata-vision-hip"     # AMD: the picture reader on the GPU (tools/vision, STRATA_VISION_HIP)
@@ -2127,20 +2127,15 @@ def unsloth_budget(model, ram, gpu=None, asked=None) -> bool:
         ram < MODELS[model]["arena_gb"] / 1.073741824 + UNSLOTH_RESIDENT_BESIDE_GB
 
 
-UNSLOTH_IMAGES_MIN_VRAM_GB = 15.5     # a 16 GB card: the GPU encoder's ~1.4 GB is under a tenth of it
+def images_default(model, family, ram, gpu=None) -> bool:
+    """Is "images on" setup's default answer (the question's Enter, and --yes) for this choice?  Owner rule 2026-10-18: pictures are on
+    wherever the model can read them - the original Flash-Next, Swift and Coder files, Unsloth's, NVFP4 - on every make of card; which
+    reader runs is strata_control/vision_reader.py's rule (the CPU under 24 GB of VRAM, the GPU from 24 GB).  The CPU reader takes no
+    VRAM (no --vram-reserve-mib), so a small card is no exception."""
+    return MODELS.get(model, {}).get("vision", FAMILIES.get(family, {}).get("vision")) is not False
 
 
-def unsloth_images_default(model, family, ram, gpu=None) -> bool:
-    """MODEL-UPDATE: is "images on" setup's default answer for this choice: Unsloth's files (the same base model and
-    image encoder as ISTA's, run end to end on CUDA and on HIP), on an NVIDIA card of 16 GB or more (the GPU encoder
-    keeps ~1.4 GB free) or, on AMD, wherever every expert stays in RAM (the CPU encoder takes no VRAM).  Smaller cards
-    keep "no" as the default (asked, as for the other families)."""
-    if family != "unsloth" or not MODELS.get(model, {}).get("budget") or MODELS[model].get("vision") is False:
-        return False
-    g = gpu or {}
-    if str(g.get("arch", "")).startswith("gfx"):
-        return not unsloth_budget(model, ram, g) and not WIN
-    return g.get("vram_gb", 0.0) >= UNSLOTH_IMAGES_MIN_VRAM_GB
+unsloth_images_default = images_default     # the earlier name
 
 
 IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # = strata_control/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
@@ -6075,33 +6070,32 @@ def own_path_size(fam: dict, ram: float) -> str:
 
 
 def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
-    """The image encoder for an own-path family (Qwen3.6-35B-A3B): "gpu", "cpu" or "none".  The Flash-Next families' rules:
-    --vision yes|no|gpu|cpu, else a question whose default answer is yes where the GPU encoder costs little - an NVIDIA
-    card of 16 GB or more (its ~1.4 GB is under a tenth of it) - and, on AMD under Linux, yes with the CPU encoder (it takes
-    no VRAM; there is no GPU encoder for AMD yet).  A smaller NVIDIA card is recommended the CPU encoder (the GPU one takes
-    room from the experts); what is asked for with --vision gpu is kept, with a note (recommend, never force)."""
+    """The image encoder for an own-path family (Qwen3.6-35B-A3B): "gpu", "cpu" or "none".  Pictures are on by default (owner rule
+    2026-10-18) and the reader follows strata_control/vision_reader.py's one rule on every make of card: the CPU encoder under 24 GB of
+    VRAM (the GPU one takes ~1.4 GB the experts would use), the GPU encoder from 24 GB.  --vision yes|no|gpu|cpu, else a question whose
+    default answer is yes; what is asked for with --vision gpu / cpu is kept, with a note (recommend, never force)."""
     asked = a.vision
     vram = float(gpu.get("vram_gb", 0.0))
-    big = vram >= UNSLOTH_IMAGES_MIN_VRAM_GB
     if asked in ("no", "none"):
         return "none"
     if asked is None:
+        from strata_control import vision_reader as VR
+        mode = VR.default_mode(vram)
         say()
         say(f"  Images: {fam['title']} can also read pictures (screenshots, photos, scanned pages). This adds a "
             f"{fam['sha256'][fam['mmproj']][0] / 1e9:.1f} GB download" + (
-                "; the encoder runs on the GPU when the engine has the AMD one (about 1 GB of VRAM), else on the CPU." if hip else
-                " and the image encoder runs on the GPU (~1.4 GB of VRAM kept free, 0.1-0.5 s per picture)." if big else
+                " and the image encoder runs on the GPU (about 1-1.4 GB of VRAM kept free, a fraction of a second per picture)."
+                if mode == "gpu" else
                 "; the encoder runs on the CPU (a few seconds per picture), because the GPU encoder would take ~1.4 GB "
-                "of VRAM from the experts on this card."))
-        default = "y" if (big or hip) else "n"
-        if ask("Do you want images?", ["y", "n"], default, a.yes) != "y":
+                "of VRAM from the experts on this card (--vision gpu to use it anyway)."))
+        if ask("Do you want images?", ["y", "n"], "y", a.yes) != "y":
             return "none"
-        asked = "yes" if hip else "cpu" if not big else "gpu"
+        asked = "yes"
     if hip:
         return hip_vision(asked, vram)               # settled against the engine's readers in hip_reader() (GPU reader, else CPU)
     if asked == "yes":
-        asked = "gpu" if big else "cpu"
-    if asked == "gpu" and not big and vram > 0:
+        asked = "gpu" if (vram <= 0 or vram >= IMAGES_GPU_ENCODER_MIN_VRAM_GB) else "cpu"
+    if asked == "gpu" and 0 < vram < IMAGES_GPU_ENCODER_MIN_VRAM_GB:
         warn(f"the GPU image encoder takes ~1.4 GB of VRAM, which on a {vram:.0f} GB card is room the experts would use: "
              "--vision cpu reads pictures on the CPU instead (a few seconds each); kept as you chose")
     return asked
@@ -6573,7 +6567,8 @@ def main() -> int:
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
-                    help="let the model read images (yes = the encoder on the GPU)")
+                    help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
+                         "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
     ap.add_argument("--vision-tokens", type=int, metavar="N",
                     help="the most image tokens a picture becomes (default 1024 with the encoder on the GPU, 300 on "
                          "the CPU): more reads small text and charts better, and takes longer to encode; remembered "
@@ -6814,7 +6809,7 @@ def main() -> int:
             + "   (recommended)")
         say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB{', unified memory' if g.get('uma') else ''})"
                                for g in amd_ok)
-            + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
+            + f"   ({'the ready-made AMD engine' if WIN else 'compiled here'}, pictures on"
               " - docs/AMD_HIP.md)")
         say("  One engine drives the cards of one make: a model is never split across NVIDIA and AMD cards, and two models at the same")
         say("  time, one on each, is not supported yet.")
@@ -7182,10 +7177,9 @@ def main() -> int:
         if a.vision not in (None, "no", "none"):
             warn(f"images are not available with {model} yet: off")
     elif hip:
-        # MODEL-UPDATE: Unsloth's files on AMD (Linux) read images with the CPU encoder by default where their experts
-        # all stay in RAM (it takes no VRAM; measured on an R9700 with UD-Q4_K_XL and UD-Q5_K_XL, docs/QUANTS.md)
-        vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
-                            else "cpu", float((gpu or {}).get("vram_gb") or 0.0))
+        # Unsloth's files on AMD: pictures on by default, the reader by the 24 GB rule (hip_vision; docs/QUANTS.md)
+        vision = hip_vision(a.vision if a.vision is not None or not images_default(model, family, ram, gpu)
+                            else "yes", float((gpu or {}).get("vram_gb") or 0.0))
     elif a.vision:
         vision = flash_vision_encoder(a.vision, gpu) if a.vision != "no" else "none"
         vision = "none" if vision in ("no", "none") else vision
@@ -7200,8 +7194,8 @@ def main() -> int:
             say("  more on some PCs. --vision gpu if you want pictures in under a second.")
         else:
             say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
-        # MODEL-UPDATE: on by default for Unsloth's files on a card with room for the encoder (16 GB and more)
-        default = "y" if unsloth_images_default(model, family, ram, gpu) else "n"
+        # on by default wherever the model can read pictures (the reader by the 24 GB rule)
+        default = "y" if images_default(model, family, ram, gpu) else "n"
         vision = flash_vision_encoder("yes", gpu) if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if vision != "none" and MODELS[model].get("vision_untested"):
@@ -7581,7 +7575,9 @@ def main() -> int:
                      "cache: it stays on auto, which may take the room the OS needs (#1715). A smaller "
                      "--resident-budget-gib leaves room")
     if vision != "none":
-        args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
+        args += ["--vision"]
+        if VISION[vision]["reserve_mib"]:
+            args += ["--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
         if vision == "gpu" and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
             # a tip only (recommend, never force): on a 12 GB card the encoder's 700 MiB can leave ~200 MiB free
             print(f"  tip: images on a {gpu['vram_gb']:.0f} GB card can leave little VRAM free; if a request stalls, "

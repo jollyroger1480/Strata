@@ -221,7 +221,8 @@ class Main(Base):
         self.assertEqual(code, 0, out)
         self.assertNotIn("EXPERIMENTAL", out)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_SHARDS])   # no image encoder
+        self.assertEqual(self.downloads[:-1], [base + n for n in setup.UNSLOTH_SHARDS])   # then the image encoder: pictures are on by default
+        self.assertIn("mmproj", self.downloads[-1])
         self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
         self.assertEqual([v[1:] for v in self.verified], list(setup.UNSLOTH_SHARDS.values()))
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
@@ -232,12 +233,12 @@ class Main(Base):
         args = cfg["args"]
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
         self.assertTrue(args[args.index("--native") + 1].endswith("-00001-of-00004.gguf"))
-        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision", "--control-vector-scaled",
+        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--control-vector-scaled",
                      "--kv-resident"):
             self.assertNotIn(flag, args)
         self.assertEqual(args[args.index("--max-context") + 1], "8192")
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
-        self.assertNotIn("vision", cfg)
+        self.assertFalse(cfg["vision"]["gpu"])                               # 11.9 GB: the CPU reader
 
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
@@ -472,7 +473,8 @@ class IQ4XS(Base):
         self.assertEqual(code, 0, out)
         self.assertNotIn("is EXPERIMENTAL", out)                               # (the menu still lists UD-Q4_K_XL)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-IQ4_XS/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])
+        self.assertEqual(self.downloads[:-1], [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])   # then the image encoder (pictures on by default)
+        self.assertIn("mmproj", self.downloads[-1])
         self.assertEqual(self.verified, [(n, *v) for n, v in setup.UNSLOTH_IQ4_XS_SHARDS.items()])
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertEqual(len(packs), 1, self.runs)
@@ -482,14 +484,15 @@ class IQ4XS(Base):
         args = cfg["args"]
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
         self.assertTrue(args[args.index("--native") + 1].endswith("UD-IQ4_XS-00001-of-00003.gguf"))
-        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision"):
+        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts"):
             self.assertNotIn(flag, args)
+        self.assertIn("--vision", args)                                       # pictures are on by default
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
         pack = self.t / "data" / "packs" / "unsloth-ud-iq4_xs"                 # its own pack and tokenizer
         self.assertEqual(packs[0][packs[0].index("--out") + 1], str(pack))
         self.assertEqual(args[args.index("--pack") + 1], str(pack))
         self.assertEqual(cfg["tokenizer"], str(pack / "tokenizer"))
-        self.assertNotIn("vision", cfg)                                        # images: asked, off by default
+        self.assertFalse(cfg["vision"]["gpu"])                                 # pictures on by default, the CPU reader under 24 GB
         with tempfile.TemporaryDirectory() as t:                               # a start reads the choice back
             p = Path(t) / "strata-unsloth-ud-iq4_xs.json"
             p.write_text(json.dumps(cfg))
@@ -824,8 +827,9 @@ class BigFiles(Base):
         self.assertEqual(code, 0, out)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/Q8_0/"
         names = [setup.model_file(setup.FAMILIES["unsloth"], Q8, i) for i in range(1, 7)]
-        self.assertEqual(self.downloads, [base + n for n in names])
-        self.assertEqual([v[0] for v in self.verified], names)
+        self.assertEqual(self.downloads[:-1], [base + n for n in names])   # then the image encoder (pictures on by default)
+        self.assertIn("mmproj", self.downloads[-1])
+        self.assertEqual([v[0] for v in self.verified][:len(names)], names)
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertIn("--compat-bf16", packs[0])
         args = cfg["args"]

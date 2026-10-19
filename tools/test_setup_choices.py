@@ -443,8 +443,12 @@ class VramReserve(unittest.TestCase):
         self.assertEqual(a.count("--vram-reserve-mib"), 1)
         self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "2048")
         self.assertIn("VRAM kept free for other programs: 2048 MiB", out)
-        code, out, cfg, _ = self.install()
+        code, out, cfg, _ = self.install("--vision", "no")
         self.assertNotIn("--vram-reserve-mib", cfg["args"])          # not given: the engine's default, as before
+        code, out, cfg, _ = self.install("--vision", "cpu")
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # the CPU reader needs no reserve
+        code, out, cfg, _ = self.install()
+        self.assertEqual(cfg["args"][cfg["args"].index("--vram-reserve-mib") + 1], "700")   # pictures on by default, GPU reader on a 32 GB card: its 700 MiB
 
     def test_with_images_one_value(self):
         code, out, cfg, _ = self.install("--vision", "cpu", "--vram-reserve-mib", "1500")

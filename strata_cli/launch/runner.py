@@ -450,7 +450,7 @@ class Runner:
 
     def vision_word(self) -> str:
         """What setup is told for the picture choice. "on" is setup's "yes": setup (Control mode) picks the CPU encoder on a card under 24 GB
-        and on AMD, the GPU encoder on a bigger NVIDIA card, and downloads the pinned picture-reader file (mmproj) with the model."""
+        and the GPU encoder from 24 GB (any make of card), and downloads the pinned picture-reader file (mmproj) with the model."""
         s = self.s
         self.resolved_vision()
         if s.vision == "off":

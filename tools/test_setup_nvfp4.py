@@ -227,7 +227,7 @@ class MockedInstall(unittest.TestCase):
         self.assertTrue(self.flag(a, "--embd-gguf").endswith("/token-embd-bf16.gguf"))
         self.assertNotIn("--mmap-experts", a)              # 128 GB: every expert in RAM
         self.assertNotIn("--resident-experts", a)
-        self.assertNotIn("vision", cfg)                    # --yes: images default off, as for every model
+        self.assertIn("vision", cfg)                       # --yes: pictures on, as for every model that can read them
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-nvfp4-nvfp4")
         self.assertIn("Qwen Community License", out)
 
