@@ -58,6 +58,22 @@ the graphics card, and works out how much of the model fits on your GPU. The mou
 PC, close other programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0
 or IQ2_XS).
 
+**The engine stops while it starts, on a small graphics card or a PC with little RAM. Can I turn the draft layer (MTP) off?**
+Yes. The draft layer is what makes answers faster, and it takes about 1 GB of graphics memory (plus some RAM and a memory
+copy that grows with the context). Without it the expert cache gets that memory back and answers are slower. Turn it off
+for one model: in the app, Models, Expert settings, "Draft layer (MTP)": Off; in the Terminal,
+`strata launch --model q2_0 --mtp off` (older Terminals: `--set mtp=off --set spec-min-p=off`); by hand, add `"mtp": false` to the
+model's `strata-<model>.json`. The choice is kept per model and applied on every start.
+
+**I changed `strata-<model>.json` by hand and the change came back.**
+The app and `START-HERE` own the `args` list and the `vision` section of that file: whenever you prepare a model, change its
+context size or its picture setting, or use "Download / repair", setup writes both again from its own choices. It keeps every
+other key (`sampling`, `mcp_servers`, `mtp`, `ui_vision_enabled`, `parallel`, ...) and the earlier file as
+`strata-<model>.json.bak`. So put your choice where it is kept: `"mtp": false` for the draft layer, the picture tick in the
+Models screen (saved as `ui_vision_enabled`), and the context size in the Models screen. Hand-editing `args` still works for
+a model you only start (the `START-HERE` run file and `strata launch` both read the file as it is); setup says which options it
+dropped and where the earlier file is.
+
 **It stopped while downloading or installing.**
 Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
 

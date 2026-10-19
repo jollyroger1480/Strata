@@ -63,6 +63,7 @@ import zipfile
 from pathlib import Path
 
 from strata_control import acquisition
+from strata_control import draft_layer
 
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
@@ -5416,6 +5417,9 @@ def carry_over(old: dict, cfg: dict) -> list[str]:
             nv["mmproj"] = mm
             kept.append("vision mmproj")
     kept += carry_profile_args(old, cfg)
+    off = draft_layer.apply(cfg)                       # "mtp": false was the user's (a key setup does not write): the new args honour it
+    if off:
+        kept.append("mtp off (" + " ".join(off) + " left out of args)")
     return kept
 
 
@@ -7142,6 +7146,10 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
+    ap.add_argument("--mtp", choices=["on", "off"],
+                    help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
+                         "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "
+                         "(\"mtp\": false) and a later setup run does not undo it. on: back to the default")
     ap.add_argument("--parallel", type=int, metavar="N",
                     help="up to N requests decode together (batch slots, opt-in; default: one at a time, the others "
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
@@ -8210,6 +8218,15 @@ def main() -> int:
         cfg["draft_vocab"] = draft_vocab
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
+    if a.mtp is not None:                              # written only when given (else an earlier choice is carried over)
+        if a.mtp == "off":
+            cfg["mtp"] = False
+            removed = draft_layer.apply(cfg)
+            ok("the draft layer (MTP) is off for this model" + (f" ({' '.join(removed)} left out)" if removed else "") +
+               ": less graphics memory and RAM, slower words per second. `--mtp on` turns it back on")
+        else:
+            cfg["mtp"] = True                          # explicit, so carry_over does not bring an earlier false back
+            ok("the draft layer (MTP) is on")
     # #465: requests at once - written only when given (else an earlier "parallel" is carried over); a recommendation
     streaming = "--kv-resident" in args
     if a.parallel is not None:

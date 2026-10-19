@@ -230,6 +230,12 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if log:
         cfg["log"] = log
     apply_cards(cfg, gpus)
+    if s.mtp == "off":                                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
+        from strata_control import draft_layer
+        cfg["mtp"] = False
+        draft_layer.apply(cfg)
+    elif s.mtp == "on":
+        cfg["mtp"] = True
     if s.extra:
         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)

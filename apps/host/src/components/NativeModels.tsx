@@ -97,7 +97,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const shownSize = useRef(selectedSize?.id);
     useEffect(() => { if (shownSize.current !== selectedSize?.id) { shownSize.current = selectedSize?.id; setCardsKey(null); } }, [selectedSize?.id]);
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(expert && gpus.length ? { gpus: gpus.join(',') } : cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, gpus.join(','), cardsGpus.join(','), expert, multiple]);
-    const downloadValues = { ...values, vision: selectedSize?.images ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
+    const downloadValues = { ...values, vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
     useEffect(() => { if (!native?.catalog || family)
         return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const have = new Set((native.installed?.models ?? []).filter(m => m.ready).map(m => m.model)); const installedFamily = families.find(f => f.sizes.some(s => have.has(s.id))); const f = loadedFamily ?? installedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
         setFamily(f.family);
@@ -147,7 +147,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         setPending(false);
     } }
     async function load() { if (!selectedSize)
-        return; await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
+        return; await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
         const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', multiple: expert && multiple, ...(expert && gpus.length ? { gpus, layerSplit: split } : cardsGpus.length ? { gpus: cardsGpus } : {}), values: {} } });
         setJobId(result.id);
     }
@@ -175,7 +175,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
       <div className="native-version"><VersionPicker versions={allSizes} selectedId={selectedSize.id} hardware={fitHardware} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
       {tr(noFit ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("May run slower \u00B7 Model data can be read from SSD.")}</p> : null)}
       <div className="native-choice__row">
-       <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={(native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={n => setContext(Number(n))}/></div>
+       <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144], context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => setContext(Number(n))}/></div>
        <div className="native-choice__col"><span className="native-choice__label">{tr("Computer use")}</span><div className="native-resource-choice"><button aria-pressed={resourceProfile === 'work'} data-selected={resourceProfile === 'work'} onClick={() => setResourceProfile('work')}><Icon name="computer" size={20}/><span><strong>{tr("Leave 20% for my work")}</strong><small>{tr("Headroom for your other apps")}</small></span>{tr(resourceProfile === 'work' ? <Icon name="check" size={15}/> : null)}</button><button aria-pressed={resourceProfile === 'performance'} data-selected={resourceProfile === 'performance'} onClick={() => setResourceProfile('performance')}><Icon name="bolt" size={20}/><span><strong>{tr("Full performance")}</strong><small>{tr("Give Strata priority")}</small></span>{tr(resourceProfile === 'performance' ? <Icon name="check" size={15}/> : null)}</button></div></div>
       </div>
       {tr(cardOptions ? <div className="native-cards"><span className="native-choice__label">{tr("Graphics cards")}</span><div className="native-cards__list" role="radiogroup" aria-label={tr("Graphics cards")}>{cardOptions.options.map(o => { const on = activeCards?.key === o.key; return <button key={o.key} type="button" role="radio" aria-checked={on} data-selected={on} disabled={!!active} className="native-cards__opt" onClick={() => setCardsKey(o.key)}><span className="native-cards__dot" aria-hidden="true"/><span><strong>{gpuNumbers(o.label)}</strong><small data-warn={o.verdict === 'spills' || o.verdict === 'tight' || usedBy(o.cards).length > 0}>{[lessKept(o.words, o.cards), ...o.notes, ...(usedBy(o.cards).length ? [tr('Already used by {0}', [usedBy(o.cards).join(', ')])] : [])].join('. ')}.</small></span></button>; })}{cardOptions.ignored.length ? <p className="small muted native-cards__note">{`Not used: ${cardOptions.ignored.map(g => `${g.name ?? 'a card'} (${g.why_ignored})`).join('; ')}.`}</p> : null}</div></div> : null)}
@@ -209,6 +209,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
  </Screen>;
 }
 /** setup's "5/7: downloading …" as a sentence a person can read. */
+/** The listed context sizes, plus the model's own when it is a size set by hand in its run config (the select would show nothing, and a load would silently pick another). */
+export function contextChoices(listed: number[], current: number): number[] {
+    return current > 0 && !listed.includes(current) ? [...listed, current].sort((a, b) => a - b) : listed;
+}
 function installStepLabel(step?: string): string {
     const n = Number(step?.match(/^(\d+)\//)?.[1]);
     if (!n)
