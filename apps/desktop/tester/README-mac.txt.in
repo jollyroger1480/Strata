@@ -12,7 +12,7 @@ Checks:  sha256 @SHA256:@APPIMAGE@@
 
 WHAT YOU NEED
 -------------
-* A Mac with Apple silicon (M1 or newer) and macOS 11 or newer. Intel Macs are not supported.
+* A Mac with Apple silicon (M1 or newer) and macOS 15 or newer (the engine needs macOS 15). Intel Macs are not supported.
 * Memory: 32 GB or more is best. The model list shows what fits your Mac.
 * Disk: about 1 GB for the app, plus 40 to 70 GB for each model you download.
 
@@ -26,6 +26,9 @@ START IT
    on where it stopped if it is interrupted.
 
 Closing the window stops Strata and its engine.
+
+Pictures: this Mac build has no picture reader yet, so models read text only here. Picture input works on the Windows and
+Linux builds.
 
 
 @INCLUDE:common-gatekeeper-mac.txt@

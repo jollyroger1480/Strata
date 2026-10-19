@@ -79,7 +79,10 @@ WHAT WE TESTED AND WHAT WE DID NOT
 * TESTED by us: this engine on an AMD Radeon AI PRO R9700 (RDNA4, the same chip family, gfx1201, as the RX 9070 XT) under Ubuntu 24.04: it loads a
   model, answers, runs tool calls, and stops cleanly, from the app's host and from the terminal app.
 * NOT tested by us: an RX 9070 XT itself, CachyOS, the app window on a real desktop (our test box has no screen). A failure on your computer is a finding we want.
-* Pictures (image input) do not work on AMD cards in this build; leave them off.
+* Pictures (image input) are on by default. The picture reader runs on the processor (CPU) for a card under 24 GB, so your 16 GB RX 9070 XT
+  uses the CPU reader (a few seconds per picture, nothing taken from the card's memory). The graphics-card reader (strata-vision-hip, for
+  gfx1200 / gfx1201) is in this build for cards of 24 GB and up; we tested it on the 32 GB R9700 (0.06 s for a small picture against 3.1 s on the
+  CPU) and tested the CPU reader. If the card's reader cannot start, Strata uses the CPU reader by itself. You can switch it per model.
 * Speed is not final; treat the numbers as a baseline.
 
 
