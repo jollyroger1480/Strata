@@ -29,6 +29,7 @@ agents. Nothing leaves your PC.
 - **Works with your tools.** It speaks the OpenAI and Anthropic APIs, so Claude Code, Codex CLI, OpenCode and other agents connect to it.
 - **Reads pictures.** They are on by default.
 - **Free.** MIT license, no account, no cloud.
+- **Private.** No telemetry. What Strata downloads, when it uses the internet and how it checks downloads is in [docs/SAFETY.md](docs/SAFETY.md).
 
 Version 0.2.0-beta · engine 0.1.45.3
 
