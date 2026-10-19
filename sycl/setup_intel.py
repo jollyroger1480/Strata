@@ -7,10 +7,14 @@ it and replaces the few steps that are NVIDIA/AMD-specific, then runs setup's ow
 model choice, the download, the pack, the tokenizer, the MTP draft layer, the context and KV questions - is
 setup.py's, unchanged.  What is replaced:
 
-  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally and has no
-    images), named and sized from sysfs;
+  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally), named and
+    sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
+  - pictures: on by default, read by the portable CPU reader (`strata-vision`, the program the AMD packages carry beside
+    their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
+    /dev/shm, which strata-sycl.sh shares with the container.  A SYCL GPU reader does not exist yet, so "gpu" is read as "cpu"
+    here; --vision no is the off switch;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
     (--stream-experts), so RAM only bounds the KV streaming;
   - the config: the container's paths, the SYCL flags, backend "sycl"; the run script starts
@@ -20,14 +24,11 @@ When setup.py changes the steps this relies on, this stops with a message rather
 """
 from __future__ import annotations
 
-import atexit
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +120,15 @@ def drop(args, name, value=False):
     while name in args:
         i = args.index(name)
         del args[i:i + 1 + int(value)]
+
+
+READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: BUILD.json and, for pictures, the CPU reader strata-vision
+
+
+def intel_vision(asked, vram_gb: float = 0.0) -> str:
+    """The picture reader wanted on an Intel Arc: "none" when switched off, else "cpu" (the only reader the SYCL port has; a
+    SYCL GPU reader is later work).  Takes setup.hip_vision's arguments."""
+    return "none" if str(asked or "").lower() in ("no", "none", "off") else "cpu"
 
 
 SYCL_PROFILE = "expert-profile-sycl.bin"   # data/: the xe cards' expert ranking (to_sycl)
@@ -222,7 +232,7 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         if flag(args, "--prefill") in (None, "auto", "2048", "4096", "8192"):
             drop(args, "--prefill", True)
             args += ["--prefill", str(recommended_prefill(vram_gb, ctx, driver, devid)[0])]
-    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
+    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpus")}   # "vision" stays: the CPU reader runs on the host
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
     if alchemist:
@@ -264,9 +274,13 @@ def install(argv) -> None:
             keep[p.name] = {k: c[k] for k in ("model_switcher", "sampling") if k in c}
         except (OSError, ValueError):
             pass
-    stub = Path(tempfile.mkdtemp(prefix="strata-sycl-"))  # setup reads the engine's BUILD.json; the SYCL build has none
-    atexit.register(shutil.rmtree, stub, True)
-    (stub / "BUILD.json").write_text(json.dumps({"version": sycl_version(), "source": "local", "lib_dirs": []}))
+    stub = READER_DIR                                   # setup reads the engine's BUILD.json; the SYCL build has none.  A folder that
+    stub.mkdir(exist_ok=True)                           # stays: the picture reader in it is what the run config points at
+    try:
+        stamped = json.loads((stub / "BUILD.json").read_text(encoding="utf-8"))   # keeps what the reader's build recorded
+    except (OSError, ValueError):
+        stamped = {}
+    (stub / "BUILD.json").write_text(json.dumps({**stamped, "version": sycl_version(), "source": "local", "lib_dirs": []}))
 
     say = S.say
     fake_ram = max(real_ram, 1024.0)
@@ -294,8 +308,15 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked, vram_gb=0.0: "none"                 # images are not wired on the SYCL port yet
-    S.build_engine_hip = lambda *a, **k: stub
+    S.hip_vision = intel_vision                         # pictures on by default, read on the CPU (setup's hip_reader settles it)
+
+    def build_engine_hip(gpu, llama, vision="none"):
+        """No engine to compile here (the SYCL build is separate); the picture reader is: the portable CPU reader, once."""
+        if vision != "none":
+            stamp = stub / "BUILD.json"
+            S.build_vision_cpu(stub, stamp, json.loads(stamp.read_text(encoding="utf-8")), llama, S.source_hash(S.VISION_SOURCES))
+        return stub
+    S.build_engine_hip = build_engine_hip
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
 
@@ -376,8 +397,6 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv:
-        sys.argv += ["--vision", "none"]
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())
