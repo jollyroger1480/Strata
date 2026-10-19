@@ -11,7 +11,7 @@ setup.py's, unchanged.  What is replaced:
     sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
-  - pictures: on by default, read by the portable CPU reader (`strata-vision`, the program the AMD packages carry beside
+  - pictures (opt-in for now, see PICTURES_ON_BY_DEFAULT): read by the portable CPU reader (`strata-vision`, the program the AMD packages carry beside
     their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
     /dev/shm, which strata-sycl.sh shares with the container.  A SYCL GPU reader does not exist yet, so "gpu" is read as "cpu"
     here; --vision no is the off switch;
@@ -121,6 +121,12 @@ def drop(args, name, value=False):
         i = args.index(name)
         del args[i:i + 1 + int(value)]
 
+
+# Pictures on an Intel Arc work end to end up to the engine (the CPU reader encodes, the embeddings reach the container through /dev/shm)
+# but the first picture request on the Arc Pro B70 (engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU: the xe driver logged an engine
+# reset (ccs + bcs) and "Fault response: Unsuccessful -EINVAL", and the request ended 503.  Until the SYCL engine's vision path is fixed
+# pictures stay opt-in here (--vision yes); flip this to True to make them the default like on the other makes of card.
+PICTURES_ON_BY_DEFAULT = False
 
 READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: BUILD.json and, for pictures, the CPU reader strata-vision
 
@@ -397,6 +403,8 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
+    if "--vision" not in argv and not PICTURES_ON_BY_DEFAULT:
+        sys.argv += ["--vision", "none"]
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())

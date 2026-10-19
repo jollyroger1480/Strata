@@ -223,8 +223,8 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.small_card(10.0, "xe"))
         self.assertFalse(m.small_card(32.0, "xe"))
 
-    def test_pictures_are_on_by_default_read_on_the_cpu_and_the_vision_section_survives(self):
-        """Intel Arc: the CPU reader (strata-vision) on the host, --vision no is the off switch; "gpu" is read as "cpu" (no SYCL GPU reader)."""
+    def test_pictures_asked_for_are_read_on_the_cpu_and_the_vision_section_survives(self):
+        """Intel Arc: the CPU reader (strata-vision) on the host when asked for (--vision yes); "gpu" is read as "cpu" (no SYCL GPU reader)."""
         m = self.mod()
         for asked in (None, "yes", "gpu", "cpu", "on"):
             self.assertEqual(m.intel_vision(asked, 8.0), "cpu")
@@ -239,9 +239,12 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["vision"], section)                              # host paths: the reader runs on the host, not in the container
         self.assertIn("--vision", c["args"])
 
-    def test_setup_intel_no_longer_forces_pictures_off(self):
+    def test_pictures_are_opt_in_on_the_arc_until_the_engine_fault_is_fixed(self):
+        """The first picture on the Arc Pro B70 hung the GPU (xe engine reset, 2026-10-19): off unless asked, --vision yes turns it on."""
+        m = self.mod()
+        self.assertFalse(m.PICTURES_ON_BY_DEFAULT)
         src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
-        self.assertNotIn('sys.argv += ["--vision", "none"]', src)
+        self.assertIn('if "--vision" not in argv and not PICTURES_ON_BY_DEFAULT:', src)
         self.assertIn("S.hip_vision = intel_vision", src)
         self.assertIn("S.build_vision_cpu(", src)                           # the CPU reader is compiled by setup's own step
 
