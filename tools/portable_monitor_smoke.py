@@ -117,7 +117,7 @@ def _server() -> tuple[ThreadingHTTPServer, list[str], threading.Event]:
                 "topology": {"mode": "single", "selected_devices": []},
                 "rates": {"output_tokens_server_counter": 0},
                 "devices": [], "quality": {"telemetry": "available"},
-            }).encode() if not malformed.is_set() else b"[" * 1100 + b"0" + b"]" * 1100
+            }).encode() if not malformed.is_set() else b"[" * 100000 + b"0" + b"]" * 100000
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
