@@ -840,6 +840,16 @@ For comparison on the same machine: llama.cpp (3cf0325, ROCm) on the same Coder 
 same gfx906 ISA; not run), a single-card run, the tensor-split experiment (the halves of every layer on two cards;
 it works but is not part of this build).
 
+**Two cards: try `--pipeline-windows 2` (community measurement, #3173; off by default on gfx906).** On 2x Instinct MI50 16 GB
+(Ryzen 7 5700X, 64 GB DDR4-3600, ROCm 7.14 from the community image, engine 0.1.43.1) with the original IQ3_XXS at 131,072 tokens
+of context, `--layer-split 27`, `--spec 3 --kv int8 --kv-resident 32768`, median of 7 runs (1.6K-token prompt, 128 greedy tokens):
+decode 49.2 tok/s without it, 66.9 with `--pipeline-windows 2` (+36%); the prompt speed stayed 353 tok/s. The first card starts the
+next verify window while the second still verifies this one ([MULTI_GPU.md](MULTI_GPU.md)). On RDNA4 the tokens are the serial
+loop's up to CPU rounding; nobody has compared them on gfx906 yet. Add `--trim-stage-weights` (with the explicit `--layer-split`): prompt reading 353 -> 371 tok/s, decode +2%.
+In the config: `"args": [ ..., "--pipeline-windows", "2", "--trim-stage-weights" ]`. One machine, one model, one run protocol: measure it
+on yours (`--pipeline-windows 0` is the plain loop) before you keep it. `--batch` did not help one user there (aggregate 20 -> 23 tok/s
+at two requests, each request slower), so leave it off for a single interactive user.
+
 ## Tuning table
 
 A hipBLASLt table holds solution ids that are valid only for one GPU architecture and one hipBLASLt version, so it
