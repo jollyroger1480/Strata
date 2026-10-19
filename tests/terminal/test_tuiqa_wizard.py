@@ -198,7 +198,7 @@ class InstalledModelFolder(Base):
         ctx.settings.family, ctx.settings.model, ctx.settings.vision = "qwen", "IQ3_XXS", "cpu"
 
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter")                       # Start -> Model (Enter) -> Folder
+            await press(pilot, "enter", "up", "enter")                 # Start -> Model (up: IQ3_XXS, the 64 GB tier pre-selects IQ3_S) -> Folder
             self.assertEqual(app.current, "folder")
             field = app.screen.query_one("#folderpath")
             self.assertEqual(Path(field.value).resolve(), docs.resolve())
@@ -217,7 +217,7 @@ class InstalledModelFolder(Base):
         ctx.settings.family, ctx.settings.model, ctx.settings.vision = "qwen", "IQ3_XXS", "cpu"
 
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter")
+            await press(pilot, "enter", "up", "enter")                 # up: IQ3_XXS (IQ3_S is pre-selected)
             shown = flat(app)
             self.assertIn("Already downloaded", shown)
             self.assertIn("Nothing more to download", shown)
