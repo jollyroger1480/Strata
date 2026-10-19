@@ -102,6 +102,8 @@ int main(int argc, char** argv) {
         else if (a == "--version") {
 #ifdef STRATA_VISION_HIP
             std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
+#elif defined(STRATA_VISION_METAL)
+            std::printf("strata-vision metal\n");
 #else
             std::printf("strata-vision\n");
 #endif
@@ -157,6 +159,23 @@ int main(int argc, char** argv) {
             !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
             std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)\n", g_gfx.front().c_str(),
                         STRATA_VISION_HIP_ARCHS);
+            std::fflush(stdout);
+            return 3;
+        }
+    }
+#endif
+#ifdef STRATA_VISION_METAL
+    if (gpu) {
+        // The Mac: the same program reads on the GPU (--gpu, ggml's Metal backend) or on the CPU.  With --gpu and no Metal device (a
+        // virtual machine without a GPU, say), mtmd would quietly use the CPU, which reads a picture in ~50 s: say so instead, and
+        // the server starts the program again without --gpu (serve/server.py, Vision._start) with one log line.
+        bool have_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        }
+        if (!have_gpu) {
+            std::printf("ERR this Mac has no Metal GPU for the picture reader\n");
             std::fflush(stdout);
             return 3;
         }

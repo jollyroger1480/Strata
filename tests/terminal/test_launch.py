@@ -333,6 +333,23 @@ class SetupArgs(unittest.TestCase):
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
 
+    def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
+        for gb in (16.0, 32.0, 128.0):
+            hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
+                  "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": gb},
+                  "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": gb, "usable": True}]}
+            with Home():
+                cat = catalog(hw)
+                with mock.patch.object(type(cat), "reader_state", lambda self: "present"):
+                    self.assertTrue(cat.is_mac())
+                    self.assertEqual(cat.picture_default(True), "gpu", gb)
+                    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=cat)
+                    with mock.patch.object(sys, "platform", "darwin"):
+                        args = r.setup_args()
+                    self.assertEqual(args[args.index("--vision") + 1], "gpu", gb)
+                with mock.patch.object(type(cat), "reader_state", lambda self: "missing"):
+                    self.assertEqual(cat.picture_default(True), "off")
+
     def test_a_model_that_cannot_read_pictures_stays_off_without_a_question(self):
         import dataclasses
         with Home():

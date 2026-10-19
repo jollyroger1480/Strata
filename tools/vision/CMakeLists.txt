@@ -23,6 +23,7 @@ endif()
 if(STRATA_VISION_HIP AND NOT STRATA_VISION_HIP_ARCHS)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_HIP needs STRATA_VISION_HIP_ARCHS, for example \"gfx1200;gfx1201\"")
 endif()
+option(STRATA_VISION_METAL "a Mac: ggml's Metal backend in the program, so --gpu reads pictures on the Mac's GPU (OFF: CPU only)" ON)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -62,6 +63,15 @@ endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
+if(APPLE)
+  # One program for both readers: strata-vision --gpu runs the encoder on the Metal GPU, without --gpu on the CPU (Apple Silicon always
+  # has the Metal framework, the engine needs it too).  The Metal shaders are embedded in the binary and compiled by macOS when the
+  # reader starts, so nothing but the program has to be shipped.  No -march flag: the default target (an M1) runs on every Apple
+  # Silicon Mac, and ggml's CPU path has no BF16 vector kernel on ARM (measured on an M4: the same ~50 s for a 260-token picture with
+  # -march=armv8.6-a+bf16+i8mm as without), so a faster target would only risk the M1.
+  set(GGML_METAL ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
+  set(GGML_METAL_EMBED_LIBRARY ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
+endif()
 if(STRATA_VISION_HIP)
   # the engine's HIP build says the same (cmake/hip_backend.cmake); ggml-hip reads AMDGPU_TARGETS / CMAKE_HIP_ARCHITECTURES
   set(AMDGPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
@@ -81,6 +91,9 @@ if(STRATA_VISION_HIP)
   set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-hip)
   string(REPLACE ";" "," _hip_archs "${STRATA_VISION_HIP_ARCHS}")
   target_compile_definitions(strata-vision PRIVATE STRATA_VISION_HIP STRATA_VISION_HIP_ARCHS="${_hip_archs}")
+endif()
+if(APPLE AND STRATA_VISION_METAL)
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_METAL)
 endif()
 if(WIN32 AND STRATA_VISION_HIP)
   # hipblas.dll (and rocblas.dll behind it) live in rocm\bin of the engine package: loaded on first use, after main() has put that folder on

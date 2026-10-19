@@ -985,11 +985,12 @@ class Strata:
             d = models[m]
             tag = (fd.get("tag", "") + m).lower()
             sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
-                          "images": False,           # the app's first release reads no pictures (setup.py's Control mode says so)
+                          "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
                           "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
                           "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
                           "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
-        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False, "images": False, "sizes": sizes}]
+        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False,
+                 "images": any(x["images"] for x in sizes), "sizes": sizes}]
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
@@ -1848,9 +1849,9 @@ class Tools:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:
             # owner rule (2026-10-18): pictures are on by default wherever the model can read them and the engine has a reader; setup picks
-            # the reader (strata_control/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card).  A Mac has none yet.
+            # the reader (strata_control/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card; a Mac reads on its GPU).
             can_read = md.get("vision", families[family].get("vision")) is not False
-            vision = "yes" if can_read and not mac else "no"
+            vision = "yes" if can_read else "no"
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
