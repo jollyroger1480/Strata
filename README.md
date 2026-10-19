@@ -275,7 +275,8 @@ off per model, or choose the reader with `--vision off`, `--vision gpu` or `--vi
 
 The numbers behind the rule: on a Radeon AI PRO R9700 the card's reader took 57 ms for a 260-token picture and the
 processor's took 3.1 s. On 16 GB cards (Tesla P100 and RTX A4000, Linux) the card's reader cost 3-5% of text speed,
-because it holds about 1.4 GB that the model would use otherwise. The Mac has no picture reader yet.
+because it holds about 1.4 GB that the model would use otherwise. On a Mac the reader runs on the Mac's GPU whatever its memory (0.45 s for a 260-token picture on an M4 with 32 GB, about 1.2 GB of the shared
+memory); the processor reader needs about 50 s per picture there, so it runs only when you ask for it with `--vision cpu`.
 
 ### Good to know
 

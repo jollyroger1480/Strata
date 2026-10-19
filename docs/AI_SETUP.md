@@ -130,7 +130,7 @@ Notes:
   whether to allow Strata on the network if you used `--access lan`.
 - **AMD on Windows:** only the AMD driver is needed. The AMD engine is a ready-made download. It has not been run with a
   model on a real AMD card on Windows by us: ask the user to report how it runs ([AMD_HIP.md](AMD_HIP.md)).
-- **Mac:** the Metal engine is fetched like any other. There is no picture reader on the Mac yet.
+- **Mac:** the Metal engine is fetched like any other. Pictures are on by default and read on the Mac's GPU ([MAC.md](MAC.md)).
 
 ## 5. While it downloads, tell the user
 

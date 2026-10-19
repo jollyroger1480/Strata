@@ -273,7 +273,8 @@ por modelo, ou escolha o leitor com `--vision off`, `--vision gpu` ou `--vision 
 
 Os números por trás da regra: numa Radeon AI PRO R9700, o leitor da placa levou 57 ms para uma imagem de 260 tokens e o do
 processador levou 3,1 s. Em placas de 16 GB (Tesla P100 e RTX A4000, Linux), o leitor da placa custou de 3 a 5% da velocidade do texto,
-porque ocupa cerca de 1,4 GB que o modelo usaria de outra forma. O Mac ainda não tem leitor de imagens.
+porque ocupa cerca de 1,4 GB que o modelo usaria de outra forma. No Mac, a GPU faz a leitura, seja qual for a memória (0,45 s para uma imagem de 260 tokens em um M4 de 32 GB, cerca de 1,2 GB da memória compartilhada);
+o processador leva cerca de 50 s por imagem, então só lê com `--vision cpu`.
 
 ### Bom saber
 

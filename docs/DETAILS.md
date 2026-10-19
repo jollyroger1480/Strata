@@ -1631,11 +1631,10 @@ The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://
 (0.9 GB, a 27-layer ViT plus the projector into the language model). Pictures are **on by default** wherever a model can read
 them. The app, `strata launch` and setup use one rule for the reader: the **CPU reader under 24 GB** of graphics memory (nothing is
 taken from the card's memory, so the experts keep their room) and the **graphics card's reader from 24 GB**, on NVIDIA and AMD
-cards. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
+cards; a Mac reads on its GPU (Metal) whatever its memory. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
 (`--vision gpu` or `--vision cpu`). The setup downloads the encoder and puts a small helper (`strata-vision`, from llama.cpp's
 `mtmd` library) beside the engine; it adds it to your start script. Nothing else changes. Where a reader is missing, pictures
-stay off and the screen says so: the Mac app and the Mac Terminal have no picture reader yet, and neither has the Intel Arc
-engine. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
+stay off and the screen says so: the Intel Arc engine has none yet. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
 starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 
 | Encoder on | Time per picture | Cost |
