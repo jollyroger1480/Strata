@@ -217,7 +217,7 @@ def smoke(bundle: Path, *, interactive: bool = False) -> dict:
         worker.join(timeout=5)
 
     if (paths[:2] != ["GET /v1/telemetry", "GET /v1/telemetry"] or
-            any(path != "GET /v1/telemetry" for path in paths) or
+            any(path not in ("GET /v1/telemetry", "GET /metrics") for path in paths) or     # the interactive Overview also reads /metrics (404 here: it keeps the earlier Overview)
             (interactive and len(paths) < 4) or (not interactive and len(paths) != 3)):
         raise RuntimeError(f"unexpected client HTTP operations: {paths}")
     report = {"schema_version": 1, "scope": "portable_monitor_stdlib_smoke",
