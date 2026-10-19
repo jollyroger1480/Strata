@@ -6,23 +6,31 @@ makers' compressions). It also runs a smaller model, [Qwen3.6-35B-A3B](#qwen36-3
 (`strata launch`) and the installer recommend one for your PC; this page explains the choice. Back to the
 [README](../README.md).
 
-> **On this page:** [Pick by RAM](#pick-by-ram) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
+> **On this page:** [Pick by memory](#pick-by-memory) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
 > [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Qwen3.6](#qwen36-35b-a3b) ·
 > [Adding another model](#adding-or-switching-models)
 
-## Pick by RAM
+## Pick by memory
 
-| Your RAM | Take | Why |
+The tiers count RAM and VRAM (the graphics card's memory) together, the same as the [README](../README.md#the-other-sizes).
+`strata launch`, setup and the install tool of the MCP server pre-select by them; the desktop app does from 0.2.1. Every
+other size stays a choice. A PC with a card of 12 GB and 32 GB of RAM is in the 40 GB tier (32 + 12 = 44).
+
+| Your memory (RAM + VRAM) | Pre-selected | Notes |
 | --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
-| **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
-| **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS or UD-Q4_K_XL](#unsloths-files-ud-iq4_xs-to-q8_0) (~4-bit) | room for the largest sizes |
-| **128-192 GB** | [Unsloth's UD-Q5_K_XL, UD-Q6_K_XL or Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0) | every expert of the 5-8-bit files in RAM |
+| **32 GB** | **Gyro-S**, or the **Coder** for code | The Coder needs 32 GB of RAM and keeps half of the experts, so it is weaker outside code ([why](#coder)). Gyro-S has lower quality than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster |
+| **40 GB** | **Swift 1.5** IQ2_XS (39.2 GB) | Gyro-M (35 GB) is the other choice: close to IQ3_XXS in quality, but it writes answers 17-21% slower than Q2_0. Gyro runs on NVIDIA and AMD cards, not on Intel Arc or the Mac |
+| **48 GB** | **IQ3_XXS** (47.0 GB) | Slower, better |
+| **64 GB** | **IQ3_S** (54.8 GB), the original. Swift 1.5's IQ3_S is an equal choice | The slowest, the best: it matches the full model on the published tests |
+| **96 GB or more** | [Unsloth's UD-IQ4_XS to Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0), 4 to 8 bit | UD-IQ4_XS keeps every expert in RAM from about 80 GB of RAM, Q8_0 from about 136 GB. Up to 192 GB, the 5-8-bit files fit in RAM. Setup still pre-selects IQ3_S here, except on a Strix Halo |
 
-Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
-chosen on code data, so it is weaker outside code and in languages other than English. For general use, or whenever
-your RAM allows, take a full model (Q2_0, IQ2_XS or IQ3_S).
+With less memory than a row says, Strata's [low-RAM mode](#a-big-graphics-card-and-little-ram) starts by itself and the
+model runs slower, much slower with a small card. The figures above are RAM + VRAM; [Will it fit?](#will-it-fit) counts
+RAM alone, for the sizes that keep their experts in RAM.
+
+Not sure? Take what the installer pre-selects. The Coder fits a 32 GB PC, but it keeps only 256 of the 512 experts,
+chosen on code data, so it is weaker outside code and in languages other than English. For general use, take a full
+model (Q2_0, IQ2_XS or IQ3_S) whenever your memory allows.
 
 ## How fast is each size
 
@@ -68,7 +76,7 @@ in a pull request.
 | Model | RAM+VRAM Requirements | Speed | Quality |
 | --- | ---: | --- | --- |
 | **Q2_0** | 37.6 GB | fastest | good |
-| **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
+| **IQ2_XS** | 39.2 GB | fast | better (**recommended** at 40 GB, as Swift 1.5) |
 | **IQ3_XXS** | 47.0 GB | slower | great |
 | **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests |
 

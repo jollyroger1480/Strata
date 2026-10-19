@@ -242,7 +242,7 @@ class Protocol(FakeRoot):
         call = r[3]["result"]
         self.assertFalse(call["isError"])
         self.assertIn("families", call["structuredContent"])
-        self.assertEqual(json.loads(call["content"][0]["text"])["recommendation"]["model"], "IQ3_XXS")
+        self.assertEqual(json.loads(call["content"][0]["text"])["recommendation"]["model"], "IQ3_S")
         self.assertEqual(r[4]["result"], {})
         self.assertNotIn(None, r)                       # the notification got no answer
 
@@ -377,7 +377,7 @@ class Install(FakeRoot):
         res, err = self.call("strata_install", {})
         self.assertFalse(err)
         self.assertIn("Nothing was done yet", res["summary"])
-        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_XXS", 32768))
+        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 32768))
         self.assertFalse((self.root / "setup-args.json").exists())
         self.assertIsNone(self.strata.install_job())
 
@@ -641,7 +641,7 @@ class Helpers(unittest.TestCase):
     def test_recommendation_follows_ram(self):
         s = M.Strata(HERE.parent)
         gpu = [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}]
-        cases = {96: ("qwen", "IQ3_XXS", 131072), 48: ("qwen", "Q2_0", 131072), 32: ("coder", "IQ1_M", 131072)}
+        cases = {96: ("qwen", "IQ3_S", 131072), 48: ("qwen", "IQ3_S", 131072), 32: ("qwen", "IQ3_XXS", 131072), 12: ("coder", "IQ1_M", 131072)}   # the owner's tiers count RAM + VRAM (24 GB card): 120, 72, 56 GB; the Coder where the older rules stand
         for ram, want in cases.items():
             r = s.recommend({"ram_gb": ram, "gpus": gpu, "cpu": {"avx2": True}})
             self.assertEqual((r["family"], r["model"], r["context"]), want, ram)
@@ -732,7 +732,7 @@ class MacCatalog(unittest.TestCase):
         s = M.Strata(HERE.parent)
         r = s.recommend({"ram_gb": 96, "gpus": [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}],
                          "cpu": {"avx2": True}})
-        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_S"))
         self.assertIn("unsloth", [f["family"] for f in s.model_table({"ram_gb": 96, "gpus": []})])
 
 
