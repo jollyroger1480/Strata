@@ -3279,5 +3279,7 @@
   "s7338": "No model is loaded. Load one in Models first.",
   "s7339": "Starting the assistant…",
   "s7340": "The assistant could not start. Try again in a moment.",
-  "s7341": "Working on the goal…"
+  "s7341": "Working on the goal…",
+  "s8001": "the pick for this PC",
+  "s8002": "the other choice"
 }
