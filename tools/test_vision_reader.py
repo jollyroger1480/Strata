@@ -35,6 +35,28 @@ class Choose(unittest.TestCase):
                                   ("no", 32, "none"), ("off", 12, "none")):
             self.assertEqual(VR.wanted(asked, vram), want, (asked, vram))
 
+    def test_an_intel_arc_keeps_the_cpu_reader_by_default_and_gpu_is_asked_for(self):
+        """The one exception to the 24 GB rule: the SYCL reader has run on a 8 GB A750 only (INTEL_GPU_READER_BY_DEFAULT)."""
+        self.assertFalse(VR.INTEL_GPU_READER_BY_DEFAULT)
+        for vram in (8, 16, 24, 32):
+            self.assertEqual(VR.default_mode(vram, "intel"), "cpu")
+            self.assertEqual(VR.wanted("yes", vram, "intel"), "cpu")
+            self.assertEqual(VR.wanted("gpu", vram, "intel"), "gpu")
+        self.assertEqual(VR.wanted("yes", 32), "gpu")                        # other makes: unchanged
+        with mock.patch.object(VR, "INTEL_GPU_READER_BY_DEFAULT", True):
+            self.assertEqual(VR.default_mode(32, "intel"), "gpu")
+            self.assertEqual(VR.default_mode(8, "intel"), "cpu")              # with the exception off, the 24 GB rule is the same as for every make
+
+    def test_the_sycl_reader_is_the_gpu_reader_of_an_intel_folder(self):
+        d = folder("strata-vision", "strata-vision-sycl")
+        r = VR.choose(d, "gpu", windows=False)
+        self.assertEqual((r.mode, r.exe.name, r.cpu_exe.name), ("gpu", "strata-vision-sycl", "strata-vision"))
+        self.assertEqual(VR.vision_section(r, {"mmproj": "m"})["gpu"], True)
+        r = VR.choose(folder("strata-vision"), "gpu", windows=False)         # no SYCL reader built: the CPU one, said
+        self.assertEqual((r.mode, r.exe.name), ("cpu", "strata-vision"))
+        self.assertIn("no GPU picture reader", r.note)
+        self.assertEqual(VR.choose(d, "cpu", windows=False).exe.name, "strata-vision")
+
     def test_hip_present_gives_the_gpu_reader_with_the_cpu_one_to_fall_back_on(self):
         d = folder("strata-vision", "strata-vision-hip")
         for ask in ("yes", "on", "gpu"):
