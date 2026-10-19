@@ -3281,5 +3281,10 @@
   "s7340": "Não foi possível iniciar o assistente. Tente novamente em instantes.",
   "s7341": "Trabalhando no objetivo…",
   "s8001": "a escolha para este PC",
-  "s8002": "a outra opção"
+  "s8002": "a outra opção",
+  "s7400": "O assistente quer pesquisar na web: {0}. As palavras da pesquisa vão para {1}.",
+  "s7401": "O assistente quer abrir a página web {0}. O site da página vê a solicitação.",
+  "s7402": "Deixar o assistente pesquisar na web sem perguntar",
+  "s7403": "No modo Manual, o assistente pergunta uma vez por chat antes de pesquisar na web ou abrir uma página web. Ative para pular essa pergunta.",
+  "s7404": "DuckDuckGo, ou Bing quando o DuckDuckGo está ocupado"
 }
