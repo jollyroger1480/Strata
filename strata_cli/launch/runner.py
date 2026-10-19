@@ -275,6 +275,14 @@ def launch_dir() -> Path:
 
 # ----------------------------------------------------------------------------------------------- the runner
 
+
+def download_text(dl: dict, already: bool) -> str:
+    """The step line for the model download. A model whose files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
+    if already:
+        return f"Model already downloaded ({dl['total_gb']:.1f} GB), checking the files"
+    return f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+
+
 class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
@@ -602,6 +610,7 @@ class Runner:
         env["PYTHONPATH"] = str(cat.src)
         p = self._spawn(argv, env=env, cwd=str(cat.src))
         lines: list[str] = []
+        already: bool | None = None                          # all the model's files were on disk before this run wrote anything
         folder = str(cat.data_dir() / "models" / cat.tag_of(s.family, s.model))
         total = float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)
         for line in p.stdout:                                # type: ignore[union-attr]
@@ -617,7 +626,10 @@ class Runner:
             prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
             dl = prog.get("download")
             if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
-                self.emit("model", f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB", float(dl["percent"]), step=prog.get("step"))
+                if already is None:
+                    already = float(dl["percent"]) >= 99.5
+                text = download_text(dl, already)
+                self.emit("model", text, float(dl["percent"]), step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))
         code = p.wait()
