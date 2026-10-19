@@ -1596,6 +1596,11 @@ uint64_t gate_cache_room() {
 }
 }
 
+double FileExpertSource::cache_room_ratio() const {
+    const uint64_t total = expert_bytes(), room = gate_cache_room();
+    return total == 0 || room == 0 ? 0.0 : (double) room / (double) total;
+}
+
 void FileExpertSource::gate_capacity() {
     if (!gate_on_ || (gate_win_++ % 16) != 0) return;
     const uint64_t total = expert_bytes(), room = gate_cache_room();
