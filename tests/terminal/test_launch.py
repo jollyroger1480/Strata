@@ -275,6 +275,18 @@ class RunConfig(unittest.TestCase):
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertEqual(self.BASE["args"][-1], "auto")               # the installed config is never edited
 
+    def test_mtp_off_leaves_the_draft_layer_out_of_this_launch_only(self):
+        base = {**self.BASE, "args": [*self.BASE["args"], "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/m/rt"]}
+        cfg = derive_config(base, S.LaunchSettings(mtp="off"), bool_flags=frozenset())
+        self.assertIs(cfg["mtp"], False)
+        for flag in ("--mtp", "--spec-min-p", "--batch-mtp"):
+            self.assertNotIn(flag, cfg["args"])
+        self.assertEqual(cfg["args"][cfg["args"].index("--spec") + 1], "4")      # prompt lookup keeps its windows
+        self.assertIn("--mtp", base["args"])                                      # the installed config is never edited
+        on = derive_config({**base, "mtp": False}, S.LaunchSettings(mtp="on"), bool_flags=frozenset())
+        self.assertIs(on["mtp"], True)                                            # an explicit on beats an installed off
+        self.assertEqual(derive_config(base, S.LaunchSettings(), bool_flags=frozenset())["args"], base["args"])
+
     def test_local_and_cloudflare_stay_on_loopback_without_a_key(self):
         for kind in ("local", "cloudflare"):
             cfg = derive_config(self.BASE, S.LaunchSettings(access=kind), bool_flags=frozenset())
@@ -658,6 +670,15 @@ class FlagsCommand(unittest.TestCase):
         code, out, _ = run_cli(["--help"])
         self.assertIn("launch", out)
         self.assertIn("connect", out)
+
+    def test_mtp_flag_is_listed_planned_and_copyable(self):
+        code, out, err = run_cli(["launch", "--help"])
+        self.assertIn("--mtp", out)
+        p = self.plan("--model", "q2_0", "--context", "32k", "--vision", "off", "--mtp", "off")
+        self.assertEqual(p["settings"]["mtp"], "off")
+        self.assertIn("--mtp off", p["flags"])
+        code, out, err = run_cli(["launch", "--plan", "--mtp", "maybe"])
+        self.assertNotEqual(code, 0)
 
     def test_vision_help_says_the_picture_rule(self):
         code, out, err = run_cli(["launch", "--help"])

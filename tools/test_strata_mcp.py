@@ -291,7 +291,7 @@ class Validation(FakeRoot):
     def test_install_arguments(self):
         self.assertRejected("strata_install", {"model": "Q9_X"}, "model must be one of")
         self.assertRejected("strata_install", {"family": "llama"}, "family must be one of")
-        self.assertRejected("strata_install", {"context": 12345}, "context must be one of")
+        self.assertRejected("strata_install", {"context": 100}, "context must be between")
         self.assertRejected("strata_install", {"gpus": "0;rm -rf /"}, "gpus=")
         self.assertRejected("strata_install", {"gpus": "0 && calc"}, "gpus=")
         self.assertRejected("strata_install", {"gpu": -1}, "between")

@@ -1520,8 +1520,10 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                        "from the SSD"},
              "model": {"type": "string", "enum": list(models),
                        "description": "the size (quantization): see strata_models"},
-             "context": {"type": "integer", "enum": contexts,
-                         "description": "context length in tokens (more needs more VRAM)"},
+             "context": {"type": "integer", "minimum": 1024, "maximum": 2097152, "examples": contexts,
+                         "description": "context length in tokens (more needs more VRAM). Any whole number works, "
+                                        "for example one typed into a model's run config by hand; the usual sizes are "
+                                        f"{', '.join(str(c) for c in contexts)}"},
              "vision": {"type": "string", "enum": ["no", "yes", "gpu", "cpu"],
                         "description": "let the model read images (~0.9 GB more download). Default yes where the model can "
                                        "read them (not on a Mac): yes = the best reader for this card (the CPU "
