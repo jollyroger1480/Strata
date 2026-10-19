@@ -25,7 +25,18 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 /// matrix-core prompt set is on by default (153-igpu).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);
 
-/// The matrix-core prompt set an integrated GPU takes by default: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
+/// 021-minipc: the matrix-core prompt set changes bits, so it is OFF by default until the owner approves it.  Flip this constant
+/// (one line) to make it the default of the integrated Radeons; STRATA_IGPU_PROMPT_SET=1 / =0 switches it per run either way,
+/// and STRATA_IGPU_DEFAULTS=0 turns it off whatever the constant says.
+inline constexpr bool kIgpuPromptSetDefaultOn = false;
+bool igpu_prompt_set_enabled();
+
+/// 021-minipc: does this device keep the expert arena unregistered (UMA mode) by default?  Exact (no bit changes): only the
+/// Radeon 780M (gfx1103, integrated, Linux).  gfx1150 / gfx1151 are not included: no hardware to measure on, and Strix Halo
+/// has a different firmware.  STRATA_UMA_REGISTER=1 registers the arena as before.
+bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows);
+
+/// The matrix-core prompt set an integrated GPU takes when `igpu_prompt_set_enabled()`: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
 /// STRATA_SELECT_WMMA, STRATA_HC_UPMIX, all "1".  Empty unless `integrated` (hipDeviceProp_t::integrated: the device
 /// shares the host's memory) AND the architecture is one of `igpu_prompt_defaults_arch`: a discrete card of the same
 /// architecture family (RX 7900 XTX gfx1100, R9700 gfx1201, ...) and every CUDA / SYCL build get nothing.  These change

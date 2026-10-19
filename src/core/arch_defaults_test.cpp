@@ -100,6 +100,20 @@ int main() {
         {"CUDA (no gcn name)",                  "",                        true,  false},
     };
     unset("STRATA_IGPU_DEFAULTS");
+    unset("STRATA_IGPU_PROMPT_SET");
+    // 021-minipc: the set changes bits, so with nothing set it is OFF everywhere (the owner flips kIgpuPromptSetDefaultOn)
+    CHECK(!kIgpuPromptSetDefaultOn);
+    CHECK(!igpu_prompt_set_enabled());
+    for (const Mock& m : mocks) CHECK(igpu_default_env(m.gcn, m.integrated).empty());
+    for (const char* k : {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"}) unset(k);
+    CHECK(apply_arch_defaults("gfx1103", true).empty());
+    CHECK(std::getenv("STRATA_HIP_WMMA") == nullptr);
+    // opt-in per run: STRATA_IGPU_PROMPT_SET=1; the rest of the checks below run with it on
+    put("STRATA_IGPU_PROMPT_SET", "1");
+    CHECK(igpu_prompt_set_enabled());
+    put("STRATA_IGPU_DEFAULTS", "0");
+    CHECK(!igpu_prompt_set_enabled());   // the whole-set off switch wins
+    unset("STRATA_IGPU_DEFAULTS");
     for (const Mock& m : mocks) {
         const auto t = igpu_default_env(m.gcn, m.integrated);
         CHECK(t.empty() == !m.expect_on);
@@ -124,6 +138,9 @@ int main() {
     put("STRATA_IGPU_DEFAULTS", "0");
     CHECK(igpu_default_env("gfx1103", true).empty());
     unset("STRATA_IGPU_DEFAULTS");
+    put("STRATA_IGPU_PROMPT_SET", "0");
+    CHECK(igpu_default_env("gfx1103", true).empty());
+    put("STRATA_IGPU_PROMPT_SET", "1");
     // apply: a discrete card sets nothing, an iGPU sets the five, a switch the user set (even to 0) is kept
     const char* five[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
     for (const char* k : five) unset(k);
@@ -138,6 +155,19 @@ int main() {
         CHECK(std::getenv(k) != nullptr && std::string(std::getenv(k)) == "1");
     CHECK(std::getenv("STRATA_HC_UPMIX") != nullptr && std::string(std::getenv("STRATA_HC_UPMIX")) == "0");
     for (const char* k : five) unset(k);
+    unset("STRATA_IGPU_PROMPT_SET");
+    // 021-minipc: UMA mode (the expert arena stays unregistered) is chosen for the Radeon 780M only: gfx1103 + integrated + not Windows
+    unset("STRATA_UMA_REGISTER");
+    CHECK(igpu_uma_arena_default("gfx1103", true, false));
+    CHECK(igpu_uma_arena_default("gfx1103:sramecc-:xnack-", true, false));
+    CHECK(!igpu_uma_arena_default("gfx1103", true, true));      // Windows: not measured
+    CHECK(!igpu_uma_arena_default("gfx1103", false, false));    // a gfx1103 that is not integrated
+    for (const char* g : {"gfx1150", "gfx1151", "gfx1152", "gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030", "gfx11030", "", "gfx90a"})
+        CHECK(!igpu_uma_arena_default(g, true, false));
+    CHECK(!igpu_uma_arena_default(nullptr, true, false));
+    put("STRATA_UMA_REGISTER", "1");
+    CHECK(!igpu_uma_arena_default("gfx1103", true, false));     // the user registers the arena as before
+    unset("STRATA_UMA_REGISTER");
     // both platforms: no Windows guard on the iGPU set (the owner wants it there too; untested on Windows is only said in the log)
     std::printf(fails ? "arch_defaults_test: %d FAILED\n" : "arch_defaults_test: OK\n", fails);
     return fails ? 1 : 0;
