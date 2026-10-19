@@ -29,7 +29,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 4. **Context** (8K to 512K, with the extra memory each costs) and the memory format (`m`: 8-bit or 4-bit).
 5. **Pictures**: only for models that can read them. They are **on by default** (Yes is preselected; `--vision off` or "No" turns them off). It says what it adds (about 0.9 GB:
    the picture-reader file, downloaded with the model through setup's Control mode, the same path the app's "Read pictures" uses). The reader runs on the CPU
-   for a card under 24 GB (a few seconds per picture, nothing taken from the card) and on the graphics card from 24 GB (about 1-1.4 GB kept free), on every make of card; the
+   for a card under 24 GB (a few seconds per picture, nothing taken from the card) and on the graphics card from 24 GB (about 1-1.4 GB kept free), on NVIDIA and AMD cards; the
    rule lives in one place, `strata_control/vision_reader.py`, for setup, `strata launch` and the app's catalog. `--vision gpu` / `--vision cpu` (or the Pictures step) switch it per model. It needs a picture reader beside the engine in the engine package; with an
    engine that has none, pictures default to off and the screen says so in plain words. A model that cannot read pictures stays off with no question.
 6. **Parallel requests**: "fit to your card" (12 GB: 1, 20: 2, 24: 3, 32+: 4) or 1 to 4; a warning if it will not fit.

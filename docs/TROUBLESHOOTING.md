@@ -179,11 +179,11 @@ setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 1
 "this server was started without the vision encoder": the model was set up for text only (someone chose "No", or the
 engine has no picture reader) - run setup again with `--vision yes` (or `--vision gpu` / `--vision cpu`), or switch pictures
 on in the app or on the Pictures step of `strata launch`. Pictures are on by default wherever a model can read them. The
-reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB, on every make of card. Pictures that take
+reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB, on NVIDIA and AMD cards. Pictures that take
 several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU;
 `--vision gpu` (NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the card's reader is `strata-vision-hip`; if it
 cannot start, the server prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with
-the CPU reader. The Mac app, the Mac Terminal and the Intel Arc engine have no picture reader yet.
+the CPU reader. The Mac app and the Mac Terminal have no picture reader yet. On Intel Arc, pictures are off by default for now (`--vision yes` turns them on).
 
 ## AMD cards
 

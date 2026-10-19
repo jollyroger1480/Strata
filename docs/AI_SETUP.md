@@ -107,7 +107,7 @@ The flags (all of them, with examples: `strata launch --help`):
 | `--model-path PATH` | files the user already has: a folder of shards or one `.gguf` file |
 | `--data-dir DIR` | where the 70-120 GB of model files go |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens |
-| `--vision off\|on\|gpu\|cpu` | read pictures. On by default when the model can read them: the reader runs on the CPU for a card under 24 GB and on the GPU from 24 GB, on every make of card. `off` turns it off |
+| `--vision off\|on\|gpu\|cpu` | read pictures. On by default when the model can read them: the reader runs on the CPU for a card under 24 GB and on the GPU from 24 GB, on NVIDIA and AMD cards. `off` turns it off |
 | `--parallel N` | requests answered at the same time, 1 to 8 (default: fit to the card) |
 | `--gpu LIST` | card numbers, e.g. `0` or `0,1` (several cards share the model) |
 | `--tune quick\|thorough\|skip` | find the fastest settings first (default here: `skip`) |
