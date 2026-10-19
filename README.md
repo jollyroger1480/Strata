@@ -23,7 +23,7 @@
 
 Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)**, a 125-billion-parameter model that
 normally needs a server, on a normal PC. It chats, writes code, reads pictures and works with your apps and coding
-agents. Nothing leaves your PC.
+agents. Your chats and files stay on your PC.
 
 - **Runs on a gaming PC.** 32 GB of RAM and graphics memory together is enough to start.
 - **Works with your tools.** It speaks the OpenAI and Anthropic APIs, so Claude Code, Codex CLI, OpenCode and other agents connect to it.

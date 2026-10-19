@@ -131,7 +131,7 @@ HTTPS and the `Niko1221/Strata` release itself. What that means, and how to read
 your PC.
 
 **Code signing.** The Windows installer is not code-signed yet, so Windows shows "Windows protected your PC". The signing and
-Apple notarisation of the Mac builds is set up in `packaging/mac/` and is run by the owner on his Mac. A Mac build that has not
+Apple notarisation of the Mac builds is set up in `packaging/mac/` and runs on the maintainer's Mac. A Mac build that has not
 been notarised shows macOS's "damaged" warning ([MAC.md](MAC.md)).
 
 **What the checks do not cover.** They catch a damaged or swapped download and a feed nobody signed with the release key. They
