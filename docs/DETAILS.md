@@ -270,8 +270,9 @@ engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) w
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
 **Linux file tier, 0.2.0 defaults (zero-copy page-cached experts, io prefetch, the decode gate):** when experts are read
-from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default (an
-`experts.bin` pack, such as the NVFP4 ones, keeps them off unless you set them: not measured there yet).
+from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default
+(0.2.1: an `experts.bin` pack gets io prefetch and the decode gate when the page cache has room for at least 55% of the experts, see below; zero-copy
+does not apply to it, its blob is one range the kernels already read from the mapping).
 (1) **Zero-copy** (`STRATA_COLD_OVERLAP=4`): an expert of a GGUF read in place whose three tensors' pages are all in the page
 cache (mincore) is computed straight from the mapping; before, every such expert was first assembled into a staging buffer
 (a copy of ~1.5 MB per Q2_0 expert, on the decode's critical path). Same bytes, same rows, same output (identity gates
@@ -292,6 +293,9 @@ the container RAM check counts a cgroup's clean page cache (active and inactive)
 host: before, the 18 GiB RAM tier in a 32 GiB cgroup re-checked "1.2 GiB available" once io prefetch's startup reads had left
 their cache in the group, and its file tier switched to unbuffered reads (which also left zero-copy off). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
 `STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged.
+
+**Linux, `experts.bin` packs (0.2.1):** io prefetch and the decode gate are on by default when the page cache has room for at least 55% of the experts
+(the tightest cgroup limit or MemAvailable over the pack's expert bytes, asked once at start; `STRATA_IO_PF_GATE_LO`). Below that the pack reads as before and the log says so; `STRATA_IO_PREFETCH=1` forces it, `0` turns it off. Measured on an RTX 3060 12 GB, IQ3_XXS pack (43 GB `experts.bin`), `--mmap-experts`, cgroup RAM limit, page cache dropped before each engine, 5 interleaved pairs: 32 GB decode 1.38x / 1.21x / 1.33x (story / code / doc8k, 5/5 pairs faster each), prompts 4K 1.04x, 20K 1.06x. At 16 GB io prefetch gave decode +3..8% but the cold 4K prompt 4-6% slower, so it stays off there (room 38%). Identity gates (fixed flags, no RAM limit and a 32 GB cgroup): 10/10 texts, exact_pp 4K / 20K residual dumps IDENTICAL.
 
 **Linux file-tier I/O path (`STRATA_IO_PREFETCH=1`; 0.1.40.2, on by default on Linux since 0.2.0 - see above):** the mapped file tier reads experts through
 page faults. With this on, the layer's uncached experts and the router-predicted ones of the next layer (`STRATA_LOOKAHEAD_K`,
