@@ -117,6 +117,7 @@ FALLBACK_FAMILIES = {
               "tag": "nvfp4-"},
 }
 OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
+MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))   # as setup.py's: RAM + VRAM floors of the owner's 64 / 48 / 40 GB tiers
 GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -1015,7 +1016,23 @@ class Strata:
             except Exception:                           # noqa: BLE001
                 return False
         notes = []
-        if ram >= 60:
+        # 0.2.0, the owner's memory tiers (README "The other sizes"; setup.py MEMORY_TIERS holds the same floors): RAM + VRAM
+        # together.  An APU's shared memory is the RAM itself, so only its BIOS carve-out counts as VRAM.
+        tvram = float(best.get("dedicated_gb", 0.0)) if best.get("uma") else float(vram)
+        tier = next(((f, n) for lo, f, n in MEMORY_TIERS if ram + tvram >= lo), None)
+        if tier and tier[1] in models and tier[0] in families:
+            fam, model = tier
+            total = f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB"
+            if model == "IQ2_XS":
+                why = (f"{total}, the 40 GB tier: Swift 1.5's IQ2_XS (thinks for a shorter time)"
+                       + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 17-21% slower at "
+                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd") else ""))
+            elif model == "IQ3_XXS":
+                why = f"{total}, the 48 GB tier: IQ3_XXS (better quality, slower)"
+            else:
+                why = (f"{total}, the 64 GB tier: IQ3_S (matches the full model, the slowest); Swift 1.5's IQ3_S is an "
+                       "equal choice")
+        elif ram >= 60:
             fam, model, why = "qwen", "IQ3_XXS", f"{ram:.0f} GB of RAM: setup's own pick from 60 GB (better quality)"
         elif ram >= models["Q2_0"]["ram_gb"] - 4:
             fam, model, why = "qwen", "Q2_0", f"{ram:.0f} GB of RAM: the full model's fastest size fits"

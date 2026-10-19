@@ -109,7 +109,11 @@ class RecommendedSizes(unittest.TestCase):
     def test_without_the_ram_the_largest_that_fits_and_iq3_s_stays_marked(self):
         n = self.names("qwen")
         self.assertEqual(setup.recommended_size("qwen", n, 61.0), "IQ3_XXS")      # IQ3_S needs 62 GB
-        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ3_XXS")      # 48 GB tier (RAM + VRAM)
+        self.assertEqual(setup.recommended_size("qwen", n, 40.0, 8.0), "IQ3_XXS")  # 40 + 8 = 48 GB together
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 12.0), "IQ2_XS")  # 44 GB: the 40 GB tier
+        self.assertEqual(setup.recommended_size("swift", self.names("swift"), 32.0, 12.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 32.0), "IQ3_S")   # 64 GB together
         self.assertEqual(setup.size_tag("qwen", "IQ3_S"), " (recommended)")
 
     def test_coder_has_nothing_marked(self):

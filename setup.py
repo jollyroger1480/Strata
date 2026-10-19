@@ -2550,10 +2550,40 @@ def mem_have(model: str, ram: float, vram: float = 0.0) -> float:
     return ram + vram if MODELS[model].get("mem_total") else ram
 
 
+# 0.2.0, the owner's memory tiers (README "The other sizes"): RAM + VRAM together pick the size.  The floors sit 2 GB
+# below the tiers' names (40 / 48 / 64 GB) because the OS reports a little less than the installed memory.  64 GB and
+# up: IQ3_S (the original; Swift 1.5's IQ3_S is an equal choice), 48 GB: IQ3_XXS, 40 GB: Swift 1.5's IQ2_XS, with Gyro-M
+# (35 GB) as the other choice.  Below 40 GB the older rules stand (Gyro-S, or the Coder for code).  The Mac has its own
+# rules (strata_control/mac_fit.py).  tools/strata_mcp.py's recommend() holds the same floors (the app and `strata launch`).
+MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))
+
+
+def tier_pick(ram: float, vram: float = 0.0):
+    """(family, size) for this PC's RAM + VRAM by MEMORY_TIERS, or None below the lowest tier (then the older rules pick:
+    Gyro-S, or the Coder).  With less RAM than the size's own figure the low-RAM mode starts by itself and the model is
+    slower.  A recommendation: every size stays a choice."""
+    for floor, fam, m in MEMORY_TIERS:
+        if ram + vram >= floor:
+            return fam, m
+    return None
+
+
+def tier_note(ram: float, vram: float = 0.0, gyro: bool = True) -> str:
+    """The sentence under the model menu for the lowest tier: Gyro-M is the other choice there (NVIDIA and AMD only)."""
+    pick = tier_pick(ram, vram)
+    if not gyro or pick != ("swift", "IQ2_XS"):
+        return ""
+    return ("this PC's RAM + VRAM is in the 40 GB tier: Swift 1.5's IQ2_XS is the pick; Gyro-M (35 GB) is the other choice, "
+            "close to IQ3_XXS in quality but 17-21% slower at writing answers than Q2_0")
+
+
 def recommended_size(family: str, names: list, ram: float, vram: float = 0.0) -> str:
-    """The size the menu pre-selects (and --yes takes): the family's recommended size when this PC's RAM fits it
-    (UD-Q4_K_XL before UD-IQ4_XS), else the largest size that fits, else the first.  Recommend, never force: every
-    other size stays a choice."""
+    """The size the menu pre-selects (and --yes takes): the memory tier's size (RAM + VRAM, MEMORY_TIERS) when this
+    family has it, else the family's recommended size when this PC's RAM fits it (UD-Q4_K_XL before UD-IQ4_XS), else
+    the largest size that fits, else the first.  Recommend, never force: every other size stays a choice."""
+    tier = tier_pick(ram, vram)
+    if tier and tier[1] in names and family in ("qwen", "swift"):
+        return tier[1]
     for m in RECOMMENDED_SIZES.get(family, ()):
         if m in names and mem_have(m, ram, vram) >= MODELS[m]["ram_gb"]:
             return m
@@ -6990,7 +7020,8 @@ def main() -> int:
     if a.family:
         family = a.family
     else:
-        rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else fams[0]
+        tier = tier_pick(ram, low_ram_vram(gpu))
+        rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else             tier[0] if tier and tier[0] in fams else fams[0]
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
@@ -7000,6 +7031,8 @@ def main() -> int:
             d = OWN_PATH_FAMILIES[f]
             say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]")
         allf = fams + list(OWN_PATH_FAMILIES)
+        if tier_note(ram, low_ram_vram(gpu)) and rec_fam == "swift":
+            say("  " + tier_note(ram, low_ram_vram(gpu)))
         family = allf[int(ask("Which model?", [str(i) for i in range(1, len(allf) + 1)],
                               str(allf.index(rec_fam) + 1), a.yes)) - 1]
     if family in OWN_PATH_FAMILIES:                    # Qwen3.6: its own engine path, its own steps 2-7
@@ -7048,7 +7081,7 @@ def main() -> int:
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = str(names.index(installed or recommended_size(family, names, ram, gpu["vram_gb"])) + 1)
+    rec = str(names.index(installed or recommended_size(family, names, ram, low_ram_vram(gpu))) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
     in_budget = bool(MODELS[model].get("budget")) and unsloth_budget(model, ram, gpu, a.resident_budget_gib)

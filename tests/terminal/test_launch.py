@@ -99,7 +99,18 @@ class CatalogRules(unittest.TestCase):
             for r in rows:
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
-            self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_XXS")])
+            self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
+
+    def test_the_recommendation_follows_the_memory_tiers(self):
+        # the owner's tiers count RAM + VRAM: 44 GB is the 40 GB tier (Swift 1.5 IQ2_XS, Gyro-M named), 60 GB the 48 GB tier
+        from tests.terminal.launch_support import HW_32GB_RAM
+        with Home():
+            rec = catalog(HW_32GB_RAM).recommendation(HW_32GB_RAM)
+            self.assertEqual((rec["family"], rec["model"]), ("swift", "IQ2_XS"))
+            self.assertIn("Gyro-M", rec["why"])
+            hw = {**HW_32GB_RAM, "ram_gb": 48.0}
+            rec = catalog(hw).recommendation(hw)
+            self.assertEqual((rec["family"], rec["model"]), ("qwen", "IQ3_XXS"))
 
     def test_fit_on_matches_native_fit_ts(self):
         # apps/host/src/lib/native-fit.ts: memory = experts + 1; GPU holds experts up to vram - 5; RAM holds up to ram - 10; the rest spills
@@ -668,7 +679,7 @@ class FlagsCommand(unittest.TestCase):
     def test_defaults_come_from_the_recommendation(self):
         p = self.plan()
         s = p["settings"]
-        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_XXS", 32768, "local", "skip"))
+        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 32768, "local", "skip"))
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):
