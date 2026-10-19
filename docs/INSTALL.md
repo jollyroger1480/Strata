@@ -50,7 +50,11 @@ The app is the easiest way. It has the engine inside, so there is nothing to bui
    The page says which installer is for which graphics card (NVIDIA or AMD). Take the one that matches yours.
    - **Windows 10 / 11:** run the `.exe`. It installs for your user and needs no administrator rights. Windows may
      say "Windows protected your PC", because the installer is not code-signed yet. Choose **More info**, then
-     **Run anyway**.
+     **Run anyway**. The installer asks for the folder (by default `%LOCALAPPDATA%\Programs\Strata`): on a PC
+     with little space on C:, pick a folder on another drive that you can write to (not Program Files, which needs
+     an administrator). Updates from inside the app go into the same folder. The engine inside the app
+     (`%LOCALAPPDATA%\Strata\components`) stays on C:; `STRATA_COMPONENTS_DIR` moves it, and the models go to the
+     folder you choose in the app.
    - **Linux:** the `.AppImage`. Make it runnable (right-click, Properties, Permissions, "Allow executing file as
      program", or `chmod +x`), then double-click it. It needs FUSE 2: `sudo apt install libfuse2` on Ubuntu 22.04,
      `sudo apt install libfuse2t64` on Ubuntu 24.04 and newer, `sudo dnf install fuse fuse-libs` on Fedora. Without
