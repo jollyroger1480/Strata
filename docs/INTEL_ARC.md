@@ -82,7 +82,7 @@ called `Strata` here:
 
 ```sh
 cd Strata
-docker build -t strata-sycl-dev sycl/tools            # once: ~6 minutes, a 13 GB image
+docker build --pull -t strata-sycl-dev sycl/tools     # once: ~6 minutes, a 13 GB image (--pull: INTEL.md says why)
 H=$(basename "$PWD")
 # Arc B-series: bmg-g31 (Pro B70), bmg-g21 (B580, B570, Pro B60). Arc A-series (Alchemist): leave out AOT (JIT) and use build-sycl
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e AOT=bmg-g31 -e REPO=/work/$H \
