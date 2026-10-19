@@ -724,7 +724,8 @@ class Strata:
             else:
                 remove.append({"path": str(p), "kind": "folder" if is_dir else "file", "bytes": self.tree_bytes(p)})
                 if not is_dir:
-                    for extra in (p.with_name(p.name + ".done"), p.with_name(p.name + ".part")):
+                    for extra in (p.with_name(p.name + ".done"), p.with_name(p.name + ".part"),
+                                  p.with_name(p.name + ".part.chunks")):
                         if extra.exists():
                             remove.append({"path": str(extra), "kind": "file", "bytes": self.tree_bytes(extra)})
         tag = config.stem[len("strata-"):]
