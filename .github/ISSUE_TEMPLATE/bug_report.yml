@@ -1,6 +1,6 @@
 name: Bug report
 description: Something in Strata doesn't work as documented
-title: "[Bug]: "
+title: "[Area] "
 labels: ["bug"]
 body:
   - type: markdown
@@ -10,6 +10,22 @@ body:
       Search the [open and closed issues](https://github.com/Niko1221/Strata/issues?q=is%3Aissue) first: this may already be tracked, and new evidence belongs in that thread.
 
       Write only what you saw. Do not guess at steps, errors, hardware or severity.
+
+      **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Start the issue title with the same area in square brackets, for example "[Engine] decode stops after 2 minutes". Pick Other if none fits.
+      options:
+        - "[Engine]  (speed, kernels, models, the server and API)"
+        - "[GUI]  (the desktop app)"
+        - "[TUI]  (the Terminal: strata launch, connect, monitor)"
+        - "[Benchmark]  (measurements and reports)"
+        - "[Docs]  (documentation)"
+        - "[Other]  (anything else, including setup and installation)"
+    validations:
+      required: true
   - type: dropdown
     id: how
     attributes:

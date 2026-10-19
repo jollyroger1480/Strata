@@ -1,3 +1,5 @@
+**The title must start with its area: [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other], for example "[Engine] fix decode stop on long prompts" or "[GUI] keep the model list after a tab switch".**
+
 <!--
 Read CONTRIBUTING.md first. Lead with the problem and the result, not a file-by-file list.
 Placeholders below are not test results: replace them with what you observed, or write "none".
