@@ -3834,15 +3834,20 @@ def hipblaslt_version(lib_dirs):
     return None
 
 
-def hipblaslt_table(arch, lib_dirs, ver=None):
-    """tools/hip/<arch>-hipblaslt-<version>.txt for this card AND the installed hipBLASLt, else None: its solution
+def hipblaslt_table(arch, lib_dirs, ver=None, extra_dirs=()):
+    """<arch>-hipblaslt-<version>.txt for this card AND the installed hipBLASLt, else None: its solution
     ids are valid only for that pair (the engine refuses any other table and uses plain hipBLAS).  ver: the
-    hipBLASLt version the ready-made Windows engine ships (its BUILD.json), else read from the installed headers."""
+    hipBLASLt version the ready-made engine ships (its BUILD.json), else read from the installed headers.  extra_dirs: the
+    engine folder's own tuning/ first (a ready-made engine carries its tables), then tools/hip of this checkout.
+    STRATA_HIPBLASLT_TABLE=off: none (strata_control/hipblaslt_tuning.py)."""
+    from strata_control import hipblaslt_tuning as HT
+    if HT.switched_off():
+        say(f"  hipBLASLt tuning table: off ({HT.SWITCH}=off); the prompt's dense matrix products use plain hipBLAS")
+        return None
     ver = ver or hipblaslt_version(lib_dirs)
-    table = ROOT / "tools" / "hip" / f"{arch}-hipblaslt-{ver}.txt"
-    if ver is not None and table.exists():
-        head = table.read_text(encoding="utf-8").split("\n", 2)[:2]
-        if f"STRATA_HIPBLASLT_TUNING_V1 {arch} {ver}" in (h.strip() for h in head):
+    for folder in (*extra_dirs, ROOT / "tools" / "hip"):
+        table = Path(folder) / HT.table_name(arch, ver or 0)
+        if ver is not None and table.exists() and HT.header_ok(table, arch, ver):
             ok(f"hipBLASLt tuning table: {table.name} (faster prompts)")
             return table
     have = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{arch}-hipblaslt-*.txt"))
@@ -8210,9 +8215,12 @@ def main() -> int:
         # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
         # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
         # engine refuses any other one and falls back to plain hipBLAS)
-        table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"))
-        if table:
-            cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
+        if CONTROL:
+            pass    # the app's engine is a package: the server picks its tuning/ table for the card when it starts (strata_control/hipblaslt_tuning.py)
+        else:
+            table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"), [eng / "tuning"])
+            if table:
+                cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"

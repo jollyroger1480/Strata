@@ -86,6 +86,9 @@ for f in "$STAGE"/*.so "$STAGE"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patch
 for f in "$STAGE/strata" "$STAGE/strata-vision" "$STAGE/strata-vision-hip"; do
   st "RUNPATH $(basename "$f"): $(readelf -d "$f" | grep -E 'RPATH|RUNPATH' | cut -d'[' -f2 | tr -d ']' | paste -sd' ')"
 done
+# the hipBLASLt version of this ROCm into BUILD.json, and the tuning tables of tools/hip that match it (architecture and version) into tuning/
+python3 packaging/stage_tuning.py --stage "$STAGE" --archs "$ARCHLIST" --rocm "$HP" >> "$OUT/stage_tuning.log" 2>&1
+st "tuning tables rc=$?: $(tail -n 1 "$OUT/stage_tuning.log")"
 [ -n "${NO_PACKAGE:-}" ] && { st "STAGE-DONE"; exit 0; }
 rm -rf "$OUT/components"; mkdir -p "$OUT/components/engine"
 ARCHARGS=""; for a in $ARCHLIST; do ARCHARGS="$ARCHARGS --arch $a"; done

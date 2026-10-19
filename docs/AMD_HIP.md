@@ -97,9 +97,18 @@ What was run on real hardware:
 - **Run by other people:** an RX 7900 XTX on Windows 11 ran the earlier ready-made Windows engine (0.1.40; [report #1173](../bench/results/2026-10-06-community-rx-7900-xtx/README.md));
   RX 7900 XTX, XT and GRE owners ran Linux builds ([COMMUNITY.md](../bench/results/COMMUNITY.md)); Strix Halo owners ran Linux builds made from source
   (ROCm 7.14 line). Nobody has reported a Strix Halo on Windows, or the packaged `halo` and `rdna3` engines.
-- **Tuning tables:** the packaged AMD engines do not carry the hipBLASLt tuning tables of `tools/hip` yet (they are planned for 0.2.1), so
-  the prompt's dense matrix products use plain hipBLAS. Prompt reading is slower than the numbers measured with a table, for example the
-  gfx1151 numbers in [STRIX_HALO.md](STRIX_HALO.md); answers are the same. A source build with the table is unchanged (see [Tuning table](#tuning-table)).
+- **Tuning tables (0.2.1):** each AMD package carries the hipBLASLt tuning tables of `tools/hip` that match the hipBLASLt it bundles, as
+  `tuning/<arch>-hipblaslt-<version>.txt` (listed and hashed in the package manifest), and records that version as `hipblaslt_version` in its
+  BUILD.json. Windows `rx9070` has the gfx1201 table, Windows `rdna3` the gfx1100 and gfx1151 ones (all hipBLASLt 1.5.0), Linux `rx7900` the
+  gfx1100 one (1.2.0), Linux `halo` the gfx1151 one (1.4.1). Linux `rx9070` has none: its wheels carry hipBLASLt 1.2.0 and no table in `tools/hip`
+  is for that version (a table calibrated for it on an R9700 read prompts about 1% faster and decode 2% slower, so none is shipped).
+  The engine start picks the table for the card and uses it only when the package's hipBLASLt version is the table's; otherwise it logs
+  why and the dense matrix products stay on plain hipBLAS. **A table changes which GEMM algorithm runs the prompt, so the rounding differs: the
+  answers are not bit-identical to plain hipBLAS** (first-token KL 0.016 on an R9700, see below). Packaged engines therefore do not use the table
+  unless you ask: `STRATA_HIPBLASLT_TABLE=on` (or `"hipblaslt_table": true` in the run config) uses it, `off` never does, and the start log
+  says which table was taken or why none was (`hipBLASLt tuning table: ...`). A `STRATA_HIPBLASLT_TUNING` you set yourself is always kept.
+  A source build is unchanged (see [Tuning table](#tuning-table)). Testers on Strix Halo and RX 7000 cards: please send that log line and a
+  prompt-speed run with `on` and `off`.
 
 Please report a run on an RX 7000 card or a Strix Halo (card, driver, OS, the end of `strata-<model>.log`).
 
@@ -801,7 +810,17 @@ CASES=$(awk 'NR>2 {printf " --case %s,%s,%s,%s,%s", $1, $5, $2, $3, $4}' tools/h
 
 The file's second line names the architecture and version (`STRATA_HIPBLASLT_TUNING_V1 gfx1201 100401`); save it
 as `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `STRATA_HIPBLASLT_TUNING` at it. Compare the
-prompt speed with and without it before keeping it.
+prompt speed with and without it before keeping it. For an engine package, `packaging/stage_tuning.py` (Linux builds) and
+`tools/hip/package_windows.py` copy the tables that match the bundled hipBLASLt into the package's `tuning/` folder.
+
+**Measured for 0.2.1 on a Radeon AI PRO R9700 (gfx1201), the Linux `rx9070` package 0.1.45.3, Q2_0, hipBLASLt 1.2.0, one card, the
+box to itself.** A 1.2.0 table (32 rows, `tune_hipblaslt` over the gfx1201 100500 table's cases) against plain hipBLAS, 6 interleaved pairs
+with a fresh engine per run and a second plain arm as the noise arm: prompt 4K 2,302 vs 2,119 tok/s and 20K 2,671 vs 2,507 (5 and 6 of 6 pairs
+faster, but a plain run alone lands on either of two speeds, 1,970 or 2,290 at 4K, so the medians mix modes; inside one mode the table is
++0.5% at 4K and +1% at 20K), decode 91.2 vs 93.2 tok/s (-2.1%, 0 of 6 pairs faster). Not bit-identical: the final residual of a 4K and a
+20K prompt differs, a 48-token greedy answer after the 20K prompt differs, and the first-token KL against plain is 0.0157 mean, 0.0716 max over
+24 prompts of 1.5K-24K tokens (plain against plain: 0 and 0.00004; top-1 token the same 24 of 24; 24-token answers equal 1 of 6). That is why
+no gfx1201 table is shipped for hipBLASLt 1.2.0 and why packaged engines use a table only when asked.
 
 Shipped tables:
 
