@@ -98,13 +98,16 @@ On an offline machine, outside any git checkout:
     npx tauri signer generate -w D:\strata-keys\tauri-updater.key      # asks for a password; prints the public key
 
 Back both up (a lost feed key means every installed PC needs a build with a new key; a lost Tauri key means the same for the app).
-Then, in git, once, in the commit that ships the first signed release:
+Then, in git, once, in the commit that ships the first signed release (done for 0.2.0, key id 5d1bc23abbeffd0d):
 
 * the `keys` entry from `feed-key.pub.json` into `strata_control/update_keys.json`;
 * the Tauri public key into `apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and into `update_keys.json` as `app_minisign_public`
   (the Terminal verifies the app installer with it).
 
-Until then `update_keys.json` is empty and every feed is refused with "this build trusts no update key": a build with no key cannot install anything.
+Only release keys live in `update_keys.json`. A tester or local-test key is never added there: it is passed with `STRATA_UPDATE_TRUSTED_KEYS`
+(a file of extra public keys; `packaging/make_local_feed.py` writes one as `test-trust.json`), so private tester builds keep working
+without their key being part of a release build. A build whose `update_keys.json` is empty (a source checkout from before the keys) refuses every
+feed with "this build trusts no update key".
 A key rotation is a release that carries both public keys; the old private key signs that release, the new one signs the next.
 
 ## Releasing (when the owner says go)
@@ -116,8 +119,12 @@ A key rotation is a release that carries both public keys; the old private key s
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json <tauri latest.json>
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
-Where the feed is hosted (GitHub release assets, a static host, ...) is the owner's decision; the default address in
-`strata_cli/update_cmd.py` is a placeholder until then, and nothing in this tree uploads anything.
+The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
+`https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`
+and `install.ps1` use the folder). GitHub assets are flat, so build the packages with `--url-prefix ""` and upload every file of the release folder
+as an asset: `strata-feed.json`, `strata-feed.json.sig`, `install-manifest.txt`, `install.sh`, `install.ps1`, the engine and Control archives and the
+app installer with `latest.json` (the Tauri updater endpoint). `STRATA_FEED` (installers) and `--feed` / `STRATA_UPDATE_FEED` (`strata update`) override the
+address. Nothing in this tree uploads anything.
 
 ## Testing locally
 

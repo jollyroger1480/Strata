@@ -49,8 +49,20 @@ class UpdaterCase(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(ec.register_signature_verifier, None)
+        # the tests sign with throwaway keys that they hand over explicitly: the release key shipped in update_keys.json is not in play here
+        # (ReleaseKeys below checks the shipped file itself)
+        patch = mock.patch.object(signing, "BUILTIN_KEYS", self.root / "no-shipped-keys.json")
+        patch.start()
+        self.addCleanup(patch.stop)
         self.key = fx.make_key()
         self.trusted = fx.trusted_of(self.key)
+        # the engine a test start runs is a child process: it reads the shipped release key too, so the test key is passed the way a
+        # tester build passes its key
+        self.test_keys = self.root / "test-trust.json"
+        self.test_keys.write_text(json.dumps({"keys": [signing.public_part(self.key)]}))
+        patch = mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": str(self.test_keys)})
+        patch.start()
+        self.addCleanup(patch.stop)
         self.hardware = {"platform": PLATFORM, "backend": "cuda", "runtime": None, "nvidia_driver": "610.47",
                          "cuda_archs": ["sm_86"], "gfx": []}
         self.models = self.root / "models"

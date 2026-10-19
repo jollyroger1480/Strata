@@ -1,7 +1,7 @@
 #!/bin/sh
 # Strata Terminal: one-line installer for Linux and macOS.
 #
-#     curl -fsSL <feed>/install.sh | sh
+#     curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
 #
 # What it does, in order (and nothing else):
 #   1. finds out which computer this is (system, processor, graphics card) so it can fetch the right archive;
@@ -14,14 +14,14 @@
 # The engine (the part that talks to your graphics card) and the model are NOT part of this: `strata launch` fetches the engine for
 # your card the first time you choose a model, from the same release folder, signed.
 #
-# <feed> is where the release folder is hosted; until that is decided this script has no address built in. Set STRATA_FEED to the
-# folder (a URL) to use it, for example a local test feed:  STRATA_FEED=http://127.0.0.1:8099 sh install.sh
+# <feed> is where the release folder is hosted: GitHub Releases of Niko1221/Strata (the "latest" release's files), built in as the default.
+# Set STRATA_FEED to another folder (a URL) to use that instead, for example a local test feed:  STRATA_FEED=http://127.0.0.1:8099 sh install.sh
 #
 # Settings (all optional): STRATA_FEED, STRATA_DATA_DIR (default ~/.local/share/strata), STRATA_BIN_DIR (default ~/.local/bin),
 # STRATA_INSTALL_TEST_TRUST=1 (a test feed: also fetch <feed>/test-trust.json and trust only that key for the check in step 4).
 set -eu
 
-FEED="${STRATA_FEED:-__FEED__}"
+FEED="${STRATA_FEED:-https://github.com/Niko1221/Strata/releases/latest/download}"
 FEED="${FEED%/}"
 DATA_DIR="${STRATA_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/strata}"
 BIN_DIR="${STRATA_BIN_DIR:-$HOME/.local/bin}"
@@ -29,9 +29,7 @@ BIN_DIR="${STRATA_BIN_DIR:-$HOME/.local/bin}"
 say() { printf '%s\n' "$*"; }
 die() { printf 'strata installer: %s\n' "$*" >&2; exit 1; }
 
-case "$FEED" in
-  "__FE""ED__"|"") die "this installer does not know where the Strata release folder is. Set STRATA_FEED to its address and run it again, for example: STRATA_FEED=https://example.org/strata sh install.sh" ;;
-esac
+[ -n "$FEED" ] || die "this installer does not know where the Strata release folder is. Set STRATA_FEED to its address and run it again, for example: STRATA_FEED=https://example.org/strata sh install.sh"
 
 # ---- tools
 if command -v curl >/dev/null 2>&1; then
