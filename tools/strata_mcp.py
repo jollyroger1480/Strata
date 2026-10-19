@@ -1044,7 +1044,7 @@ class Strata:
             notes.append("this CPU has no AVX2: EXPERIMENTAL and slow - setup compiles the engine on this PC for the "
                          "older CPU (10-20 minutes), and the CPU's share of the experts runs a few times slower")
         if backend == "hip":
-            notes.append("AMD (experimental): no GPU picture reader yet")
+            notes.append("AMD (experimental): pictures are on; the reader runs on the CPU under 24 GB of VRAM and on the GPU from 24 GB")
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
                f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
@@ -1491,7 +1491,7 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                         "script). Without confirm=true it only returns the plan (what would be downloaded, disk "
                         "space): show it to the user and call again with confirm=true once they agree. Returns at "
                         "once; call it again (no arguments needed) to see the progress, or with cancel=true to stop "
-                        "it (it resumes later). Defaults: the recommended model and context for this PC, images off. "
+                        "it (it resumes later). Defaults: the recommended model and context for this PC, pictures on where the model can read them. "
                         "After it finishes, start the model with strata_start.",
          "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
              "family": {"type": "string", "enum": list(families),
@@ -1505,8 +1505,10 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
              "context": {"type": "integer", "enum": contexts,
                          "description": "context length in tokens (more needs more VRAM)"},
              "vision": {"type": "string", "enum": ["no", "yes", "gpu", "cpu"],
-                        "description": "let the model read images (yes = the encoder on the GPU; ~0.9 GB more "
-                                       "download); default no"},
+                        "description": "let the model read images (~0.9 GB more download). Default yes where the model can "
+                                       "read them (not on a Mac): yes = the best reader for this card (the CPU "
+                                       "under 24 GB of VRAM, the GPU from 24 GB, any make), gpu / cpu = that "
+                                       "reader, no = text only"},
              "kv": {"type": "string", "enum": ["int8", "q4_0", "k8v4"],
                     "description": "KV cache precision above 8K context (default int8)"},
              "gpu": {"type": "integer", "minimum": 0, "maximum": 63,
@@ -1824,16 +1826,11 @@ class Tools:
                 context = 8192 if vram < 14 else 32768
         if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
-        if vision is not None and backend == "hip" and vision != "no":
-            # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
-            # images on the CPU beside it (Linux; the ready-made Windows AMD engine has no encoder)
-            if vision == "cpu" and not WIN:
-                pass
-            elif vision == "cpu":
-                raise ToolError("images on the CPU with an AMD card are Linux-only for now: use vision=no")
-            else:
-                raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
-                                "Linux) or vision=no")
+        if vision is None:
+            # owner rule (2026-10-18): pictures are on by default wherever the model can read them and the engine has a reader; setup picks
+            # the reader (strata_control/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card).  A Mac has none yet.
+            can_read = md.get("vision", families[family].get("vision")) is not False
+            vision = "yes" if can_read and not mac else "no"
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag

@@ -190,8 +190,8 @@ class InstallOwnPath(unittest.TestCase):
         a = self.cfg["args"]
         self.assertEqual(a[a.index("--max-context") + 1], "131072")
 
-    def test_images_by_default_on_a_16gb_nvidia_card_use_the_gpu_encoder(self):
-        rc, out = self.install(model="UD-Q4_K_XL", vram=16.0)               # --yes: the question's default answer
+    def test_images_by_default_on_a_24gb_plus_nvidia_card_use_the_gpu_encoder(self):
+        rc, out = self.install(model="UD-Q4_K_XL", vram=24.0)               # --yes: the question's default answer (yes)
         self.assertEqual(rc, 0, out)
         self.assertIn(("engine", "gpu"), self.calls)
         mm = self.root / "models" / "qwen36-UD-Q4_K_XL" / "mmproj-F16.gguf"
@@ -209,9 +209,12 @@ class InstallOwnPath(unittest.TestCase):
         self.assertIn("images: on", out)
 
     def test_a_12gb_card_is_recommended_the_cpu_encoder_never_forced(self):
-        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0)               # the default answer is no
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0)               # the default answer is yes, with the CPU encoder
         self.assertEqual(rc, 0, out)
-        self.assertNotIn("vision", self.cfg)
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        rc, out = self.install(model="UD-Q4_K_XL", vram=16.0)               # the 24 GB rule, not the old 16 GB one
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.cfg["vision"]["gpu"])
         rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="yes")  # yes: the CPU encoder, said why
         self.assertEqual(rc, 0, out)
         self.assertFalse(self.cfg["vision"]["gpu"])
@@ -252,6 +255,14 @@ class InstallOwnPath(unittest.TestCase):
             rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True)
         self.assertEqual(rc, 0, out)
         self.assertTrue(self.cfg["vision"]["gpu"])
+
+    def test_amd_under_24gb_reads_pictures_on_the_cpu_by_default(self):
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"),                 mock.patch.object(setup, "HVEXE", "strata-vision-hip"):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=16.0, hip=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("--vision", self.cfg["args"])
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        self.assertEqual(Path(self.cfg["vision"]["exe"]).name, "strata-vision")
 
     def test_parallel_is_opt_in_and_recommended_where_the_experts_fit(self):
         fam = setup.OWN_PATH_FAMILIES["qwen36"]
@@ -321,7 +332,7 @@ class InstallOwnPath(unittest.TestCase):
         p.write_text(json.dumps(self.cfg), encoding="utf-8")
         ch = setup.choices_from_config(p)
         self.assertEqual((ch["family"], ch["model"], ch["context"]), ("qwen36", "UD-Q6_K_XL", 65536))
-        self.assertEqual(ch["vision"], "gpu")                  # 16 GB NVIDIA, the default answer
+        self.assertEqual(ch["vision"], "cpu")                  # 16 GB NVIDIA, the default answer: the CPU encoder under 24 GB
         self.assertTrue(setup.own_path_config(self.cfg))
         self.assertEqual(setup.calibration_targets([p], None, None), [])   # the tuning is Flash-Next's
 

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import components, engine_component as ec
+from strata_control import components, engine_component as ec, signing
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))
@@ -188,6 +188,9 @@ class Start(unittest.TestCase):
         self.folder = package_engine.build(make_source(self.root / "src"), "cuda", "0.1.45", HERE, self.out,
                                            archs=("sm_86",), min_driver={"nvidia": "580.65"}, build_id="b1")
         self.addCleanup(ec.register_signature_verifier, None)
+        patch = mock.patch.object(signing, "BUILTIN_KEYS", self.root / "no-shipped-keys.json")   # a build with no shipped key; the real file: test_release_keys
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def start(self, **kw):
         with mock.patch.object(ec, "cuda_archs_present", return_value=kw.pop("cards", ["sm_86"])), \

@@ -308,22 +308,30 @@ class Validation(FakeRoot):
         self.assertEqual(res["plan"]["images"], "yes")
         self.assertRejected("strata_install", {"vision": "yes\nrm"}, "control characters")
 
-    def test_amd_vision_follows_setups_rules(self):
-        """#990: --vision cpu is allowed with the AMD backend on Linux (setup.hip_vision); a GPU encoder is not."""
-        with mock.patch.object(M, "WIN", False):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "yes"}, "no GPU image encoder")
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "gpu"}, "vision=cpu")
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "cpu"})
+    def test_amd_vision_follows_the_picture_rule(self):
+        """Owner rule 2026-10-18: pictures are on for AMD too, on Linux and Windows (setup picks the reader: CPU under 24 GB, GPU from 24 GB)."""
+        for win in (False, True):
+            with mock.patch.object(M, "WIN", win):
+                for asked in ("yes", "gpu", "cpu"):
+                    res, err = self.call("strata_install", {"backend": "hip", "vision": asked})
+                    self.assertFalse(err, res)
+                    self.assertEqual(res["plan"]["images"], asked)
+                    self.assertIn("--vision " + asked, res["plan"]["setup_command"])
+                res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
+                self.assertFalse(err, res)
+                self.assertEqual(res["plan"]["images"], "no")
+
+    def test_pictures_default_on(self):
+        """Nothing asked: pictures are on where the model can read them (any backend), off for a model that cannot."""
+        for backend in (None, "cuda", "hip"):
+            args = {"backend": backend} if backend else {}
+            res, err = self.call("strata_install", args)
             self.assertFalse(err, res)
-            self.assertEqual(res["plan"]["images"], "cpu")
-            self.assertIn("--vision cpu", res["plan"]["setup_command"])
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
-            self.assertFalse(err, res)
-        with mock.patch.object(M, "WIN", True):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "cpu"}, "Linux")
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})      # the Windows AMD engine is no longer refused outright
-            self.assertFalse(err, res)
-            self.assertIn("--backend hip", res["plan"]["setup_command"])
+            self.assertEqual(res["plan"]["images"], "yes")
+            self.assertIn("--vision yes", res["plan"]["setup_command"])
+        res, err = self.call("strata_install", {"vision": "no"})
+        self.assertFalse(err, res)
+        self.assertEqual(res["plan"]["images"], "no")
 
     def test_data_dir_paths(self):
         self.assertRejected("strata_install", {"data_dir": "models"}, "absolute")

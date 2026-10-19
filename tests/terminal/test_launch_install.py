@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))
+sys.path.insert(0, str(ROOT))
+import make_local_feed as mlf  # noqa: E402
 
 
 class Scripts(unittest.TestCase):
@@ -28,13 +30,15 @@ class Scripts(unittest.TestCase):
         r = subprocess.run([sh, "-n", str(ROOT / "packaging" / "install.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
-        self.assertEqual(text.count("__FEED__"), 1)                       # the baked address replaces only the default; the guard survives
+        self.assertNotIn("__FEED__", text)                                # no placeholder: the GitHub Releases address is the built-in default
+        self.assertIn(":-" + mlf.RELEASE_FEED + "}", text)                # the default a local feed bakes its own address over
         self.assertIn("Installed. Run: ", text)
         self.assertNotIn("\r", text)
 
     def test_install_ps1_parses_and_guard(self):
         text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
-        self.assertEqual(text.count("__FEED__"), 1)
+        self.assertNotIn("__FEED__", text)
+        self.assertIn("else { '" + mlf.RELEASE_FEED + "' }", text)
         self.assertIn("Installed. Run: strata launch", text)
         ps = shutil.which("powershell") or shutil.which("pwsh")
         if not ps:
@@ -44,14 +48,12 @@ class Scripts(unittest.TestCase):
         r = subprocess.run([ps, "-NoProfile", "-Command", cmd], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_script_without_an_address_says_what_to_do(self):
-        sh = shutil.which("sh") or shutil.which("bash")
-        if not sh or os.name == "nt":
-            self.skipTest("POSIX sh only")
-        env = {k: v for k, v in os.environ.items() if k != "STRATA_FEED"}
-        r = subprocess.run([sh, str(ROOT / "packaging" / "install.sh")], capture_output=True, text=True, env=env)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("Set STRATA_FEED", r.stderr)
+    def test_the_built_in_address_is_the_default_feed(self):
+        """install.sh / install.ps1 and `strata update` use the same GitHub Releases folder; STRATA_FEED stays an override."""
+        from strata_cli import update_cmd
+        self.assertEqual(update_cmd.DEFAULT_FEED, mlf.RELEASE_FEED + "/strata-feed.json")
+        self.assertIn(":-" + mlf.RELEASE_FEED + "}", (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8"))
+        self.assertIn("$env:STRATA_FEED", (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8"))
 
 
 class Feed(unittest.TestCase):
@@ -89,7 +91,7 @@ class Feed(unittest.TestCase):
             self.assertEqual(control.stat().st_size, int(line[4]))
             sh_text = (feed / "install.sh").read_text()
             self.assertIn("http://127.0.0.1:1", sh_text)
-            self.assertIn('"__FE""ED__"', sh_text)                        # the guard was not rewritten
+            self.assertNotIn(mlf.RELEASE_FEED, sh_text)                  # the GitHub address was replaced everywhere by the local one
             self.assertIn("Installed. Run:", (feed / "install.ps1").read_text())
             doc = json.loads((feed / "strata-feed.json").read_text())
             self.assertEqual(doc["control"]["packages"][0]["sha256"], line[3])

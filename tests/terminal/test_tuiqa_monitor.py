@@ -132,6 +132,46 @@ class MonitorViews(unittest.TestCase):
             self.assertEqual(app.view, 5)
         self.run_app(MonitorApp, (120, 40), case)
 
+    def test_strata_monitor_is_the_same_seven_view_monitor_as_launchs(self):
+        """`strata monitor --url ...` builds the launch monitor without the quit question: seven views, key 7, Connect points at that server."""
+        from strata_cli import monitor_commands
+        seen = {}
+
+        class Fake:
+            def __init__(self, endpoint, snapshot, **kw):
+                seen.update(kw, endpoint=endpoint)
+
+            def run(self):
+                seen["ran"] = True
+
+        args = monitor_commands.parser().parse_args(["monitor", "--url", "http://127.0.0.1:18765"])
+        with mock.patch("strata_cli.launch.monitor_ext.LaunchMonitor", Fake), mock.patch("sys.stdout.isatty", return_value=True), Home():
+            self.assertEqual(monitor_commands.run(args), 0)
+        self.assertTrue(seen.get("ran"))
+        self.assertFalse(seen["ask_quit"])                                   # q detaches: this command started nothing
+        self.assertEqual(seen["info"]["url"], "http://127.0.0.1:18765")      # the Connect view's address is the --url server
+        self.assertIn("seven views", " ".join(monitor_commands.parser().format_help().split()))
+
+    def test_the_monitor_strata_monitor_opens_has_seven_views_and_connect_shows_the_server(self):
+        async def case(app, pilot):
+            shown = text_of(app)
+            self.assertIn("7 Connect", shown)
+            self.assertNotIn("1-6", shown)
+            await pilot.press("7")
+            await pilot.pause(0.2)
+            self.assertEqual(app.view, 6)
+            self.assertIn(INFO["url"], text_of(app))
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            self.assertEqual(app.view, 0)
+        async def go():
+            app = LaunchMonitor(Source(metrics("idle")), None, info=dict(INFO), interval=30, ask_quit=False)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause(0.4)
+                return await case(app, pilot)
+        with Home():
+            asyncio.run(go())
+
     def test_the_overview_is_titled_overview(self):
         async def case(app, pilot):
             self.assertIn("STRATA  Overview", text_of(app))

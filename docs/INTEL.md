@@ -772,8 +772,14 @@ is 0.012), first-token KL 0.0017 (floor 0.0005), top-1 agreement 99.7%. HumanEva
 
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Images on the llama.cpp config: not wired. On the SYCL port pictures are wired but opt-in (`setup --backend sycl --vision yes`):
+  setup compiles the portable CPU reader `strata-vision` (the program the AMD packages carry beside their engine) into `engine-sycl/`,
+  the server runs it on the host, and the engine in the container reads its embeddings from the host's `/dev/shm`, which
+  `strata-sycl.sh` shares (`STRATA_SYCL_SHM=0` keeps a private one). A SYCL GPU reader does not exist yet, so every Arc reads
+  pictures on the CPU (a few seconds each). They are not on by default because the first picture request on the Arc Pro B70
+  (engine 0.1.45, IQ3_S, 2026-10-19) hung the GPU: the xe driver logged an engine reset and `Fault response: Unsuccessful -EINVAL`
+  and the request ended 503. Text was not affected by this wiring (the reader and the shared `/dev/shm` are only used for pictures);
+  the engine's vision path on SYCL needs a look first (`setup_intel.PICTURES_ON_BY_DEFAULT` flips the default).
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 

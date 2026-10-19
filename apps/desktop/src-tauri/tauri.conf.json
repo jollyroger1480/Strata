@@ -35,7 +35,8 @@
       "../../host/package.json": "host/package.json",
       "resources/node": "node",
       "resources/control": "control",
-      "resources/harness": "harness"
+      "resources/harness": "harness",
+      "resources/engine-bundle": "engine-bundle"
     },
     "linux": {
       "appimage": {
@@ -43,7 +44,7 @@
       }
     },
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "15.0",
       "entitlements": "entitlements.plist"
     },
     "createUpdaterArtifacts": false,
@@ -63,7 +64,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE-WITH-THE-OWNERS-TAURI-UPDATER-PUBLIC-KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI2QjA5OTk5MDU1MjFGNUUKUldSZUgxSUZtWm13dHNGRU40N2xOUjdZZGpvcGl0NTB2WGxnS3VTc2RlakpSbnBxUkxndHNFY0oK",
       "endpoints": [
         "https://github.com/Niko1221/Strata/releases/latest/download/latest.json"
       ],

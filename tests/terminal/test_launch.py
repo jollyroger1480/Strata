@@ -648,6 +648,14 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("launch", out)
         self.assertIn("connect", out)
 
+    def test_vision_help_says_the_picture_rule(self):
+        code, out, err = run_cli(["launch", "--help"])
+        text = " ".join(out.split())
+        self.assertIn("CPU reader under 24 GB", text)
+        self.assertIn("GPU reader from 24 GB", text)
+        self.assertIn("off turns pictures off", text)
+        self.assertNotIn("for NVIDIA and AMD", text)
+
     def test_model_context_parallel_vision_tune_access_port(self):
         p = self.plan("--model", "iq3_xxs", "--context", "128k", "--parallel", "2", "--vision", "off", "--tune", "quick", "--access", "lan",
                       "--port", "9090")
