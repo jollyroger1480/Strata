@@ -2671,8 +2671,31 @@ int main(int argc, char** argv) {
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
         // any engine code reads its switches (they are read at first use), and the user's own settings are kept
         cudaDeviceProp ad{};
-        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName);
-        else (void) cudaGetLastError();
+        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) {
+            // an integrated Radeon (UMA / APU: the device property, not the name): the matrix-core prompt set is on by
+            // default.  Only when EVERY visible GPU is integrated and of the same architecture, so a box that also holds a
+            // discrete card (whichever the engine ends up using) keeps the old defaults.
+            bool all_igpu = ad.integrated != 0;
+            int ndev = 0;
+            if (all_igpu && cudaGetDeviceCount(&ndev) == cudaSuccess) {
+                for (int d = 1; d < ndev && d < 64; ++d) {
+                    cudaDeviceProp od{};
+                    if (cudaGetDeviceProperties(&od, d) != cudaSuccess || od.integrated == 0 ||
+                        std::strncmp(od.gcnArchName, ad.gcnArchName, 7) != 0) { all_igpu = false; (void) cudaGetLastError(); break; }
+                }
+            }
+            strata::core::apply_arch_defaults(ad.gcnArchName, all_igpu);
+#if defined(_WIN32)
+            const bool win_host = true;
+#else
+            const bool win_host = false;
+#endif
+            // UMA mode (021-minipc): the Radeon 780M's firmware (gc 11.0.1 MES) resets the GPU when the kernel evicts the queues of a
+            // process that has a dispatch in a barrier loop, and a registered host arena is what gets it evicted (notes-021-minipc.md).
+            // So its expert arena stays unregistered.  STRATA_UMA_REGISTER=1 (or STRATA_ARENA_PIN_GIB=0) registers it as before.
+            if (strata::core::igpu_uma_arena_default(ad.gcnArchName, all_igpu, win_host))
+                strata::core::arena_uma_no_register_flag().store(true);
+        } else (void) cudaGetLastError();
     }
 #endif
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
