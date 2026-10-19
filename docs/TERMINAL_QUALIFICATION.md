@@ -1,5 +1,7 @@
 # Terminal qualification matrix
 
+> **Historical record (11 October 2026).** This page was written while the Terminal was being built, before Strata 0.2.0. It is kept for the record and is not kept up to date: it describes six views, source-run commands and checks that had not yet been run on target hardware. For what the Terminal does now, see [TERMINAL.md](TERMINAL.md), [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md) and [TERMINAL_QUICKSTART.md](TERMINAL_QUICKSTART.md).
+
 This matrix separates checks already run in this source checkout from release gates that need the supplied UI/harness/TUI assets or a target host. A passed synthetic client test does not establish engine performance or platform support. Record exact commands, source commit, artifacts and environment for every final gate.
 
 | Gate | Evidence in this checkout | Remaining acceptance work |

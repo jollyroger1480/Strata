@@ -1,5 +1,7 @@
 # Strata developer integration handoff
 
+> **Historical record (11 October 2026).** This page was written while the Terminal was being built, before Strata 0.2.0. It is kept for the record and is not kept up to date: it describes six views, source-run commands and checks that had not yet been run on target hardware. For what the Terminal does now, see [TERMINAL.md](TERMINAL.md), [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md) and [TERMINAL_QUICKSTART.md](TERMINAL_QUICKSTART.md).
+
 11 October 2026 - execution brief for joining the current Strata engine, Desktop UI, serving CLI, monitor TUI and coding harness.
 
 **Purpose.** The developer should use the current UI handover zip, the owner's forthcoming DeepSeek harness repository and TUI zip, and the current GitHub repository to deliver one working product. This document adds the missing operator workflow: editable ways to restart a model, calibrate the engine, verify components and repeat a serving setup. Read it with `strata-development-work-plan.md`, `strata-architecture-plan.md` and `strata-terminal-implementation-plan.md`. Their release, security, model support and hardware gates still apply.

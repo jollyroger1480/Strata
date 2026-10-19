@@ -1,28 +1,33 @@
 # Strata packaging: targets, recipes and locks
 
-Revision: Phase A. This directory holds the per-target build recipes and the machine-readable
+Revision: Strata 0.2.0. This directory holds the per-target build recipes and the machine-readable
 manifests. **It describes what can be built where, and it is explicit about what has *not* been
 built or tested.** Nothing here is a support claim.
 
+The installers carry the engine: the desktop installers hold an engine package for their platform and graphics card, and the first
+start copies it into the per-user component folder after checking every file against its manifest. A new install therefore starts a
+model without a download; later engines come from the signed feed ([UPDATES.md](UPDATES.md)). The Terminal install is the other
+route: one line, and the first model brings the engine for that PC from the same release.
+
 ## The target matrix
 
-A backend name alone is not a target. Each row is an OS × CPU ABI × backend tuple, and a row is
+A backend name alone is not a target. Each row is an OS x CPU ABI x backend tuple, and a row is
 `qualified` only after the acceptance checklist has actually run on it.
 
-| Target tuple | App artifact | Engine package | Status on this Mac |
+| Target tuple | App artifact | Engine package | Status |
 | --- | --- | --- | --- |
-| `macos-arm64-metal` | `.app` + `.dmg` (Tauri) | source-built `strata` | **built.** App self-test 8/8 from inside the mounted DMG; engine built from source and 17/17 kernel-parity suites pass on the real M4 GPU. Real-model inference **not run** (no pack fits 16 GiB / 21 GiB free). |
-| Terminal `darwin-arm64` | self-contained `.tar.gz` (42 MB) | any | **built and verified.** Runs from a moved directory in a clean environment with no usable system Python; serving, `status`, `timeskip` and `tune` all exercised on the bundled interpreter. |
-| `windows-x86_64-cuda` | NSIS `.exe` (Tauri) | `setup.py` / `tools/windows` | **not built here.** Config present; needs a Windows host with an NVIDIA GPU. |
-| `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | **not built here.** Needs Windows + AMD. |
-| `linux-x86_64-cuda` | AppImage (Tauri) | `setup.py` | **not built here.** Needs a Linux host with an NVIDIA GPU. |
-| `linux-x86_64-hip` | AppImage (Tauri) | `cmake -DSTRATA_ENABLE_HIP=ON` | **not built here.** Needs Linux + ROCm. |
-| `linux-x86_64-sycl` | AppImage (Tauri) | `sycl/setup_intel.py` | **not built here.** Needs Linux + Intel Arc. Documented upstream as experimental. |
-| `windows-x86_64-sycl` | — | — | **gated.** No native Windows SYCL path exists upstream; it needs a separate feasibility gate, not a recipe. |
-| `macos-x86_64-*` | — | — | **unsupported.** The macOS engine is Apple-Silicon only (`metal/CMakeLists.txt` requires Apple Silicon for the Metal runtime). |
+| `macos-arm64-metal` | `.app` + `.dmg` (Tauri) | Metal `strata`, bundled | **built.** The app's self-test passed from inside the mounted DMG and the engine's 17 kernel-parity suites pass on an Apple M4 GPU. A large model does not fit the 16 GiB test Mac. No picture reader on Mac yet. Signing and notarising: `packaging/mac/sign-and-notarize.sh` (see [mac/README.md](mac/README.md)); it has been run with stand-ins for Apple's service, not yet against the real one. |
+| Terminal `darwin-arm64` | self-contained `.tar.gz` | any | **built and verified.** Runs from a moved directory in a clean environment with no usable system Python. |
+| `windows-x86_64-cuda` | NSIS `.exe` (Tauri) | `cuda13` and `cuda12` packages | **built and tested** on a Windows PC with an NVIDIA card: silent install with a PATH of System32 only, a real model, an agent chat. |
+| `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | **built; never run on a real AMD card.** |
+| `linux-x86_64-cuda` | AppImage (Tauri) | `setup.py`; built in a glibc 2.35 chroot | **cuda13 built and tested** (RTX 3060 and RTX A4000: app in the browser, a real model, a picture). cuda12 built. |
+| `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | **RX 9000 (gfx1200 / gfx1201) built and tested** on a Radeon AI PRO R9700. **RX 7000 (gfx1100 / 1101 / 1102) built; not run on an RX 7000 card.** |
+| `linux-x86_64-sycl` | | `sycl/setup_intel.py` | Documented as experimental ([INTEL.md](../docs/INTEL.md)). |
+| `windows-x86_64-sycl` | none | none | **gated.** No native Windows SYCL path exists upstream; it needs a separate feasibility gate, not a recipe. |
+| `macos-x86_64-*` | none | none | **unsupported.** The macOS engine is Apple-Silicon only (`metal/CMakeLists.txt` requires Apple Silicon for the Metal runtime). |
 
 **Cross-compilation is not attempted for the desktop app.** Tauri bundles are per-OS and the
-Windows installer must be produced on Windows. What *is* portable, and therefore tested here, is
+Windows installer must be produced on Windows. What *is* portable is
 everything below the carrier: the Python contracts, the owner transport, the checks, and the engine
 build recipes.
 
@@ -91,13 +96,13 @@ with the shell (a kill-on-close Job Object around the app on Windows; the host w
 single instance: a second launch focuses the open window. One app can run several engines (profiles `app-1`, `app-2`, ...).
 docs/CLOSING.md has every close path and how each is tested.
 
-**The engine** is not in the installer. It is a component in the per-user component folder
+**The engine** comes with the installer (`<install>/engine-bundle/<package folder>`, the same layout as below); the first start checks it against its own manifest and copies it into the per-user component folder, where Control finds it like any engine that `strata update` installed. It is a component in the per-user component folder
 (`%LOCALAPPDATA%\Strata\components`, `$XDG_DATA_HOME/strata/components`, or `STRATA_COMPONENTS_DIR`):
 
     components/engine/<version>-<platform>-<backend>/
         engine-component.json     schema 2: id/name "strata-engine", version, platform, backend, archs, min_driver,
                                   build_id, min_runtime (optional), entrypoint, files [{path, sha256, bytes}],
-                                  signature (null until S6); full table and the checks in ENGINE-COMPONENT.md
+                                  signature (null for a local package, set by the release feed); full table and the checks in ENGINE-COMPONENT.md
         strata[.exe]  *.dll | *.so   the binary and the GPU runtime libraries beside it
 
 A run config names it as `"exe": "component:strata-engine"`; at start `strata_control/engine_component.py` picks the package
@@ -105,8 +110,10 @@ for this PC (platform, then the backend its GPU needs: nvidia-smi / rocminfo / s
 architectures, `min_driver` and `min_runtime` are checked; the newest version wins), checks every file's size and
 SHA-256 (a start hashes the whole package; a mismatch is `EngineIntegrityError` and nothing starts) and puts the package
 folder first on the library path.
-Nothing matching is `EngineMissing`: exit 5, "No engine for this PC was found in ... The app never downloads an engine
-while it starts or serves", and no fetch. `packaging/package_engine.py` makes a local package from a build folder.
+Nothing matching is `EngineMissing`: `strata serve` ends with exit 5 and "No engine for this PC was found in ... The app never downloads an engine
+while it starts or serves", and no fetch. That is the start itself. Everything before it is a warning, not a refusal: `strata launch` says in plain
+words that it could not find an engine for this computer, asks whether to go on (Enter means yes), downloads the model and ends with the next step
+(exit code 0, nothing started), and the app shows the same warning with an "Update engine" button in Settings. `packaging/package_engine.py` makes a local package from a build folder.
 
 **No acquisition at run time.** `STRATA_NO_ACQUIRE=1` (set by the Tauri shell for the host, and for Control by the host)
 makes `strata_control/acquisition.py` refuse pip, downloads and compiles; on the host side `server/acquisition.mjs`
@@ -127,8 +134,10 @@ user chooses to download are a separate, explicit action. `apps/host/tests/no-ac
 
 * There is no CI. Every recipe here is written to be run by hand; making them automated is separate
   work.
-* No signing or notarization assets, and no update-feed bootstrap trust. Both need owner-supplied
-  credentials (work plan D04).
+* Signing needs the owner's credentials, which are never in this tree. The update feed and every engine package are signed with the feed key
+  (`feed_tool.py`, [UPDATES.md](UPDATES.md)); the app installers with the Tauri updater key. The Mac app and Terminal archive are signed and
+  notarised on a Mac that holds the Developer ID certificate, with `packaging/mac/sign-and-notarize.sh` ([mac/README.md](mac/README.md)). No
+  Windows code-signing certificate is configured in this tree; Windows may warn about an installer that is not signed.
 * No font or asset redistribution evidence has been gathered (D05). The app currently ships the
   brand assets from the supplied UI ZIP, which is fine for an internal candidate and not sufficient
   for redistribution.

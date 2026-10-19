@@ -2,7 +2,9 @@
 
 One format for every engine package: Windows CUDA 13 and 12, Windows HIP, Linux CUDA, Linux HIP, Linux SYCL and macOS
 Metal. Control (`strata_control/engine_component.py`) reads it, checks it, and only then starts the engine.
-`packaging/package_engine.py` writes it. Packages are local and unsigned for now; publishing and signing are S6.
+`packaging/package_engine.py` writes it. A package you make locally is unsigned and loads. A package in the release feed is signed with the
+feed key (an Ed25519 key the owner keeps offline), and `strata update` / "Update engine" install it only when that signature verifies
+([UPDATES.md](UPDATES.md)). The installers carry an engine of their own, so a new install needs no download to start a model.
 
 ## Folder
 
@@ -63,9 +65,10 @@ Settings or `strata update` in the Terminal". A package
 for another GPU or an older driver is `EngineMissing` with its reason. A tampered newer package never falls back silently
 to nothing: a good older package is used and the tampered one is listed under `problems` in `strata components engine`.
 
-## Signature (S6)
+## Signature
 
-`signature` is `null` today. S6 fills it and registers the verifier:
+`signature` is `null` in a package made locally. The release feed's packages carry one; the updater registers the verifier
+(`strata_control/signing.py`) and requires it for every package it installs:
 
     engine_component.register_signature_verifier(fn)       # fn(payload: bytes, signature: dict, component) -> None, raises if bad
     engine_component.signing_payload(manifest_dict)         # canonical bytes the signature covers
@@ -76,7 +79,7 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
 * unsigned package: loads, reported `unsigned`;
 * signed, no verifier registered: loads, reported `unverified` (never "verified");
 * signed, verifier registered: must verify, otherwise refused;
-* `STRATA_REQUIRE_SIGNED_COMPONENTS=1`: unsigned and unverifiable packages are refused (the setting S6 turns on for released builds).
+* `STRATA_REQUIRE_SIGNED_COMPONENTS=1`: unsigned and unverifiable packages are refused (the updater turns it on while it checks a downloaded package).
 
 ## Building a package
 
@@ -89,7 +92,7 @@ Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `
 defaults to the checkout's commit (`-dirty` when the tree has changes). It prints the size, file count and the SHA-256 of
 the manifest file (which holds every file's hash), used as the package's digest in notes.
 
-## What each target's package holds (S1, local, unpublished)
+## What each target's package holds
 
 | Package | Built on | Contents | Notes |
 |---|---|---|---|
@@ -98,7 +101,7 @@ the manifest file (which holds every file's hash), used as the package's digest 
 | `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | no Windows AMD test machine yet; with `STRATA_NO_VISION` unset it also builds the two picture readers (`strata-vision.exe` on the CPU, `strata-vision-hip.exe` on the GPU) |
 | `linux-x86_64` cuda | a Linux box with the CUDA toolkit | `strata`, `libstrata_kq.so`, `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
 | `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs; `packaging/build_hip_linux.sh` builds it with both picture readers |
-| `linux-x86_64` hip, gfx1103 (Radeon 780M / Phoenix iGPU) | `packaging/build_hip_gfx1103.sh` on the mini PC (TheRock gfx110X-all SDK) | the same set as the gfx1200/1201 package, with `rocblas/library` and `hipblaslt/library` for gfx1103 (600 MiB) | experimental, unvalidated: the iGPU resets now and then (MES REMOVE_QUEUE, notes-minipc.md); never kill the engine mid-request; run configs set `STRATA_NO_ARENA_THP=1`. `engine_component.resolve` picks a HIP package only when its `archs` list a gfx target the Linux kfd topology reports |
+| `linux-x86_64` hip, gfx1103 (Radeon 780M / Phoenix iGPU) | `packaging/build_hip_gfx1103.sh` on the mini PC (TheRock gfx110X-all SDK) | the same set as the gfx1200/1201 package, with `rocblas/library` and `hipblaslt/library` for gfx1103 (600 MiB) | experimental, unvalidated: the iGPU resets now and then (MES REMOVE_QUEUE); never kill the engine mid-request; run configs set `STRATA_NO_ARENA_THP=1`. `engine_component.resolve` picks a HIP package only when its `archs` list a gfx target the Linux kfd topology reports |
 | `linux-x86_64` sycl | a box with oneAPI DPC++ | `strata` (JIT from SPIR-V), libsycl, the Unified Runtime adapters, MKL SYCL libraries | the Level Zero loader and compute runtime are the PC's driver |
 | `macos-arm64` metal | an Apple Silicon Mac | `strata`, `metal/kernels/*.metal`, `metal/engine-msl/*.metal`, `metal/ggml-common.h`, `metal/data/*.bin` | the Metal engine compiles its kernel sources when it starts; since S1 it finds them beside the executable (`metal/src/resource_path.h`: environment variable, then `<exe dir>/metal/`, then the compiled-in source path) |
 
@@ -110,8 +113,9 @@ GPU architecture) into the folder `package_engine.py` packages; libraries the di
 
 A HIP package carries two programs for pictures next to `strata` (`vision` in its BUILD.json): `strata-vision` is the CPU reader, which
 needs nothing of the GPU runtime and starts on every PC, and `strata-vision-hip` is the same reader on the card (llama.cpp's HIP
-backend, built for the package's `archs`; BUILD.json `vision_archs`). Setup writes the run config with the GPU reader first and the CPU
-reader as `vision.cpu_exe`; when the GPU reader does not start (the card is not in its build, the HIP runtime does not load, the card is
+backend, built for the package's `archs`; BUILD.json `vision_archs`). Pictures are on by default. The reader runs on the CPU for a card under 24 GB and on the card from 24 GB, on every make of card (the rule is
+`strata_control/vision_reader.py`; `--vision gpu` or `--vision cpu` picks the other one for a model). When the run config names the GPU reader first
+and the CPU reader as `vision.cpu_exe`, and the GPU reader does not start (the card is not in its build, the HIP runtime does not load, the card is
 busy) the server starts the CPU reader by itself and prints one line. Both programs have RUNPATH `$ORIGIN` on Linux; on Windows the
 ROCm DLLs they import sit beside the programs or in `rocm/bin` (the engine's PATH entry, `lib_dirs`). `strata_control/vision_reader.py`
 holds the choice; `tools/test_vision_reader.py` the tests.

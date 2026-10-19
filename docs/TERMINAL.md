@@ -1,44 +1,44 @@
-# Strata terminal commands (implementation in progress)
+# Strata terminal commands
 
 `strata launch` (guided setup, serve and monitor) and `strata connect` (setup for your coding apps): see [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md).
 
-For the shortest path through the source-checkout commands, use the [terminal quick start](TERMINAL_QUICKSTART.md).
+For the shortest path, use the [terminal quick start](TERMINAL_QUICKSTART.md). The Terminal installs with one line (see [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md#install-one-line)) and gives you the `strata` command; every command below is typed as `strata ...`. In a source checkout, run `python strata.py ...` from the repository root instead (use `python3` where there is no `python`).
 
-This checkout adds a source-run terminal entry point beside the existing server:
+Read a server, watch it and start one:
 
 ```sh
-python strata.py status --url http://127.0.0.1:8095
-python strata.py status --url http://127.0.0.1:8095 --json
-python strata.py monitor --url http://127.0.0.1:8095 --once
-python strata.py serve --profile path/to/strata-model.json --port 8095
+strata status --url http://127.0.0.1:8095
+strata status --url http://127.0.0.1:8095 --json
+strata monitor --url http://127.0.0.1:8095 --once
+strata serve --profile path/to/strata-model.json --port 8095
 ```
 
 Discover setup-written model run configs in an installation without loading the engine:
 
 ```sh
-python strata.py models list --installed --output json
-python strata.py models inspect MODEL_ID --output json
-python strata.py models list --installed --install-dir /absolute/Strata/install --output json
-python strata.py models list --served --connection work --output json
-python strata.py models import /absolute/path/to/GGUF-directory --plan --output json
+strata models list --installed --output json
+strata models inspect MODEL_ID --output json
+strata models list --installed --install-dir /absolute/Strata/install --output json
+strata models list --served --connection work --output json
+strata models import /absolute/path/to/GGUF-directory --plan --output json
 ```
 
-Installed discovery scans only top-level `strata-*.json` files in the checkout containing `strata.py`, or in the existing absolute directory chosen by `--install-dir`/`STRATA_INSTALL_DIR`. It checks the local engine, tokenizer and referenced pack files using the same read-only component inventory as `doctor`. Invalid config candidates stay visible with an error. `models inspect` returns the component report and source-config SHA-256. `component_status: present` means required files exist, while `execution_compatibility: unverified` means model/backend support and real loading have not been proven.
+Installed discovery scans only top-level `strata-*.json` files in the install folders it knows (the Terminal's own folder, the desktop app's install folder and folders earlier installs remembered; in a source checkout, the folder containing `strata.py`), or only in the existing absolute directory chosen by `--install-dir`/`STRATA_INSTALL_DIR`. It checks the local engine, tokenizer and referenced pack files using the same read-only component inventory as `doctor`. Invalid config candidates stay visible with an error. `models inspect` returns the component report and source-config SHA-256. `component_status: present` means required files exist, while `execution_compatibility: unverified` means model/backend support and real loading have not been proven.
 
 `models list --served` uses the saved read-only connection and reports the **current server instance's** model ID and loaded state from telemetry. It is not a catalog of every installed or available model. `models import PATH --plan` inspects a local GGUF file or directory for bounded shard names, presence, regular files and GGUF v3 metadata. It checks for the expected `qwen4exp` architecture and `gpt2` tokenizer fields, and compares shard names with this checkout's known supported setup selections. It parses each bounded tensor directory, rejects payload extents past the end of a shard, and reports observed routed-expert encodings against the known variant's allowed encodings. An optional `mmproj` GGUF in the folder is listed as auxiliary and left untouched. A matching name produces a `setup_args_hint`, not a compatibility verdict: the preview does not read tensor payloads, hash entire files, verify provenance or test an engine load. Full artifact, model-pack, engine-version and hardware checks remain before actual adoption. No import, copy, download, repair or engine launch occurs in these inventory and preview commands.
 
 Save a monitor endpoint separately from the model's serving profile. A connection stores the server root, an optional reverse-proxy prefix and the **name** of a credential environment variable; it never stores the secret:
 
 ```sh
-python strata.py connection create work --url https://inference.example --prefix /strata --credential-env STRATA_TELEMETRY_KEY
-python strata.py connection list --output json
-python strata.py connection show work --output json
-python strata.py connection set work prefix=/new-strata --plan --output json
-python strata.py connection set work prefix=/new-strata --if-revision CONNECTION_REVISION
-python strata.py config show --effective --connection work --output json
-python strata.py status --connection work --json
-python strata.py monitor --connection work
-python strata.py logs --connection work --source runtime --follow --output jsonl
+strata connection create work --url https://inference.example --prefix /strata --credential-env STRATA_TELEMETRY_KEY
+strata connection list --output json
+strata connection show work --output json
+strata connection set work prefix=/new-strata --plan --output json
+strata connection set work prefix=/new-strata --if-revision CONNECTION_REVISION
+strata config show --effective --connection work --output json
+strata status --connection work --json
+strata monitor --connection work
+strata logs --connection work --source runtime --follow --output jsonl
 ```
 
 `config show` reports the source of each effective setting and whether the referenced credential is present, without printing its value or connecting to the server. An explicit `--url` or `--connection` wins over `STRATA_CONNECTION`, then `STRATA_URL`, then the local default. `--credential-env` overrides the selected reference. Direct URL use retains the legacy `STRATA_API_KEY` default; new saved connections default to `STRATA_TELEMETRY_KEY` so a read-only key can be used. Remote roots require HTTPS, and a saved proxy prefix accepts only simple path segments. The source CLI and portable monitor bundle use the same owner-private connection files in `${XDG_CONFIG_HOME:-~/.config}/strata/connections` or `%APPDATA%/Strata/connections`; `STRATA_CONNECTION_DIR` can select an absolute directory. On POSIX, the directory and records must be owner-only. Windows ACL qualification remains open.
@@ -46,75 +46,75 @@ python strata.py logs --connection work --source runtime --follow --output jsonl
 Operator profiles are separate from setup's run config. Save one from an installed config, preview edits, and use its name for serving:
 
 ```sh
-python strata.py profile create four-gpu --from-config path/to/strata-model.json
-python strata.py profile set four-gpu parallel=8 batch_groups=auto max_queue=32 queue_timeout=15 batch_telemetry=true --plan
-python strata.py profile set four-gpu parallel=8 batch_groups=auto max_queue=32 queue_timeout=15 batch_telemetry=true
-python strata.py profile show four-gpu --effective --output json
-python strata.py serve --profile four-gpu --plan --output json
-python strata.py serve --profile four-gpu --output jsonl
-python strata.py doctor --profile four-gpu --components --output json
-python strata.py doctor --profile four-gpu --live --output json
-python strata.py engine calibrate --profile four-gpu --plan --output json
-python strata.py serve --profile four-gpu --ready-file /absolute/path/strata-ready.json
+strata profile create four-gpu --from-config path/to/strata-model.json
+strata profile set four-gpu parallel=8 batch_groups=auto max_queue=32 queue_timeout=15 batch_telemetry=true --plan
+strata profile set four-gpu parallel=8 batch_groups=auto max_queue=32 queue_timeout=15 batch_telemetry=true
+strata profile show four-gpu --effective --output json
+strata serve --profile four-gpu --plan --output json
+strata serve --profile four-gpu --output jsonl
+strata doctor --profile four-gpu --components --output json
+strata doctor --profile four-gpu --live --output json
+strata engine calibrate --profile four-gpu --plan --output json
+strata serve --profile four-gpu --ready-file /absolute/path/strata-ready.json
 ```
 
 `strata serve` is the foreground form: Ctrl+C, a closing terminal, `kill` and a killed parent all end the server and its engine. `strata runtime start` is the background form: a service that keeps serving after the terminal closes and until `strata runtime stop` (`strata runtime cleanup` ends what a lost owner left behind). See [CLOSING.md](CLOSING.md) for every way of ending and what each one does on each OS.
 
-For a saved profile on POSIX, an owner-only local host can keep the server running and provide repeatable rerun commands:
+For a saved profile, an owner-only local host can keep the server running and provide repeatable rerun commands:
 
 ```sh
-python strata.py runtime start --profile four-gpu --plan --output json
-python strata.py runtime start --profile four-gpu --shutdown-timeout 30
-python strata.py runtime status --profile four-gpu --output json
-python strata.py runtime verify --profile four-gpu --wait 300 --output json
-python strata.py runtime verify --profile four-gpu --load --wait 300 --output json
-python strata.py profile set four-gpu parallel=8 batch_groups=auto --plan
-python strata.py profile set four-gpu parallel=8 batch_groups=auto
-python strata.py runtime restart --profile four-gpu --plan --output json
-python strata.py runtime restart --profile four-gpu --startup-wait 300
-python strata.py runtime stop --profile four-gpu
+strata runtime start --profile four-gpu --plan --output json
+strata runtime start --profile four-gpu --shutdown-timeout 30
+strata runtime status --profile four-gpu --output json
+strata runtime verify --profile four-gpu --wait 300 --output json
+strata runtime verify --profile four-gpu --load --wait 300 --output json
+strata profile set four-gpu parallel=8 batch_groups=auto --plan
+strata profile set four-gpu parallel=8 batch_groups=auto
+strata runtime restart --profile four-gpu --plan --output json
+strata runtime restart --profile four-gpu --startup-wait 300
+strata runtime stop --profile four-gpu
 ```
 
 To switch a managed model to a separate run config file, select the file in the saved profile, preview the owned restart, then pass its candidate digest when restarting:
 
 ```sh
-python strata.py profile use-config four-gpu --from-config /absolute/path/next-model.json --plan --output json
-python strata.py profile use-config four-gpu --from-config /absolute/path/next-model.json --if-revision PROFILE_REVISION --output json
-python strata.py runtime restart --profile four-gpu --allow-source-switch --plan --output json
-python strata.py runtime restart --profile four-gpu --allow-source-switch --if-profile-revision NEW_PROFILE_REVISION --if-source-sha256 CANDIDATE_SOURCE_SHA256
+strata profile use-config four-gpu --from-config /absolute/path/next-model.json --plan --output json
+strata profile use-config four-gpu --from-config /absolute/path/next-model.json --if-revision PROFILE_REVISION --output json
+strata runtime restart --profile four-gpu --allow-source-switch --plan --output json
+strata runtime restart --profile four-gpu --allow-source-switch --if-profile-revision NEW_PROFILE_REVISION --if-source-sha256 CANDIDATE_SOURCE_SHA256
 ```
 
 If an operator edits the **same run config file** while its managed server is running, use the separate migration preview and pin the edited bytes before restart:
 
 ```sh
-python strata.py runtime restart --profile four-gpu --allow-source-migration --plan --output json
-python strata.py runtime restart --profile four-gpu --allow-source-migration --if-profile-revision PROFILE_REVISION --if-source-sha256 CANDIDATE_SOURCE_SHA256
+strata runtime restart --profile four-gpu --allow-source-migration --plan --output json
+strata runtime restart --profile four-gpu --allow-source-migration --if-profile-revision PROFILE_REVISION --if-source-sha256 CANDIDATE_SOURCE_SHA256
 ```
 
-The local host owns its server child and uses a private Unix control socket and token file; the CLI never signals a PID read from a ready file. Restart drains the current instance, applies the saved profile revision, waits for the new ready file, and launches the previous arguments again if activation fails. Switching the saved profile to a **distinct, regular source file** is explicit and requires the preview's source digest. The old source file must still contain its launch bytes for ordinary rollback. An in-place edit requires `--allow-source-migration`; before drain the host copies the running config bytes to a mode-0600 file in its private runtime directory. If the old file was edited **and** the saved profile now points to a new file, preview and run with both source flags. A failed activation restarts from the snapshot, leaving the operator's edited file untouched. The rollback status reports the snapshot path; after the operator fixes the candidate file, retry it as a distinct source with `--allow-source-switch`. A successful activation removes the unneeded snapshot. A hard link to the old file or a source change after preview is rejected before draining; a source change during activation fails attestation and attempts rollback. The host stores private logs and state under `${XDG_STATE_HOME:-~/.local/state}/strata/runtime` or `STRATA_RUNTIME_DIR` (which must be an absolute, owner-only directory). `runtime start` and `runtime restart` verify the ready-file instance ID against authenticated local telemetry, compare a private MAC of the config bytes and launch arguments actually read by the server, and run a one-token generation before reporting generation readiness. A launch mismatch fails before generation. The MAC is scoped to the owner-managed process; it is not a publisher signature or a model-file hash. An intentionally lazy model remains `unloaded` with `generation_ready=false`; `runtime verify --load` opts into loading and generating. `runtime status` reports the last successful startup or explicit verification, not continuous engine liveness; use `runtime verify` to recheck. The probe validates the bound endpoint and model ID, requires at least one completion token, uses a configured API key only in memory, and puts neither generated text nor credentials in the operation journal. If the optional API monitor is enabled, it can capture the fixed probe request like other inference calls. This one-token smoke check does not establish sustained throughput, answer quality or four-card stability. On POSIX, an inherited pipe makes the server stop its dedicated process group when the owner host dies, including after a hard kill. `runtime status` then reports `stale`; a new `runtime start` waits for the recorded child to exit, verifies the host's file lease is gone and the child has exited, and reclaims private state and any orphaned rollback snapshots without signaling a saved PID. If the child is still present, its ownership record is missing, or the socket has an active listener, recovery refuses and requires inspection. This mechanism has been tested with a fake engine on macOS, not qualified on real multi-GPU workloads or Linux. Windows needs a qualified owner-only control transport and ACL tests before these commands can manage it. The shared Desktop operation journal and full model/device editing contract are still pending.
+The local host owns its server child. On macOS and Linux it uses a private Unix control socket and token file; on Windows it uses a loopback-only TCP listener (127.0.0.1, never a network address) that answers only requests carrying the owner's 256-bit token, kept in an owner-only folder (that is a weaker guarantee than a socket the other users cannot open, and the token is what protects it); the CLI never signals a PID read from a ready file. Restart drains the current instance, applies the saved profile revision, waits for the new ready file, and launches the previous arguments again if activation fails. Switching the saved profile to a **distinct, regular source file** is explicit and requires the preview's source digest. The old source file must still contain its launch bytes for ordinary rollback. An in-place edit requires `--allow-source-migration`; before drain the host copies the running config bytes to a mode-0600 file in its private runtime directory. If the old file was edited **and** the saved profile now points to a new file, preview and run with both source flags. A failed activation restarts from the snapshot, leaving the operator's edited file untouched. The rollback status reports the snapshot path; after the operator fixes the candidate file, retry it as a distinct source with `--allow-source-switch`. A successful activation removes the unneeded snapshot. A hard link to the old file or a source change after preview is rejected before draining; a source change during activation fails attestation and attempts rollback. The host stores private logs and state under `${XDG_STATE_HOME:-~/.local/state}/strata/runtime` or `STRATA_RUNTIME_DIR` (which must be an absolute, owner-only directory). `runtime start` and `runtime restart` verify the ready-file instance ID against authenticated local telemetry, compare a private MAC of the config bytes and launch arguments actually read by the server, and run a one-token generation before reporting generation readiness. A launch mismatch fails before generation. The MAC is scoped to the owner-managed process; it is not a publisher signature or a model-file hash. An intentionally lazy model remains `unloaded` with `generation_ready=false`; `runtime verify --load` opts into loading and generating. `runtime status` reports the last successful startup or explicit verification, not continuous engine liveness; use `runtime verify` to recheck. The probe validates the bound endpoint and model ID, requires at least one completion token, uses a configured API key only in memory, and puts neither generated text nor credentials in the operation journal. If the optional API monitor is enabled, it can capture the fixed probe request like other inference calls. This one-token smoke check does not establish sustained throughput, answer quality or four-card stability. On macOS and Linux, an inherited pipe makes the server stop its dedicated process group when the owner host dies, including after a hard kill. `runtime status` then reports `stale`; a new `runtime start` waits for the recorded child to exit, verifies the host's file lease is gone and the child has exited, and reclaims private state and any orphaned rollback snapshots without signaling a saved PID. If the child is still present, its ownership record is missing, or the socket has an active listener, recovery refuses and requires inspection. The desktop app starts its models through this host on all three systems. Multi-GPU workloads have not been qualified on this path.
 
 Owner-editable operation recipes save typed actions next to profiles. Initialize three examples, preview the exact action and its effects, then run it explicitly:
 
 ```sh
-python strata.py ops init --profile four-gpu
-python strata.py ops list --profile four-gpu
-python strata.py ops set restart --profile four-gpu startup_wait_s=45 --plan
-python strata.py ops set restart --profile four-gpu startup_wait_s=45
-python strata.py ops edit restart --profile four-gpu
-python strata.py ops plan restart --profile four-gpu --output json
-python strata.py ops run restart --profile four-gpu --if-revision RECIPE_REVISION --if-profile-revision PROFILE_REVISION
-python strata.py ops run check --profile four-gpu --output json
-python strata.py ops set check --profile four-gpu live=true --plan
-python strata.py ops set check --profile four-gpu live=true
-python strata.py ops plan check --profile four-gpu --output json
-python strata.py ops run check --profile four-gpu --output json
-python strata.py ops set calibrate --profile four-gpu report_dir=/private/path/reports
-python strata.py ops plan calibrate --profile four-gpu --output json
-python strata.py ops run calibrate --profile four-gpu --exclusive --output json
-python strata.py ops runs --profile four-gpu --limit 20 --output json
-python strata.py ops result OPERATION_ID --profile four-gpu --output json
-python strata.py ops history restart --profile four-gpu
-python strata.py ops rollback restart --profile four-gpu --to REVISION
+strata ops init --profile four-gpu
+strata ops list --profile four-gpu
+strata ops set restart --profile four-gpu startup_wait_s=45 --plan
+strata ops set restart --profile four-gpu startup_wait_s=45
+strata ops edit restart --profile four-gpu
+strata ops plan restart --profile four-gpu --output json
+strata ops run restart --profile four-gpu --if-revision RECIPE_REVISION --if-profile-revision PROFILE_REVISION
+strata ops run check --profile four-gpu --output json
+strata ops set check --profile four-gpu live=true --plan
+strata ops set check --profile four-gpu live=true
+strata ops plan check --profile four-gpu --output json
+strata ops run check --profile four-gpu --output json
+strata ops set calibrate --profile four-gpu report_dir=/private/path/reports
+strata ops plan calibrate --profile four-gpu --output json
+strata ops run calibrate --profile four-gpu --exclusive --output json
+strata ops runs --profile four-gpu --limit 20 --output json
+strata ops result OPERATION_ID --profile four-gpu --output json
+strata ops history restart --profile four-gpu
+strata ops rollback restart --profile four-gpu --to REVISION
 ```
 
 `ops create NAME --profile four-gpu --kind runtime.restart|engine.calibrate.measure|components.verify` adds another typed recipe. `ops edit` opens a temporary JSON copy in `VISUAL` or `EDITOR`; invalid drafts are kept for repair. Recipe revisions are saved atomically with history. `--if-revision` and `--if-profile-revision` prevent an edited recipe or profile from running after a preview; the runtime host checks the profile revision again before draining. `ops plan` is read-only and distinguishes preview effects from the effects of a subsequent run. The calibration recipe runs the existing decode-speed sweep, creates a new report filename under its saved absolute `report_dir`, and requires a fresh `--exclusive` assertion every time. Review and apply that report with the separate `engine calibrate --review-result` and `--apply-result` commands above; a recipe run never applies tuning automatically. The component recipe reads installed files; its optional typed `live=true` setting also queries the host's GPU inventory during both preview and run. Recipes contain known kinds and typed values, never arbitrary shell command text.
@@ -124,31 +124,31 @@ Each accepted `ops run` creates a local operation record with recipe/profile rev
 To tune an installed engine, stop all instances using its devices, then measure and review a separate report before applying it:
 
 ```sh
-python strata.py engine calibrate --profile four-gpu --measure --exclusive --out calibration.json
-python strata.py engine calibrate --profile four-gpu --review-result calibration.json --output json
-python strata.py engine calibrate --profile four-gpu --apply-result calibration.json --exclusive
-python strata.py engine calibrate --profile four-gpu --review-rollback calibration.json --output json
-python strata.py engine calibrate --profile four-gpu --rollback-result calibration.json --exclusive
+strata engine calibrate --profile four-gpu --measure --exclusive --out calibration.json
+strata engine calibrate --profile four-gpu --review-result calibration.json --output json
+strata engine calibrate --profile four-gpu --apply-result calibration.json --exclusive
+strata engine calibrate --profile four-gpu --review-rollback calibration.json --output json
+strata engine calibrate --profile four-gpu --rollback-result calibration.json --exclusive
 ```
 
 To measure the **running** server after selecting the intended model and batching profile, run an explicit serving workload and keep its local evidence:
 
 ```sh
-python strata.py bench run --profile four-gpu --suite serving-smoke --concurrency 8 --out ./bench-smoke-01
-python strata.py bench report ./bench-smoke-01 --output json
-python strata.py bench run --url http://127.0.0.1:8095 --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --out ./bench-mixed-01
-python strata.py bench run --profile four-gpu --suite parallel-overload-v1 --concurrency 48 --out ./bench-overload-01
-python strata.py bench run --profile four-gpu --suite parallel-cancel-v1 --concurrency 8 --out ./bench-cancel-01
-python strata.py bench run --profile four-gpu --suite parallel-prefill-cancel-v1 --concurrency 8 --out ./bench-prefill-cancel-01
-python strata.py runtime start --profile four-gpu
-python strata.py bench run --profile four-gpu --require-managed-match --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --condition baseline --out ./bench-baseline
+strata bench run --profile four-gpu --suite serving-smoke --concurrency 8 --out ./bench-smoke-01
+strata bench report ./bench-smoke-01 --output json
+strata bench run --url http://127.0.0.1:8095 --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --out ./bench-mixed-01
+strata bench run --profile four-gpu --suite parallel-overload-v1 --concurrency 48 --out ./bench-overload-01
+strata bench run --profile four-gpu --suite parallel-cancel-v1 --concurrency 8 --out ./bench-cancel-01
+strata bench run --profile four-gpu --suite parallel-prefill-cancel-v1 --concurrency 8 --out ./bench-prefill-cancel-01
+strata runtime start --profile four-gpu
+strata bench run --profile four-gpu --require-managed-match --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --condition baseline --out ./bench-baseline
 # Attach the read-only monitor in a separate terminal, then repeat the same workload.
-# python strata.py monitor --url http://127.0.0.1:8095 --interval 2
-python strata.py bench run --profile four-gpu --require-managed-match --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --condition monitor-default --out ./bench-monitored
-python strata.py bench compare ./bench-baseline ./bench-monitored --output json
+# strata monitor --url http://127.0.0.1:8095 --interval 2
+strata bench run --profile four-gpu --require-managed-match --suite parallel-mixed-v1 --concurrency 8 --repeat 3 --condition monitor-default --out ./bench-monitored
+strata bench compare ./bench-baseline ./bench-monitored --output json
 ```
 
-`bench run` requires a loaded instance and versioned telemetry. It sends one warmup request, a two-request serial phase and a mixed short/long streaming phase; `parallel-mixed-v1` repeats the mixed phase twice per trial. `parallel-overload-v1` instead sends one warmup, a synchronized short/long burst and a recovery request. It requires configured `max_queue` and `queue_timeout`, and `--concurrency` must exceed the reported admission limit; use up to 64 workers for this explicit suite, or up to 16 for the others. The example of 48 workers only fits a server whose reported admission limit is below 48. Expected `admission_full` and `queue_wait_timeout` responses are counted separately from unexpected errors; the suite passes only if some calls run, some are refused or time out, and recovery works. `parallel-cancel-v1` closes one active stream after its first content, then fills the effective slots and closes a queued stream, followed by a recovery request. It requires at least one queue place, a queue timeout of at least two seconds, disconnect telemetry and `--concurrency` at least the effective slot count. It checks that the target was visible, the server observed a client disconnect, companions completed and admission and slots settled. `parallel-prefill-cancel-v1` separately closes a target while the engine reports partial prompt reading in a batch slot, with one companion decoding; it requires at least two effective slots, concurrency at least two and disconnect telemetry. Both cancellation suites verify companion completion, settled resources and recovery. Run them without unrelated client traffic because the disconnect counter is server-wide. `--concurrency` is a client-worker count, not the engine's effective slot count. Supply an inference key through `STRATA_API_KEY`; if monitoring has a separate key, add `--telemetry-credential-env STRATA_TELEMETRY_KEY`. The new output directory contains `results.json`, with request latency, first-token time, output token counts when the API provides them, and sampled active/queued/occupied slots, groups and per-card readings. Prompts, answer text and credentials are excluded. The report records null when a backend signal is unavailable and labels the limits of client-observed timing. `bench run --profile NAME --require-managed-match` is an opt-in gate for a server launched by the POSIX owner host. It rejects a changed profile, changed source config, unverified owner launch, wrong telemetry instance or endpoint before creating benchmark output. It checks again after the workload and retains a failed report if the match was lost. Reports label the result `managed_launch_checked`; default, foreground and remote runs label it `unverified`. This is a beginning/end check of the owner's startup attestation, not continuous verification of running files. These source-run suites do not verify model artifact hashes or driver versions or establish four-GPU throughput on the target host.
+`bench run` is a serving benchmark for your own tuning and comparisons; it is not the draft community benchmark protocol ([BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md)), and its output is not a standard submission. It requires a loaded instance and versioned telemetry. It sends one warmup request, a two-request serial phase and a mixed short/long streaming phase; `parallel-mixed-v1` repeats the mixed phase twice per trial. `parallel-overload-v1` instead sends one warmup, a synchronized short/long burst and a recovery request. It requires configured `max_queue` and `queue_timeout`, and `--concurrency` must exceed the reported admission limit; use up to 64 workers for this explicit suite, or up to 16 for the others. The example of 48 workers only fits a server whose reported admission limit is below 48. Expected `admission_full` and `queue_wait_timeout` responses are counted separately from unexpected errors; the suite passes only if some calls run, some are refused or time out, and recovery works. `parallel-cancel-v1` closes one active stream after its first content, then fills the effective slots and closes a queued stream, followed by a recovery request. It requires at least one queue place, a queue timeout of at least two seconds, disconnect telemetry and `--concurrency` at least the effective slot count. It checks that the target was visible, the server observed a client disconnect, companions completed and admission and slots settled. `parallel-prefill-cancel-v1` separately closes a target while the engine reports partial prompt reading in a batch slot, with one companion decoding; it requires at least two effective slots, concurrency at least two and disconnect telemetry. Both cancellation suites verify companion completion, settled resources and recovery. Run them without unrelated client traffic because the disconnect counter is server-wide. `--concurrency` is a client-worker count, not the engine's effective slot count. Supply an inference key through `STRATA_API_KEY`; if monitoring has a separate key, add `--telemetry-credential-env STRATA_TELEMETRY_KEY`. The new output directory contains `results.json`, with request latency, first-token time, output token counts when the API provides them, and sampled active/queued/occupied slots, groups and per-card readings. Prompts, answer text and credentials are excluded. The report records null when a backend signal is unavailable and labels the limits of client-observed timing. `bench run --profile NAME --require-managed-match` is an opt-in gate for a server launched by the POSIX owner host. It rejects a changed profile, changed source config, unverified owner launch, wrong telemetry instance or endpoint before creating benchmark output. It checks again after the workload and retains a failed report if the match was lost. Reports label the result `managed_launch_checked`; default, foreground and remote runs label it `unverified`. This is a beginning/end check of the owner's startup attestation, not continuous verification of running files. These source-run suites do not verify model artifact hashes or driver versions or establish four-GPU throughput on the target host.
 
 `bench run --condition NAME` records a short operator label, such as `baseline`, `monitor-default` or `monitor-fast`; it does not verify that a monitor was attached. `bench compare BASELINE CANDIDATE` reads two saved reports without contacting the server or writing files. It rejects failed runs, different suites/models, changed request fingerprints or concurrency, changed source-config digests and conflicting reported device/settings identity. It pairs phases and reports client-observed p95 TTFT, p95 latency and output throughput, plus admission/queue deltas. Missing values remain unavailable. The comparison is **provisional** even when both runs have `managed_launch_checked`: the owner match is checked only at the beginning and end, and exact driver/engine/model hashes, monitor attachment, host CPU/RSS and telemetry traffic are not attested. For the four-card overhead gate, keep at least three repeated measured phases, save `doctor --live` card/driver evidence, record PCIe and layer topology separately, measure host and monitor CPU/RSS and HTTP calls/bytes separately, and investigate changes against trial variability. A pair of reports alone is not release qualification.
 
@@ -162,7 +162,7 @@ The basic CLI and status command use Python's standard library. The interactive 
 
 ```sh
 python -m pip install -r requirements-monitor.txt
-python strata.py monitor --url http://127.0.0.1:8095
+strata monitor --url http://127.0.0.1:8095
 ```
 
 Use the same Python environment that runs Strata. Strata's runtime dependencies are listed separately in `requirements.txt`; the monitor dependency is not needed for `serve` or `status`.
@@ -184,7 +184,7 @@ python dist/strata-monitor.pyz monitor --url https://HOST --once --json
 python dist/strata-monitor.pyz logs --url https://HOST --output json
 ```
 
-The `.pyz` contains only the bounded telemetry client, connection store, renderers for the Overview and five detail pages, optional TUI module, the same status/monitor/logs command implementation used by `python strata.py`, and Strata's MIT license notice. It has no server, engine, model, setup code or bundled framework. One-shot status, request activity and saved connections work with Python's standard library alone; interactive mode needs an explicit `python -m pip install textual==8.2.8` in that Python environment. The adjacent version-4 `.manifest.json` records a SHA-256 checksum, exact bundle members, Python 3.10 minimum and telemetry schema 1 compatibility. The verifier still accepts older version-1 through version-3 source bundles so a local update can retain and roll back to one. The manifest has no publisher signature, so it is a source-run artifact, not a signed release component. A remote URL still requires HTTPS or a local SSH tunnel; credentials come from an environment variable through `--credential-env` or a saved reference.
+The `.pyz` contains only the bounded telemetry client, connection store, renderers for the Overview and five detail pages, optional TUI module, the same status/monitor/logs command implementation used by `strata`, and Strata's MIT license notice. It has no server, engine, model, setup code or bundled framework. One-shot status, request activity and saved connections work with Python's standard library alone; interactive mode needs an explicit `python -m pip install textual==8.2.8` in that Python environment. The adjacent version-4 `.manifest.json` records a SHA-256 checksum, exact bundle members, Python 3.10 minimum and telemetry schema 1 compatibility. The verifier still accepts older version-1 through version-3 source bundles so a local update can retain and roll back to one. The manifest has no publisher signature, so it is a source-run artifact, not a signed release component. A remote URL still requires HTTPS or a local SSH tunnel; credentials come from an environment variable through `--credential-env` or a saved reference.
 
 Before distributing a candidate to an operator, run its standard-library smoke on each target Python and OS:
 
@@ -234,7 +234,7 @@ When `--max-queue` is set, at most **effective slots + max queue** HTTP inferenc
 
 `status --json` and `monitor --once --json` return one versioned JSON object. Remote monitor URLs require verified HTTPS; a local SSH tunnel can use `http://127.0.0.1`. For a read-only monitor key, set `STRATA_TELEMETRY_KEY` on the server and pass the same secret to the client through `--credential-env STRATA_TELEMETRY_KEY` (or another client environment variable). Use a distinct inference API key: the server rejects duplicate keys. The telemetry key authorizes `/v1/telemetry` only; it cannot call inference or management endpoints. The existing `STRATA_API_KEY` also works and has its broader legacy permissions. Keys are never put in URLs or command arguments. The client refuses redirects and responses over 2 MiB. Excessively nested JSON is reported as a malformed telemetry response with the same one-record error contract, rather than a Python traceback.
 
-The interactive monitor has Overview, Serving, Requests, Engine, Hardware and Logs views. Use keys `1`–`6` or Left/Right to switch views, Tab in Serving to cycle Devices / Requests / Groups at wide and compact widths, `/` to filter requests, Up/Down and Page Up/Down to move the selected row, Home/End to jump to the first/last row, Enter to show or hide read-only request, device or slot detail, Space to freeze the display, `r` to refresh, `t` to cycle theme, `?` or F1 for help, and `q` to detach. Filter input is limited to 80 characters and cleaned of terminal controls and bidi formatters as text arrives; `q` remains ordinary text while the filter has focus. Recent detail contains bounded token and timing summaries, never prompt bodies. A selected request, device or slot stays attached to its reported ID across polls, including when a request moves from live to recent history; detail closes and the TUI says “No longer retained” if that ID disappears. An instance restart clears selection even when a new request reuses the same ID. The 60- and 40-column layouts keep the selected request visible. It never starts or stops the server. `NO_COLOR` or `--color never` uses terminal defaults. `--glyphs ascii` avoids special glyphs. The selected terminal font is controlled by the terminal, not Strata.
+The interactive monitor has six views: Overview, Serving, Requests, Engine, Hardware and Logs. The monitor that `strata launch` opens adds a seventh, **Connect** (the address, the key and the setup for your coding apps; see [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md#after-the-start-the-monitor)). Use keys `1`–`6` (`1`–`7` in the launch monitor) or Left/Right to switch views, Tab in Serving to cycle Devices / Requests / Groups at wide and compact widths, `/` to filter requests, Up/Down and Page Up/Down to move the selected row, Home/End to jump to the first/last row, Enter to show or hide read-only request, device or slot detail, Space to freeze the display, `r` to refresh, `t` to cycle theme, `?` or F1 for help, and `q` to detach. Filter input is limited to 80 characters and cleaned of terminal controls and bidi formatters as text arrives; `q` remains ordinary text while the filter has focus. Recent detail contains bounded token and timing summaries, never prompt bodies. A selected request, device or slot stays attached to its reported ID across polls, including when a request moves from live to recent history; detail closes and the TUI says “No longer retained” if that ID disappears. An instance restart clears selection even when a new request reuses the same ID. The 60- and 40-column layouts keep the selected request visible. It never starts or stops the server. `NO_COLOR` or `--color never` uses terminal defaults. `--glyphs ascii` avoids special glyphs. The selected terminal font is controlled by the terminal, not Strata.
 
 Remote model, device and request labels are stripped of terminal controls and bidi formatters before display. The stdlib renderer clips by terminal display cells and pads fixed columns by the same measure; local cases cover combining marks, CJK names, regional-indicator flags and joined emoji at 110, 80, 60 and 40 columns. Terminal implementations can differ on ambiguous-width characters, so the renderer uses the terminal's narrow default for them.
 
@@ -248,7 +248,7 @@ The [wide four-GPU Serving preview](terminal-previews/serving-110-color.png), [8
 
 The [schema v1 telemetry field matrix](TERMINAL_TELEMETRY_FIELDS.md) gives each displayed value's source, unit, scope, sensitivity and missing-data rule. Use it when connecting another UI or consuming `status --json`.
 
-The [qualification matrix](TERMINAL_QUALIFICATION.md) lists source-run checks and the remaining target-host gates for the developer.
+The [qualification matrix](TERMINAL_QUALIFICATION.md) is a historical record of the source-run checks made before the 0.2.0 Terminal (11 October 2026).
 
 For a repeatable client stability check, run `tools/monitor_soak.py` with an absolute new report path. `--exercise-ui` resizes the live Textual monitor across 110 x 30, 80 x 24, 60 x 16 and 40 x 12 while a synthetic server rotates an unrelated host GPU row and intermittently omits or duplicates a selected card sensor. It checks selected-card history bounds alongside reconnect, restart and read-only detach. Use `--seconds 1800 --interval 0.5 --exercise-ui` for the long soak. Its JSON is synthetic client evidence; it does not measure engine, model or GPU performance.
 
@@ -273,4 +273,4 @@ For a four-card run, record the exact GPU model/VRAM, driver, selected device ID
 
 ## Current limits
 
-The `strata code` command returns a missing-component error because the shared Desktop harness source and its session/approval contract have not been integrated. No separate coding-agent loop is bundled here. The source-run checkout now has a POSIX owner bridge, recoverable benchmark and calibration journal receipts, a redacted request-activity feed and a portable read-only monitor bundle. Windows runtime ownership and locking, remaining Desktop authority mappings, complete management journal coverage, signed whole-runtime distribution and qualified native batch/stage samples are pending. Calibration and serving benchmarks have not been run on a real model in this checkout. This implementation does not establish a macOS inference-engine port or four-RTX-6000 performance.
+`strata code` is not available in this version: it exits with code 5 and says the shared Desktop harness component is not installed. To use a coding app with a Strata server, run `strata connect` (see [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md#connect-your-apps-strata-connect)); the desktop app has its own coding harness. Calibration and serving benchmarks (`strata bench run`) are explicit, separate steps; this page does not report results from a real model. Nothing here establishes four-RTX-6000 performance.

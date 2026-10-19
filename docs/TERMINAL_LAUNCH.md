@@ -7,15 +7,15 @@ in the Terminal's look, with presets, an Advanced table, an access choice and a 
 ## Install (one line)
 
 ```sh
-curl -fsSL <release-folder>/install.sh | sh          # Linux, macOS
-irm <release-folder>/install.ps1 | iex                # Windows PowerShell
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh          # Linux, macOS
+irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex                # Windows PowerShell
 ```
 
 It finds out which computer this is, downloads the Terminal archive named in the release folder's `install-manifest.txt`, checks its SHA-256, unpacks it into your
 home (`~/.local/share/strata/terminal`, `%LOCALAPPDATA%\Strata\terminal`; no administrator rights), checks the release's signed feed with the Terminal it just unpacked
 (`strata update --check`; if that fails it removes what it unpacked), puts `strata` on your PATH and prints `Installed. Run: strata launch`. The engine (the part that talks
 to your graphics card) comes with the first model: `strata launch` fetches the one for your card from the same release folder, signed, and test-starts it before using it.
-`<release-folder>` is where the release is hosted (not decided yet: set `STRATA_FEED` to try a local one; `packaging/make_local_feed.py` builds a test-signed one).
+The release folder is the latest GitHub release of Niko1221/Strata (`https://github.com/Niko1221/Strata/releases/latest/download`). The script only fetches and checks; read it first if you like (it is the same file as `install.sh` / `install.ps1` in the repository's `packaging` folder and in the release). Set `STRATA_FEED` to another folder to try a local one; `packaging/make_local_feed.py` builds a test-signed one. How far to trust a piped installer is in [SECURITY.md](../SECURITY.md).
 
 ## The screens (`strata launch`)
 
@@ -76,7 +76,7 @@ folder; the run uses the shared profile `launch-<name>` and the shared tuning pr
 
 `strata connect` lists OpenCode, Codex CLI, Claude Code, oh-my-pi (omp), pi, Hermes Agent, OpenClaw and the DeepSeek Harness (built into the app). `strata connect opencode` prints the file and
 environment for the running server (address, key, model name and context filled in); `--write` writes it after asking and keeps a backup of anything it replaces; `--check` sends one prompt and one tool call
-the way that app does and says whether each worked. Each configuration was tested for real against a Strata server at 32K context (the app versions are on screen); the known limits are printed in plain
+the way that app does and says whether each worked. With `--output json` (`strata connect opencode --check --output json`) it prints one JSON object with the same file and environment fields plus `checks` (one entry per check: `name`, `ok`, `detail`, `seconds`) and `checked_server`; `ok` is true only when both checks passed. The exit code is 0 when both worked and 1 when one failed or the server could not be reached; in that case the object also carries an `error` that says which of the two it was. Each configuration was tested for real against a Strata server at 32K context (the app versions are on screen); the known limits are printed in plain
 words (for example: Claude Code needs `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; OpenCode needs `limit.input`; Hermes refuses windows under 64K unless set up as the config does; OpenClaw needs Node 24.16+).
 
 ## Boxes the installer cannot set up
