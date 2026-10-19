@@ -11,6 +11,18 @@ verify window (a few hundred KB through pinned RAM), not twice per layer. No NVL
 needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
 is every card's share and skips those probes; there is no per-card setting yet.
 
+**Two models on two cards (the app).** A layer split puts one model on several cards. The other way to use two cards is two
+models, one per card, each answering on its own. In the app, turn on **Run multiple models** on the Models page: the card
+list then says which card a loaded model uses ("Already used by ..."), preselects a free card for the next model, and
+explains a failed start on a card that is taken. Measured on a PC with Radeon AI PRO R9700 cards (two of four, Linux): Q2_0 on
+one card and IQ3_XXS on another both loaded (33 s and 59 s with the files cached, 114 s the first time), both answered chats
+(about 60 tokens/s each), the Monitor listed both, and unloading one left the other answering. This was run with the AMD build only;
+the same app code drives NVIDIA cards, but we have not run two models on two NVIDIA cards.
+
+**One make of card per engine.** An engine drives one make of card (NVIDIA, AMD or Intel). The app, `strata launch` and setup
+offer only the cards the engine can drive, never split a model across two makes, say in one plain line when the other make has
+the bigger card, and say that two models at once on two makes is not supported.
+
 ## Using it
 
 **Nothing to type.** `START-HERE.bat` (Linux: `./setup.sh`) lists your NVIDIA cards and says for each one whether

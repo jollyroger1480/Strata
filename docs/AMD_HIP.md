@@ -264,7 +264,7 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
 compositor fails with "Failed to pin framebuffer with error -12".
 
-The installer supports this backend (see "Install with setup" above). Pictures are read on the card (`strata-vision-hip`) when the engine has it, else on the CPU (`strata-vision`).
+The installer supports this backend (see "Install with setup" above). Pictures are on by default. They are read on the CPU (`strata-vision`) under 24 GB of VRAM and on the card (`strata-vision-hip`) from 24 GB, the same rule as for every make of card; if the engine has no card reader, or it cannot start, the CPU reader is used.
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
 **Opt-in switches for RDNA2 prompts and hangs (0.1.40, off by default):** `STRATA_DENSE_MMQ=1` (#820, HIP) runs the
@@ -495,7 +495,12 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     4K / 20K residual dumps identical on both packs.
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
-- **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
+- **Pictures:** the card's reader (`strata-vision-hip`) is measured on an R9700 (gfx1201): 57 ms for a 260-token picture and 0.40 s for a
+  972-token one, against 3.13 s and 14.1 s on the CPU reader (EPYC, 32 threads); the embeddings agree with the CPU reader's (cosine mean 0.99985). It keeps
+  about 1.4 GiB of VRAM (+1,470 MiB on the R9700). A test picture (red circle, blue square, green triangle, the text "STRATA 42") was answered correctly with both readers, and the
+  fallback to the CPU reader was tested with a reader built for another card. The same reader built for gfx1103 ran on a Radeon 780M (0.40 s for 260 tokens
+  against 2.42 s on its CPU). It has not run on an RDNA3 card (gfx1100-gfx1102) or on Windows with an AMD card.
+- **Not validated:** long contexts beyond 16K, answer-quality benchmarks.
 
 ## Community-validated cards
 

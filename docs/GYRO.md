@@ -39,7 +39,19 @@ APR port, and the released 0.1.45 stops at v4. A ready-made engine that is older
 
 **Supported:** NVIDIA (CUDA, Linux and Windows) and AMD (HIP, experimental: the authors validated gfx1151; we ran
 gfx1201 with identical output to rc2). **Not supported:** Intel Arc (SYCL) and Apple Metal: the engines there have no
-trellis kernels; the Metal engine refuses the file at load with the reason. Images are off for these files.
+trellis kernels; the Metal engine refuses the file at load with the reason.
+
+**Pictures.** Gyro reads pictures with the original model's picture reader file (the same one every Qwen3.8-Flash-Next
+model uses; setup downloads it with the model). The reader opens only the vocabulary and the header of the Gyro file, so
+the trellis tensors do not matter to it. Pictures are on by default, with the CPU reader under 24 GB of graphics memory and
+the card's reader from 24 GB. This needs engine 0.1.45.1 or newer, like the Gyro files themselves.
+
+**RTX 50 cards (sm_120).** Gyro gives correct output on them with engine 0.1.45.3. The fused gate/up SwiGLU kernel, which
+is the default on compute capability 12.0 cards, handles only rows of 80 dot products; Gyro's trellis rows have 160, and
+before the fix they went through it anyway. Gyro-S then answered with loops, garbage or nothing: on an RTX PRO 5000, 0 of
+8 test questions were answered right before the fix and 8 of 8 after it (greedy and with the app's sampling). Now those
+rows use the full-warp kernel, and the identity gate (10 prompts, 4K and 20K prompts) is identical to the run with the fused
+kernel off. If Gyro misbehaves on an RTX 50 card, update the engine.
 
 **Prompt speed and the ggml build.** The trellis prompt kernels (MMQ) are agentionai's, from their llama.cpp fork (MIT).
 Strata builds against upstream ggml, which does not have them, so it adds them itself at configure time:

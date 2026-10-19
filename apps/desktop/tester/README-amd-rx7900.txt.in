@@ -77,11 +77,16 @@ Please do not send API keys.
 WHAT WE TESTED AND WHAT WE DID NOT
 ----------------------------------
 * NOT TESTED by us on any RDNA3 card (RX 7000 series): we have no such card. The engine and the libraries inside contain code for gfx1100, gfx1101 and
-  gfx1102 (we checked the files), but it has never run on real hardware. Expect problems; every report helps. This is the most important thing to know.
+  gfx1102 (we checked the files), but this packaged build has never run on real hardware. Earlier engines built from source were run by community
+  members on an RX 7900 XTX and an RX 7800 XT (see docs/AMD_HIP.md in the Strata repository), which is why we expect it to work. Expect problems; every
+  report helps. This is the most important thing to know.
 * The same program was tested on an RDNA4 card (AMD Radeon AI PRO R9700) under Ubuntu 24.04: it loads a model, answers, runs tool calls and stops cleanly.
   The RDNA3 code is the same source compiled for your card.
 * NOT tested by us either: the app window on a real desktop (our test box has no screen).
-* Pictures (image input) do not work on AMD cards in this build; leave them off.
+* Pictures (image input) are on by default. The picture reader runs on the processor (CPU) for a card under 24 GB and on the graphics card from 24 GB, so
+  your 24 GB RX 7900 XTX uses the card's reader (strata-vision-hip, for gfx1100 / gfx1101 / gfx1102) and a 20 GB RX 7900 XT or a 16 GB RX 7800 XT uses the CPU
+  reader. The card's reader compiles for RDNA3 but has never run on an RDNA3 card here (we ran it on an R9700, RDNA4). If it cannot start, Strata uses the
+  CPU reader by itself. You can switch it per model. Please tell us whether pictures worked.
 * Speed is not final; treat the numbers as a baseline.
 
 

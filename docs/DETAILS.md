@@ -291,8 +291,7 @@ real RTX 3060 12 GB (32 GB cgroup, 3 pairs) zero-copy alone gave 1.14 / 1.44 / 1
 the container RAM check counts a cgroup's clean page cache (active and inactive) as available, as MemAvailable does on a bare
 host: before, the 18 GiB RAM tier in a 32 GiB cgroup re-checked "1.2 GiB available" once io prefetch's startup reads had left
 their cache in the group, and its file tier switched to unbuffered reads (which also left zero-copy off). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
-`STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged. Measured detail:
-phaseA-tests/notes-149-l620.md.
+`STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged.
 
 **Linux file-tier I/O path (`STRATA_IO_PREFETCH=1`; 0.1.40.2, on by default on Linux since 0.2.0 - see above):** the mapped file tier reads experts through
 page faults. With this on, the layer's uncached experts and the router-predicted ones of the next layer (`STRATA_LOOKAHEAD_K`,
@@ -1629,14 +1628,20 @@ The config snippets for every client, the tool arguments and the safety rules ar
 (Qwen3.6-35B-A3B reads pictures the same way, with its own `mmproj-F16.gguf`: [QWEN36.md](QWEN36.md).)
 
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
-(0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
-"Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
-helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
+(0.9 GB, a 27-layer ViT plus the projector into the language model). Pictures are **on by default** wherever a model can read
+them. The app, `strata launch` and setup use one rule for the reader: the **CPU reader under 24 GB** of graphics memory (nothing is
+taken from the card's memory, so the experts keep their room) and the **graphics card's reader from 24 GB**, on every make of
+card. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
+(`--vision gpu` or `--vision cpu`). The setup downloads the encoder and puts a small helper (`strata-vision`, from llama.cpp's
+`mtmd` library) beside the engine; it adds it to your start script. Nothing else changes. Where a reader is missing, pictures
+stay off and the screen says so: the Mac app and the Mac Terminal have no picture reader yet, and neither has the Intel Arc
+engine. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
+starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |
-| **GPU** (recommended) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
-| CPU | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
+| **GPU** (the default from 24 GB) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
+| CPU (the default under 24 GB) | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
@@ -1732,7 +1737,7 @@ WebP). Chat apps with image upload work the same way.
 | **IQ2_XS** | 468 | 458 | 77.1 | 74.0 |
 | **IQ3_XXS** | 411 | 401 | 64.7 | 59.5 |
 
-"Off" is the published setup; "on" runs with the encoder loaded on the GPU and its VRAM kept free, so ~1,000 fewer
+These numbers date from 2026-09-24 (an engine before 0.1.13). "Off" is the published setup; "on" runs with the encoder loaded on the GPU and its VRAM kept free, so ~1,000 fewer
 experts fit in VRAM and the CPU computes a few more per token: 2-8% slower. For text, turning images on changes
 nothing else (the output is bit-identical when the VRAM is the same).
 
@@ -1840,8 +1845,7 @@ says so; `STRATA_ROUTE_TAIL_SKIP=7` turns it on anyway, and `STRATA_TAIL_SKIP_MA
 `route tail skip: N missed experts skipped` (cumulative) while it is active.
 
 **Answers differ slightly from 0.1.41** (`STRATA_ROUTE_TAIL_SKIP=0` brings them back). Teacher-forced KL of the decode path (the default's own greedy text and the default sampled at T=0.8, 28 chat prompts of code,
-reasoning, chat, six languages and long-document summaries, 220 tokens each, about 6,000 scored tokens per set, through the real verify windows with the MTP drafts;
-`phaseA-tests/cuda-route-kl.md`):
+reasoning, chat, six languages and long-document summaries, 220 tokens each, about 6,000 scored tokens per set, through the real verify windows with the MTP drafts):
 
 | | RTX 3060 12 GB, IQ3_XXS | RTX A4000 16 GB, Q2_0 |
 |---|---|---|
@@ -1869,7 +1873,7 @@ median over the rounds (ratio of tokens/s, default over `=0`; rounds in which th
 | Tesla P100 16 GB, IQ3_XXS, `--pcie-frac 0.29` | 1.149 (5/5) | 1.182 (5/5) | 1.118 (5/5) | **1.146 (5/5)** |
 | two RTX A4000, layer split (hit rate 99.7%) | 0.987 (0/5) | 1.004 (5/5) | 1.002 (3/5) | 0.998 (1/5) |
 
-The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile, `phaseA-tests/cuda-profile.md`); a 2-GPU
+The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile); a 2-GPU
 split that holds nearly every expert (hit rate 99.7%) gains nothing. It does not touch prompt reading. Switches that stay opt-in and are not part of this:
 `STRATA_ROUTE_PRIOR` (adds speed, doubles the KL), `STRATA_ROUTE_RESIDENT` and `STRATA_ROUTE_RESIDENT_MTP` (the latter is not faster than the former).
 
@@ -1897,7 +1901,6 @@ Measured (interleaved pairs of whole engine runs, new default against `STRATA_PC
 Explicit-share runs are byte-identical to 0.1.41 (`mg_norepeat` 10 of 10, `exact_pp` 4096 and 20000). With the new default the answers differ a little
 from the old default, as any change of the share does (CPU and GPU round differently): teacher-forced KL against the old default 0.0015 on the 3060
 (run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
-The sweeps behind the constant: `phaseA-tests/notes-142-pciefrac.md`.
 
 `STRATA_PCIE_BALANCE=1` (opt-in, CUDA, one GPU, no `--batch`, no `--pcie-frac`; #1548 by sergiywith / stuchapin909): instead of one share for every layer, each verify layer
 reads over PCIe the number of its missed experts that balances the two sides. The spin kernels stamp the GPU's clock (the plan's arrival, the PCIe part's start, the wait for the CPU rows),
@@ -1908,7 +1911,7 @@ Every 64th layer with a miss moves one expert to the other side so both fits sta
 
 When the experts that do not fit in VRAM are read from the model files through the page cache, the size of the prompt chunk decides how many times a long
 prompt walks over those files, and how big the working set is each time (the chunk's activation buffers and the lent slots take RAM and VRAM from the
-cache). Up to 0.1.46 the chunk was always today's pick (8192 on most cards). The planner prices the host from what it can measure at start: the RAM copy and its
+cache). Before engine 0.1.45.3 the chunk was always today's pick (8192 on most cards). The planner prices the host from what it can measure at start: the RAM copy and its
 lent slots, the page cache that is left, the drive class (read from the GGUF path) and the PCIe link, and picks the chunk (and the ring) with the fewest
 predicted bytes read per prompt. It prints one `chunk 8192 -> 3840, ring 96 -> 96: ...` line when it changes the pick, and `chunk 8192 kept: ...` when it does not.
 A prompt that fits today's chunk keeps one chunk; a longer one is read in equal chunks of at most the plan's size (no stub at the end). No weight or expert
@@ -1931,7 +1934,7 @@ pairs, plan off against the planner's `8192 -> 3840`, medians):
 | 28,887 | 418.8 | 910.4 | **2.17x** | 5/5 | 29.5 -> 0.6 | 28.6 -> 45.7 |
 
 The same box with its real NVMe and a 32 GB cap picks 8192 again (bigger chunk 480 vs 327 tok/s at 3328, even though it thrashes), and the 16 GiB cap is unchanged. Identity gate (fixed flags,
-`--expert-cache 1500`): the plan line says `kept`. Data: `phaseA-tests/notes-150-planner.md`; the host model is `include/strata/program/prefill_plan.hpp` with `tests/program/prefill_plan_test.cpp`.
+`--expert-cache 1500`): the plan line says `kept`. The host model is `include/strata/program/prefill_plan.hpp` with `tests/program/prefill_plan_test.cpp`.
 
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
@@ -2146,7 +2149,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | Setup puts the model on an old drive after you moved or reinstalled Strata (#1070) | Setup remembers the data folder you used last in its settings file (`%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on Linux; the `data_dir` entry) and uses it again. Choose another place with `--data-dir DIR` (model files, packs, MTP layer) or `--models-dir DIR` (the GGUF files only), or delete the `data_dir` line; `--gguf-dir DIR` uses GGUF files you already have without copying. To move a model, copy its folder and run setup with the new `--data-dir`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
-| Pictures are slow (3-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
+| Pictures are slow (3-30 s) | The encoder runs on the CPU, which is the default under 24 GB of graphics memory (the card's reader is the default from 24 GB). To use the card's reader: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM; it takes room from the expert cache). |
 | A request never finishes: "reading the prompt", GPU "100%" at low power | The GPU ran out of VRAM (engines before 0.1.9 could end with ~30 MiB free at large contexts). Run `START-HERE.bat` once to get engine 0.1.9 or newer; the log then says `... MiB of VRAM free with everything loaded` (a few hundred) and names the `--vram-reserve-mib` to add if it is low. |
 | Output much slower than the tables above, only with a large `--context`, and the start says a small `... MiB of VRAM free with everything loaded` | The expert cache does not fit the card at that context. With `--expert-cache auto` the engine shrinks it to fit; with a fixed number it does not check again after the slots are written, and on Windows the extra is put in system memory instead of failing, so only the speed shows it. Use `auto`, a smaller number, or raise `--vram-reserve-mib` (it is deducted before the cache is sized). See "The expert cache size is a budget" under Sharing the GPU. |
 | Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
@@ -2154,7 +2157,8 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `the engine said nothing for ... s during the request` or `... did not finish the request after it was stopped (STOP)` | Issue #481: the engine and the server lost step (the engine waits for its next command, the server for the request's end; GPU at 0 %, nothing in the log). The server ends the engine after 300 s without a line from it during a request (while a prompt is read: each chunk may take three times the previous one's time, the first one up to its tokens at 50 tok/s more), the request ends with an error and the next request starts the engine again. `"engine_silence_s": 600` in `strata-<model>.json` sets the time (0 = wait forever, as before). If you see it, please add the end of the engine log to #481. |
 | `the engine said nothing for ... s and used no CPU or disk in that time (frozen ...)` | Issue #1317: a quicker version of the check above for an engine that is not slow but stopped (a deadlock inside a CUDA call, a driver stall): after 90 s without a line, if the engine process has also used no CPU time and moved no disk bytes in that time, the server ends it and the next request starts it again. An engine that is silent but still working is never ended by this check, the server prints one note (`... but is still working; it is not ended`) and leaves it to `engine_silence_s`. `STRATA_ENGINE_STALL_S=180` sets the time, `0` turns the check off (it needs `psutil`, which setup installs). |
 | `out of memory: cudaFuncSetAttribute` in the log (IQ3_XXS, long prompt) | Fixed in engine 0.1.15: CUDA loaded a kernel's code when it was first needed, and mid-prompt there was no VRAM left for it. Run `START-HERE.bat` (Windows) or `./setup.sh` (Linux) once to update. |
-| Anything else | The engine log is `strata-<model>.log` in this folder. |
+| The desktop app or the Terminal says it could not find an engine, or that a model needs a newer engine; a Mac says an app is "damaged" | [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal). |
+| Anything else | The engine log is `strata-<model>.log` in this folder. In the app: Settings, Engine, Diagnostics, View logs, Save logs. In the Terminal: `strata doctor`. |
 
 ---
 
@@ -2321,7 +2325,24 @@ The table is used when every visible card has that one compute capability. `STRA
 `STRATA_ADAPT_LAG` / `STRATA_ADAPT_NOWAIT`: set `STRATA_ADAPT_LAG=1 STRATA_ADAPT_NOWAIT=0` with it. Left out because they did not pay or
 were mixed: `STRATA_EXPDEC`, `STRATA_GR_NORM_FAST`, `STRATA_RAM_ADAPT`, `STRATA_KV_HOST_REGISTER`, `STRATA_HOST_CORE`,
 `STRATA_GR_DOWN_TG`, `STRATA_DEQUANT_WIDE`; `STRATA_EXCHANGE_ROTATE` never reaches READY on the 3060 and `STRATA_PCIE_BALANCE` is slower on a
-single card. Measured numbers: phaseA-tests/notes-148-nv.md.
+single card.
+
+The per-architecture sets themselves (no environment variables), against the engine without them, IQ3_XXS, default flags, 8
+interleaved pairs of fresh engines, the same number of expert-cache slots in every arm (engine 0.1.45.3 and its test builds):
+
+| Card | Decode before -> after | Gain | Pairs faster | Same engine against itself | With `STRATA_SM86_PERF=0` / `STRATA_SM60_PERF=0` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RTX 3060 12 GB (sm_86) | 60.36 -> 66.52 tok/s | +10.2% | 8/8 | 0.999 | 1.002 (equal to before) |
+| RTX A4000 16 GB (sm_86) | 51.16 -> 57.82 tok/s | +13.0% | 8/8 | 0.979 | 0.994 |
+| Tesla P100 16 GB (sm_60) | 36.56 -> 41.76 tok/s | +14.2% | 8/8 | 0.975 | 0.991 |
+
+Two things looked at and **not changed**. A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) changes prompt speed by -3% to +8%
+on 12-16 GB cards at 20K tokens (at 16384 / 32768: RTX 3060 +4.5% / +4.5%, Tesla P100 +3.1% / +7.7%, RTX A4000 -3.4% / +6.0%), but it is not bit-exact on
+CUDA (the residual dump differs on the P100 and the A4000; 32768 also changed the output tokens on the P100), so the default
+stays 8192 on NVIDIA. It is exact on gfx12, where 16384 is the default. And `STRATA_ROUTE_PRIOR=0.5` stays opt-in: on an RTX 3060
+(IQ3_XXS) its teacher-forced KL is 0.0126 against a run-to-run floor of 0.0012 (top-1 agreement 96.6% against 99.1%); on an RTX A4000
+HumanEval scored 154/164 against 157 and 159 for the default twice, and reasoning 25/30 against 24 and 26 (agent 6/6, needles 3/3, CJK
+8/8 and tool calls 5/5 for all), which is inside the run-to-run spread.
 
 ## Compute capability 12.0 cards: faster decode (bitwise) and fused prompt experts by default
 

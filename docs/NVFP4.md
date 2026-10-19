@@ -5,6 +5,11 @@ blocks of E2M1 codes with four UE4M3 sub-block scales, plus one FP32 `weight_sca
 Everything else (attention, GDN, shared experts, routers, the head) stays in the formats the native path already
 reads. Measured on Windows 11, RTX 5090 (32 GB), Ryzen 9 9950X3D, 128 GB DDR5-5600.
 
+**The three NVFP4 versions in setup and the app.** `NVFP4` is "NVFP4 (Strata's version)", `NVFP4-NVIDIA` is "NVFP4
+(NVIDIA's version)", and `NVFP4-QAD` is "NVFP4 (NVIDIA, trained for FP4)" ([the short guide](MODELS.md#nvfp4)). All three
+read pictures, through the original model's picture reader file that setup downloads with them (see "Images" below and
+the FP4-Local section). The other sections of this page apply to all three unless they say otherwise.
+
 ## Getting a model
 
 ```
@@ -38,7 +43,7 @@ original model therefore work as they are.
 Tested end to end with `jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4`. By its
 `hf_quant_config.json`, NVIDIA's `nvidia/Qwen3.8-Flash-Next-NVFP4` quantizes the routed experts the same way
 (NVFP4, group 16; the other layers BF16, the PLE table FP8, the MTP experts FP8), so it takes the same path. It has
-not been run here.
+not been run here as downloaded. Setup offers it as a ready-made pack, the size `NVFP4-NVIDIA`.
 
 ## Measured
 
@@ -111,7 +116,8 @@ Images: the packs keep Qwen's vision tower unquantized, so the original's image 
 (`--vision`; strata-vision opens the dense GGUF for the vocabulary). Checked on an RTX 5070 and an RTX 3060 against
 IQ3_XXS's answers on the same picture (a number in the picture read, two shapes with their colours and sides). The
 encoder on the GPU takes ~1.1 GiB of VRAM: on the 3060 at 8K context the cache held 1,293 experts with images against
-1,734 without.
+1,734 without. Pictures are on by default; setup and the app pick the CPU reader under 24 GB of graphics memory and the
+GPU reader from 24 GB (`--vision cpu` / `--vision gpu` change it).
 
 ## Where the global scales go
 
@@ -232,7 +238,7 @@ What the checkpoint holds, and what `tools/nvfp4_local_pack.py` does with it:
 | attention, GDN projections, shared experts, indexer: MXFP8 (E4M3 values, E8M0 scale per 32) | dequantized exactly, then Q8_0 (same 32-value blocks; +0.6% RMS on top of MXFP8's own ~3%), or BF16 for the small projections the BF16 kernels read |
 | n-gram (PLE) table, 26.8 GiB: NVFP4 rows of 160 values | a one-tensor GGUF of 90-byte rows (80 B codes + 10 E4M3 scales, one F32 for the table), read by the new PLE format `NVFP4` (`strata.ple.format = nvfp4x16`) in `ngram.cpp`; same row size as IQ4_NL |
 | MTP head: NVFP4 experts, BF16 rest | a Q2_0 draft layer built with `mtp_pack.py` / `mtp_rt.py` (88.7% of drafts accepted over 225 test requests) |
-| vision tower | not converted yet (text only) |
+| vision tower | not converted. Pictures are read by the original model's picture reader (the shared `mmproj` file that setup downloads, as for the other NVFP4 versions); the dense GGUF supplies the vocabulary |
 
 `python tools/nvfp4_local_pack.py prepare --model <checkpoint> --out <dir>` runs every step (setup does this): the n-gram
 table, the dense GGUF (no experts), the pack (experts written straight from the checkpoint) and the draft layer. It needs
