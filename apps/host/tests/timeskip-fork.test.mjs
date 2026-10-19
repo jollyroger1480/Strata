@@ -67,7 +67,7 @@ test('plan -> lever (with its why) -> A runs every step -> B forks after step 1 
   const phases = r.events.map(e => e.phase);
   assert.ok(phases.indexOf('checkpointing') < phases.indexOf('generating') && phases.indexOf('generating') < phases.indexOf('completed'));
   assert.ok(r.events.some(e => e.lever && e.lever.step === 2), 'the lever and its reason were sent');
-  assert.ok(r.events.some(e => e.a?.line && /Step 1 of 3/.test(e.a.line)) && r.events.some(e => e.b?.line && /Step 1 of 2/.test(e.b.line)), "A's and B's progress were sent");
+  assert.ok(r.events.some(e => e.a?.line && / — /.test(e.a.line)) && r.events.some(e => e.b?.line && / — /.test(e.b.line)), "A's and B's progress were sent");
   assert.ok(r.events.some(e => /^B, /.test(e.activity?.text ?? '')), 'the activity line names B');
   // B was copied from A at the fork and got the context attachment; the project is untouched
   assert.ok(existsSync(join(r.dir, 'ts', run.id, 'B', '.timeskip', 'context.md')));

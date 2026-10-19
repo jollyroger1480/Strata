@@ -124,9 +124,9 @@ export function stepObjective(plan, index) {
 }
 
 const WORD = { started: 'started', done: 'done', failed: "didn't finish", stopped: 'stopped', skipped: 'skipped' };
-/** One short friendly line for a step: "Step 2 of 4: Write the roof — done". */
+/** One short friendly line for a step: "Write the roof — done" (no step counter: the owner removed it). */
 export function stepLine(index, total, text, state) {
-  return `Step ${index + 1} of ${total}: ${clip(clean(text), 90)} — ${WORD[state] ?? state}`;
+  return `${clip(clean(text), 90)} — ${WORD[state] ?? state}`;
 }
 
 /** The short summary of a step from the words it closed with: the first sentence, plain. */

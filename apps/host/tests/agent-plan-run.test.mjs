@@ -63,7 +63,7 @@ test('Start as goal: each plan step is a goal step, reported one by one, queued 
   const stepFrames = out.filter(f => f.type === 'plan-step').map(f => `${f.index}:${f.state}`);
   assert.deepEqual(stepFrames, ['1:running', '1:done', '2:running', '2:done', '3:running', '3:done']);
   const lines = words(out);
-  assert.match(lines, /Step 1 of 3: First thing SCRIPT:goalstep — done/); assert.match(lines, /Step 3 of 3: Third thing SCRIPT:goalstep — done/);
+  assert.match(lines, /First thing SCRIPT:goalstep — done/); assert.match(lines, /Third thing SCRIPT:goalstep — done/);
   assert.ok(out.find(f => f.type === 'plan-step' && f.state === 'done').summary, 'a done step carries a short summary from its closing words');
   const goals = out.filter(f => f.type === 'goal' && f.goal);
   assert.ok(goals.some(f => f.goal.step?.index === 2 && f.goal.step.total === 3 && f.goal.objective === plan.title), 'the goal bar knows the step and shows the plan title');
@@ -84,7 +84,7 @@ test('a goal with numbered points runs point by point and reports each one', { s
   await r.bridge.goalCommand({ ...r.base('p3', f => out.push(f)), line: 'Make the page: 1. draw the base SCRIPT:goalstep 2. add the roof SCRIPT:goalstep' });
   const plan = r.bridge.planState('p3');
   assert.equal(plan.source, 'goal'); assert.equal(plan.title, 'Make the page'); assert.equal(plan.state, 'done');
-  assert.match(words(out), /Step 1 of 2: draw the base SCRIPT:goalstep — done/); assert.match(words(out), /Step 2 of 2: add the roof SCRIPT:goalstep — done/);
+  assert.match(words(out), /draw the base SCRIPT:goalstep — done/); assert.match(words(out), /add the roof SCRIPT:goalstep — done/);
 });
 
 test('a message typed while a goal without points runs is queued, can be taken back, and is handed back when the goal is stopped', { skip }, async (t) => {

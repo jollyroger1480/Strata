@@ -647,7 +647,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       emit(stepFrame(now, index));
       emit(publishPlan('step', now));
       const st = now.steps[index];
-      reporter.set({ phase: 'goal', code: 'goal-step', text: stepLine(index, now.steps.length, st.text, 'started'), key: 'Step {0} of {1}: {2}', values: [index + 1, now.steps.length, st.text], args: { step: index + 1, steps: now.steps.length } });
+      reporter.set({ phase: 'goal', code: 'goal-step', text: stepLine(index, now.steps.length, st.text, 'started'), key: '{0}', values: [st.text], args: { step: index + 1, steps: now.steps.length } });
     }
 
     /** One goal step finished: say so, hand over queued messages, and begin the next step (or end the plan). */
