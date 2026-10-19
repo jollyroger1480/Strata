@@ -187,7 +187,8 @@ async function bridgeRig(t) {
   const dir = mkdtempSync(join(tmpdir(), 'strata-webask-'));
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
   const local = [{ id: 'i', label: 'S', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }];
-  const make = (tools = () => undefined) => createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], tools, env: process.env, startTimeoutMs: 90_000, searchMock: 'limited' });
+  let n = 0;   // one data folder per bridge: two bridges on one folder share a pid file and end each other's Harness
+  const make = (tools = () => undefined) => createAgentBridge({ dataDir: join(dir, 'bridge-' + (++n)), localInstances: () => local, connections: () => [], tools, env: process.env, startTimeoutMs: 90_000, searchMock: 'limited' });
   const bridges = [];
   t.after(async () => { for (const b of bridges) await b.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
   const open = tools => { const b = make(tools); bridges.push(b); return b; };
@@ -263,7 +264,10 @@ test('real Harness: a scheduled task in Manual is answered "no" at once, so it c
   assert.ok(off, 'the task ran');
   const offCards = JSON.stringify(off);
   assert.doesNotMatch(offCards, /rate limit|limited right now/, 'no search happened');
+  assert.match(offCards, /did not allow web access/, 'the model was told');
+  assert.match(offCards, /needed a yes, which nobody could give/, 'the report says why');
   const tools = { off: new Set(), search: { provider: 'builtin', key: '' }, servers: {}, webWithoutAsking: true };
   const on = await createAgentTaskRunner({ agent: r.open(() => tools), choice: () => ({ instanceId: 'i' }), workspace: r.ws })({ ...task, id: 't2' });
   assert.ok(on);
+  assert.doesNotMatch(JSON.stringify(on), /did not allow web access|nobody could give/, 'with the switch on the search was not refused');
 });
