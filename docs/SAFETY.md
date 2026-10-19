@@ -30,7 +30,8 @@ Some things sound similar and stay on your PC:
 
 - The Monitor, `/metrics` and `/v1/telemetry` show hardware readings (temperature, speed, memory) to you. They are served
   from your own PC, and they need your API key when you set one.
-- On Linux, when the app window crashes, a crash log is written to a folder on your disk. Nothing sends it. **Save logs**
+- When the app window crashes (Linux) or the app fails to start (Windows, Mac), a crash log is written to a folder on your disk
+  (on Windows, `%LOCALAPPDATA%\Strata\logs`). Nothing sends it. **Save logs**
   (Settings, Engine, Diagnostics) puts a text file in your Downloads folder, and you decide whether to attach it to a bug report.
 - The coding agent is a separate component (the DeepSeek Harness, MIT). It has its own telemetry switch, and Strata starts it
   with that switch off (`apps/host/server/agent/harness-runtime.mjs`).
