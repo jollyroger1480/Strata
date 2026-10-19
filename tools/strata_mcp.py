@@ -136,6 +136,16 @@ if WIN:
     _k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
     _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
     _QUERY, _TERMINATE, _SYNCHRONIZE, _STILL_ACTIVE = 0x1000, 0x0001, 0x00100000, 259
+
+    class _PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _k32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    _k32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W))
+    _k32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W))
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_BREAKAWAY_FROM_JOB = 0x200, 0x08000000, 0x01000000
 
 
@@ -220,14 +230,60 @@ def _rmtree_ignore_missing(func, path, exc_info):
     raise exc
 
 
+def proc_children_map() -> dict:
+    """Windows: {parent pid: [child pids]} of every running process (a Toolhelp snapshot); {} elsewhere or when it fails."""
+    if not WIN:
+        return {}
+    snap = _k32.CreateToolhelp32Snapshot(0x2, 0)                  # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    kids: dict = {}
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        ok = _k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            kids.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+            ok = _k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        _k32.CloseHandle(snap)
+    return kids
+
+
+def proc_tree_snapshot(pid) -> list:
+    """Every process below `pid` as [(pid, identity)], taken NOW: once a middle process of the tree ends, taskkill /T can no longer reach
+    what it started (#3257: a cancelled install left tools/mtp_fetch.py writing).  Windows only; [] elsewhere (a process group does that)."""
+    kids = proc_children_map()
+    out, seen, todo = [], {int(pid)}, [int(pid)]
+    while todo:
+        for child in kids.get(todo.pop(), []):
+            if child in seen:
+                continue
+            seen.add(child)
+            ident = proc_identity(child)
+            if ident:
+                out.append((child, ident))
+                todo.append(child)
+    return out
+
+
+def kill_snapshot(procs) -> None:
+    """End what a proc_tree_snapshot() listed and still runs (the same process: its start time still matches)."""
+    for pid, ident in reversed(list(procs)):
+        if proc_alive(pid, ident):
+            proc_terminate(pid, ident)
+
+
 def proc_kill_tree(pid, ident) -> bool:
     """End a process WE started together with the processes it started (setup's pip / cmake, the engine)."""
     if not proc_alive(pid, ident):
         return False
     if WIN:
+        tree = proc_tree_snapshot(pid)                  # before taskkill: it walks parent ids, and a break in the chain hides the rest
         r = subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"], capture_output=True,
                            creationflags=CREATE_NO_WINDOW)
-        return r.returncode == 0
+        kill_snapshot(tree)
+        return r.returncode == 0 or not proc_alive(pid, ident)
     try:
         os.killpg(int(pid), signal.SIGKILL)             # started as a session leader: its group is its own
         return True
@@ -1350,12 +1406,34 @@ def files_progress(prog: dict, job: dict, files: list) -> dict:
     return prog
 
 
+def draft_progress(prog: dict, job: dict, dl: dict) -> dict:
+    """Setup step 6 downloads the ~5 GB of MTP tensors (tools/mtp_fetch.py prints `MTP draft layer: 1.2 / 5.0 GB (24%)`).  The figure
+    the app shows is the whole job's: the model files (done by now) plus this part, so the bar does not fall back to 0 (#3257)."""
+    done_gb, total_gb = float(dl.get("done_gb") or 0), float(dl.get("total_gb") or 0)
+    parts = []
+    if job.get("files"):
+        base = files_progress({}, job, job["files"])
+        parts = [dict(p, state="done", done_gb=p["total_gb"]) for p in base.get("parts", []) if p.get("state") == "done"]
+    parts.append({"kind": "draft", "name": "Speed-up layer", "state": "done" if int(dl.get("percent") or 0) >= 100 else "downloading",
+                  "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3)})
+    total = sum(p["total_gb"] for p in parts)
+    done = min(sum(p["done_gb"] for p in parts), total)
+    prog["parts"] = parts
+    prog["download"] = {"file": "Speed-up layer", "done_gb": round(done, 3), "total_gb": round(total, 3),
+                        "remaining_gb": round(max(0.0, total - done), 3),
+                        "percent": min(99, int(100 * done / total)) if total else 0}
+    return prog
+
+
 def combined_progress(prog: dict, job: dict) -> dict:
     """One total for the whole model: the bytes of all its files (finished, partial and the one in flight, read from the
     model's folder) over the download size, instead of each file's own 0-100% (a two-file model went 70 GB -> 0 -> up
     again). Only while the download step runs; later steps are not a download."""
     folder, total = job.get("folder"), job.get("total_gb")
     step = str(prog.get("step") or "")
+    dl = prog.get("download") or {}
+    if step.startswith("6/") and str(dl.get("file", "")).startswith("MTP draft layer"):
+        return draft_progress(prog, job, dl)
     if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
         return files_progress(prog, job, job["files"])
     if not folder or not total or not step.startswith("5/"):
@@ -1769,9 +1847,11 @@ class Tools:
                 j = s.state("install")
                 res = s.state("install-result")
                 child = res.get("child_pid") if res.get("job") == j.get("job") else None
+                tree = proc_tree_snapshot(j["pid"]) if proc_alive(j["pid"], j["ident"]) else []   # setup.py and what it runs (#3257)
                 if child:
                     proc_kill_tree(child, res.get("child_ident"))
                 proc_kill_tree(j["pid"], j["ident"])
+                kill_snapshot(tree)
                 wait_gone(j["pid"], j["ident"], 15)
                 return {"summary": "the install was stopped; calling strata_install again resumes it (downloads "
                                    "continue where they stopped)", "install": s.install_job()}

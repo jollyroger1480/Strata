@@ -893,3 +893,58 @@ class DiskUsageTest(unittest.TestCase):
         self.blob(self.own / "Model-00003-of-00003.gguf", 10)
         desc = s.describe_config(s.configs()[0])
         self.assertEqual([m for m in desc["missing_files"] if m.endswith(".gguf")], [])
+
+
+class DraftLayerAndCancel(unittest.TestCase):
+    """#3257: the draft layer's download shows real progress, and a cancel ends the whole tree."""
+
+    def test_step_6_shows_the_draft_layer_download_added_to_the_finished_model_files(self):
+        lines = ["=== Step 6: preparing the model for Strata ===", "  > python mtp_fetch.py fetch",
+                 "  MTP draft layer:   2.00 / 5.00 GB (40%)"]
+        with tempfile.TemporaryDirectory() as d:
+            shard = Path(d) / "m-00001-of-00001.gguf"
+            shard.write_bytes(b"x" * 20_000_000)
+            job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
+            prog = M.combined_progress(M.install_progress(lines), job)
+        self.assertEqual(prog["download"]["file"], "Speed-up layer")
+        self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
+        self.assertEqual(prog["parts"][0]["state"], "done")
+        self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)
+        self.assertAlmostEqual(prog["parts"][1]["total_gb"], 5.0)
+        self.assertGreater(prog["download"]["total_gb"], 5.0)
+        self.assertEqual(prog["download"]["percent"], min(99, int(100 * prog["download"]["done_gb"] / prog["download"]["total_gb"])))
+
+    def test_without_a_file_list_the_draft_layer_alone_is_shown(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  MTP draft layer:   5.00 / 5.00 GB (100%)"]), {})
+        self.assertEqual([(p["kind"], p["state"]) for p in prog["parts"]], [("draft", "done")])
+
+    def test_other_step_6_output_still_shows_no_download(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  IQ2_XS:   0.00 / 0.00 GB (0%)"]), {})
+        self.assertNotIn("download", prog)
+
+    @unittest.skipUnless(M.WIN, "Windows process trees")
+    def test_cancel_ends_a_grandchild_even_when_taskkill_does_not_reach_it(self):
+        """setup.py -> tools/*.py: taskkill /T walks parent ids; a snapshot taken first still finds the grandchild."""
+        code = ("import subprocess,sys,time; c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)']);"
+                "print(c.pid, flush=True); time.sleep(120)")
+        top = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        grand = int(top.stdout.readline())
+        try:
+            ident, gident = M.proc_identity(top.pid), M.proc_identity(grand)
+            self.assertTrue(ident and gident)
+            self.assertIn((grand, gident), M.proc_tree_snapshot(top.pid))
+            real_run = subprocess.run
+
+            def no_taskkill(cmd, *a, **kw):                  # the case of #3257: taskkill ends the parent only
+                if cmd and cmd[0] == "taskkill":
+                    return real_run(["taskkill", "/PID", str(top.pid), "/F"], capture_output=True)
+                return real_run(cmd, *a, **kw)
+            with mock.patch.object(M.subprocess, "run", no_taskkill):
+                M.proc_kill_tree(top.pid, ident)
+            M.wait_gone(grand, gident, 10)
+            self.assertFalse(M.proc_alive(grand, gident), "the grandchild kept running")
+            self.assertFalse(M.proc_alive(top.pid, ident))
+        finally:
+            for pid in (grand, top.pid):
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            top.wait(10)
