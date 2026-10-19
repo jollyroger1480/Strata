@@ -7003,6 +7003,35 @@ def preview_family(a) -> int:
     return 0
 
 
+def mac_vision(asked, model: str, ram: float) -> str:
+    """The picture setting of a Mac's setup: "gpu", "cpu" or "none".  Pictures are on wherever the model can read them (owner rule
+    2026-10-18) and the reader follows strata_control/vision_reader.py: on a Mac, the GPU (Metal) reader, because the memory is shared
+    (no card to keep free) and the CPU reader is ~100x slower.  --vision cpu is kept, with a note (recommend, never force)."""
+    from strata_control import vision_reader as VR
+    if asked in ("no", "none", "off"):
+        return "none"
+    if asked is None and not images_default(model, "qwen", ram):
+        return "none"
+    if MODELS.get(model, {}).get("vision") is False:
+        if asked is not None:
+            warn(f"images are not available with {model} yet: off")
+        return "none"
+    mode = VR.wanted(asked, None, unified=True)
+    if mode == "cpu":
+        warn(VR.MAC_CPU_NOTE)
+    return mode
+
+
+def mac_reader(eng: Path, vision: str):
+    """The picture reader the Mac engine folder carries (strata-vision: Metal built in), for `vision` "gpu" or "cpu".  A folder
+    without it gets pictures off, said once."""
+    from strata_control import vision_reader as VR
+    r = VR.choose(eng, vision, windows=False, mac=True)
+    if r.mode == "none":
+        warn(r.note or "this engine has no picture reader: pictures off")
+    return r
+
+
 def mac_control_setup(a) -> int:
     """The app (and the Terminal's `strata launch`) on a Mac, STRATA_CONTROL_INSTALL=1: the same job as on Windows and Linux. It
     downloads and prepares the model files and writes a run config whose engine is "component:strata-engine"; it builds nothing
@@ -7041,8 +7070,7 @@ def mac_control_setup(a) -> int:
         fail(f"{model} is not offered on a Mac in the app", "choose one of: " + ", ".join(app_sizes))
     for n in MF.model_note(model, ram):
         warn(n)
-    if a.vision in ("yes", "gpu", "cpu"):
-        warn("the Mac engine has no picture reader yet: images off for this model (text works as usual)")
+    vision = mac_vision(a.vision, model, ram)
     ctx = a.context or MF.recommend_context(ram)
     if ctx > MF.TESTED_CONTEXT:
         say(f"  context {ctx}: measured on the Mac up to {MF.TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
@@ -7055,13 +7083,21 @@ def mac_control_setup(a) -> int:
     from strata_control import engine_component as EC
     llama = get_llama_cpp()                            # gguf-py for the preparation tools only: no git, no compiler
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
+    reader = None
     try:
         found = EC.resolve(full=False)
         ok(f"engine component: {found.version} ({found.platform}-{found.backend})")
+        if vision != "none":
+            reader = mac_reader(Path(found.root), vision)
+            vision = reader.mode
     except EC.EngineMissing as e:
         warn(f"no Metal engine is installed for this Mac yet ({e}). The model is downloaded and prepared now; the engine comes "
              "with the app or its update feed, and is looked up when the model loads")
+        if vision != "none":
+            warn("pictures are off for now: the picture reader comes with the engine (run setup again once it is installed)")
+            vision = "none"
     ok("engine: the engine component (looked up when the model loads)")
+    ok("images: " + {"none": "off", "gpu": "on (read on the Mac's GPU)", "cpu": "on (read on the CPU)"}[vision])
 
     step(5, f"downloading {fam['title']} {model}")
     models_dir = Path(a.gguf_dir) if a.gguf_dir else models_root / tag
@@ -7091,6 +7127,18 @@ def mac_control_setup(a) -> int:
             download(fam["hf"].format(q=model) + s.name, s)
     check_shards(files)
     ok("model files present")
+    mmproj = None
+    if vision != "none":
+        mmproj = Path(models_root) / fam["mmproj"]
+        if not mmproj.exists():                        # an earlier install's copy (the same file for every family)
+            mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
+        if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
+            mmproj = Path(a.gguf_dir) / fam["mmproj"]
+        elif not (mmproj.exists() and done(mmproj)):
+            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+        if fam["mmproj"] in ISTA_FILES:
+            verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
+        ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
@@ -7130,6 +7178,13 @@ def mac_control_setup(a) -> int:
         cfg["draft_vocab"] = a.draft_vocab
     if a.browser is not None:
         cfg["open_browser"] = a.browser
+    if vision != "none":                               # the Mac's one program reads on the GPU (--gpu) or the CPU (strata_control/vision_reader.py)
+        from strata_control import vision_reader as VR
+        cfg["args"].append("--vision")
+        cfg["vision"] = VR.vision_section(reader, {"exe": str(reader.exe), "mmproj": str(mmproj), "model": str(files[0]),
+                                                   "gpu": vision == "gpu", "max_tokens": vision_tokens(a.vision_tokens, vision, None)})
+        if vision == "cpu":
+            cfg["vision"]["threads"] = vision_threads()
     cfg_path = home() / f"strata-{tag.lower()}.json"
     write_setup_config(cfg_path, cfg)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)

@@ -104,6 +104,48 @@ class Choose(unittest.TestCase):
         self.assertIsNone(VR.cpu_fallback({"exe": "strata-vision", "gpu": True}))   # an NVIDIA config has no fallback
 
 
+class MacReader(unittest.TestCase):
+    """A Mac has one picture program, strata-vision with Metal built in: --gpu reads on the GPU, without it on the CPU."""
+
+    def test_a_mac_reads_on_the_gpu_by_default_whatever_its_memory(self):
+        for ram in (16, 32, 64, 128, None):
+            self.assertEqual(VR.default_mode(ram, unified=True), "gpu", ram)
+            self.assertEqual(VR.wanted(None, ram, unified=True), "gpu", ram)
+            self.assertEqual(VR.wanted("yes", ram, unified=True), "gpu", ram)
+        self.assertEqual(VR.wanted("cpu", 32, unified=True), "cpu")             # asked for: kept
+        self.assertEqual(VR.wanted("off", 32, unified=True), "none")
+        self.assertEqual(VR.default_mode(16), "cpu")                           # a 16 GB card of a PC still follows the 24 GB rule
+
+    def test_the_one_program_is_both_readers_and_its_own_fallback(self):
+        d = folder("strata", "strata-vision")
+        for ask in ("yes", "on", "gpu"):
+            r = VR.choose(d, ask, windows=False, mac=True)
+            self.assertEqual((r.mode, r.exe.name, r.cpu_exe.name, r.note), ("gpu", "strata-vision", "strata-vision", ""), ask)
+        sec = VR.vision_section(VR.choose(d, "yes", windows=False, mac=True), {"mmproj": "m.gguf", "model": "t.gguf", "max_tokens": 1024})
+        self.assertTrue(sec["gpu"])
+        self.assertEqual(sec["exe"], sec["cpu_exe"])
+        fallback = VR.cpu_fallback(sec)
+        self.assertFalse(fallback["gpu"])
+        self.assertEqual(fallback["exe"], sec["exe"])
+
+    def test_cpu_asked_is_kept_with_the_time_it_takes(self):
+        r = VR.choose(folder("strata-vision"), "cpu", windows=False, mac=True)
+        self.assertEqual((r.mode, r.exe.name, r.cpu_exe), ("cpu", "strata-vision", None))
+        self.assertIn("50 seconds", r.note)
+        self.assertFalse(VR.vision_section(r, {})["gpu"])
+
+    def test_an_engine_without_the_reader_gets_pictures_off(self):
+        for ask in ("yes", "gpu", "cpu"):
+            r = VR.choose(folder("strata"), ask, windows=False, mac=True)
+            self.assertEqual(r.mode, "none", ask)
+            self.assertIn("no picture reader", r.note)
+        self.assertEqual(VR.choose(folder("strata-vision"), "off", windows=False, mac=True).mode, "none")
+
+    def test_a_hip_program_is_not_a_mac_reader(self):
+        r = VR.choose(folder("strata-vision-hip"), "yes", windows=False, mac=True)
+        self.assertEqual(r.mode, "none")
+
+
 class FakeProc:
     def __init__(self, first_line: str):
         self.stdin, self.stdout = io.StringIO(), io.StringIO(first_line)

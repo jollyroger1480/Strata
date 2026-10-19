@@ -281,7 +281,8 @@ NVIDIA y AMD. Puedes desactivar las imágenes por modelo, o elegir el lector con
 
 Las cifras detrás de la regla: en una Radeon AI PRO R9700, el lector de la tarjeta tardó 57 ms en una imagen de 260 tokens y
 el del procesador 3,1 s. En tarjetas de 16 GB (Tesla P100 y RTX A4000, Linux), el lector de la tarjeta costó un 3-5 % de
-velocidad en texto, porque ocupa unos 1,4 GB que de otro modo usaría el modelo. El Mac todavía no tiene lector de imágenes.
+velocidad en texto, porque ocupa unos 1,4 GB que de otro modo usaría el modelo. En un Mac lee la GPU, tenga la memoria que tenga (0,45 s para una imagen de 260 tokens en un M4 de 32 GB, unos 1,2 GB de la memoria compartida);
+el procesador tarda unos 50 s por imagen, así que solo lee con `--vision cpu`.
 
 ### Conviene saber
 

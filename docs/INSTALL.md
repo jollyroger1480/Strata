@@ -73,7 +73,7 @@ in `%LOCALAPPDATA%\Strata\components` (Linux and Mac: `~/.local/share/strata/com
 `Strata` folder in your Documents (you can change the model folder in the app). Removing the app does not remove
 them. **For a bug report:** Settings, Engine, Diagnostics, View logs, **Save logs**.
 
-The app has no picture reader on the Mac yet. Everything else about pictures is in [Setup's questions](#setups-questions).
+On a Mac pictures are on by default and read on the GPU ([MAC.md](MAC.md)). Everything else about pictures is in [Setup's questions](#setups-questions).
 
 ## The Terminal
 
@@ -282,7 +282,7 @@ These are the questions of the installer from source (`START-HERE.bat`, `./setup
   from the GPU) and on the GPU from 24 GB (0.1-0.5 s per picture, ~1.4 GB of VRAM kept free for it). The rule is the
   same for NVIDIA and AMD cards; `--vision gpu` and `--vision cpu` choose the reader yourself, `--vision no` turns
   pictures off. On a Radeon AI PRO R9700 the GPU reader took 57 ms for a 260-token picture and the CPU reader 3.1 s.
-  The Mac has no picture reader yet. [Details](DETAILS.md#images-vision).
+  A Mac reads on its GPU (0.45 s for a 260-token picture on an M4). [Details](DETAILS.md#images-vision).
 - **Experimental speed projection?** Off unless you say yes - [read what it does](DETAILS.md#experimental-speed-projection-experimental-off-by-default)
   first. It changes how the model answers, and only the original model offers it.
 

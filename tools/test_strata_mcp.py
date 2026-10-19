@@ -706,7 +706,7 @@ class MacCatalog(unittest.TestCase):
         self.assertIn("slower", by["Q2_0"]["on_this_pc"])
         self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
-        self.assertFalse(any(x["images"] for x in by.values()))
+        self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
         self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
         s, hw = self.hw(8)
@@ -723,6 +723,9 @@ class MacCatalog(unittest.TestCase):
         for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
             self.assertNotIn(flag, args)
         self.assertIn("--gguf-dir", args)
+        with tempfile.TemporaryDirectory() as own:      # nothing said about pictures: on, as everywhere (the Mac's reader is the Metal one)
+            _plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, None, "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(args[args.index("--vision") + 1], "yes")
         with self.assertRaises(M.ToolError):
             s2, hw2 = self.hw(8)
             s2.hardware = lambda fresh=False: hw2

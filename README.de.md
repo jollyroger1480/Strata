@@ -282,7 +282,8 @@ Du kannst Bilder pro Modell ausschalten oder den Leser mit `--vision off`, `--vi
 
 Die Zahlen hinter der Regel: Auf einer Radeon AI PRO R9700 brauchte der Bildleser der Karte 57 ms für ein Bild mit 260 Tokens,
 der des Prozessors 3,1 s. Auf Karten mit 16 GB (Tesla P100 und RTX A4000, Linux) kostete der Bildleser der Karte 3-5 % des
-Texttempos, weil er etwa 1,4 GB belegt, die sonst das Modell nutzen würde. Der Mac hat noch keinen Bildleser.
+Texttempos, weil er etwa 1,4 GB belegt, die sonst das Modell nutzen würde. Auf dem Mac liest die GPU, egal wie viel Speicher er hat (0,45 s für ein Bild mit 260 Tokens auf einem M4 mit 32 GB, etwa 1,2 GB des gemeinsamen
+Speichers); der Prozessor braucht dort etwa 50 s pro Bild und liest deshalb nur mit `--vision cpu`.
 
 ### Gut zu wissen
 
