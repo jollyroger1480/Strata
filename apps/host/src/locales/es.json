@@ -3343,5 +3343,7 @@
   "s8254": "Eso no funcionó",
   "s8255": "No hay tarjetas que coincidan.",
   "s8256": "Nada por aquí ahora mismo.",
-  "s8257": "cada {0} min"
+  "s8257": "cada {0} min",
+  "s8258": "Este motor de Strata no tiene código para la tarjeta gráfica que intentó usar.",
+  "s8259": "Elige otra tarjeta en «Ejecutar en», o abre los detalles para ver qué tarjetas se encontraron y para cuáles está compilado el motor."
 }

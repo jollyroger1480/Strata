@@ -3343,5 +3343,7 @@
   "s8254": "Isso não funcionou",
   "s8255": "Nenhum cartão correspondente.",
   "s8256": "Nada aqui por enquanto.",
-  "s8257": "a cada {0} min"
+  "s8257": "a cada {0} min",
+  "s8258": "Este motor do Strata não tem código para a placa de vídeo que tentou usar.",
+  "s8259": "Escolha outra placa em «Executar em» ou abra os detalhes para ver quais placas foram encontradas e para quais o motor foi compilado."
 }

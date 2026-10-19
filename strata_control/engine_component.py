@@ -638,8 +638,24 @@ def hip_family(arch: str) -> str:
     return next((name for name, archs in HIP_FAMILIES if arch in archs), arch)
 
 
+#: AMD architectures no ready-made engine package of this release covers (the packages: RX 9000, RX 7000 + Ryzen AI Max): the RX 6000 series.
+#: Setup and a source build can still target them (docs/AMD_HIP.md); the app's one-click engine cannot.
+NO_PACKAGE_HIP = {"gfx1030": "RX 6000", "gfx1031": "RX 6000"}
+NO_PACKAGE_SENTENCE = ("This release has no ready-made Strata engine for the AMD {0} series. Strata can only run on it with an engine built for "
+                       "that card (docs/AMD_HIP.md, \"RDNA2\").")
+
+
+def no_package_note(archs) -> str | None:
+    """One plain sentence when some of these architectures (gfx1030 ...) have no ready-made package in this release, else None."""
+    families = sorted({NO_PACKAGE_HIP[a] for a in archs if a in NO_PACKAGE_HIP})
+    return NO_PACKAGE_SENTENCE.format(" and ".join(families)) if families else None
+
+
 def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
     """The plain sentence for an AMD engine that has code for other cards than this computer's (a tester build for another card)."""
+    if here and all(a in NO_PACKAGE_HIP for a in here):      # asking for "the RX 6000 build" would send the person to one that does not exist
+        have = sorted({hip_family(a) for a in here})
+        return (f"This computer has an AMD {' and '.join(have)} card ({', '.join(sorted(set(here)))}). {no_package_note(here)}")
     built_for = sorted({hip_family(a) for a in built})
     have = sorted({hip_family(a) for a in here})
     make = lambda names: " and ".join(names)  # noqa: E731

@@ -925,11 +925,33 @@ class Strata:
                 if g.get("uma") and g.get("usable"):
                     g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         hw["gpus"] = nv + amd
+        self._engine_code(hw)
         self._engine_vendor(hw)
         if WIN:
             hw["display_adapters"] = windows_video_controllers()
         hw["nvidia_smi"] = bool(shutil.which("nvidia-smi"))
         return hw
+
+    @staticmethod
+    def _engine_code(hw: dict) -> None:
+        """An AMD card the installed engine package has no code for is not one Strata can run on (the engine would stop on it, #3203): flag it
+        unusable with the plain reason, so the card lists and "Automatic" leave it out.  Only a package that lists its archs speaks here."""
+        amd = [g for g in hw.get("gpus", []) if g.get("vendor") == "amd" and g.get("arch")]
+        if not amd:
+            return
+        try:
+            from strata_control import engine_component as ec
+            rep = ec.status()
+            eng = rep.get("engine") or {}
+            built = [a for a in eng.get("archs") or [] if str(a).startswith("gfx")]
+            if not rep.get("usable") or eng.get("backend") != "hip" or not built:
+                return
+        except Exception:                               # noqa: BLE001 - never break the hardware page over this
+            return
+        for g in amd:
+            if g["arch"] not in built and g.get("usable") is not False:
+                g["usable"] = False
+                g["problem"] = (ec.no_package_note([g["arch"]]) or f"this Strata engine has no code for {g['arch']} (it is built for {', '.join(built)})")
 
     @staticmethod
     def _engine_vendor(hw: dict) -> None:

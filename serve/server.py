@@ -3089,6 +3089,89 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     return out
 
 
+#: AMD chips that share the system memory (an iGPU): never preferred over a card that has memory of its own.
+HIP_IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+
+
+def parse_hip_devices(text: str) -> list[dict]:
+    """`strata-device --list-devices`: [{"index", "name", "arch", "vram_gb", "integrated", "cannot_run"}], numbered as the HIP runtime numbers them."""
+    found: list[dict] = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"device\s+(\d+):\s*(.*)$", s)
+        if m:
+            found.append({"index": int(m.group(1)), "name": m.group(2).strip(), "arch": "", "vram_gb": 0.0, "integrated": False, "cannot_run": None})
+            continue
+        if not found:
+            continue
+        a = re.match(r"arch\s+(gfx[0-9a-f]+)\s*,\s*([\d.]+)\s*GiB(.*)$", s)
+        if a and not found[-1]["arch"]:
+            found[-1]["arch"], found[-1]["vram_gb"] = a.group(1), float(a.group(2))
+            found[-1]["integrated"] = "integrated" in a.group(3)      # a newer engine says so itself
+        elif s.startswith("cannot run:"):
+            found[-1]["cannot_run"] = s[len("cannot run:"):].strip()
+    for d in found:
+        d["integrated"] = d["integrated"] or d["arch"] in HIP_IGPU_ARCHS
+    return found
+
+
+def hip_no_card_message(devices: list[dict]) -> str:
+    """The plain line when the engine has code for none of the computer's cards."""
+    cards = ", ".join(f"{d['name'] or 'graphics card'} ({d['arch'] or 'unknown'}{', integrated' if d['integrated'] else ''})" for d in devices)
+    built = next((m.group(1) for d in devices for m in [re.search(r"compiled for \(([^)]*)\)", d["cannot_run"] or "")] if m), "")
+    text = f"[strata] none of this computer's graphics cards has code in this Strata engine{f' (it is built for {built})' if built else ''}. Cards found: {cards}."
+    note = engine_component.no_package_note([d["arch"] for d in devices])
+    return text + (f" {note}" if note else "")
+
+
+def pick_hip_devices(devices: list[dict]) -> tuple[list[int] | None, str | None]:
+    """Which card an "Automatic" start runs on: (HIP_VISIBLE_DEVICES to set, or None to leave the runtime's own order; a plain problem or
+    None).  Cards this engine has no code for are skipped, and so are integrated chips while a card of its own can run (#3203: a mini PC's
+    Radeon 760M is HIP's device 0 and the engine died on it; the RX 6800 XT behind it was never tried).  When device 0 is already the right
+    kind nothing changes."""
+    if not devices:
+        return None, None
+    runnable = [d for d in devices if not d["cannot_run"]]
+    if not runnable:
+        return None, hip_no_card_message(devices)
+    pool = [d for d in runnable if not d["integrated"]] or runnable
+    if devices[0] in pool:
+        return None, None
+    best = max(pool, key=lambda d: (round(d["vram_gb"]), -d["index"]))
+    return [best["index"]], None
+
+
+def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
+    """HIP_VISIBLE_DEVICES for a start that names no card (see pick_hip_devices), asked of the engine package's own `strata-device`.
+    None leaves everything as it was: a card the config or the environment names, no probe next to the engine, or a probe that fails.
+    SystemExit with the plain line when no card of this computer can run."""
+    if cfg.get("backend") != "hip" or gpu_list(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
+            or env.get("HIP_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES"):
+        return None
+    exe = cfg.get("exe")
+    if not isinstance(exe, str) or not exe or engine_component.is_reference(exe):
+        return None
+    probe = Path(exe).with_name("strata-device.exe" if os.name == "nt" else "strata-device")
+    if not probe.is_file():
+        return None
+    try:
+        done = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=60, cwd=str(probe.parent), env=env,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    devices = parse_hip_devices(done.stdout)
+    visible, problem = pick_hip_devices(devices)
+    if problem:
+        raise SystemExit(problem)
+    if visible:
+        d = next(x for x in devices if x["index"] == visible[0])
+        print(f"[strata] automatic GPU choice: GPU {d['index']} ({d['name']}, {d['arch']}); the engine skips cards it has no code for and "
+              f"integrated chips while a card of its own can run", flush=True)
+    return visible
+
+
 def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -3119,6 +3202,9 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     if cfg.get("backend") == "hip":
         hip_env_guard(env, cfg)
+        auto = hip_auto_devices(cfg, env)
+        if auto:
+            env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in auto)
     return env
 
 
