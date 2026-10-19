@@ -136,7 +136,7 @@ user chooses to download are a separate, explicit action. `apps/host/tests/no-ac
   work.
 * Signing needs the owner's credentials, which are never in this tree. The update feed and every engine package are signed with the feed key
   (`feed_tool.py`, [UPDATES.md](UPDATES.md)); the app installers with the Tauri updater key. The Mac app and Terminal archive are signed and
-  notarised on a Mac that holds the Developer ID certificate, with `packaging/mac/sign-and-notarize.sh` ([mac/README.md](mac/README.md)). No
+  notarised on a Mac that holds the Developer ID certificate, with `packaging/mac/sign-and-notarize.sh` ([mac/README.md](mac/README.md)); for a release, `--updater-archive` also packs the notarised app as `Strata.app.tar.gz` for the in-app Mac update (the one `tauri build` makes holds the unsigned app), signed with the Tauri key on the PC and added with `feed_tool.py set-app-platform`. No
   Windows code-signing certificate is configured in this tree; Windows may warn about an installer that is not signed.
 * No font or asset redistribution evidence has been gathered (D05). The app currently ships the
   brand assets from the supplied UI ZIP, which is fine for an internal candidate and not sufficient

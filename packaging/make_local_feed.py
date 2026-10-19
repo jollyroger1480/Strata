@@ -10,7 +10,7 @@
 What it writes into FEED (the folder a person would host):
     strata-feed.json + .sig        the signed feed (Ed25519, the key in KEYDIR, made once, never inside a git checkout)
     control/*, engine/*            the Terminal (as a "control" package) and each engine package, archived
-    install-manifest.txt           one line per platform for install.sh / install.ps1: platform version url sha256 size
+    install-manifest.txt           one line per platform for install.sh / install.ps1: platform version url sha256 size (written by feed_tool build-feed)
     install.sh, install.ps1        the one-line installers with this feed's address filled in (--url)
     test-trust.json                the PUBLIC test key: `STRATA_UPDATE_TRUSTED_KEYS=<this file>` lets this build trust the feed
                                    (the real key goes into strata_control/update_keys.json at release; this one never does)
@@ -72,7 +72,6 @@ def main(argv=None) -> int:
     shutil.rmtree(out, ignore_errors=True)
     (out / "engine").mkdir(parents=True)
     (out / "control").mkdir(parents=True)
-    manifest_lines: list[str] = []
     version = a.version
     with tempfile.TemporaryDirectory(prefix="strata-feed-") as tmp:
         tmpdir = Path(tmp)
@@ -86,7 +85,6 @@ def main(argv=None) -> int:
                         "macos-arm64" if ("darwin" in term.name or "macos" in term.name) else "linux-x86_64")      # the feed's own platform names
             fmt = "zip" if platform.startswith("windows") else "tar.gz"
             entry = ft.pack_control(folder, out / "control", version=v, platform=platform, fmt=fmt)
-            manifest_lines.append(f"{platform} {v} {entry['url']} {entry['sha256']} {entry['size']}")
             print(f"control {platform} {v}: {entry['size'] // 1048576} MB")
         for n, pkg in enumerate(a.engine):
             copy = tmpdir / f"e{n}" / pkg.name
@@ -97,7 +95,6 @@ def main(argv=None) -> int:
             shutil.rmtree(copy.parent, ignore_errors=True)
     ft.build_feed(out, key=key, sequence=a.sequence, channel=a.channel, engine_dir=out / "engine" if a.engine else None,
                   control_dir=out / "control" if a.terminal else None)
-    (out / "install-manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
     base = a.url.rstrip("/")
     for name in ("install.sh", "install.ps1"):
         text = (ROOT / "packaging" / name).read_text(encoding="utf-8").replace(RELEASE_FEED, base)

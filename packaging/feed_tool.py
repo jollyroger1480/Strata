@@ -178,6 +178,7 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
                control_dir: Path | None = None, app_json: Path | None = None, expires_days: int | None = None,
                now: dt.datetime | None = None) -> dict:
     now = now or dt.datetime.now(dt.timezone.utc)
+    install_manifest = ""
     document: dict = {"schema_version": feedmod.SCHEMA_VERSION, "feed": "strata-updates", "channel": channel,
                       "sequence": sequence, "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                       "expires_at": (now + dt.timedelta(days=expires_days)).strftime("%Y-%m-%dT%H:%M:%SZ") if expires_days else None}
@@ -191,6 +192,13 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
             raise SystemExit(f"the control packages are for different versions: {sorted(versions)}")
         if entries:
             document["control"] = {"version": versions.pop(), "packages": [{k: v for k, v in e.items() if k != "version"} for e in entries]}
+            for e in entries:     # install.sh unpacks with tar -xzf, install.ps1 with Expand-Archive: a pack in the other format cannot be installed that way
+                want = "zip" if e["platform"].startswith("windows") else "tar.gz"
+                if e.get("format") != want:
+                    print(f"note: the {e['platform']} control package is {e.get('format')}, so it is left out of install-manifest.txt "
+                          f"(the one-line installer needs {want}; pack-control --format {want})", file=sys.stderr)
+                    continue
+                install_manifest += f"{e['platform']} {e['version']} {e['url']} {e['sha256']} {e['size']}\n"
     if app_json:
         document["app"] = json.loads(Path(app_json).read_text(encoding="utf-8"))
     payload = (json.dumps(document, indent=1, sort_keys=True) + "\n").encode("utf-8")
@@ -198,6 +206,8 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     (Path(out) / feedmod.FEED_NAME).write_bytes(payload)
     signature = signing.sign_bytes(key, payload)
     (Path(out) / (feedmod.FEED_NAME + feedmod.SIGNATURE_SUFFIX)).write_text(json.dumps(signature) + "\n", encoding="utf-8")
+    if install_manifest:                        # what install.sh / install.ps1 read: platform version url sha256 size, one line per Terminal (Control) package
+        (Path(out) / "install-manifest.txt").write_text(install_manifest, encoding="utf-8", newline="\n")
     if "app" in document:                       # the file the Tauri updater plugin reads
         latest = Path(out) / "app" / "latest.json"
         latest.parent.mkdir(parents=True, exist_ok=True)

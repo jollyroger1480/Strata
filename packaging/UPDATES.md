@@ -113,8 +113,8 @@ A key rotation is a release that carries both public keys; the old private key s
 ## Releasing (when the owner says go)
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>
-    python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine
-    python packaging/feed_tool.py pack-control <control bundle folder> --version V --platform P --out RELEASE/control
+    python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix ""
+    python packaging/feed_tool.py pack-control <control bundle folder> --version V --platform P --out RELEASE/control --url-prefix ""   # add --format zip for windows-x86_64
     # the app installers carry the engine out of the box: fill apps/desktop/src-tauri/resources/engine-bundle/<package folder> with the signed
     # engine packages first (the tester builds do the same); tauri.conf.json lists that folder as a resource for every build
     TAURI_SIGNING_PRIVATE_KEY=<path to tauri-updater.key> npx tauri build --config src-tauri/tauri.release.conf.json   # installers + their .sig files (one build per OS)
@@ -144,6 +144,12 @@ Mach-O in the app with the Developer ID and notarises and staples it, which chan
 
 The Windows installer and the Linux AppImage need no extra step: their `.sig` files from `tauri build` are the ones to pass to `set-app-platform`. Re-signing the Mac app after the archive
 was made (a second `sign-and-notarize.sh` run) makes a new archive: sign and add it again.
+
+`build-feed` also writes `RELEASE/install-manifest.txt`, the file the one-line installers read (`install.sh` L76, `install.ps1` L45): one line per Control package,
+`platform version url sha256 size`, taken from the `*.entry.json` files in `RELEASE/control`. The Control package is the Terminal that `install.sh` unpacks (it must hold `bin/strata`).
+`install.sh` unpacks with `tar -xzf` and `install.ps1` with `Expand-Archive`, so `windows-x86_64` must be packed with `--format zip` and the other platforms as `tar.gz`;
+`build-feed` leaves a pack in the wrong format out of the manifest and says so. Pack Control for every platform you want the one-line install to cover (`install.sh` knows `linux-x86_64` and `macos-arm64`, `install.ps1` `windows-x86_64`);
+a platform with no line gets "this release has no Terminal for <platform>". Upload `install.sh` and `install.ps1` from `packaging/` unchanged: their built-in address is the release folder.
 
 The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
 `https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`

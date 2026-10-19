@@ -140,6 +140,56 @@ class Feed(unittest.TestCase):
             finally:
                 server.shutdown()
 
+    def test_the_release_path_writes_install_manifest_and_the_unchanged_install_sh_installs_from_it(self):
+        """pack-control (flat names, as for GitHub assets) + build-feed, the files a release uploads; not make_local_feed."""
+        import feed_tool
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            archive = self.make_bundle(work)
+            unpacked = work / "unpacked"
+            unpacked.mkdir()
+            folder = mlf.extract_terminal(archive, unpacked)
+            release = work / "release"
+            feed_tool.keygen(work / "keys")
+            key = feed_tool._load_key(work / "keys" / "feed-key.json")
+            entry = feed_tool.pack_control(folder, release / "control", version="9.9.9", platform="linux-x86_64", url_prefix="")
+            shutil.move(str(release / "control" / entry["url"]), str(release / entry["url"]))        # GitHub assets are flat
+            feed_tool.build_feed(release, key=key, sequence=1, control_dir=release / "control")
+            line = (release / "install-manifest.txt").read_text().split()
+            self.assertEqual(line, ["linux-x86_64", "9.9.9", entry["url"], entry["sha256"], str(entry["size"])])
+            self.assertEqual(json.loads((release / "strata-feed.json").read_text())["control"]["packages"][0]["sha256"], entry["sha256"])
+            bad = work / "bad"                           # a Windows pack that is not a zip cannot be installed by install.ps1: left out of the manifest
+            feed_tool.build_feed(bad, key=key, sequence=1, control_dir=self._windows_tar_pack(folder, work))
+            self.assertFalse((bad / "install-manifest.txt").exists())
+            shutil.copy2(ROOT / "packaging" / "install.sh", release / "install.sh")                   # uploaded unchanged
+            shutil.copy2(work / "keys" / "feed-key.pub.json", release / "test-trust.json")
+            if os.name == "nt" or not (shutil.which("sh") and shutil.which("curl") and shutil.which("tar")):
+                self.skipTest("the real install.sh run needs POSIX sh, curl and tar")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(release))
+            handler.log_message = lambda *a, **k: None                                   # type: ignore[attr-defined]
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                home = work / "home"
+                home.mkdir()
+                env = {**os.environ, "HOME": str(home), "STRATA_FEED": f"http://127.0.0.1:{server.server_address[1]}",
+                       "STRATA_INSTALL_TEST_TRUST": "1", "STRATA_PYTHON": sys.executable, "STRATA_NO_ACQUIRE": ""}
+                for k in ("XDG_DATA_HOME", "STRATA_UPDATE_TRUSTED_KEYS"):
+                    env.pop(k, None)
+                r = subprocess.run(["sh", str(release / "install.sh")], capture_output=True, text=True, env=env, timeout=240)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("Checksum ok", r.stdout)
+                self.assertIn("Signature ok", r.stdout)
+                self.assertTrue((home / ".local" / "bin" / "strata").exists())
+            finally:
+                server.shutdown()
+
+    def _windows_tar_pack(self, folder: Path, work: Path) -> Path:
+        import feed_tool
+        out = work / "badcontrol"
+        feed_tool.pack_control(folder, out, version="9.9.9", platform="windows-x86_64", fmt="tar.gz", url_prefix="")
+        return out
+
 
 if __name__ == "__main__":
     unittest.main()
