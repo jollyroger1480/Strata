@@ -83,7 +83,7 @@ What the person chose is saved by `tools-settings.mjs` (inside the host's settin
 
 ## /goal
 
-`/goal` typed in a chat goes to `bridge.goalCommand`: nothing = show the goal, `clear`, `pause`, `resume`, `edit <text>`, `complete`, anything else = a new goal (one unfinished goal at a time). Create/resume use the Harness goal Remotes (`goals/create|get|resume|pause|edit|clear|complete`); the Harness's goal driver runs the rounds and they stream into the chat ("Working on the goal, step N"); the run ends when the goal stops (complete, paused, blocked, round limit - the default cap is the Harness's 256, a run with `maxRounds` is capped) and says how in plain words. After a restart an active goal stays disarmed until `/goal resume`.
+`/goal` typed in a chat goes to `bridge.goalCommand`: nothing = show the goal, `clear`, `pause`, `resume`, `edit <text>`, `complete`, anything else = a new goal (one unfinished goal at a time). Create/resume use the Harness goal Remotes (`goals/create|get|resume|pause|edit|clear|complete`); the Harness's goal driver runs the rounds and they stream into the chat ("Working on the goal…", with no step counter); the run ends when the goal stops (complete, paused, blocked, round limit - the default cap is the Harness's 256, a run with `maxRounds` is capped) and says how in plain words. After a restart an active goal stays disarmed until `/goal resume`.
 
 ## Thinking and the output budget
 

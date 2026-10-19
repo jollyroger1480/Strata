@@ -34,3 +34,28 @@ test('one card per path; created stays created and the line counts add up', () =
   const list = D.mergeDeliverable(D.mergeDeliverable(undefined, a), b);
   assert.equal(list.length, 1); assert.equal(list[0].status, 'created'); assert.equal(list[0].added, 8); assert.equal(list[0].removed, 1); assert.equal(list[0].size, 14);
 });
+
+test('a finished run opens one main result in the sidebar: the file the answer names, else the one written last, only kinds the sidebar shows', () => {
+  const f = (path, kind) => D.readDeliverable({ path, kind, status: 'created', size: 10, lines: 5, added: 5, removed: 0 });
+  const add = (list, file) => D.mergeDeliverable(list, file);
+  let list = add(add(add(undefined, f('notes.md', 'markdown')), f('pagoda.html', 'html')), f('build.py', 'code'));
+  assert.equal(D.mainResult(list, 'All done.').name, 'pagoda.html', 'the last written one the sidebar can show (a script is not shown)');
+  assert.equal(D.mainResult(list, 'The notes are in notes.md.').name, 'notes.md', 'the file the answer names wins');
+  assert.equal(D.mainResult(list, 'Open Pagoda.HTML and read notes.md for details; the page is pagoda.html').name, 'pagoda.html', 'the last one it names');
+  list = add(list, f('notes.md', 'markdown'));
+  assert.equal(D.mainResult(list, '').name, 'notes.md', 'a file written again counts as written last');
+  assert.equal(list.length, 3, 'still one card per path');
+  assert.equal(D.mainResult(add(undefined, f('run.py', 'code')), 'Made run.py'), null, 'code is not opened by itself');
+  assert.equal(D.mainResult(undefined, ''), null);
+  for (const kind of ['html', 'markdown', 'pdf', 'image', 'csv', 'text']) assert.ok(D.SIDEBAR_KINDS.includes(kind), kind);
+});
+
+test('the file card: Open uses the system, the menu has Open in sidebar, and a run opens its result by itself', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const card = await readFile(new URL('../src/components/Deliverables.tsx', import.meta.url), 'utf8');
+  assert.match(card, /fileAction\.open\(sessionId, file\.path, 'app'\)[^]*?\{tr\("Open"\)\}/, 'Open hands the file to its own app or the browser');
+  assert.match(card, /showOf\(file, sessionId, onPreview, file\.kind\); \}\}><Icon name="panel"\/>\{tr\("Open in sidebar"\)\}/, 'the menu opens the sidebar preview');
+  const chat = await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8');
+  assert.match(chat, /mainResult\(lastReply\.deliverables, lastReply\.content\)/);
+  assert.match(chat, /before !== true \|\| lastReply\.streaming \|\| lastReply\.error/, 'only a run seen finishing, and not a failed one');
+});

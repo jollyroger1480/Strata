@@ -57,6 +57,19 @@ export function createChatFolders({ file }) {
   };
 }
 
+/**
+ * The folder a chat's files live in, one rule for the agent's writes, Open, Show in folder, preview and attach:
+ *   1. the folder the person chose for this chat; else
+ *   2. the folder the agent actually worked in for it (its session's working folder, so it is the one it wrote to); else
+ *   3. the default workspace (Documents/Strata/Workspace, or STRATA_WORKSPACE), where a chat with no folder is run.
+ * A folder that no longer exists is skipped. Never null while the default exists, so a chat with no chosen folder can still open its files.
+ */
+export function chatRootOf({ chosen = null, used = null, fallback = null } = {}) {
+  const alive = p => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
+  for (const p of [chosen, used, fallback]) if (alive(p)) return resolve(p);
+  return fallback ? resolve(fallback) : null;
+}
+
 /** The real path of a file the chat may touch, or throws a plain sentence. Symbolic links are followed before the check. */
 export function resolveChatFile(root, rawPath) {
   if (!root) throw Object.assign(new Error('This chat has no folder yet. Choose one first.'), { code: 'no-folder' });

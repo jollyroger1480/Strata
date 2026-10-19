@@ -55,7 +55,7 @@ import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
-import { createChatFolders, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
+import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
@@ -467,9 +467,11 @@ let workspaces = loadWorkspaces();
 /* The folder each chat works in ("Select a folder"): the agent's working folder and sandbox for that chat. */
 const chatAttachments = createAttachments();
 const nativeDrops = createNativeDrops();
-const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: chatId => chatFolders.get(chatId) ?? workspaces[0]?.path ?? WORKSPACE, attachments: chatAttachments });
+const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: chatId => chatRoot(chatId), attachments: chatAttachments });
 try { uploads.sweep(); } catch { /* best effort */ }
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
+/** Where a chat's files are: its chosen folder, else the folder its agent worked in, else the default workspace (chat-files.mjs). One source for every file route. */
+const chatRoot = chatId => chatRootOf({ chosen: chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE });
 
 function saveWorkspaces() {
   try {
@@ -1662,7 +1664,7 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/files/open' && method === 'POST') {
     const body = await readBody(req);
-    try { return json(res, 200, openFile(chatFolders.get(String(body.sessionId ?? '')), body.path, String(body.how ?? 'app'))); }
+    try { return json(res, 200, openFile(chatRoot(String(body.sessionId ?? '')), body.path, String(body.how ?? 'app'))); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   /* Files and pictures dropped or pasted into a chat: multipart, a JSON data address, or raw bytes. A picture comes back with an id the next message names (imageIds). */
@@ -1680,22 +1682,22 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/files/preview' && method === 'GET') {
     const sid = url.searchParams.get('sessionId') ?? '';
-    try { return json(res, 200, previewFile(chatFolders.get(sid), url.searchParams.get('path'), sid)); }
+    try { return json(res, 200, previewFile(chatRoot(sid), url.searchParams.get('path'), sid)); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   if (path === '/api/files/raw' && method === 'GET') {
-    try { const f = rawFile(chatFolders.get(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
+    try { const f = rawFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   /* "Attach as context": the file is named in the next message of the chat, so the assistant reads it again. */
   if (path === '/api/chat/attachments' && method === 'GET') return json(res, 200, { files: chatAttachments.list(url.searchParams.get('sessionId') ?? '') });
   if (path === '/api/chat/attachments' && method === 'POST') {
     const body = await readBody(req); const id = String(body.sessionId ?? '');
-    try { const file = resolveChatFile(chatFolders.get(id), body.path); return json(res, 200, { files: body.remove === true ? chatAttachments.remove(id, file) : chatAttachments.add(id, file) }); }
+    try { const file = resolveChatFile(chatRoot(id), body.path); return json(res, 200, { files: body.remove === true ? chatAttachments.remove(id, file) : chatAttachments.add(id, file) }); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   if (path === '/api/files/path' && method === 'GET') {
-    try { const p = resolveChatFile(chatFolders.get(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); return json(res, 200, { path: p }); }
+    try { const p = resolveChatFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); return json(res, 200, { path: p }); }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
   if (path === '/api/workspaces' && method === 'GET') {

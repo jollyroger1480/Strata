@@ -25,7 +25,7 @@ test('item 1: only the newest status frame is kept, and idle, a missing phase or
   assert.equal(status.statusOf(chat).phase, 'preparing');
   status.applyStatusFrame(chat, { seq: 3, phase: 'idle', code: 'idle', text: '' });
   assert.equal(status.statusOf(chat), null, 'idle removes the line');
-  status.applyStatusFrame(chat, { seq: 4, phase: 'goal', code: 'goal-step', text: 'Working on the goal, step 1', args: { round: 1 } });
+  status.applyStatusFrame(chat, { seq: 4, phase: 'goal', code: 'goal-step', text: 'Working on the goal…', args: { round: 1 } });
   status.clearStatus(chat);
   assert.equal(status.statusOf(chat), null, 'done and error clear it too');
 });
@@ -41,7 +41,7 @@ test('item 1: playful words only while it thinks; a running tool always shows th
   assert.equal(status.statusWords(frame('waiting', 'reading-prompt'), 5), 'Reading your message…', 'what is really happening is said plainly');
   assert.equal(status.statusWords(frame('preparing', 'preparing-tool', { verb: 'Writing a file', target: 'pagoda.html' }), 5), 'Writing a file · pagoda.html…');
   assert.equal(status.statusWords(frame('tool', 'tool', { verb: 'Searching the web' }), 9), 'Searching the web…');
-  assert.equal(status.statusWords(frame('goal', 'goal-step', { round: 2 }), 7), 'Working on the goal, step 2');
+  assert.equal(status.statusWords(frame('goal', 'goal-step', { round: 2 }), 7), 'Working on the goal…');
   assert.equal(status.isPlayful(frame('tool', 'tool')), false);
   assert.equal(status.elapsedText(0, 14_000), '14s'); assert.equal(status.elapsedText(0, 64_000), '1m 04s');
 });
@@ -64,5 +64,5 @@ test('item 5: the goal object from a frame, an event or a route; anything else i
   assert.equal(goal.goalOf('chat-g').objective, 'Ship it');
   goal.applyGoalFrame('chat-g', null);
   assert.equal(goal.goalOf('chat-g'), null, 'the host clearing the goal removes the bar');
-  assert.equal(goal.goalProgress({ objective: 'x', phase: 'active', round: 2, maxRounds: 4 }), '2/4');
+  assert.equal(goal.goalProgress, undefined, 'no step counter is shown for a goal');
 });

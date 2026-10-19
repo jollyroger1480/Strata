@@ -3269,5 +3269,15 @@
   "s3277": "Das laufende Modell wird entladen.",
   "s3278": "Lokal",
   "s3279": "Strata hat für diesen Computer keine passende Engine erkannt. Das Modell wird trotzdem heruntergeladen, läuft aber möglicherweise erst, wenn die richtige Engine installiert ist (Einstellungen → Engine).",
-  "s3280": "Strata hat für diesen Computer keine passende Engine erkannt. Das Modell ist heruntergeladen, läuft aber erst, wenn die richtige Engine installiert ist. Öffne Einstellungen → Engine."
+  "s3280": "Strata hat für diesen Computer keine passende Engine erkannt. Das Modell ist heruntergeladen, läuft aber erst, wenn die richtige Engine installiert ist. Öffne Einstellungen → Engine.",
+  "s7332": "Ein Modell wird heruntergeladen",
+  "s7333": "Dein Modell wird heruntergeladen ({0}%). Du kannst chatten, sobald es fertig ist.",
+  "s7334": "Dein Modell wird heruntergeladen. Du kannst chatten, sobald es fertig ist.",
+  "s7335": "Das Modell wird geladen",
+  "s7336": "Dein Modell wird noch geladen. Gleich kannst du chatten.",
+  "s7337": "Kein Modell geladen",
+  "s7338": "Es ist kein Modell geladen. Lade zuerst eines unter Modelle.",
+  "s7339": "Der Assistent startet…",
+  "s7340": "Der Assistent konnte nicht starten. Versuche es gleich noch einmal.",
+  "s7341": "Arbeitet am Ziel…"
 }

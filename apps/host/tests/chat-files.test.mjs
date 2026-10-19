@@ -70,3 +70,27 @@ test('a chat that moves to another folder gets a session there: the agent writes
   await run(b, 'again.txt');
   assert.equal(readFileSync(join(b, 'again.txt'), 'utf8').trim(), 'again.txt');
 });
+
+import { chatRootOf, previewFile } from '../server/chat-files.mjs';
+test('a chat with no chosen folder still has a folder: the one its agent worked in, else the default workspace; files there open, preview and reveal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-root-'));
+  try {
+    const def = join(dir, 'Documents', 'Strata', 'Workspace'); mkdirSync(def, { recursive: true });
+    const chosen = join(dir, 'mine'); mkdirSync(chosen);
+    const used = join(dir, 'other'); mkdirSync(used);
+    assert.equal(chatRootOf({ chosen, used, fallback: def }), chosen, 'the chosen folder wins');
+    assert.equal(chatRootOf({ chosen: null, used, fallback: def }), used, 'the folder the agent really wrote to');
+    assert.equal(chatRootOf({ chosen: null, used: join(dir, 'gone'), fallback: def }), def, 'a folder that is gone is skipped');
+    const root = chatRootOf({ chosen: null, used: null, fallback: def });
+    assert.equal(root, def, 'no chosen folder: the default workspace');
+    writeFileSync(join(def, 'pagoda.html'), '<h1>hi</h1>');
+    assert.equal(previewFile(root, 'pagoda.html', 'c1').kind, 'html');
+    const rec = [];
+    const r = openFile(root, join(def, 'pagoda.html'), 'folder', { platform: 'darwin', recorder: rec });
+    assert.equal(r.ok, true); assert.deepEqual(rec[0].slice(0, 2), ['open', '-R']);
+    assert.equal(openFile(root, 'pagoda.html', 'app', { platform: 'linux', recorder: rec }).ok, true);
+    assert.equal(openFile(root, 'pagoda.html', 'app', { platform: 'win32', recorder: rec }).ok, true);
+    assert.throws(() => resolveChatFile(root, join(dir, 'secret.txt')), /no longer there|outside/, 'the default folder is still a boundary');
+    assert.equal(chatRootOf({}), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
