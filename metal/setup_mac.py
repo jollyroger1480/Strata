@@ -332,6 +332,8 @@ def main(argv=None) -> int:
     ap.add_argument("--draft-vocab", choices=list(S.DRAFT_VOCABS))
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None)
     ap.add_argument("--data-dir")
+    ap.add_argument("--move-data", action="store_true", help="with --data-dir: move the model files already here into the new folder")
+    ap.add_argument("--set-default-data-dir", action="store_true", help="with --data-dir: remember the new folder without moving anything")
     ap.add_argument("--models-dir")
     ap.add_argument("--gguf-dir")
     ap.add_argument("--yes", action="store_true")
@@ -354,7 +356,7 @@ def main(argv=None) -> int:
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     S.say("Strata on a Mac (Apple Silicon, Metal)")
-    data, elsewhere = S.data_folder(a.data_dir)
+    data, elsewhere = S.data_folder_for(a)
     roots = [data, *elsewhere]
     models_root = Path(a.models_dir) if a.models_dir else data / "models"
 

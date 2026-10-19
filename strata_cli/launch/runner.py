@@ -287,8 +287,9 @@ class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
                  components_dir: str | None = None, hardware: dict | None = None,
-                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False):
+                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False):
         self.s = s
+        self.move_data = move_data            # --move-data / the answer "move": the model files already here go to the new --data-dir
         self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
         self.assume_yes = assume_yes          # --yes: no questions
         self.engine_problem: str | None = None
@@ -501,6 +502,8 @@ class Runner:
         data = s.data_dir or self.existing_data_dir()
         if data:
             args += ["--data-dir", str(data)]
+            if self.move_data and s.data_dir:             # only when the person said so: setup moves nothing otherwise
+                args.append("--move-data")
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
@@ -508,14 +511,15 @@ class Runner:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
-            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir"}
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data"}
+            flags = ("--yes", "--no-start", "--move-data")
             out, i = [], 0
             while i < len(args):
                 if args[i] in keep:
                     out.append(args[i])
-                    if args[i] not in ("--yes", "--no-start") and i + 1 < len(args):
+                    if args[i] not in flags and i + 1 < len(args):
                         out.append(args[i + 1])
-                    i += 2 if args[i] not in ("--yes", "--no-start") else 1
+                    i += 2 if args[i] not in flags else 1
                 else:
                     i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
             args = out
