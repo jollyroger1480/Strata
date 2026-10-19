@@ -239,7 +239,7 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     if raw_app is not None:
         if not isinstance(raw_app, dict):
             raise FeedError("the feed's app member is not an object")
-        version_key(_need(raw_app, "version", str, "app entry"))
+        app_version_key(_need(raw_app, "version", str, "app entry"))
         platforms = raw_app.get("platforms")
         if not isinstance(platforms, dict) or not platforms:
             raise FeedError("the feed's app entry lists no platforms")

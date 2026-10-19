@@ -3,7 +3,7 @@
 Everything that downloads software on a user's PC lives behind one explicit step: `strata update` in the Terminal, or
 "Update engine" / "Update Strata" in the app's Settings. Starting a model and serving never download anything
 (`STRATA_NO_ACQUIRE` stays on for them; the update step is a separate Control process that is allowed to). Engines are
-separate from the app and ship more often: an app-only update downloads 0 engine bytes, an engine update downloads only the
+separate from the app and ship more often: an app-only update downloads 0 engine bytes (the update installers are built without the engine), an engine update downloads only the
 package for that PC's GPU. **Models and saved tuning presets are never downloaded, replaced or deleted by any update.**
 
 ## The three things that are updated
@@ -112,21 +112,42 @@ A key rotation is a release that carries both public keys; the old private key s
 
 ## Releasing (when the owner says go)
 
-    python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>
-    python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix ""
-    python packaging/feed_tool.py pack-control <control bundle folder> --version V --platform P --out RELEASE/control --url-prefix ""   # add --format zip for windows-x86_64
-    # the app installers carry the engine out of the box: fill apps/desktop/src-tauri/resources/engine-bundle/<package folder> with the signed
-    # engine packages first (the tester builds do the same); tauri.conf.json lists that folder as a resource for every build
-    TAURI_SIGNING_PRIVATE_KEY=<path to tauri-updater.key> npx tauri build --config src-tauri/tauri.release.conf.json   # installers + their .sig files (one build per OS)
-    # Mac only, on the Mac that holds the Developer ID certificate (see "The Mac app" below); the .app.tar.gz that tauri build made is NOT used:
-    bash packaging/mac/sign-and-notarize.sh <Strata.dmg> --updater-archive      # writes signed/Strata.dmg (notarised) and signed/Strata.app.tar.gz
-    # on the release PC, per app installer (this is also the step that makes the Tauri updater json; tauri build does not write latest.json):
-    npx tauri signer sign -f <path to tauri-updater.key> signed/Strata.app.tar.gz    # asks for the key password; writes Strata.app.tar.gz.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version V --archive signed/Strata.app.tar.gz --sig signed/Strata.app.tar.gz.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version V --archive <setup .exe> --sig <setup .exe.sig>
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64 --version V --archive <.AppImage> --sig <.AppImage.sig>
+Keys live only on the release PC (`feed-key.json`, `tauri-updater.key`; the Tauri key has no password). Every build box builds WITHOUT a key:
+the default `tauri.conf.json` has `createUpdaterArtifacts: false`, so `tauri build` needs no signing key and makes the same installer bytes.
+All signing happens on the release PC, on the finished files.
+
+**What is built (per OS)**
+
+* *Full installers* (the first download, engine inside): Windows `cuda13`, `cuda12`, `rx9070`; Linux `nvidia-cuda13`, `nvidia-cuda12`, `amd-rx9070`,
+  `amd-rx7900`; Mac `dmg`. Each carries ONE signed engine package in `engine-bundle/` (the Mac one unsigned, see below).
+* *Update installers* (the only files `latest.json` names): built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`.
+  Windows: `Strata-0.2.0-beta-windows-update.exe`; Linux: the base AppImage before the engines are repacked into it
+  (`Strata-0.2.0-beta-linux-update.AppImage`); Mac: `Strata.app.tar.gz` (the Metal engine is 2 MB and there is one Mac variant, so it stays inside).
+  Why: an app update must not carry an engine. One `latest.json` entry per OS goes to every variant, and a CUDA installer on an AMD PC
+  would copy a useless CUDA engine beside the AMD one (`bundled-engine.test.mjs`). Engines come per card from the signed feed
+  (`feed.select_engine`: platform, backend, CUDA `archs` and `min_driver`, HIP `archs`; `tests/terminal/test_release_matrix.py`).
+
+**Steps**
+
+    python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
+    python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
+    python packaging/feed_tool.py pack-control <control folder> --version 0.1.45.3 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
+    # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
+    # (0.1.45.3), not the app version: a Control package newer than the installed one is installed by `strata update`.
+    # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
+    cd apps/desktop && npx tauri build --bundles nsis                                               # Windows full installers: engine-bundle holds the one signed package
+    cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows update installer
+    # Linux: tauri build --bundles appimage (no engine) is the update AppImage; repack-appimage.sh puts an engine package into a copy for each full AppImage
+    # on the release PC, per updater artifact (Windows update .exe, Linux update .AppImage, Mac Strata.app.tar.gz):
+    npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.0-beta --archive <update .exe> --sig <update .exe.sig> --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.0-beta --archive <update .AppImage> --sig <update .AppImage.sig>
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.0-beta --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
+
+`set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
+signing, stops the release. The full installers are not in `latest.json` and need no Tauri signature (they are downloaded by hand).
 
 ### The Mac app
 
