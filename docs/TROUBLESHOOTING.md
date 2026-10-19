@@ -46,7 +46,8 @@ In the app: Settings, Engine, Diagnostics, View logs, then Save logs. It writes 
 `strata-diagnostics-<date>.txt`, into your Downloads folder and shows where. It holds the engine's messages, the failed
 steps and the end of each model's server log. In the Terminal, send the output of `strata doctor`. If the Linux app window
 crashes or will not open, run the AppImage with `--save-logs` in a terminal instead; it writes the crash log and the other
-logs to one file in Downloads. Look through a log before you send it, and never send an API key.
+logs to one file in Downloads. If the Windows app closes right after you start it, it shows a message with the reason and writes
+`desktop-crash-<date>.log` in `%LOCALAPPDATA%\Strata\logs`; Save logs includes it, and so can you, by hand. Look through a log before you send it, and never send an API key.
 
 ## While installing or starting
 
