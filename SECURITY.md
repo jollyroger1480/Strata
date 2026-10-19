@@ -92,3 +92,4 @@ If that is not enough: save the script (`curl -fsSLO https://github.com/Niko1221
 run it from the file; or install the desktop app or build from source instead and check the code you build.
 
 Strata has not had an outside security audit yet.
+What Strata downloads, when it uses the internet, what stays on your PC and how downloads are checked is written up in [docs/SAFETY.md](docs/SAFETY.md).

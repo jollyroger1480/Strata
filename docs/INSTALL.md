@@ -227,7 +227,8 @@ any PC (to try it). Problems and results on real hardware are welcome as GitHub 
 
 **The Terminal:** `strata update --check`, then `strata update` (see [the Terminal](#the-terminal)). Add `--app` to
 download the app's installer too. Models and saved tuning presets are never downloaded, replaced or deleted by an
-update. How the signed update feed works: [packaging/UPDATES.md](../packaging/UPDATES.md).
+update. How the signed update feed works: [packaging/UPDATES.md](../packaging/UPDATES.md). What Strata downloads and
+how it checks it: [SAFETY.md](SAFETY.md).
 
 **From source: `UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
 something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
