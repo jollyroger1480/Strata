@@ -12,7 +12,7 @@ There are three ways to install it. Take the first one unless you have a reason 
    fetches the engine itself.
 
 > **On this page:** [What you need](#what-you-need) · [The app](#the-app) · [The Terminal](#the-terminal) ·
-> [From source: Windows](#from-source-windows) · [Linux](#from-source-linux) · [Mac](#from-source-mac) ·
+> [From source: Windows](#from-source-windows) · [Linux](#from-source-linux) ([build from git](#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code)) · [Mac](#from-source-mac) ·
 > [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
 > [Older CPUs](#older-cpus-experimental) · [Updating](#updating) · [Where things are stored](#where-things-are-stored) ·
 > [Setup's questions](#setups-questions) · [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
@@ -149,6 +149,41 @@ On Nix/NixOS, you can use the flake:
 ```bash
 nix develop -c ./setup.sh
 ```
+
+### Build from git on Linux (to try a pull request or change the code)
+
+You do not need the app or the AppImage for this: the source install builds the engine on your PC and keeps
+everything in the checkout, so you can edit, rebuild and test.
+
+```bash
+git clone https://github.com/Niko1221/Strata.git && cd Strata
+./setup.sh              # first run: .venv, the engine build (build/, or build-hip/ on a Radeon), the model, then it serves
+```
+
+- **What it needs:** `git`, a C++ compiler and `cmake` (setup installs the build tools through `sudo apt` on
+  Debian and Ubuntu; elsewhere install them first), and the CUDA Toolkit for NVIDIA or ROCm with the HIP compiler for
+  a Radeon card ([AMD_HIP.md](AMD_HIP.md)). Python goes into `.venv` of the checkout.
+- **After you change the code:** run `./setup.sh` again. It compiles only what changed and starts the model. To
+  update without starting: `git pull`, then `./update.sh`. By hand, the build folder is an ordinary CMake build:
+  `cmake --build build --target strata -j8` (`build-hip` for a Radeon card; the options are in
+  [AMD_HIP.md](AMD_HIP.md)).
+- **To try a pull request:** `git fetch origin pull/<number>/head:pr-<number> && git checkout pr-<number>`, then
+  `./setup.sh`. `git checkout main` goes back; the next `./setup.sh` rebuilds.
+- **Settings for the engine** (for example `STRATA_HIPBLASLT_TUNING=/path/to/table.txt`) go into the `"env"` object of
+  `strata-<model>.json`, which `./setup.sh` writes next to the checkout. `./run-<model>.sh` starts the model with it.
+- **The Terminal monitor from a checkout:** the monitor needs one extra package, which the source install does not
+  put into `.venv`:
+
+  ```bash
+  .venv/bin/pip install -r requirements-monitor.txt
+  STRATA_PYTHON="$PWD/.venv/bin/python3" bin/strata monitor --url http://127.0.0.1:8080
+  ```
+
+  (`bin/strata` is the same `strata` command as the Terminal's: `bin/strata --help` lists the rest.)
+- **Only compile, without the installer:** the engine is a normal CMake project. For NVIDIA:
+  `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native &&
+  cmake --build build --target strata -j8`. The options, and the flags setup passes, are in `setup.py` (search for
+  `-DSTRATA_`).
 
 ## From source: Mac
 

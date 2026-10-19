@@ -676,6 +676,7 @@ The same questions, the same automatic install (it uses `sudo apt` for Python an
 for the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly. Options as on Windows (`./setup.sh --setup`, `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`).
 Terminal chat: `.venv/bin/python chat.py`.
+Building from git, trying a pull request, the monitor from a checkout: [INSTALL.md](INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
 - **Updating:** `git pull`, then `./setup.sh`: it compiles the engine again when its source changed (a minute or
   two for the changed files). If that compile fails, it says so and starts the engine you had.
