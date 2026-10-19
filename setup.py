@@ -64,6 +64,7 @@ from pathlib import Path
 
 from strata_control import acquisition
 from strata_control import draft_layer
+from strata_control import user_args
 
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
@@ -5541,8 +5542,10 @@ def write_config(path: Path, cfg: dict):
 
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
+# "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
+# then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -5552,12 +5555,13 @@ SETUP_ENV_UNSLOTH = frozenset({"STRATA_MMQ_KQ", "STRATA_HC_Q8", "STRATA_ROUTE_TA
 SETUP_VISION = frozenset({"exe", "cpu_exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
-def carry_over(old: dict, cfg: dict) -> list[str]:
+def carry_over(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[str]:
     """#629: setup run again for an installed model keeps what the user added to its run config: every key setup does
     not write (`SETUP_KEYS`), the "env" entries setup does not write, and in "vision" the keys setup does not write
     plus an mmproj of their own (a Q8_0 one, #625) that still exists.  `cfg` (the new config) is updated in place;
     the names of what was kept are returned.  Engine options added by hand to "args" are not merged (setup chooses
-    those): `args_dropped` names them."""
+    those): `args_dropped` names them.  `explicit`: engine options given on this run's command line (they win and are
+    kept from now on, see carry_user_args)."""
     kept = []
     for k, v in old.items():
         if k not in SETUP_KEYS and k not in cfg:
@@ -5580,10 +5584,67 @@ def carry_over(old: dict, cfg: dict) -> list[str]:
             nv["mmproj"] = mm
             kept.append("vision mmproj")
     kept += carry_profile_args(old, cfg)
+    kept += carry_user_args(old, cfg, explicit)
     off = draft_layer.apply(cfg)                       # "mtp": false was the user's (a key setup does not write): the new args honour it
     if off:
         kept.append("mtp off (" + " ".join(off) + " left out of args)")
     return kept
+
+
+# the options setup chooses itself on every run from its answers (context, KV type, pictures, the draft layer, the layer split):
+# a hand edit of one of these is carried by the answers (choices_from_config) or by its own key ("mtp", "vision"), not by user_args
+SETUP_CHOICE_FLAGS = frozenset({"--max-context", "--kv", "--vision", "--mtp", "--spec-min-p", "--batch-mtp", "--layer-split"})
+
+
+def setup_flags() -> frozenset:
+    """Every engine option this file names (setup.py's own source): the options setup can write.  Used for a run config
+    that has no `args_written` (written by an earlier Strata): an option in its args that is not in this set was added by hand."""
+    global _SETUP_FLAGS
+    if _SETUP_FLAGS is None:
+        try:
+            text = Path(__file__).read_text(encoding="utf-8")
+            _SETUP_FLAGS = frozenset(re.findall(r'"(--[a-z][a-z0-9-]+)"', text))
+        except OSError:
+            _SETUP_FLAGS = frozenset()
+    return _SETUP_FLAGS
+
+
+_SETUP_FLAGS = None
+
+
+def explicit_args(a) -> list[str]:
+    """The engine options this run's command line sets that the person keeps from now on (user_args): --vram-reserve-mib."""
+    n = getattr(a, "vram_reserve_mib", None)
+    return ["--vram-reserve-mib", str(n)] if n is not None else []
+
+
+def carry_user_args(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[str]:
+    """#3216 #3215 #3270: the engine options the person set by hand in the earlier run config are put back over the
+    generated ones, and recorded in the new one's "user_args" (strata_control/user_args.py).  They are the earlier
+    "user_args", the options of "args" that differ from "args_written" (hand edits), for a config with no "args_written"
+    the options its args had and the new ones do not (control vectors, --spec, ...) and an explicit --vram-reserve-mib of
+    the earlier file.  `explicit`: options given on this run's command line, which win.  The names kept are returned."""
+    nargs = cfg.get("args")
+    if not isinstance(nargs, list):
+        return []
+    mine = user_args.capture(old, SETUP_CHOICE_FLAGS)
+    oargs = old.get("args")
+    if user_args.WRITTEN_KEY not in old and isinstance(oargs, list):
+        have = {user_args.flag_of(g) for g in user_args.groups(mine)}
+        mine += user_args.flat([g for g in user_args.groups(user_args.dropped_by_setup(oargs, nargs, setup_flags(), SETUP_CHOICE_FLAGS))
+                                if user_args.flag_of(g) not in have])
+        reserve = flag_value(oargs, "--vram-reserve-mib")   # an old file: the reserve it names, unless it is the vision default or the app's own
+        vis = isinstance(old.get("vision"), dict)
+        if reserve is not None and reserve.isdigit() and not (vis and int(reserve) == VISION["gpu"]["reserve_mib"])                 and "ui_resource_baseline" not in old and "--vram-reserve-mib" not in mine:
+            mine += ["--vram-reserve-mib", reserve]
+    for g in user_args.groups(explicit or []):
+        mine = user_args.merge(mine, g)
+    if not mine:
+        user_args.stamp(cfg, [])
+        return []
+    cfg["args"] = user_args.merge(nargs, mine)
+    user_args.stamp(cfg, mine)
+    return ["args " + f for f in dict.fromkeys(g[0] for g in user_args.groups(mine) if g[0].startswith("--"))]
 
 
 def flag_value(args: list, flag: str):
@@ -5629,7 +5690,7 @@ def engine_exe(eng: Path) -> str:
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
-def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) -> None:
+def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, explicit: list[str] | None = None) -> None:
     """#629: setup's run config, written over an earlier one for the same model without losing what the user added
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
     strata-<model>.json.bak when it changes.  `source`: an earlier install's config to carry the keys over from when
@@ -5643,7 +5704,10 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) ->
             pass
         if not isinstance(old, dict):
             old = None
-    kept = carry_over(old, cfg) if old is not None else []
+    kept = carry_over(old, cfg, explicit) if old is not None else []
+    if old is None:
+        carry_user_args({}, cfg, explicit)              # a first install: only what this run's command line sets (nothing to report as kept)
+    user_args.stamp(cfg)                               # args_written: what setup wrote, for the next hand-edit check
     if "images" in cfg and cfg["images"] is None:      # --images no (or not downloaded): no image section
         cfg.pop("images")
     bak = None
@@ -6048,6 +6112,9 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
             args[args.index("--vram-reserve-mib") + 1] = str(reserve)
         else:
             args += ["--vram-reserve-mib", str(reserve)]
+        cfg[user_args.USER_KEY] = user_args.set_flag(user_args.capture(cfg), "--vram-reserve-mib", reserve)   # the person's own value: kept by every later setup run and start
+        if user_args.WRITTEN_KEY in cfg:
+            cfg[user_args.WRITTEN_KEY] = list(cfg["args"])
         write_config(cfg_path, cfg)
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
@@ -7000,7 +7067,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         else:
             cfg["parallel"] = 1
             ok("parallel requests: one at a time (--parallel 1)")
-    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     ok(f"start script: {script.name}")
     say()
@@ -8496,7 +8563,7 @@ def main() -> int:
             say("  " + line)
     for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN):
         say("  " + line)
-    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
     if cal is None and not hip and not a.no_start and not a.yes and ask(

@@ -14,6 +14,8 @@ import os
 import shutil
 from pathlib import Path
 
+from strata_control import user_args
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 EDITABLE = [
@@ -155,6 +157,13 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
             elif v is not None:
                 a += [flag, str(v)]
             new["args"] = a
+            mine = user_args.set_flag(user_args.capture(new), flag, v)   # a value set here is the person's: it survives setup and the app
+            if mine:
+                new[user_args.USER_KEY] = mine
+            else:
+                new.pop(user_args.USER_KEY, None)
+            if user_args.WRITTEN_KEY in new:
+                new[user_args.WRITTEN_KEY] = list(a)
         elif v is None:
             new.pop(key, None)
         else:

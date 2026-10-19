@@ -53,11 +53,12 @@ class CarryOver(unittest.TestCase):
             self.assertEqual(cfg[k], v, k)
         a = cfg["args"]
         self.assertEqual(a[a.index("--max-context") + 1], "131072")       # the new choice is used
-        self.assertNotIn("--hand-option", a)                               # setup chooses the engine options...
+        self.assertEqual(a[a.index("--hand-option") + 1], "7")             # an option added by hand is kept (#3216)...
+        self.assertEqual(cfg["user_args"], ["--hand-option", "7"])         # ...and recorded as the person's
         self.assertIn("kept from your earlier strata-q2_0.json: sampling, mcp_servers, mcp, cors_origins, "
                       "reasoning_effort", out)
         self.assertIn("kept as strata-q2_0.json.bak", out)
-        self.assertIn("--hand-option", out)                                # ...and says which ones it did not keep
+        self.assertIn("args --hand-option", out)                           # ...and the run says it was kept
 
     def test_a_first_install_is_unchanged(self):
         code, out, cfg, _ = self.run_setup()
@@ -111,7 +112,7 @@ class CarryOver(unittest.TestCase):
             p = Path(d) / "strata-x.json"
             p.write_text("{cut off", encoding="utf-8")
             quiet(setup.write_setup_config, p, {"exe": "e", "args": []})
-            self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"exe": "e", "args": []})
+            self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"exe": "e", "args": [], "args_written": []})
             self.assertEqual((Path(d) / "strata-x.json.bak").read_text(encoding="utf-8"), "{cut off")
 
     def test_display_tip_and_typed_ahead_flush(self):

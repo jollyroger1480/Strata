@@ -140,6 +140,8 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
         cfg = None
         if written and code == 0:
             cfg = normalize(json.loads(written[-1].read_text(encoding="utf-8")), t)
+            # "args_written" (strata_control/user_args.py): the arguments as setup wrote them, so a later hand edit can be told; the golden configs keep their own keys
+            assert cfg.pop("args_written", cfg.get("args")) == cfg.get("args"), "args_written is not the written args"
         return code, out.getvalue(), cfg, asked
 
 

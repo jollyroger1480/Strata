@@ -924,6 +924,10 @@ class Strata:
             for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
                 if g.get("uma") and g.get("usable"):
                     g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
+        try:                                            # does the card drive a display?  (the app keeps less VRAM free on one that does not, #3215)
+            mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and amd else [])
+        except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
+            pass
         hw["gpus"] = nv + amd
         self._engine_code(hw)
         self._engine_vendor(hw)
@@ -1534,6 +1538,43 @@ def own_nvidia_gpus() -> list:
         except ValueError:
             continue
     return found
+
+
+def nvidia_display_active() -> dict:
+    """{GPU index: True when a display is attached to the card} from nvidia-smi (display_active Enabled); {} when it says nothing."""
+    found = {}
+    for line in run_quiet(["nvidia-smi", "--query-gpu=index,display_active", "--format=csv,noheader"]).strip().splitlines():
+        idx, _, state = line.partition(",")
+        if idx.strip().isdigit() and state.strip().lower() in ("enabled", "disabled"):
+            found[int(idx)] = state.strip().lower() == "enabled"
+    return found
+
+
+def windows_desktop_adapters() -> list:
+    """The PNPDeviceIDs of the Windows display adapters that have a desktop resolution (a monitor is attached to them)."""
+    out = []
+    for line in run_quiet(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                           "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.CurrentHorizontalResolution }"]
+                          ).splitlines():
+        pnp, _, res = line.strip().rpartition("|")
+        if pnp and res.strip().isdigit() and int(res) > 0:
+            out.append(pnp)
+    return out
+
+
+def mark_display(gpus: list, nvidia_active: dict, desktop_pnp: list) -> None:
+    """Sets g["drives_display"] (True / False) on the cards that can be told, from nvidia-smi (NVIDIA) and the Windows adapters that have a desktop
+    resolution (AMD and Intel, matched by PCI device id; two cards of one model are not told apart: left unknown).  A card left without the key is
+    unknown, and the app treats an unknown card as one that drives a display."""
+    desk = [str(p).upper() for p in desktop_pnp]
+    for g in gpus:
+        if g.get("vendor") == "nvidia" and g.get("index") in nvidia_active:
+            g["drives_display"] = nvidia_active[g["index"]]
+        elif g.get("vendor") == "amd" and isinstance(g.get("pci_id"), int) and desktop_pnp is not None and desktop_pnp:
+            tag = f"DEV_{g['pci_id']:04X}"
+            twins = [x for x in gpus if x.get("vendor") == "amd" and x.get("pci_id") == g["pci_id"]]
+            if len(twins) == 1:
+                g["drives_display"] = any(tag in p and "VEN_1002" in p for p in desk)
 
 
 def windows_video_controllers() -> list:

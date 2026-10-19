@@ -66,13 +66,23 @@ for one model: in the app, Models, Expert settings, "Draft layer (MTP)": Off; in
 model's `strata-<model>.json`. The choice is kept per model and applied on every start.
 
 **I changed `strata-<model>.json` by hand and the change came back.**
-The app and `START-HERE` own the `args` list and the `vision` section of that file: whenever you prepare a model, change its
-context size or its picture setting, or use "Download / repair", setup writes both again from its own choices. It keeps every
-other key (`sampling`, `mcp_servers`, `mtp`, `ui_vision_enabled`, `parallel`, ...) and the earlier file as
-`strata-<model>.json.bak`. So put your choice where it is kept: `"mtp": false` for the draft layer, the picture tick in the
-Models screen (saved as `ui_vision_enabled`), and the context size in the Models screen. Hand-editing `args` still works for
-a model you only start (the `START-HERE` run file and `strata launch` both read the file as it is); setup says which options it
-dropped and where the earlier file is.
+Engine options you add to `args` by hand (control vectors, `--spec`, `--vram-reserve-mib 0`, anything the app does not offer)
+are kept. The file has two helper keys for this. `user_args` lists your options; every start and every setup run puts them
+over the ones the app generates, and for the same option your value wins. `args_written` is a copy of `args` as the app last
+wrote it, so an option you added or changed in `args` is noticed and moved into `user_args` the next time the app or setup
+touches the file. To undo one, delete it from both `args` and `user_args`. A value you save in the app's Expert settings
+("GPU memory for other apps") is put in `user_args` for you.
+
+Two things the app still chooses itself: the context size, KV type, picture reading and draft layer. Set them in the Models
+screen, or with `"mtp": false` (draft layer). The app keeps the earlier file as `strata-<model>.json.bak`.
+
+**The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
+Without a value of yours the app keeps 1536 MiB free (2048 with picture reading) on a card that drives a display, and 512 MiB
+(700 with pictures) on a card that has no display attached, such as a second GPU with the screen on the integrated one. It
+reads that from the driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it
+assumes a display. Your own value is never raised or lowered: set "GPU memory for other apps" in Expert settings, or
+`--vram-reserve-mib 0` in `args`. The engine's own warning about low free memory stays; a card that also draws the desktop
+can freeze or slow to a few tokens a second with a very small reserve.
 
 **It stopped while downloading or installing.**
 Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
