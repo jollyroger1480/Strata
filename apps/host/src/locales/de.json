@@ -3279,5 +3279,10 @@
   "s7338": "Es ist kein Modell geladen. Lade zuerst eines unter Modelle.",
   "s7339": "Der Assistent startet…",
   "s7340": "Der Assistent konnte nicht starten. Versuche es gleich noch einmal.",
-  "s7341": "Arbeitet am Ziel…"
+  "s7341": "Arbeitet am Ziel…",
+  "s7400": "Der Assistent möchte im Web suchen nach: {0}. Die Suchbegriffe gehen an {1}.",
+  "s7401": "Der Assistent möchte die Webseite {0} öffnen. Die Seite sieht die Anfrage.",
+  "s7402": "Den Assistenten ohne Nachfrage im Web suchen lassen",
+  "s7403": "Im Modus „Manuell“ fragt der Assistent pro Chat einmal nach, bevor er im Web sucht oder eine Webseite öffnet. Schalte das ein, um die Nachfrage zu überspringen.",
+  "s7404": "DuckDuckGo oder Bing, wenn DuckDuckGo ausgelastet ist"
 }

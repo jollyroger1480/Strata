@@ -3279,5 +3279,10 @@
   "s7338": "No hay ningún modelo cargado. Carga uno primero en Modelos.",
   "s7339": "Iniciando el asistente…",
   "s7340": "El asistente no pudo iniciarse. Inténtalo de nuevo en un momento.",
-  "s7341": "Trabajando en el objetivo…"
+  "s7341": "Trabajando en el objetivo…",
+  "s7400": "El asistente quiere buscar en la web: {0}. Las palabras de búsqueda se envían a {1}.",
+  "s7401": "El asistente quiere abrir la página web {0}. El sitio de la página ve la solicitud.",
+  "s7402": "Dejar que el asistente busque en la web sin preguntar",
+  "s7403": "En el modo Manual, el asistente pregunta una vez por chat antes de buscar en la web o abrir una página web. Actívalo para omitir esa pregunta.",
+  "s7404": "DuckDuckGo, o Bing cuando DuckDuckGo está ocupado"
 }

@@ -3279,5 +3279,10 @@
   "s7338": "No model is loaded. Load one in Models first.",
   "s7339": "Starting the assistant…",
   "s7340": "The assistant could not start. Try again in a moment.",
-  "s7341": "Working on the goal…"
+  "s7341": "Working on the goal…",
+  "s7400": "The assistant wants to search the web for: {0}. Search words go to {1}.",
+  "s7401": "The assistant wants to open the web page {0}. The page's site sees the request.",
+  "s7402": "Let the assistant search the web without asking",
+  "s7403": "In Manual mode the assistant asks once per chat before it searches the web or opens a web page. Turn this on to skip that question.",
+  "s7404": "DuckDuckGo, or Bing when DuckDuckGo is busy"
 }
