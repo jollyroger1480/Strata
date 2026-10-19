@@ -5108,6 +5108,9 @@ int main(int argc, char** argv) {
         bin.batch_mtp = mtp_on;
         bin.adapt_async = o.adapt_async != 0;
         { const char* ms = std::getenv("STRATA_BATCH_MTP_SERIAL"); bin.mtp_serial = ms != nullptr && ms[0] != '\0' && ms[0] != '0'; }
+#if !defined(STRATA_USE_HIP)
+        { const char* nv = std::getenv("STRATA_BATCH_GROUPS_NV_SERIAL"); bin.nv_serial_faster = nv == nullptr || nv[0] != '0'; }   // PROPOSED 0.2.1 default (NVIDIA, 2 cards)
+#endif
         return strata::program::batch_groups::resolve(bin);
     };
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
@@ -5179,7 +5182,11 @@ int main(int argc, char** argv) {
         o.batch_groups = r.groups;
         if (groups_said == r.groups) return;   // (the second call, once the slots that fit are known, says nothing new)
         groups_said = r.groups;
-        if (r.serial != strata::program::batch_groups::Serial::None)
+        if (r.serial == strata::program::batch_groups::Serial::TwoCardsSerialFaster)
+            std::fprintf(stderr, "strata generate: --batch-groups auto: 1 group of %d slot%s - %s; --batch-groups %d asks for the "
+                                 "pipelined groups\n", o.batch, o.batch == 1 ? "" : "s",
+                         strata::program::batch_groups::serial_what(r.serial), r.would_be);
+        else if (r.serial != strata::program::batch_groups::Serial::None)
             std::fprintf(stderr, "strata generate: --batch-groups auto: 1 group of %d slot%s - %s does not run in pipelined "
                                  "groups; --batch-groups %d would pipeline them and turn it off\n", o.batch,
                          o.batch == 1 ? "" : "s", strata::program::batch_groups::serial_what(r.serial), r.would_be);
