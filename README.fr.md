@@ -173,7 +173,7 @@ Gyro fonctionne sur les cartes NVIDIA et AMD (expérimental sur AMD), pas sur In
 | **32 Go** | **Gyro-S**, ou le **[Coder](docs/MODELS.md#coder)** pour le code | Le Coder demande 32 Go de RAM et garde la moitié des experts, il est donc moins bon hors du code |
 | **40 Go** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 Go), ou **Gyro-M** (35 Go) | Swift réfléchit moins longtemps avant de répondre. Gyro-M approche la qualité d'IQ3_XXS, mais il écrit les réponses 17 à 21 % plus lentement que Q2_0 |
 | **48 Go** | **IQ3_XXS** (47,0 Go) | Plus lent, meilleur |
-| **64 Go** | **IQ3_S** (54,8 Go), l'original ou Swift 1.5 | Le plus lent, le meilleur : il égale le modèle complet dans les tests publiés |
+| **64 Go** | **IQ3_S** (54,8 Go), l'original ou Swift 1.5 | Le plus lent, le meilleur. Il égale le modèle complet dans les tests publiés |
 | **96 Go ou plus** | **UD-IQ4_XS** d'Unsloth (environ 72 Go de RAM) jusqu'à **Q8_0** (environ 136 Go), 4 à 8 bits | Plus proche du modèle complet. Avec moins de RAM, Strata lit une partie depuis le SSD, ce qui est beaucoup plus lent |
 
 Avoir moins de RAM que ce qu'indique une ligne peut encore fonctionner : Strata passe tout seul en
@@ -213,7 +213,7 @@ Mesuré avec une carte AMD de 16 Go (RX 9070 XT, Ryzen 9 3900X, 47 Go de RAM) :
 | **IQ2_XS** | `███████░░░░░` 52 tokens/s | `█████░░░░░░░` 1 110 tokens/s |
 | **Coder** | `██████░░░░░░` 44 tokens/s | `██████░░░░░░` 1 420 tokens/s |
 
-Les barres utilisent la même échelle dans les deux tableaux. Une carte avec plus de VRAM est plus rapide : une RTX 3090
+Les barres utilisent la même échelle dans les deux tableaux. Une carte avec plus de VRAM est plus rapide. Une RTX 3090
 (24 Go) devrait écrire environ 100 à 140 tokens par seconde. La version du moteur derrière chaque chiffre est indiquée dans
 [DETAILS.md](docs/DETAILS.md#speed-measured).
 
@@ -221,15 +221,14 @@ Les barres utilisent la même échelle dans les deux tableaux. Une carte avec pl
 
 ### Dans l'application
 
-L'application comprend un **Chat**, un **Monitor** du modèle, de votre GPU, de votre CPU et de votre RAM, une page
-**Modèles** et les **Paramètres**. Le chat peut travailler dans un dossier de votre PC. En mode **Manuel**, il demande
+L'application comprend un **Chat**, un **Monitor** du modèle, de votre GPU, de votre CPU et de votre RAM, une page **Models** et les **Settings**. Le chat peut travailler dans un dossier de votre PC. En mode **Manual**, il demande
 avant de modifier un fichier ou d'exécuter une commande. Tapez `/loop 10m <what to do>` pour répéter un message toutes les
 10 minutes tant que le chat est ouvert.
 
 Le chat peut chercher sur le web avec DuckDuckGo (ou Bing), sans compte. Vous pouvez ajouter une clé de recherche sous
-**Paramètres, Outils**. La recherche est la seule fonction qui envoie quelque chose hors de votre PC : les mots recherchés.
+**Settings, Tools**. La recherche est la seule fonction qui envoie quelque chose hors de votre PC (les mots recherchés).
 
-Pour faire tourner deux modèles, activez **Exécuter plusieurs modèles** et donnez à chacun sa propre carte de la même marque.
+Pour faire tourner deux modèles, activez **Run multiple models** (exécuter plusieurs modèles) et donnez à chacun sa propre carte de la même marque.
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
 <sub>Le <b>Monitor</b> de l'application Strata (à gauche) pendant qu'un agent de code écrit le jardin de pagode de la vidéo (à droite)</sub></p>
@@ -370,13 +369,11 @@ L'explication plus longue : [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Chaque
   `START-HERE.bat` (ou `./setup.sh`). Cela reprend là où ça s'était arrêté.
 - **C'est très lent, le voyant du disque clignote sans arrêt, ou il affiche « the engine stopped unexpectedly ».** Votre PC
   n'a pas assez de RAM libre. Fermez d'autres programmes (les navigateurs en consomment beaucoup) ou choisissez une taille plus petite, comme Q2_0 ou IQ2_XS.
-- **Il indique qu'il n'y a pas de moteur pour ce PC.** Dans l'application, ouvrez **Paramètres, Moteur** et appuyez sur
-  **Mettre à jour le moteur**. Dans le Terminal, lancez `strata update`. `strata doctor` montre quels fichiers du moteur sont installés.
+- **Il indique qu'il n'y a pas de moteur pour ce PC.** Dans l'application, ouvrez **Settings, Engine** et appuyez sur **Update engine** (mettre à jour le moteur). Dans le Terminal, lancez `strata update`. `strata doctor` montre quels fichiers du moteur sont installés.
 - **Il indique que le port 8080 est déjà utilisé.** Strata tourne déjà. Cherchez sa fenêtre.
 
 Autres problèmes et solutions : [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Toujours bloqué ? Ouvrez une
-[issue](https://github.com/Niko1221/Strata/issues). Dans l'application, joignez le fichier obtenu par **Paramètres, Moteur,
-Diagnostic, Afficher les journaux, Enregistrer les journaux**. Dans le Terminal, collez la sortie de `strata doctor`. Si
+[issue](https://github.com/Niko1221/Strata/issues). Dans l'application, joignez le fichier obtenu par **Settings, Engine, Diagnostics, View logs, Save logs**. Dans le Terminal, collez la sortie de `strata doctor`. Si
 vous avez lancé depuis les sources, joignez `strata-<model>.log` du dossier Strata. Pour un problème de sécurité,
 signalez-le en privé : [SECURITY.md](SECURITY.md).
 

@@ -172,7 +172,7 @@ Gyro läuft auf NVIDIA- und AMD-Karten (bei AMD experimentell), nicht auf Intel 
 | **32 GB** | **Gyro-S**, oder den **[Coder](docs/MODELS.md#coder)** für Code | Der Coder braucht 32 GB RAM und behält die Hälfte der Experten, deshalb ist er außerhalb von Code schwächer |
 | **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 GB), oder **Gyro-M** (35 GB) | Swift denkt kürzer nach, bevor es antwortet. Gyro-M kommt der Qualität von IQ3_XXS nahe, schreibt Antworten aber 17-21 % langsamer als Q2_0 |
 | **48 GB** | **IQ3_XXS** (47,0 GB) | Langsamer, besser |
-| **64 GB** | **IQ3_S** (54,8 GB), das Original oder Swift 1.5 | Am langsamsten, am besten: Es erreicht in den veröffentlichten Tests das volle Modell |
+| **64 GB** | **IQ3_S** (54,8 GB), das Original oder Swift 1.5 | Am langsamsten, am besten. Es erreicht in den veröffentlichten Tests das volle Modell |
 | **96 GB oder mehr** | **UD-IQ4_XS** von Unsloth (etwa 72 GB RAM) bis **Q8_0** (etwa 136 GB), 4 bis 8 Bit | Näher am vollen Modell. Bei weniger RAM liest Strata einen Teil von der SSD, das ist viel langsamer |
 
 Auch mit weniger RAM, als eine Zeile nennt, kann es funktionieren: Strata wechselt von selbst in seinen
@@ -212,7 +212,7 @@ Gemessen mit einer AMD-Karte mit 16 GB (RX 9070 XT, Ryzen 9 3900X, 47 GB RAM):
 | **IQ2_XS** | `███████░░░░░` 52 Tokens/s | `█████░░░░░░░` 1.110 Tokens/s |
 | **Coder** | `██████░░░░░░` 44 Tokens/s | `██████░░░░░░` 1.420 Tokens/s |
 
-Die Balken haben in beiden Tabellen denselben Maßstab. Eine Karte mit mehr VRAM ist schneller: Eine RTX 3090 (24 GB) sollte
+Die Balken haben in beiden Tabellen denselben Maßstab. Eine Karte mit mehr VRAM ist schneller. Eine RTX 3090 (24 GB) sollte
 etwa 100-140 Tokens pro Sekunde schreiben. Die Engine-Version hinter jeder Zahl steht in [DETAILS.md](docs/DETAILS.md#speed-measured).
 
 ## Benutzung
@@ -224,8 +224,8 @@ Die App hat einen **Chat**, einen **Monitor** für das Modell sowie für GPU, CP
 Datei ändert oder einen Befehl ausführt. Mit `/loop 10m <what to do>` wiederholst du eine Nachricht alle 10 Minuten, solange
 der Chat geöffnet ist.
 
-Der Chat kann das Web mit DuckDuckGo (oder Bing) durchsuchen, ohne Konto. Unter **Einstellungen, Werkzeuge** kannst du einen
-Suchschlüssel hinzufügen. Die Suche ist die einzige Funktion, die etwas von deinem PC sendet: die Suchbegriffe.
+Der Chat kann das Web mit DuckDuckGo (oder Bing) durchsuchen, ohne Konto. Unter **Einstellungen, Tools** kannst du einen
+Suchschlüssel hinzufügen. Die Suche ist die einzige Funktion, die etwas von deinem PC sendet (die Suchbegriffe).
 
 Um zwei Modelle auszuführen, schalte **Mehrere Modelle ausführen** ein und gib jedem Modell eine eigene Karte desselben
 Herstellers.
@@ -372,8 +372,7 @@ Die ausführliche Erklärung: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Jede
 - **Es meldet, dass Port 8080 schon belegt ist.** Strata läuft bereits. Such das Fenster.
 
 Weitere Probleme und Lösungen: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Du kommst nicht weiter? Öffne ein
-[Issue](https://github.com/Niko1221/Strata/issues). Hänge in der App die Datei aus **Einstellungen, Engine, Diagnose, Logs
-anzeigen, Logs speichern** an. Füge im Terminal die Ausgabe von `strata doctor` ein. Hänge beim Start aus dem Quellcode die
+[Issue](https://github.com/Niko1221/Strata/issues). Hänge in der App die Datei aus **Einstellungen, Engine, Diagnose, Protokolle anzeigen, Protokolle speichern** an. Füge im Terminal die Ausgabe von `strata doctor` ein. Hänge beim Start aus dem Quellcode die
 Datei `strata-<model>.log` aus dem Strata-Ordner an. Ein Sicherheitsproblem meldest du bitte privat: [SECURITY.md](SECURITY.md).
 
 ## Danksagung und Lizenz

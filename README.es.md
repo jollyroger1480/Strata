@@ -172,7 +172,7 @@ Gyro funciona en tarjetas NVIDIA y AMD (en AMD es experimental), no en Intel Arc
 | **32 GB** | **Gyro-S**, o el **[Coder](docs/MODELS.md#coder)** para código | El Coder necesita 32 GB de RAM y conserva la mitad de los expertos, así que es más flojo fuera del código |
 | **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 GB), o **Gyro-M** (35 GB) | Swift piensa menos tiempo antes de responder. Gyro-M se acerca a la calidad de IQ3_XXS, pero escribe las respuestas un 17-21 % más despacio que Q2_0 |
 | **48 GB** | **IQ3_XXS** (47,0 GB) | Más lento, mejor |
-| **64 GB** | **IQ3_S** (54,8 GB), el original o Swift 1.5 | El más lento, el mejor: iguala al modelo completo en las pruebas publicadas |
+| **64 GB** | **IQ3_S** (54,8 GB), el original o Swift 1.5 | El más lento, el mejor. Iguala al modelo completo en las pruebas publicadas |
 | **96 GB o más** | **UD-IQ4_XS** de Unsloth (unos 72 GB de RAM) hasta **Q8_0** (unos 136 GB), de 4 a 8 bits | Más cerca del modelo completo. Con menos RAM, Strata lee una parte desde el SSD, que es mucho más lento |
 
 Con menos RAM de la que indica una fila también puede funcionar: Strata pasa solo a su
@@ -212,7 +212,7 @@ Medido con una tarjeta AMD de 16 GB (RX 9070 XT, Ryzen 9 3900X, 47 GB de RAM):
 | **IQ2_XS** | `███████░░░░░` 52 tokens/s | `█████░░░░░░░` 1.110 tokens/s |
 | **Coder** | `██████░░░░░░` 44 tokens/s | `██████░░░░░░` 1.420 tokens/s |
 
-Las barras usan la misma escala en las dos tablas. Una tarjeta con más VRAM es más rápida: una RTX 3090 (24 GB) debería
+Las barras usan la misma escala en las dos tablas. Una tarjeta con más VRAM es más rápida. Una RTX 3090 (24 GB) debería
 escribir unos 100-140 tokens por segundo. La versión del motor detrás de cada cifra está en [DETAILS.md](docs/DETAILS.md#speed-measured).
 
 ## Uso
@@ -224,7 +224,7 @@ La aplicación tiene un **Chat**, un **Monitor** del modelo y de tu GPU, CPU y R
 ejecutar un comando. Escribe `/loop 10m <what to do>` para repetir un mensaje cada 10 minutos mientras el chat esté abierto.
 
 El chat puede buscar en la web con DuckDuckGo (o Bing), sin cuenta. Puedes añadir una clave de búsqueda en **Ajustes,
-Herramientas**. La búsqueda es la única función que envía algo fuera de tu PC: las palabras que buscas.
+Herramientas**. La búsqueda es la única función que envía algo fuera de tu PC (las palabras que buscas).
 
 Para ejecutar dos modelos, activa **Ejecutar varios modelos** y dale a cada modelo su propia tarjeta de la misma marca.
 
