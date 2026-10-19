@@ -3343,5 +3343,6 @@
   "s8254": "That did not work",
   "s8255": "No matching cards.",
   "s8256": "Nothing here right now.",
-  "s8257": "every {0} min"
+  "s8257": "every {0} min",
+  "s8258": "This switch does nothing in the app. Web pages from any site can already call the API shown under Serving. To allow only some sites, or to use the engine’s own server (port 8080), add \"cors_origins\": [\"https://your.site\"] to the model’s config file."
 }

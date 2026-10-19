@@ -3343,5 +3343,6 @@
   "s8254": "Eso no funcionó",
   "s8255": "No hay tarjetas que coincidan.",
   "s8256": "Nada por aquí ahora mismo.",
-  "s8257": "cada {0} min"
+  "s8257": "cada {0} min",
+  "s8258": "Este interruptor no hace nada en la app. Las páginas web de cualquier sitio ya pueden llamar a la API que se muestra en Servicio. Para permitir solo algunos sitios, o para usar el servidor propio del motor (puerto 8080), añada \"cors_origins\": [\"https://su.sitio\"] al archivo de configuración del modelo."
 }

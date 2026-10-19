@@ -3343,5 +3343,6 @@
   "s8254": "Isso não funcionou",
   "s8255": "Nenhum cartão correspondente.",
   "s8256": "Nada aqui por enquanto.",
-  "s8257": "a cada {0} min"
+  "s8257": "a cada {0} min",
+  "s8258": "Este botão não faz nada no app. Páginas web de qualquer site já podem chamar a API mostrada em API. Para permitir só alguns sites, ou para usar o servidor próprio do motor (porta 8080), adicione \"cors_origins\": [\"https://seu.site\"] ao arquivo de configuração do modelo."
 }

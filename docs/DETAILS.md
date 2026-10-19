@@ -1072,6 +1072,9 @@ print(r.choices[0].message.content)
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
+  `cors_origins` belongs to the engine's own server (`strata serve`, `./setup.sh`, port 8080 by default). The desktop
+  app answers browser pages on its own API address (the one under Serving, port 47831 or the next free one) and already allows pages of
+  any site there, so its "Allow browser origins" switch in the Expert parameters does nothing.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their

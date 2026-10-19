@@ -3343,5 +3343,6 @@
   "s8254": "Das hat nicht geklappt",
   "s8255": "Keine passenden Karten.",
   "s8256": "Im Moment nichts hier.",
-  "s8257": "alle {0} Min."
+  "s8257": "alle {0} Min.",
+  "s8258": "Dieser Schalter bewirkt in der App nichts. Webseiten beliebiger Seiten können die unter „API-Server“ gezeigte API schon aufrufen. Um nur bestimmte Seiten zuzulassen oder den eigenen Server der Engine (Port 8080) zu nutzen, tragen Sie \"cors_origins\": [\"https://ihre.seite\"] in die Konfigurationsdatei des Modells ein."
 }
