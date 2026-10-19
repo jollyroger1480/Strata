@@ -223,10 +223,13 @@ Search is the one feature that sends something off your PC, the search words.
 
 To run two models, turn on **Run multiple models** and give each model its own card of the same make.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
+<sub>A chat in the Strata app: the agent wrote a small voxel pagoda garden as one HTML file, and the page opens in the preview next to the conversation</sub></p>
 
 ### In the Terminal
+
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<sub><code>strata monitor</code> while the model writes a reply: speed, GPU, memory and the recent requests</sub></p>
 
 ```sh
 strata launch                                  # guided screens: model, context, pictures, access, then serve
