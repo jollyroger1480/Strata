@@ -104,8 +104,10 @@ What was run on real hardware:
   is for that version (a table calibrated for it on an R9700 read prompts about 1% faster and decode 2% slower, so none is shipped).
   The engine start picks the table for the card and uses it only when the package's hipBLASLt version is the table's; otherwise it logs
   why and the dense matrix products stay on plain hipBLAS. **A table changes which GEMM algorithm runs the prompt, so the rounding differs: the
-  answers are not bit-identical to plain hipBLAS** (first-token KL 0.016 on an R9700, see below). Packaged engines therefore do not use the table
-  unless you ask: `STRATA_HIPBLASLT_TABLE=on` (or `"hipblaslt_table": true` in the run config) uses it, `off` never does, and the start log
+  answers are not bit-identical to plain hipBLAS** (first-token KL 0.016 on an R9700, see below). Packaged engines therefore use the table by
+  default only on Strix Halo (gfx1151), where a community A/B measured prompts 2.11x faster with it (251 to 529 tokens/s); every other card
+  uses it only when you ask: `STRATA_HIPBLASLT_TABLE=on` (or `"hipblaslt_table": true` in the run config) uses it, `off` never does (on Strix
+  Halo too), and the start log
   says which table was taken or why none was (`hipBLASLt tuning table: ...`). A `STRATA_HIPBLASLT_TUNING` you set yourself is always kept.
   A source build is unchanged (see [Tuning table](#tuning-table)). Testers on Strix Halo and RX 7000 cards: please send that log line and a
   prompt-speed run with `on` and `off`.

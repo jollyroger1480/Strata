@@ -139,9 +139,19 @@ class Decision(TempDir):
             self.assertEqual(d.path, pkg / "tuning" / "gfx1201-hipblaslt-100500.txt")
             self.assertIsNone(ht.resolve(pkg, ["gfx1201"], environ={ht.SWITCH: "off"}).path)
 
-    def test_the_default_is_off_until_the_owner_decides(self):
-        """A table changes the bits of the prompt's dense GEMMs (notes-021-hip.md); this fails on purpose when someone flips the default."""
+    def test_the_default_is_the_owners_decision(self):
+        """A table changes the bits of the prompt's dense GEMMs (notes-021-hip.md); the owner chose: on by default for Strix Halo only."""
         self.assertFalse(ht.AUTO_USES_TABLE)
+        self.assertEqual(ht.AUTO_ARCHS, ("gfx1151",))
+
+    def test_auto_uses_the_table_on_strix_halo_only(self):
+        for arch, used in (("gfx1151", True), ("gfx1201", False), ("gfx1100", False)):
+            root = self.root / arch
+            root.mkdir()
+            pkg = fake_package(root, tables=((arch, 100500),))
+            d = ht.resolve(pkg, [arch], environ=AUTO)
+            self.assertEqual(d.path is not None, used, (arch, d.message))
+            self.assertIsNone(ht.resolve(pkg, [arch], environ={ht.SWITCH: "off"}).path)
 
     def test_a_table_the_person_set_is_never_replaced(self):
         pkg = fake_package(self.root)

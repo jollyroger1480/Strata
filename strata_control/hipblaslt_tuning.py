@@ -31,6 +31,9 @@ SWITCH = "STRATA_HIPBLASLT_TABLE"            # on | auto | off
 #: A default that changes bits needs the owner's decision, so the packages carry their tables and the switch ("on") uses them, but "auto" is
 #: off until that decision. Flipping this one constant turns the tables on for every package that carries one.
 AUTO_USES_TABLE = False
+#: The owner's decision (2026-10-19): "auto" uses the table on these architectures only. gfx1151 (Strix Halo): a community A/B measured
+#: 251 -> 529 prompt tok/s (2.11x) with the table; on gfx1201 the gain was ~1% and decode lost ~2% (notes-021-hip.md), so it stays opt-in there.
+AUTO_ARCHS = ("gfx1151",)
 ENGINE_VAR = "STRATA_HIPBLASLT_TUNING"       # what the engine reads: the path of one table
 TABLE_DIR = "tuning"                         # inside an engine package
 HEADER = "STRATA_HIPBLASLT_TUNING_V1"
@@ -205,7 +208,7 @@ def resolve(folder, archs_present, *, environ=None, cfg: dict | None = None) -> 
             continue
         if not header_ok(path, arch, version):
             return Decision(None, f"hipBLASLt tuning table: {path.name} is not used, its header does not match its name; plain hipBLAS", "warn")
-        if mode(environ, cfg) == "auto" and not AUTO_USES_TABLE:
+        if mode(environ, cfg) == "auto" and not (AUTO_USES_TABLE or arch in AUTO_ARCHS):
             return Decision(None, f"hipBLASLt tuning table: {path.name} is in this package and not used by default (faster prompts, but answers can differ "
                                   f"in the last digits); {SWITCH}=on uses it")
         return Decision(path, f"hipBLASLt tuning table: {path.name} (faster prompts; {SWITCH}=off turns it off)")
