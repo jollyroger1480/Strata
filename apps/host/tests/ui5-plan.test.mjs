@@ -56,7 +56,7 @@ test('queued messages: the first waits for the current step, the next ones "afte
 test('the goal bar reads the step the host reports', () => {
   const g = G.readGoal({ objective: 'Build a small pagoda page', phase: 'active', round: 9, maxRounds: 50, step: { index: 2, total: 3, text: 'Write it' } });
   assert.deepEqual(g.step, { index: 2, total: 3, text: 'Write it' });
-  assert.equal(G.goalProgress(g), '2/3');
+  assert.equal(G.goalProgress, undefined, 'no step counter is shown for a goal');
   assert.equal(G.readGoal({ objective: 'x', phase: 'active', round: 1, maxRounds: 5 }).step, undefined);
 });
 

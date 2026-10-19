@@ -3269,5 +3269,15 @@
   "s3277": "The running model will be unloaded.",
   "s3278": "Local",
   "s3279": "Strata didn’t recognise an engine for this computer. The model will download, but it may not run until the right engine is installed (Settings → Engine).",
-  "s3280": "Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine."
+  "s3280": "Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine.",
+  "s7332": "A model is downloading",
+  "s7333": "Your model is downloading ({0}%). You can chat when it has finished.",
+  "s7334": "Your model is downloading. You can chat when it has finished.",
+  "s7335": "The model is loading",
+  "s7336": "Your model is still loading. You can chat in a moment.",
+  "s7337": "No model is loaded",
+  "s7338": "No model is loaded. Load one in Models first.",
+  "s7339": "Starting the assistant…",
+  "s7340": "The assistant could not start. Try again in a moment.",
+  "s7341": "Working on the goal…"
 }

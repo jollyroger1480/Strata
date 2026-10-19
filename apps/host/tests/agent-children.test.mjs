@@ -186,7 +186,7 @@ test('/goal: sets a goal, runs its rounds in the chat, says how it ended, refuse
   const ran = await r.run('g', null, { goal: { action: 'create', objective: 'say hello a few times', maxRounds: 3 } });
   // The round is a live status now (it used to be an italic line of text that stayed on screen after the model moved on).
   assert.ok(!/Working on the goal/.test(text(ran.frames)), 'no goal-step text in the message');
-  assert.ok(ran.frames.some(f => f.type === 'status' && f.phase === 'goal' && f.code === 'goal-step' && /^Working on the goal, step \d$/.test(f.text) && f.args.round >= 1), 'a goal-step status was sent');
+  assert.ok(ran.frames.some(f => f.type === 'status' && f.phase === 'goal' && f.code === 'goal-step' && /^Working on the goal…$/.test(f.text) && f.args.round >= 1), 'a goal-step status was sent');
   const goalFrames = ran.frames.filter(f => f.type === 'goal');
   assert.ok(goalFrames.length >= 2 && goalFrames[0].goal.objective === 'say hello a few times' && goalFrames[0].goal.maxRounds === 3, 'the goal frame carries the objective and the round limit');
   assert.equal(goalFrames.at(-1).goal.phase, 'blocked'); assert.match(goalFrames.at(-1).goal.blocked, /most steps/);

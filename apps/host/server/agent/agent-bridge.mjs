@@ -66,6 +66,29 @@ export function plainTurnFailure(err) {
   return { message: plainAgentFailure(raw), details, code: err?.code ?? 'AGENT_ERROR' };
 }
 
+/** The Harness's plugins start one after another: until they are all up, session/create answers "<plugin>: waiting for <service>". */
+const STARTING_UP = /waiting for (shell|subprocess|ptcRuntime|workflowEngine|sandbox)/i;
+
+/**
+ * Create a Harness session, waiting for its plugins to finish starting. Right after the app opens (or the Harness restarts) the first
+ * message can arrive before they are up: that is retried every `retryMs` for up to `readyMs` (`onWait` tells the page "Starting the assistant…")
+ * instead of failing the first chat. Any other error is thrown at once; a start that never finishes is a plain AGENT_NOT_READY error
+ * with the Harness's text kept for Details. Returns null when `cancelled()` turns true while waiting.
+ */
+export async function createSessionWhenReady(create, { readyMs = 60_000, retryMs = 1_500, onWait = () => {}, cancelled = () => false, now = Date.now } = {}) {
+  const until = now() + readyMs;
+  for (;;) {
+    try { return await create(); } catch (e) {
+      const text = String(e?.message ?? e ?? '');
+      if (!STARTING_UP.test(text)) throw e;
+      if (now() >= until) throw new AgentUnavailable('The assistant could not start. Try again in a moment.', 'AGENT_NOT_READY', text);
+      onWait();
+      await new Promise(r => setTimeout(r, retryMs));
+      if (cancelled()) return null;
+    }
+  }
+}
+
 /** Attached pictures (data addresses) as the Harness's image prompt parts. */
 export function imageParts(images) {
   return (Array.isArray(images) ? images : []).map(i => {
@@ -91,7 +114,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -248,13 +271,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     }
   }
 
-  async function sessionFor(c, cwd, runtime) {
+  async function sessionFor(c, cwd, runtime, { onWait = () => {} } = {}) {
     let known = sessionMap[c.id];
     // The chat's folder changed: the agent's working folder and sandbox are fixed when its session starts, so the chat gets a new session
     // in the new folder (the earlier conversation is carried into its first message, as for any fresh session).
     if (known && cwd && known.cwd && resolve(known.cwd) !== resolve(cwd)) { delete sessionMap[c.id]; persist(); known = null; }
     if (known) return { sessionId: known.sessionId, fresh: false };
-    const created = await runtime.gw.rpc('session/create', { request: { cwd } });
+    const created = await createSessionWhenReady(() => runtime.gw.rpc('session/create', { request: { cwd } }), { readyMs: sessionReadyMs, retryMs: sessionRetryMs, onWait, cancelled: () => c.cancelStart });
+    if (!created) return null;
     sessionMap[c.id] = { sessionId: created.sessionId, cwd, createdAt: new Date().toISOString() };
     persist();
     return { sessionId: created.sessionId, fresh: true };
@@ -344,9 +368,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     emit({ type: 'queued', requestId });
     reporter.set({ phase: 'starting', code: 'starting', text: 'Starting…' });
     const { rt: runtime, route } = await ensureRuntime(choice, signal);
-    const { sessionId, fresh } = await sessionFor(c, workspacePath, runtime);
+    const made = await sessionFor(c, workspacePath, runtime, { onWait: () => reporter.set({ phase: 'starting', code: 'assistant-starting', text: 'Starting the assistant…' }) });
+    const { sessionId, fresh } = made ?? {};
     const cancelled = () => { reporter.clear(); emit({ type: 'done', finishReason: 'aborted', cancelled: true, tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0, model: route.name, contextMax: route.contextWindow }); return { cancelled: true }; };
-    if (c.cancelStart) return cancelled();
+    if (c.cancelStart || !made) return cancelled();
 
     // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
     // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
@@ -723,7 +748,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       const goal = goalObject(view, chatId);
       emit({ type: 'goal', goal });
       onGoal(chatId, goal);
-      if (!final && goal && goal.phase === 'active' && turn.goalRound) reporter.set({ phase: 'goal', code: 'goal-step', text: `Working on the goal, step ${turn.goalRound}`, key: 'Working on the goal, step {0}', values: [turn.goalRound], args: { round: turn.goalRound, max: goal.maxRounds } });
+      if (!final && goal && goal.phase === 'active' && turn.goalRound) reporter.set({ phase: 'goal', code: 'goal-step', text: 'Working on the goal…', args: { round: turn.goalRound, max: goal.maxRounds } });
     }
     turn.announceGoal = announceGoal;
     turn.announceQueue = frame => emit(frame);
@@ -850,10 +875,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** The goal's state in plain words. */
   function describeGoal(view) {
     if (!view) return 'No goal is set. Start one with /goal followed by what you want done.';
-    const steps = `step ${view.roundsStarted} of at most ${view.maxGoalRounds}`;
     const what = `"${view.objective}"`;
-    if (view.phase === 'active') return `Working on the goal ${what} (${steps}).`;
-    if (view.phase === 'paused') return `The goal ${what} is paused (${steps}). Type /goal resume to go on.`;
+    if (view.phase === 'active') return `Working on the goal ${what}.`;
+    if (view.phase === 'paused') return `The goal ${what} is paused. Type /goal resume to go on.`;
     if (view.phase === 'complete') return `The goal ${what} is complete.`;
     return `The goal ${what} stopped: ${plainBlocker(view.blockedReason)}`;
   }
@@ -1164,7 +1188,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

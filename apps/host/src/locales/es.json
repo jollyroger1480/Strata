@@ -3269,5 +3269,15 @@
   "s3277": "El modelo en ejecución se descargará de la memoria.",
   "s3278": "Local",
   "s3279": "Strata no reconoció un motor para este equipo. El modelo se descargará, pero puede que no funcione hasta que se instale el motor adecuado (Ajustes → Motor).",
-  "s3280": "Strata no reconoció un motor para este equipo. El modelo está descargado, pero no podrá funcionar hasta que se instale el motor adecuado. Abre Ajustes → Motor."
+  "s3280": "Strata no reconoció un motor para este equipo. El modelo está descargado, pero no podrá funcionar hasta que se instale el motor adecuado. Abre Ajustes → Motor.",
+  "s7332": "Se está descargando un modelo",
+  "s7333": "Tu modelo se está descargando ({0}%). Podrás chatear cuando termine.",
+  "s7334": "Tu modelo se está descargando. Podrás chatear cuando termine.",
+  "s7335": "El modelo se está cargando",
+  "s7336": "Tu modelo todavía se está cargando. Podrás chatear en un momento.",
+  "s7337": "No hay ningún modelo cargado",
+  "s7338": "No hay ningún modelo cargado. Carga uno primero en Modelos.",
+  "s7339": "Iniciando el asistente…",
+  "s7340": "El asistente no pudo iniciarse. Inténtalo de nuevo en un momento.",
+  "s7341": "Trabajando en el objetivo…"
 }

@@ -65,11 +65,3 @@ export async function goalAction(chatId: string, action: 'pause' | 'edit' | 'cle
   const result = await api.post<{ goal: unknown }>(`/api/goal/${action}`, { chatId, ...(text !== undefined ? { text } : {}) });
   applyGoalFrame(chatId, result.goal);
 }
-
-/** The one sentence the bar shows after the objective. */
-export function goalProgress(goal: Goal): string {
-  if (goal.phase === 'blocked') return goal.blocked ?? '';
-  if (goal.phase === 'complete') return '';
-  if (goal.step) return `${goal.step.index}/${goal.step.total}`;
-  return goal.maxRounds > 0 && goal.round > 0 ? `${goal.round}/${goal.maxRounds}` : '';
-}
