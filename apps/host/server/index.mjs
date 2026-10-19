@@ -1410,7 +1410,7 @@ async function api(req, res, path, method, url) {
   if (modelMatch) {
     const [, id, action] = modelMatch;
     if (method === 'DELETE') {if(runtimeModels.hasVariant(id))return error(res,409,'Unload every instance of this model before deleting its files.');return json(res, 200, runtimeModels.libraryState(models.remove(id)));}
-    if (method === 'POST' && action === 'install') return json(res, 200, runtimeModels.libraryState(await models.install(id)));
+    if (method === 'POST' && action === 'install') { try { return json(res, 200, runtimeModels.libraryState(await models.install(id))); } catch (err) { return error(res, err.status ?? 500, err.message); } }
     if (method === 'POST' && action === 'cancel') return json(res, 200, runtimeModels.libraryState(models.cancel(id)));
     if (method === 'POST' && action === 'load') {
       const hw = await hardware.detect();
