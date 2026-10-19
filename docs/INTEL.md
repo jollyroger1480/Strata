@@ -90,7 +90,7 @@ community llama.cpp SYCL image), so the PC needs no oneAPI. From the checkout (i
 folder above it is what the container mounts at `/work`):
 
     cd Strata
-    docker build -t strata-sycl-dev sycl/tools          # once: about 6 minutes, a 13 GB image
+    docker build --pull -t strata-sycl-dev sycl/tools   # once: about 6 minutes, a 13 GB image
     H=$(basename "$PWD")
 
 **Arc B-series** (Pro B70: `bmg-g31`; B580, B570 and Pro B60: `bmg-g21`; `ocloc ids bmg-g21` in the image lists the
@@ -104,6 +104,13 @@ device ids). Ahead-of-time code, no compile at the first start:
 
     docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
         -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+
+`--pull` matters: the image starts from a community image whose tag moves, and `docker build` reuses a copy of it from an earlier
+build unless it is told to fetch the current one. An old copy can hold a device compiler (ocloc from Compute Runtime
+26.22.38646, IGC 2.36.3) that crashes on the Battlemage kernels ("IGC: Internal Compiler Error: Floating point exception", 77 device
+images, then `gen compiler command failed with exit code 245` at the last link, #3219). `sycl/tools/build.sh` checks the
+version before the compile and stops with the fix. If you cannot update the image, `-e I8_ESIMD=OFF` builds without the fused int8
+kernels (stubs: the prompt's experts take the slower XMX path, the answers do not change); `-e ALLOW_BAD_OCLOC=1` builds anyway.
 
 The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. The binary is `build-sycl-aot/strata`
 (B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
