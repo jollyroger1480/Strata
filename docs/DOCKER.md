@@ -320,11 +320,11 @@ The images run on the runner without a graphics card, so the card checks (`docke
 ## Tested
 
 2026-10-19, images built from the engine packages of the 0.2.0-beta release (engine 0.1.45.3), fetched and checked against the signed feed by
-`docker/fetch-engines.py` (the packages are the ones `strata update` installs). `cuda13` and `cuda12` ran on one RTX A4000 (driver 580) with the same
-checks as below (`docker/smoke-test.sh`): all passed, serving 111-161 s after `docker run` with the prepared files, `docker stop` took 4 s with exit
-code 0, the card's memory was free again, and the second start reused the saved preset. `rocm-gfx120x`, `rocm-gfx110x` and `rocm-gfx1151` were built
-and passed the package and library checks; on a computer without an AMD card the `rocm-gfx120x` container says in plain words that the engine does
-not match the card and exits with code 3. `rocm-gfx110x` and `rocm-gfx1151` (Strix Halo) have not run on a card.
+`docker/fetch-engines.py` (the packages are the ones `strata update` installs). Run on real cards with the checks below (`docker/smoke-test.sh`): `cuda13`
+and `cuda12` on one RTX A4000 (driver 580), `rocm-gfx120x` on one Radeon AI PRO R9700. All passed: serving 71-161 s after `docker run` with the prepared
+files, `docker stop` took 4-5 s with exit code 0, the card's memory was free again, and the second start reused the saved preset. `rocm-gfx110x` and
+`rocm-gfx1151` (Strix Halo) were built and passed the package and library checks but have not run on a card. On a computer without an AMD card the
+`rocm-gfx120x` container says in plain words that the engine does not match the card and exits with code 3.
 
 2026-10-17, images built from the 0.1.45 engine packages, on real cards: NVIDIA RTX 3060 (`cuda13`
 and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
