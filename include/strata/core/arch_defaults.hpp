@@ -6,7 +6,7 @@
 // architecture and nowhere else: a CUDA build and every other HIP architecture run the code they always ran.
 // Switches that change bits (STRATA_PF_GEMM, STRATA_PF_FUSED, STRATA_HC_UPMIX, STRATA_PA_FAST, STRATA_HIP_WMMA,
 // STRATA_SELECT_WMMA, STRATA_HC_Q8: rounding-level, KL-gated) stay opt-in in THIS table; docs/STRIX_HALO.md lists them.  Five of them
-// (HIP_WMMA, PF_GEMM, PA_FAST, SELECT_WMMA, HC_UPMIX) are on by default on an integrated Radeon through igpu_default_env() below.
+// (HIP_WMMA, PF_GEMM, PA_FAST, SELECT_WMMA, HC_UPMIX) are an opt-in set on an integrated Radeon (igpu_default_env() below).
 //
 // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
 #pragma once
@@ -22,7 +22,7 @@ namespace strata::core {
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
 /// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose
-/// matrix-core prompt set is on by default (153-igpu).  Pure architecture-name test; the caller adds the UMA test.
+/// matrix-core prompt set is offered (opt-in; 021-minipc).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);
 
 /// 021-minipc: the matrix-core prompt set changes bits, so it is OFF by default until the owner approves it.  Flip this constant
@@ -31,10 +31,12 @@ bool igpu_prompt_defaults_arch(const char* gcn_arch);
 inline constexpr bool kIgpuPromptSetDefaultOn = false;
 bool igpu_prompt_set_enabled();
 
-/// 021-minipc: does this device keep the expert arena unregistered (UMA mode) by default?  Exact (no bit changes): only the
-/// Radeon 780M (gfx1103, integrated, Linux).  gfx1150 / gfx1151 are not included: no hardware to measure on, and Strix Halo
-/// has a different firmware.  STRATA_UMA_REGISTER=1 registers the arena as before.
-bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows);
+/// 021-minipc: UMA mode (the expert arena stays unregistered).  Exact (no bit changes) but NOT a default: measured on the 780M it was
+/// 1-4% slower and did not stop the resets (4 of 20 runs against 1 of 10), so kIgpuUmaArenaDefaultOn is false.  When true it applies
+/// to the Radeon 780M only (gfx1103, integrated, Linux); gfx1150 / gfx1151 are not covered (no hardware).  STRATA_UMA_REGISTER=1
+/// registers the arena as before; STRATA_ARENA_PIN_GIB=none selects UMA mode per run.
+inline constexpr bool kIgpuUmaArenaDefaultOn = false;
+bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on = kIgpuUmaArenaDefaultOn);
 
 /// The matrix-core prompt set an integrated GPU takes when `igpu_prompt_set_enabled()`: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
 /// STRATA_SELECT_WMMA, STRATA_HC_UPMIX, all "1".  Empty unless `integrated` (hipDeviceProp_t::integrated: the device

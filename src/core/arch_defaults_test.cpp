@@ -156,17 +156,20 @@ int main() {
     CHECK(std::getenv("STRATA_HC_UPMIX") != nullptr && std::string(std::getenv("STRATA_HC_UPMIX")) == "0");
     for (const char* k : five) unset(k);
     unset("STRATA_IGPU_PROMPT_SET");
+    // 021-minipc: UMA mode is NOT a default (slower, resets not fixed): off with nothing asked; the logic below runs with on=true
+    CHECK(!kIgpuUmaArenaDefaultOn);
+    CHECK(!igpu_uma_arena_default("gfx1103", true, false));
     // 021-minipc: UMA mode (the expert arena stays unregistered) is chosen for the Radeon 780M only: gfx1103 + integrated + not Windows
     unset("STRATA_UMA_REGISTER");
-    CHECK(igpu_uma_arena_default("gfx1103", true, false));
-    CHECK(igpu_uma_arena_default("gfx1103:sramecc-:xnack-", true, false));
-    CHECK(!igpu_uma_arena_default("gfx1103", true, true));      // Windows: not measured
-    CHECK(!igpu_uma_arena_default("gfx1103", false, false));    // a gfx1103 that is not integrated
+    CHECK(igpu_uma_arena_default("gfx1103", true, false, true));
+    CHECK(igpu_uma_arena_default("gfx1103:sramecc-:xnack-", true, false, true));
+    CHECK(!igpu_uma_arena_default("gfx1103", true, true, true));      // Windows: not measured
+    CHECK(!igpu_uma_arena_default("gfx1103", false, false, true));    // a gfx1103 that is not integrated
     for (const char* g : {"gfx1150", "gfx1151", "gfx1152", "gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030", "gfx11030", "", "gfx90a"})
-        CHECK(!igpu_uma_arena_default(g, true, false));
-    CHECK(!igpu_uma_arena_default(nullptr, true, false));
+        CHECK(!igpu_uma_arena_default(g, true, false, true));
+    CHECK(!igpu_uma_arena_default(nullptr, true, false, true));
     put("STRATA_UMA_REGISTER", "1");
-    CHECK(!igpu_uma_arena_default("gfx1103", true, false));     // the user registers the arena as before
+    CHECK(!igpu_uma_arena_default("gfx1103", true, false, true));     // the user registers the arena as before
     unset("STRATA_UMA_REGISTER");
     // both platforms: no Windows guard on the iGPU set (the owner wants it there too; untested on Windows is only said in the log)
     std::printf(fails ? "arch_defaults_test: %d FAILED\n" : "arch_defaults_test: OK\n", fails);

@@ -79,10 +79,10 @@ greedy tokens, 3 of 3 pairs), with the greedy token ids unchanged. They are the 
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
 | `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`, `STRATA_SH_STREAM` | grouped decode experts, butterfly warp sums, fewer launches, the GDN step over four blocks per head, producer-written activation images, batched PLE projections, the shared expert on its own stream |
 
-## 5. The matrix-core prompt set (on by default on an integrated GPU; it changes bits)
+## 5. The matrix-core prompt set (opt-in on an integrated GPU: `STRATA_IGPU_PROMPT_SET=1`; it changes bits)
 
-On by default since the integrated-GPU defaults (AMD_HIP.md, "Integrated GPUs"): the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`,
-`STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself on an integrated Radeon; `STRATA_IGPU_DEFAULTS=0` or `NAME=0` turns them off. `STRATA_PF_FUSED` stays opt-in.
+Opt-in (AMD_HIP.md, "Integrated GPUs"); with `STRATA_IGPU_PROMPT_SET=1` the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`,
+`STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself on an integrated Radeon; `NAME=0` turns one off. `STRATA_PF_FUSED` stays opt-in.
 The prompt levers need the table to pay: with the table, the WMMA set
 read 248 tok/s at 4K against 186 without it, and at 32K 272 against 178. No KL was measured on this chip.
 

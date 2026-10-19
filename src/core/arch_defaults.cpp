@@ -73,8 +73,8 @@ bool igpu_prompt_set_enabled() {
     return kIgpuPromptSetDefaultOn;
 }
 
-bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows) {
-    if (windows || !integrated || !strata::kernels::gfx_arch_is(gcn_arch, "gfx1103")) return false;
+bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on) {
+    if (!on || windows || !integrated || !strata::kernels::gfx_arch_is(gcn_arch, "gfx1103")) return false;
     const char* reg = std::getenv("STRATA_UMA_REGISTER");
     return !(reg != nullptr && reg[0] == '1');
 }
