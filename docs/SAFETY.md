@@ -12,8 +12,11 @@ you trust can check it. Where Strata does less than you might hope, the page say
 - **There is no telemetry.** Strata sends no usage data, no crash reports and no analytics, and has no account to sign in to.
 - **Starting and running a model never downloads anything.** Downloads and updates are separate steps that you start.
 - **The server listens on your PC only.** Reaching it from another device needs an API key.
-- **Downloads are checked.** Updates come from a signed feed. Some model files are checked against a fixed SHA-256, others
-  against a fixed version of their repository and for completeness (the details are [below](#how-downloads-are-checked)).
+- **Once a model is downloaded, Strata runs without internet.** Starting, loading, serving and chatting need no
+  connection. Only things you ask for use it: the agent's web search and web pages, an outside model service, the tunnel,
+  and installs and updates (a first model install also fetches llama.cpp's preparation scripts).
+- **Downloads are checked.** Updates come from a signed feed. Every model file has a fixed SHA-256 and size, and an install
+  stops if the pinned version of a file is gone (the details are [below](#how-downloads-are-checked)).
 - **The coding agent asks before it changes anything** in its default mode. It does not ask before it searches the web.
 - **The code is open.** Anyone can read it, and security problems go to [SECURITY.md](../SECURITY.md).
 
@@ -107,18 +110,24 @@ Updates never replace your models or saved tuning. The full description is in [p
 (`apps/desktop/src-tauri/tauri.conf.json`). The updater refuses an installer whose signature does not match. The Terminal
 checks the same signature when you run `strata update --app`.
 
-**Model files.** There are two levels, and they are not the same.
+**Model files.** Every model file that `setup.py` downloads has a fixed SHA-256 and size, written in the code, so the check
+needs no network: the main Qwen3.8-Flash-Next files (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S), Swift 1.5, the Coder, the Unsloth sizes,
+the Gyro files, Qwen3.6, the NVFP4 packs, the picture reader, the image model files and the speed-up layer (MTP, tensor by
+tensor). A file that does not match is deleted and the install stops. A file whose size on the server is not the pinned
+size stops it before the download starts.
 
-- *A fixed SHA-256 and size per file*: the Unsloth sizes, the Gyro files, Qwen3.6, the NVFP4 packs, the image model files
-  and the speed-up layer (MTP, tensor by tensor). A file that does not match is deleted and the install stops
-  (`setup.py`, `verify_sha256`; `tools/mtp_fetch.py`; `apps/host/server/image-models.mjs`).
-- *A fixed repository version, with no SHA-256*: the main Qwen3.8-Flash-Next files (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S), Swift 1.5 and
-  the Coder, and the picture reader. Strata downloads them from a fixed commit of the repository and checks that each file is
-  complete, but it does not compare a hash. If that commit has disappeared from Hugging Face, setup says so and takes the
-  repository's current file instead (`setup.py`, `HF_REVISIONS` and `download`).
-- Files from ModelScope are checked against the SHA-256 that ModelScope itself publishes. Setup warns when it publishes none.
-- The app also has a short model list of its own (`apps/host/server/real-model-catalog.mjs`). The app downloads those files
-  from the repository's current `main` branch and checks that they have about the expected size.
+- If the pinned version of a file is gone from Hugging Face, the install stops and says to update Strata. It does not take
+  the repository's current file instead. A tester can set `STRATA_ALLOW_UNPINNED=1` to take the current file anyway, without
+  the check. It is off by default, and setup says so when it is set.
+- Starting a model does not check its files, and running setup again for a model you have does not download or hash them
+  again. A file installed before these hashes existed is kept as it is.
+- Files from ModelScope are checked against the same fixed SHA-256. ModelScope serves a repository's current files, so a file
+  it has changed fails the check. A file without a pin is checked against the hash ModelScope publishes, and setup warns
+  when it publishes none.
+- The app installs these models by running the same setup, so it has the same checks. The app's host also keeps a short
+  starter list of its own (`apps/host/server/real-model-catalog.mjs`). Its download path takes files from the repository's
+  current `main` branch and checks only that they have about the expected size. The 0.2.0 app screens do not use it.
+  (`setup.py`: `REPO_PINS`, `download`, `verify_sha256`; `tools/mtp_fetch.py`; `apps/host/server/image-models.mjs`.)
 
 **Engine in the source route.** `setup.py` checks the engine zip against the SHA-256 that GitHub's API publishes for that
 release file. If GitHub cannot say (offline, rate limit), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` switches the

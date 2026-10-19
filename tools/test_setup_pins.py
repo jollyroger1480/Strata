@@ -1,5 +1,5 @@
 """Tests for setup.py's reproducible installs (#214): the engine of the checkout's own release first (the latest as
-the fallback), Hugging Face files at pinned revisions (the current files when a revision is gone), the pinned
+the fallback), Hugging Face files at pinned revisions (a gone revision stops the download), the pinned
 requirements file, and an existing install left as it is.  Mocked network - nothing is downloaded.
 
     python -m unittest tools.test_setup_pins
@@ -94,7 +94,25 @@ class HuggingFacePins(unittest.TestCase):
                          "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/x.gguf")
         self.assertEqual(setup.hf_unpinned("https://example.com/a/b"), "https://example.com/a/b")
 
-    def test_a_gone_revision_downloads_the_current_file(self):
+    def test_a_gone_revision_stops_the_download(self):
+        """The pinned commit answers 404: setup stops with a plain message and fetches no current file."""
+        seen = []
+
+        def urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.full_url))
+            raise not_found(req.full_url)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen),                 mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface"}):
+            setup.os.environ.pop("STRATA_ALLOW_UNPINNED", None)
+            dst = Path(d) / "m.gguf"
+            with self.assertRaises(SystemExit):
+                _, out = quiet(setup.download, setup.FAMILIES["qwen"]["mmproj_hf"] + "m.gguf", dst)
+            self.assertFalse(dst.exists())
+        self.assertEqual([m for m, _ in seen], ["HEAD"])
+        self.assertTrue(all("/resolve/main/" not in u for _, u in seen))
+
+    def test_the_opt_out_downloads_the_current_file(self):
+        """STRATA_ALLOW_UNPINNED=1 (a tester's choice): the repository's current file, announced, off by default."""
         seen = []
 
         def urlopen(req, timeout=None):
@@ -104,11 +122,11 @@ class HuggingFacePins(unittest.TestCase):
             return Response(b"model bytes", status=200)
 
         # the pinned Hugging Face path itself (setup's --source huggingface; auto may pick ModelScope)
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
-                mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface"}):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen),                 mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface", "STRATA_ALLOW_UNPINNED": "1"}),                 mock.patch.object(setup, "_unpinned_said", []):
             dst = Path(d) / "m.gguf"
             _, out = quiet(setup.download, setup.FAMILIES["qwen"]["mmproj_hf"] + "m.gguf", dst)
             self.assertEqual(dst.read_bytes(), b"model bytes")
+        self.assertIn("STRATA_ALLOW_UNPINNED=1", out)
         self.assertIn("not at the pinned revision any more", out)
         self.assertEqual([m for m, _ in seen], ["HEAD", "HEAD", "GET"])
         self.assertTrue(all("/resolve/main/" in u for _, u in seen[1:]))
@@ -133,7 +151,7 @@ class HuggingFacePins(unittest.TestCase):
             self.assertTrue(setup.done(dst))
         self.assertEqual(seen, [("HEAD", None)])
 
-    def test_mtp_fetch_is_pinned_and_falls_back(self):
+    def test_mtp_fetch_is_pinned_and_stops_when_the_revision_is_gone(self):
         import mtp_fetch
         self.assertRegex(mtp_fetch.REPO, SHA)
         self.assertIn(mtp_fetch.REVISION, mtp_fetch.REPO)
@@ -143,10 +161,14 @@ class HuggingFacePins(unittest.TestCase):
             raise not_found(req.full_url)
 
         try:
-            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen), \
-                    contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": ""}):
+                with self.assertRaises(SystemExit) as stop:
+                    mtp_fetch.resolve_repo()
+                self.assertIn("no longer on Hugging Face", str(stop.exception))
+                self.assertEqual(mtp_fetch.REPO, pinned)
+            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": "1"}),                     contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(mtp_fetch.resolve_repo(), "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/")
-            self.assertIn("pinned revision", err.getvalue())
+            self.assertIn("STRATA_ALLOW_UNPINNED=1", err.getvalue())
         finally:
             mtp_fetch.REPO = pinned
 
