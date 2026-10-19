@@ -647,6 +647,18 @@ def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
             f"Ask for the {make(have)} build.")
 
 
+RELEASES_URL = "https://github.com/Niko1221/Strata/releases"
+MAKE_NAMES = {"cuda": "NVIDIA", "hip": "AMD", "sycl": "Intel"}
+
+
+def wrong_make_notice(built: str, archs: tuple[str, ...], here: str) -> str:
+    """The plain sentence for a build made for another make of graphics card than this computer has (an AMD build on an NVIDIA PC)."""
+    families = sorted({hip_family(a) for a in archs if any(a in group for _, group in HIP_FAMILIES)})
+    built_for = f"AMD {' and '.join(families)}" if built == "hip" and families else MAKE_NAMES.get(built, built)
+    make = MAKE_NAMES.get(here, here)
+    return f"This Strata is for {built_for} cards. Your PC has an {make} card: download the {make} version from {RELEASES_URL}"
+
+
 def resolve(root: Path | None = None, *, backend: str | None = None, target: str | None = None,
             full: bool = False, runtime: str | None = None) -> EngineComponent:
     """The engine to start on this machine, or `EngineMissing` / `EngineIntegrityError`. Never downloads, never creates
@@ -714,6 +726,12 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         plain = None
         if arch_blocked and len(arch_blocked) == compatible and not broken:      # every engine that fits this PC is built for other cards
             plain = arch_notice(tuple(sorted({a for item in arch_blocked for a in item.hip_archs})), hip_here)
+        if plain is None and not compatible and not broken and wanted in MAKE_NAMES:       # every engine here is for another make of card
+            here_target = [item for item in found if item.platform == target]
+            other = [item for item in here_target if item.backend in MAKE_NAMES and item.backend != wanted]
+            if other and len(other) == len(here_target):
+                top = max(other, key=lambda item: _version_key(item.version))
+                plain = wrong_make_notice(top.backend, top.archs, wanted)
         missing = EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems, notice=plain)
         if driver_blocked and len(driver_blocked) == compatible and not broken:
             # the only thing in the way is the NVIDIA driver: one plain line that names the version to install
