@@ -48,6 +48,17 @@ if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
 
+# #3202: Windows hands a program its command line in the system's ANSI code page (cp1251 / cp866 on a Russian Windows, cp1252 on an
+# English one), but the engine reads every path as UTF-8 (the run configs and the server write UTF-8). A model folder with
+# Cyrillic letters arrived as other bytes, or as "?" where the page has no such letter, and the model did not open. This manifest
+# makes the process's ANSI code page UTF-8 (Windows 10 1903 and newer; older Windows ignores it and nothing changes), so the
+# command line, fopen and std::ifstream all take UTF-8.
+function(strata_utf8_manifest target)
+  if(MSVC)
+    target_sources(${target} PRIVATE ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/cmake/strata-utf8.manifest)
+  endif()
+endfunction()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -722,6 +733,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
 
   add_executable(strata src/program/generate.cpp)
+  strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
 
@@ -742,6 +754,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_compile_definitions(strata_qwen35 PRIVATE STRATA_Q36_CPU_POOL=1)
   endif()
   add_executable(strata-q36 src/qwen35/q36_main.cpp)
+  strata_utf8_manifest(strata-q36)
   target_link_libraries(strata-q36 PRIVATE strata_qwen35 ${_strata_gpu_runtime_target})
   target_link_libraries(strata PRIVATE strata_qwen35)
   target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)
