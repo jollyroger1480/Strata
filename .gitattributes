@@ -22,3 +22,6 @@ docker/*.sh text eol=lf
 Dockerfile text eol=lf
 docker/Dockerfile text eol=lf
 docker/compose/* text eol=lf
+
+# Apple tools (codesign, plutil) read these: LF only, wherever the repository is cloned
+*.plist text eol=lf

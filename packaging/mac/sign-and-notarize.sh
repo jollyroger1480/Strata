@@ -131,7 +131,7 @@ trap 'echo "interrupted" >&2; exit 130' INT TERM HUP
 # run a command, appending all its output to the log; on failure show the last lines of it
 logged() {
   local tmp rc
-  tmp="$(mktemp "${WORK:-${TMPDIR:-/tmp}}/cmd.XXXXXX")"
+  tmp="$(mktemp "${WORK:-${TMPBASE:-/tmp}}/cmd.XXXXXX")"
   "$@" >"$tmp" 2>&1; rc=$?
   cat "$tmp" >>"${LOG:-/dev/null}"
   [ "$rc" -eq 0 ] || { tail -n 12 "$tmp" | sed 's/^/        /' >&2; }
@@ -182,7 +182,8 @@ if [ -z "$OUT" ]; then
 fi
 mkdir -p "$OUT" || { echo "cannot create $OUT" >&2; exit 2; }
 OUT="$(cd "$OUT" && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/strata-sign.XXXXXX")" || { echo "cannot make a work folder" >&2; exit 2; }
+TMPBASE="${TMPDIR:-/tmp}"; TMPBASE="${TMPBASE%/}"   # macOS TMPDIR ends in "/": a "//" in the path broke the app self-test
+WORK="$(mktemp -d "$TMPBASE/strata-sign.XXXXXX")" || { echo "cannot make a work folder" >&2; exit 2; }
 LOG="$OUT/sign-and-notarize.log"
 : >"$LOG"
 : >"$OUT/SHA256SUMS.txt"
@@ -457,7 +458,7 @@ smoke_terminal() {   # extracted terminal folder
   local root=$1 py f strata home="$WORK/termhome" out
   mkdir -p "$home"
   export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
-  py="$(find "$root" -maxdepth 4 -path '*/python/bin/python3' -type f 2>/dev/null | head -n 1)"
+  py="$(find "$root" -maxdepth 4 -path '*/python/bin/python3' \( -type f -o -type l \) 2>/dev/null | head -n 1)"
   if [ -n "$py" ]; then
     if env HOME="$home" "$py" -c 'import ctypes, ssl, sqlite3, zlib; print("python ok")' >>"$LOG" 2>&1; then rec OK "smoke: terminal python starts"
     else fail "smoke: terminal python" "does not start under the hardened runtime"; fi
