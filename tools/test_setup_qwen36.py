@@ -101,7 +101,7 @@ class InstallOwnPath(unittest.TestCase):
                     (eng / setup.HVEXE).write_text("x")
             return self.root / "llama", eng, {"version": "0.1.44"}, ["/libs"], gpu, vision
 
-        def write_cfg(path, cfg, source=None):
+        def write_cfg(path, cfg, source=None, explicit=None):
             self.cfg = cfg
             self.calls.append(("config", path.name))
 

@@ -69,6 +69,7 @@ from strata_control import engine_component  # noqa: E402
 from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
+from strata_control import user_args  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -2873,6 +2874,10 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
+    # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
+    # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
+    if cfg.get("user_args"):
+        args = user_args.merge(args, cfg["user_args"])
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
     # that writes --mtp back into the args cannot undo it, because this is applied at every start.
     if draft_layer.is_off(cfg):

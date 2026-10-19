@@ -1,10 +1,59 @@
+import {USER_KEY,flagValue} from './native-user-args.mjs';
+
+/** The engine's own default reserve, and the one setup writes for pictures read on the GPU: neither is a choice of the person. */
+const ENGINE_DEFAULT_RESERVE_MIB=700;
+/** A card that drives no display needs little beside the engine; the engine keeps the last few hundred MiB for allocations it makes after the cache. */
+const COMPUTE_ONLY_RESERVE_MIB=512;
+
+const wholeMib=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))&&Number(v)>=0?Math.trunc(Number(v)):null;
+
+/** The graphics memory the person asked to keep free, or null when they asked for nothing (#3215 #3270): the Expert setting of this load,
+ *  "user_args", the setting saved for the model ("vram_reserve_mib", unless it is the value the app itself wrote last), or a value written by hand into "args"
+ *  (not the engine's default 700, and not the one the app wrote). Any number counts, 0 too. */
+function candidateReserve(config,values={},legacyDefaults=new Set()){
+ if(values&&typeof values==='object'&&'vram_reserve_mib' in values){const v=wholeMib(values.vram_reserve_mib);if(v!==null)return v;}
+ const user=wholeMib(flagValue(config?.[USER_KEY],'--vram-reserve-mib'));if(user!==null)return user;
+ const applied=config?.ui_reserve_applied,legacy=applied===undefined&&config?.ui_resource_baseline!==undefined;   // 0.2.0-beta wrote the key itself, without saying so
+ const key=wholeMib(config?.vram_reserve_mib),arg=wholeMib(flagValue(config?.args,'--vram-reserve-mib'));
+ const keyOk=key!==null&&key!==applied,argOk=arg!==null&&arg!==applied&&arg!==ENGINE_DEFAULT_RESERVE_MIB;
+ if(legacy)return [arg,key].map((n,i)=>(i===0?argOk:keyOk)?n:null).find(n=>n!==null&&!(n===1536||n===2048||legacyDefaults.has(n)))??null;   // a 0.2.0-beta file: the app wrote both, so what is not one of its own numbers is the person's
+ return keyOk?key:argOk?arg:null;
+}
+
+/** What the app keeps free when the person asked for nothing: [work, performance]. A card that drives a display (or is not known to be headless) gets no
+ *  less than 1536 MiB on a card of 16 GB or less, 1024 above, 2048 with pictures (the engine warns below ~1-1.5 GiB of free VRAM: the driver then pages GPU memory to
+ *  system RAM and decoding falls to a few tokens a second, #2065); "work" also keeps a fifth of the card. A card the probe says drives no display keeps 512 MiB
+ *  (700 with pictures) on either profile. */
+export function defaultReserves(config,hardware,baselineReserve=0){
+ const placement=Array.isArray(config.gpu)?config.gpu:[config.gpu??0];
+ const placed=(hardware?.gpus??[]).filter(g=>placement.includes(g.index)),gpuMemory=placed.map(g=>g.vram_gb).filter(n=>Number.isFinite(n)&&n>0);
+ const headless=placed.length>0&&placed.every(computeOnly);   // no display on the card (the desktop is on an integrated GPU): no desktop to keep room for
+ const floor=headless?(config.vision?ENGINE_DEFAULT_RESERVE_MIB:COMPUTE_ONLY_RESERVE_MIB):gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
+ const safety=headless?floor:Math.max(config.vision?2048:floor,baselineReserve);
+ return {work:gpuMemory.length&&!headless?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety,performance:safety};
+}
+
+/** The reserve the person asked for (null: nothing) and the default for each profile. A 0.2.0-beta file has the key and the same number in "args" with no note that the
+ *  app wrote them: a number that is one of the app's two defaults is the app's, any other is the person's. */
+export function reserveChoice(config,hardware,values={},baselineReserve=0){
+ const defaults=defaultReserves(config,hardware,config.ui_resource_baseline?.reserve??baselineReserve);
+ const asked=candidateReserve(config,values,new Set([defaults.work,defaults.performance]));
+ return {asked,defaults};
+}
+export const explicitReserve=(config,values={},hardware=null)=>reserveChoice(config,hardware,values).asked;
+
+/** True when the probe says this card drives no display: only compute runs on it. Unknown counts as a display card. */
+const computeOnly=g=>g?.drives_display===false;
+
 /** Headroom is a worker/memory budget, not a hard utilisation throttle. */
-export function resourceSettings(config,hardware,profile,model={}){
+export function resourceSettings(config,hardware,profile,model={},values={}){
  if(!['work','performance'].includes(profile))throw new Error('Choose a resource preference.');
  const args=[...(config.args??[])];
  const remove=flag=>{for(let at=args.indexOf(flag);at>=0;at=args.indexOf(flag))args.splice(at,2);};
  const value=flag=>{const at=args.indexOf(flag);return at>=0?Number(args[at+1])||0:0;};
- const baseline=config.ui_resource_baseline??{workers:value('--pool-workers'),reserve:Math.max(Number(config.vram_reserve_mib)||0,value('--vram-reserve-mib'))};
+ const first=reserveChoice(config,hardware,values).asked;
+ const baseline=config.ui_resource_baseline??{workers:value('--pool-workers'),reserve:first!==null?0:Math.max(Number(config.vram_reserve_mib)||0,value('--vram-reserve-mib'))};
+ const {asked,defaults}=reserveChoice(config,hardware,values,baseline.reserve);
  if(profile==='performance'&&config.ui_resource_profile==='work'){
   remove('--pool-workers');if(baseline.workers>0)args.push('--pool-workers',String(baseline.workers));
  }
@@ -15,13 +64,8 @@ export function resourceSettings(config,hardware,profile,model={}){
   args.push('--pool-workers',String(previous>0?Math.min(previous,workers):workers));
  }
  // Preserve calibrated worker counts and the installation's safety/vision reserve.
- const placement=Array.isArray(config.gpu)?config.gpu:[config.gpu??0];
- const gpuMemory=(hardware?.gpus??[]).filter(g=>placement.includes(g.index)).map(g=>g.vram_gb).filter(n=>Number.isFinite(n)&&n>0);
- /* The engine warns below ~1-1.5 GiB of free VRAM (the driver then pages GPU memory to system RAM and decoding falls to a few tokens a
-    second, #2065), so neither profile may reserve less: 1536 MiB on a card of 16 GB or less, 1024 above; with pictures 2048. */
- const floor=gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
- const safety=Math.max(config.vision?2048:floor,baseline.reserve);
- const reserve=profile==='work'&&gpuMemory.length?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety;
+ /* A reserve the person set is theirs, 0 included: no floor and no share of the card (#3215 #3270). Without one the card gets the safety default (defaultReserves). */
+ const reserve=asked!==null?asked:defaults[profile];
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
  // RAM: "leave 20% for my work" keeps the model's RAM within 80% of the PC. A model whose experts do not fit there (the
  // setup rule: experts plus 10 GB) keeps only that many GiB of them in RAM and reads the rest from the model files
@@ -37,7 +81,7 @@ export function resourceSettings(config,hardware,profile,model={}){
  // available for other programs (it keeps fewer experts if the PC is busy), and it said nothing about this before.
  let ramHeadroom=false;
  if(ramBudget&&!(config.env?.STRATA_RESIDENT_HEADROOM_GIB)){env={...(env??config.env??{}),STRATA_RESIDENT_HEADROOM_GIB:String(Math.ceil(ram*.2))};ramHeadroom=true;}
- return {args,vram_reserve_mib:reserve,...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom}};
+ return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom}};
 }
 
 /* One automatic second try after a start that died. Returns null when there is nothing safer to try (the caller then reports the first
