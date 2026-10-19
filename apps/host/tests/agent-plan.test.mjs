@@ -52,8 +52,8 @@ test('a step goal names its step, what is done and what is not its job', () => {
   const o = stepObjective(plan, 1);
   assert.match(o, /step 2 of 3: Write it \(one file\)/); assert.match(o, /Already done: 1\. Look/); assert.match(o, /do not start them/);
   assert.ok(!/do not start/.test(stepObjective(plan, 2)));
-  assert.equal(stepLine(1, 4, 'Build the roof', 'done'), 'Step 2 of 4: Build the roof — done');
-  assert.equal(stepLine(0, 4, 'x', 'failed'), "Step 1 of 4: x — didn't finish");
+  assert.equal(stepLine(1, 4, 'Build the roof', 'done'), 'Build the roof — done');
+  assert.equal(stepLine(0, 4, 'x', 'failed'), "x — didn't finish");
   assert.equal(firstSentence('## Done\n\nThe roof is built and tiled. Then I checked it.'), 'The roof is built and tiled.');
   assert.equal(firstSentence('   '), null);
 });

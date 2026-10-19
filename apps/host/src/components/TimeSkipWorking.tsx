@@ -36,7 +36,7 @@ const laneFraction = (l: ForkLane | null | undefined) => (l && l.total > 0 ? Mat
 
 function Lane({ name, lane, waitingText }: { name: string; lane: ForkLane | null | undefined; waitingText: string }) {
   const pct = Math.round(laneFraction(lane) * 100);
-  const words = !lane ? waitingText : lane.waiting ? waitingText : lane.line || (lane.text ? tr('Step {0} of {1}: {2}', [lane.step, lane.total, lane.text]) : tr('Starting…'));
+  const words = !lane ? waitingText : lane.waiting ? waitingText : lane.line || (lane.text ? lane.text : tr('Starting…'));
   return <div className="tsf__lane" data-state={lane?.state ?? 'waiting'}>
     <span className="tsf__name">{name}</span>
     <div className="tsf__prog" role="progressbar" aria-label={tr('Progress of {0}', [name])} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: `${pct}%` }}/></div>
