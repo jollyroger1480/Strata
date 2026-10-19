@@ -2813,7 +2813,7 @@ def control_missing_packages() -> list:
             if importlib.util.find_spec(m) is None]
 
 
-def pip_install(packages, what):
+def pip_install(packages, what, extra=()):
     """pip install into .venv, skipped when the same list was installed before.  An install from before the pinned
     requirements (#214) recorded bare names: those packages are kept as they are (nothing is reinstalled), and the
     pinned dependencies it already has count as installed."""
@@ -2833,9 +2833,42 @@ def pip_install(packages, what):
         return
     acquisition.require(what)
     say(f"  Installing {what} ...")
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *need])
+    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *extra, *need])
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
     ok(f"{what} installed")
+
+
+NVFP4_LOCAL_REQUIREMENTS = ROOT / "requirements-nvfp4-local.txt"
+NVFP4_LOCAL_MODULES = ("torch", "transformers", "safetensors")
+
+
+def nvfp4_local_packages() -> list:
+    """The pinned lines of requirements-nvfp4-local.txt (comments and options left out)."""
+    try:
+        lines = NVFP4_LOCAL_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [l.split("#")[0].strip() for l in lines if l.strip() and not l.lstrip().startswith(("#", "-"))]
+
+
+def ensure_nvfp4_local_packages() -> None:
+    """#3227: NVIDIA's FP4-Local checkpoint is converted on this PC with llama.cpp's converter, which imports torch and transformers
+    (the runtime requirements do not have them: nothing else in setup needs them).  Installed only for a prepare that runs; what is
+    already there is kept.  The app does not ship them (hundreds of MB): it says so and points at the source installer."""
+    import importlib.util
+    missing = [m for m in NVFP4_LOCAL_MODULES if importlib.util.find_spec(m) is None]
+    if not missing:
+        return
+    if CONTROL:
+        fail("preparing NVIDIA's FP4-Local checkpoint needs PyTorch and transformers, which the app does not include",
+             "install this model from the source download (SETUP.bat on Windows, ./setup.sh on Linux), or pick another version in the app")
+    pkgs = nvfp4_local_packages()
+    if not pkgs:
+        fail("requirements-nvfp4-local.txt is missing", "update Strata, or run: python -m pip install torch transformers safetensors")
+    say("  Converting NVIDIA's checkpoint needs PyTorch, transformers and safetensors (a few hundred MB, installed once).")
+    pip_install(pkgs, "PyTorch, transformers and safetensors (for the FP4-Local conversion)",
+                extra=[] if WIN else ["--extra-index-url", "https://download.pytorch.org/whl/cpu"])   # Linux: the CPU build, not 3 GB of CUDA libraries
+    importlib.invalidate_caches()
 
 
 def cuda_lib_dirs(toolkit=13):
@@ -8096,6 +8129,7 @@ def main() -> int:
     if prepared and not prepared_done(model, models_dir):
         say("  NVIDIA's checkpoint is turned into a Strata pack on this PC (once; 20-40 minutes, reads the 102 GB, writes about")
         say(f"  {MODELS[model]['prepare_gb']:.0f} GB). Nothing of NVIDIA's weights leaves this PC.")
+        ensure_nvfp4_local_packages()
         run([sys.executable, str(ROOT / "tools" / "nvfp4_local_pack.py"), "prepare",
              "--model", str(ready_where(models_dir, ("src", MODELS[model]["repo"], "", "", 0, ""))),
              "--out", str(prepared_dir(model, models_dir))], env=env)
