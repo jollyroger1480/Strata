@@ -757,6 +757,28 @@ class MixedGraphics(unittest.TestCase):
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
 
+    def test_an_amd_card_the_installed_engine_has_no_code_for_is_not_usable(self):
+        """#3203: the engine package lists its GPU code; a card outside it is flagged unusable with the plain reason, so no list offers it."""
+        status = {"usable": True, "engine": {"backend": "hip", "archs": ["gfx1200", "gfx1201"]}}
+        hw = {"gpus": [{"vendor": "amd", "index": 0, "name": "AMD Radeon 760M", "arch": "gfx1103", "usable": False, "problem": "integrated"},
+                       {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 6800 XT", "arch": "gfx1030", "usable": True, "problem": None},
+                       {"vendor": "amd", "index": 2, "name": "AMD Radeon RX 9070 XT", "arch": "gfx1201", "usable": True, "problem": None},
+                       {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060", "arch": "86", "usable": True, "problem": None}]}
+        with mock.patch("strata_control.engine_component.status", lambda: status):
+            M.Strata._engine_code(hw)
+        by = {g["name"]: g for g in hw["gpus"]}
+        self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
+        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", by["AMD Radeon RX 6800 XT"]["problem"])
+        self.assertEqual(by["AMD Radeon 760M"]["problem"], "integrated", "an earlier reason stays")
+        self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
+        self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
+        # no engine package that lists archs (a source build, no engine yet): nothing is judged
+        for other in ({"usable": False}, {"usable": True, "engine": {"backend": "cuda", "archs": ["sm_86"]}}):
+            again = {"gpus": [{"vendor": "amd", "index": 1, "name": "x", "arch": "gfx1030", "usable": True, "problem": None}]}
+            with mock.patch("strata_control.engine_component.status", lambda other=other: other):
+                M.Strata._engine_code(again)
+            self.assertTrue(again["gpus"][0]["usable"])
+
     @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
     def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
         s = M.Strata(HERE.parent)

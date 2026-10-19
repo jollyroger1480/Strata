@@ -84,6 +84,13 @@ per library set, and 7.10 crashes in the HSA runtime on a Strix Halo with a new 
 Each package carries the engine, the CPU picture reader and the GPU picture reader (`strata-vision-hip`) for the same architectures, and
 the rocBLAS and hipBLASLt kernel data for them only. A package whose GPU code does not cover the card is refused with one line that
 names the card family ("This build of Strata is for AMD RX 9000 cards. This computer has an AMD RX 7000 card ...").
+**The RX 6000 series (gfx1030, RX 6800 / 6900) is in no package of this release**, on Windows or Linux: the app says so plainly instead of naming a
+build to ask for. An engine built for it ([RDNA2](#rdna2-gfx1030), `STRATA_HIP_ARCHS=gfx1030`) still runs it.
+
+**Automatic card (0.2.1):** with no card named in the model's settings, the engine start asks the package's `strata-device --list-devices`
+and skips cards the package has no code for and integrated chips (a mini PC's Radeon 760M / 890M is HIP's device 0) while a card of its own
+can run. Device 0 stays the choice when it is already such a card. When none of the computer's cards can run, the start stops
+with one line that names the cards found and what the engine is built for. `HIP_VISIBLE_DEVICES`, a `"gpu"` in the settings file or `hip_ordinal` is never overridden.
 
 What was run on real hardware:
 

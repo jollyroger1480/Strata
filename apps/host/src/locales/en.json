@@ -3343,5 +3343,7 @@
   "s8254": "That did not work",
   "s8255": "No matching cards.",
   "s8256": "Nothing here right now.",
-  "s8257": "every {0} min"
+  "s8257": "every {0} min",
+  "s8258": "This Strata engine has no code for the graphics card it tried to use.",
+  "s8259": "Pick another card under Run on, or open Details to see which cards were found and what the engine is built for."
 }

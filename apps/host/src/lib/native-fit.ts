@@ -89,3 +89,18 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
   if (gyroM) out.push({ r: { family: 'gyro', model: 'Gyro-M', note: OTHER_NOTE }, v: gyroM });
   return [...out, ...rest.filter(x => x.v !== gyroM)];
 }
+
+/** A card as the installer's hardware report lists it. */
+export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
+
+/**
+ * The cards a model can be placed on: the ones this engine can drive (strata_control/gpu_fit.py `usable_cards` and `for_vendor`, same rule).
+ * A card the engine has no code for, a card of the other make (an engine drives one make; the report numbers each make from 0, so
+ * two cards could share a number) and a chip that shares the system memory while the computer has a card of its own are left out.
+ */
+export function runCards<T extends RunCard>(gpus: T[] | null | undefined, engineVendor?: string | null): T[] {
+  const sharesMemory = (g: RunCard) => !!(g.integrated || g.uma || g.unified_gb);
+  const mine = (gpus ?? []).filter(g => g.usable !== false && (!engineVendor || !g.vendor || g.vendor === engineVendor));
+  const hasReal = mine.some(g => !sharesMemory(g) && g.vram_gb >= 4);
+  return mine.filter(g => !(hasReal && sharesMemory(g)));
+}

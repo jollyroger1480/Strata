@@ -3343,5 +3343,7 @@
   "s8254": "Das hat nicht geklappt",
   "s8255": "Keine passenden Karten.",
   "s8256": "Im Moment nichts hier.",
-  "s8257": "alle {0} Min."
+  "s8257": "alle {0} Min.",
+  "s8258": "Diese Strata-Engine hat keinen Code für die Grafikkarte, die sie verwenden wollte.",
+  "s8259": "Wähle unter „Ausführen auf“ eine andere Karte, oder öffne die Details: Dort steht, welche Karten gefunden wurden und wofür die Engine gebaut ist."
 }
