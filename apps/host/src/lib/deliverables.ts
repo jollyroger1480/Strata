@@ -8,7 +8,8 @@ import { tidyAnswer } from './answer-text';
  * that arrives between activities reads as one continuous piece.
  */
 export type DeliverableKind = 'html' | 'markdown' | 'pdf' | 'csv' | 'image' | 'code' | 'text' | 'other';
-export interface Deliverable { path: string; abs: string; name: string; kind: DeliverableKind; status: 'created' | 'changed'; size: number; lines: number | null; added: number; removed: number }
+export interface Deliverable { path: string; abs: string; name: string; kind: DeliverableKind; status: 'created' | 'changed'; size: number; lines: number | null; added: number; removed: number;
+  /** Which write came last in this reply (set when the host's frames are merged): the newest is the run's main result. */ order?: number }
 export interface GroupFile { path: string; name: string; kind: DeliverableKind; status: string; added: number; removed: number }
 export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[] }
 export type MessageBlock = { kind: 'text'; text: string } | ({ kind: 'group' } & ActivityGroup);
@@ -65,9 +66,30 @@ export function upsertGroup(blocks: MessageBlock[] | undefined, group: ActivityG
 /** The same file may be written more than once in a run: one card per path, with its latest numbers. */
 export function mergeDeliverable(list: Deliverable[] | undefined, file: Deliverable): Deliverable[] {
   const have = list ?? [], at = have.findIndex(f => f.path === file.path);
-  if (at < 0) return [...have, file];
+  const order = have.reduce((n, f) => Math.max(n, f.order ?? 0), 0) + 1;
+  if (at < 0) return [...have, { ...file, order }];
   const old = have[at];
-  return have.map((f, i) => (i === at ? { ...file, status: old.status === 'created' ? 'created' : file.status, added: old.added + file.added, removed: old.removed + file.removed } : f));
+  return have.map((f, i) => (i === at ? { ...file, order, status: old.status === 'created' ? 'created' : file.status, added: old.added + file.added, removed: old.removed + file.removed } : f));
+}
+
+/** The kinds the sidebar preview shows and a finished run may open by itself: pages, markdown, PDFs, pictures, tables and plain text (not code or unknown files). */
+export const SIDEBAR_KINDS: DeliverableKind[] = ['html', 'markdown', 'pdf', 'image', 'csv', 'text'];
+
+/**
+ * The one file a finished run opens in the sidebar, or null. The file the answer names wins (the last one it mentions); otherwise the one
+ * written last. Only kinds the sidebar can show count, so a run that made a script and a page opens the page, and several files open one.
+ */
+export function mainResult(files: Deliverable[] | undefined, answer: string): Deliverable | null {
+  const shown = (files ?? []).filter(f => SIDEBAR_KINDS.includes(f.kind));
+  if (!shown.length) return null;
+  const text = answer.toLowerCase();
+  let named: Deliverable | null = null, at = -1;
+  for (const f of shown) {
+    const mention = Math.max(text.lastIndexOf(f.name.toLowerCase()), text.lastIndexOf(f.path.toLowerCase()));
+    if (mention > at) { at = mention; named = f; }
+  }
+  if (named) return named;
+  return shown.reduce((best, f) => ((f.order ?? 0) >= (best.order ?? 0) ? f : best));
 }
 
 export const fileTypeLabel = (d: { kind: DeliverableKind; name: string }) => {

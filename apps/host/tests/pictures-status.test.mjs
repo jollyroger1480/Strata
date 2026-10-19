@@ -37,3 +37,16 @@ test('an API model takes pictures unless it was switched off or its server said 
   assert.equal(off.ok, false); assert.equal(off.why, 'api-off'); assert.match(off.message, /turn on Read pictures with this model/);
   assert.equal(pictureStatus(null, pick, api({}, 'anthropic')).why, 'api-style');
 });
+
+const noModelSource = await readFile(new URL('../src/lib/no-model.ts', import.meta.url), 'utf8');
+const { noModelNotice } = await import(`data:text/javascript;base64,${Buffer.from((await transform(noModelSource, { loader: 'ts', format: 'esm' })).code).toString('base64')}`);
+test('no model: Send says so plainly, shows a running download, and stays quiet when a model can answer', () => {
+  assert.equal(noModelNotice({ instances: [], jobs: [] }).message, 'No model is loaded. Load one in Models first.');
+  assert.equal(noModelNotice(null).message, 'No model is loaded. Load one in Models first.');
+  assert.match(noModelNotice({ instances: [], jobs: [{ kind: 'install', state: 'running', result: { install: { download: { percent: 41.6 } } } }] }).message, /downloading \(42%\)/);
+  assert.match(noModelNotice({ instances: [{ status: 'loading' }], jobs: [] }).message, /still loading/);
+  assert.equal(noModelNotice({ instances: [{ status: 'ready' }], jobs: [] }), null);
+  assert.equal(noModelNotice({ instances: [], jobs: [] }, { remote: true }), null);
+  assert.equal(noModelNotice({ instances: [], jobs: [] }, { libraryLoaded: true }), null);
+  assert.equal(noModelNotice({ instances: [], jobs: [{ kind: 'benchmark', state: 'running' }] }).title, 'No model is loaded');
+});

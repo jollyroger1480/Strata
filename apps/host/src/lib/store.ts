@@ -15,6 +15,7 @@ import { newestServingState } from './serving-state';
 import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
 import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
+import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
@@ -1522,6 +1523,11 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
     else startTimeSkipDemo(demoPrompt);
     return;
+  }
+  // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
+  if (state.connection === 'live') {
+    const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
+    if (why) { pushToast('info', why.title, why.message); return; }
   }
   const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
   if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}

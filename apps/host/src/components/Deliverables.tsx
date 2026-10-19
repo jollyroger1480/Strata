@@ -21,7 +21,7 @@ const showOf = (file: { path: string; name: string }, sessionId: string, onPrevi
     return problem('The file has no preview', e);
   });
 
-/** One file the assistant made or changed: its type, name and size, and Open (in the sidebar) with a menu for the other things to do with it. */
+/** One file the assistant made or changed: its type, name and size, and Open (in the file's own app or the browser) with a menu for the other things to do with it, among them Open in sidebar. */
 export function FileCard({ file, sessionId, onPreview }: { file: Deliverable; sessionId: string; onPreview: (a: PreviewArtifact) => void }) {
   const more = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState(false), [busy, setBusy] = useState(false);
@@ -30,10 +30,11 @@ export function FileCard({ file, sessionId, onPreview }: { file: Deliverable; se
     <span className="fcard__type">{fileTypeLabel(file)}</span>
     <span className="fcard__name"><strong title={file.path}>{file.name}</strong><span>{fileSize(file.size)}</span></span>
     <span className="fcard__split">
-      <button type="button" className="fcard__open" disabled={busy} onClick={() => { setBusy(true); void showOf(file, sessionId, onPreview, file.kind).finally(() => setBusy(false)); }}>{tr("Open")}</button>
+      <button type="button" className="fcard__open" disabled={busy} onClick={() => { setBusy(true); void fileAction.open(sessionId, file.path, 'app').catch(err => problem('The file was not opened', err)).finally(() => setBusy(false)); }}>{tr("Open")}</button>
       <button ref={more} type="button" className="fcard__more" aria-haspopup="menu" aria-expanded={menu} aria-label={tr("More ways to open {0}", [file.name])} onClick={() => setMenu(v => !v)}><Icon name="chevron" size={14} className="fcard__chev"/></button>
     </span>
     {tr(menu ? <FloatingMenu anchor={more.current} title={tr("File actions")} width={220} onClose={() => setMenu(false)}>
+      <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); void showOf(file, sessionId, onPreview, file.kind); }}><Icon name="panel"/>{tr("Open in sidebar")}</button>
       <button role="menuitem" className="menu__item" onClick={() => void run(() => fileAction.open(sessionId, file.path, 'folder'), 'The folder was not opened')}><Icon name="folder"/>{tr("Show in folder")}</button>
       <button role="menuitem" className="menu__item" onClick={() => void run(async () => { await navigator.clipboard.writeText(await fileAction.fullPath(sessionId, file.path)); pushToast('info', tr('Path copied')); }, 'The path was not copied')}><Icon name="copy"/>{tr("Copy path")}</button>
       <button role="menuitem" className="menu__item" onClick={() => void run(async () => { await fileAction.attach(sessionId, file.path); pushToast('info', tr('Attached to your next message'), file.name); }, 'The file was not attached')}><Icon name="attach"/>{tr("Attach as context")}</button>

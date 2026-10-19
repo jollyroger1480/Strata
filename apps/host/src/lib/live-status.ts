@@ -77,7 +77,7 @@ export function statusWords(frame: StatusFrame, rotation = 0): string {
     }
     case 'waiting-approval': return tr('Waiting for your answer…');
     case 'helpers': return tr('Helpers are working ({0})…', [Number(a.n) || 1]);
-    case 'goal-step': return tr('Working on the goal, step {0}', [Number(a.round) || 1]);
+    case 'goal-step': return tr('Working on the goal…');
     default: return tr(frame.text);
   }
 }

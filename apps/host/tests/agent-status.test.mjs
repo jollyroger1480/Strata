@@ -160,7 +160,7 @@ test('a sentence with a name or a number also carries its catalog template and v
   p.consume({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a', chunk: { type: 'tool-call-delta', index: 0, id: 'c', name: 'write', argumentsDelta: '{"file_path":"/w/pagoda.html","content":"' + 'x'.repeat(4000) } } });
   assert.deepEqual([seen.at(-1).key, seen.at(-1).values], ['Writing {0}… ({1} KB)', ['pagoda.html', '3.9']]);
   assert.equal(seen.at(-1).text, 'Writing pagoda.html… (3.9 KB)');
-  const keys = ['Starting…', 'Reading your message…', 'Working out the next step…', 'Thinking… {0} tokens', 'Writing the answer…', 'Waiting for your answer…', 'Helpers are working ({0})…', 'Working on the goal, step {0}',
+  const keys = ['Starting the assistant…', 'Starting…', 'Reading your message…', 'Working out the next step…', 'Thinking… {0} tokens', 'Writing the answer…', 'Waiting for your answer…', 'Helpers are working ({0})…', 'Working on the goal…',
     'Writing {0}…', 'Writing a file…', 'Writing {0}… ({1} KB)', 'Writing a file… ({0} KB)', 'Changing {0}…', 'Changing a file…', 'Reading {0}…', 'Reading a file…', 'Running a command…', 'Searching your files…', 'Searching the web…',
     'Opening {0}…', 'Opening a web page…', 'Using the browser…', 'Setting the goal…', 'Updating the goal…', 'Checking the goal…', 'Using a tool…', 'Reading your files…', 'Trying an improved version…', 'Checking the result…', 'Comparing the two versions…'];
   for (const key of keys) { const id = idOf(key); assert.ok(id, `${key} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) { assert.ok(catalog[l][id]?.trim(), `${l}: ${key}`); assert.deepEqual((catalog[l][id].match(/\{\d\}/g) ?? []).sort(), (key.match(/\{\d\}/g) ?? []).sort(), `${l} keeps the slots of ${key}`); } }
@@ -170,7 +170,7 @@ test('a goal step is always sent, even right after another status (it used to be
   const { reporter, frames, advance } = rig();
   reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
   advance(20);
-  reporter.set({ phase: 'goal', code: 'goal-step', text: 'Working on the goal, step 1', key: 'Working on the goal, step {0}', values: [1], args: { round: 1, max: 3 } });
+  reporter.set({ phase: 'goal', code: 'goal-step', text: 'Working on the goal…', args: { round: 1, max: 3 } });
   advance(10);
   reporter.set({ phase: 'thinking', code: 'thinking', text: 'Thinking… 1 tokens', tokens: 1 });
   advance(400);
@@ -186,4 +186,39 @@ test('a start failure from the agent reads in plain words and keeps the raw text
   assert.match(f.message, /reinstall|reopen/i);
   assert.match(f.details, /waiting for workflowEngine/);
   assert.doesNotMatch(plainTurnFailure(new Error('turn/start: boom')).message, /turn\/start/);
+});
+
+import { createSessionWhenReady, AgentUnavailable } from '../server/agent/agent-bridge.mjs';
+test('first chat on a fresh start waits for the Harness plugins instead of failing', async () => {
+  let calls = 0; let waits = 0;
+  const create = async () => {
+    calls++;
+    if (calls < 3) throw new Error('session/create: tool-bash (@deepseek-ai/dsh-tool-bash): waiting for shell\ntool-workflow: waiting for workflowEngine');
+    return { sessionId: 's1' };
+  };
+  const r = await createSessionWhenReady(create, { readyMs: 5000, retryMs: 5, onWait: () => { waits++; } });
+  assert.deepEqual(r, { sessionId: 's1' });
+  assert.equal(calls, 3);
+  assert.equal(waits, 2, 'the page is told twice that the assistant is starting');
+});
+test('a start that never finishes gives the plain message with the raw text for Details', async () => {
+  const raw = 'session/create: tool-bash: waiting for shell';
+  let clock = 0;
+  await assert.rejects(
+    createSessionWhenReady(async () => { throw new Error(raw); }, { readyMs: 100, retryMs: 1, now: () => (clock += 60) }),
+    e => {
+      assert.ok(e instanceof AgentUnavailable);
+      const f = plainTurnFailure(e);
+      assert.equal(f.message, 'The assistant could not start. Try again in a moment.');
+      assert.equal(f.details, raw);
+      assert.equal(f.code, 'AGENT_NOT_READY');
+      return true;
+    });
+});
+test('other session errors are not retried, and Stop while waiting ends the wait', async () => {
+  let calls = 0;
+  await assert.rejects(createSessionWhenReady(async () => { calls++; throw new Error('session/create: disk full'); }, { retryMs: 1 }), /disk full/);
+  assert.equal(calls, 1);
+  const r = await createSessionWhenReady(async () => { throw new Error('x: waiting for shell'); }, { retryMs: 1, cancelled: () => true });
+  assert.equal(r, null);
 });

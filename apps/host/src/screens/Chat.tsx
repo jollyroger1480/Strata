@@ -17,6 +17,8 @@ import { ComposerControls } from '../components/ComposerControls';
 import { ChatPhotos } from '../components/ChatPhotos';
 import { useChatPhotos, removeChatPhoto } from '../lib/chat-photos';
 import { useNative } from '../lib/native';
+import { mainResult, previewOf } from '../lib/deliverables';
+import { noModelNotice } from '../lib/no-model';
 import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
@@ -149,6 +151,20 @@ export function ChatScreen() {
         setPreviews(old => old.some(a => a.id === item.id) ? old : [...old, item]);
         setSelectedPreview(item.id);
     }
+    /* A run that finishes with a file the sidebar can show opens its main result there by itself (one file, never several). Only a run seen
+       finishing here does it: opening an old chat shows nothing new. A file that cannot be read just stays a card with Open. */
+    const replyWasStreaming = useRef<Map<string, boolean>>(new Map());
+    const lastReply = [...(session?.messages ?? [])].reverse().find(m => m.role === 'assistant');
+    useEffect(() => {
+        if (!session || !lastReply) return;
+        const before = replyWasStreaming.current.get(lastReply.id);
+        replyWasStreaming.current.set(lastReply.id, !!lastReply.streaming);
+        if (before !== true || lastReply.streaming || lastReply.error) return;
+        const main = mainResult(lastReply.deliverables, lastReply.content);
+        if (!main) return;
+        const sessionId = session.id;
+        void previewOf(sessionId, main).then(item => { if (session.id === sessionId) openPreview(item); }, () => { });
+    }, [lastReply?.id, lastReply?.streaming]);
     function closeTab(id: string) {
         const next = closePreviewTab([...previews.map(p => ({ id: p.id })), ...extraTabs], selectedPreview, id);
         setPreviews(previews.filter(p => p.id !== id));
@@ -359,8 +375,11 @@ export function ChatScreen() {
             pushToast('info', 'Add a prompt after /time-skip');
             return;
         }
-        if (!loaded && !chatNative?.instances.some(i => i.status === 'ready') && timeSkip === null)
-            return;
+        if (timeSkip === null) {
+            // No model to answer: say so plainly (or show the download), and do not start a run.
+            const why = noModelNotice(chatNative ?? null, { libraryLoaded: !!loaded });
+            if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
+        }
         updateDraft('');
         void sendMessage(text);
     }

@@ -3269,5 +3269,15 @@
   "s3277": "O modelo em execução será descarregado.",
   "s3278": "Local",
   "s3279": "A Strata não reconheceu um mecanismo para este computador. O modelo será baixado, mas pode não funcionar até que o mecanismo certo seja instalado (Configurações → Mecanismo).",
-  "s3280": "A Strata não reconheceu um mecanismo para este computador. O modelo foi baixado, mas não vai funcionar até que o mecanismo certo seja instalado. Abra Configurações → Mecanismo."
+  "s3280": "A Strata não reconheceu um mecanismo para este computador. O modelo foi baixado, mas não vai funcionar até que o mecanismo certo seja instalado. Abra Configurações → Mecanismo.",
+  "s7332": "Um modelo está sendo baixado",
+  "s7333": "Seu modelo está sendo baixado ({0}%). Você poderá conversar quando terminar.",
+  "s7334": "Seu modelo está sendo baixado. Você poderá conversar quando terminar.",
+  "s7335": "O modelo está carregando",
+  "s7336": "Seu modelo ainda está carregando. Você poderá conversar em instantes.",
+  "s7337": "Nenhum modelo carregado",
+  "s7338": "Nenhum modelo está carregado. Carregue um em Modelos primeiro.",
+  "s7339": "Iniciando o assistente…",
+  "s7340": "Não foi possível iniciar o assistente. Tente novamente em instantes.",
+  "s7341": "Trabalhando no objetivo…"
 }
