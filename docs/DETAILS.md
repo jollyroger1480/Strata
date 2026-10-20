@@ -1072,7 +1072,9 @@ print(r.choices[0].message.content)
   editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:
   run setup with `START-HERE.bat --setup --host 0.0.0.0 --api-key some-long-secret` (or add `"host": "0.0.0.0"` and
-  `"api_key": "..."` to `strata-<model>.json`). The server window then prints this PC's addresses
+  `"api_key": "..."` to `strata-<model>.json`). The key is recommended, not required: without one the server still starts and
+  warns that anyone who can reach the port can use the model and its tools (to say it is on purpose, use `--no-api-key` on
+  the server or `"api_key": "none"` in the config, which silences the config-empty note). The server window then prints this PC's addresses
   (`from other devices: http://192.168.x.x:8080/`); open that on the other device, or use `.../v1` as an API base URL.
   On Windows the firewall blocks it until you allow it: accept its prompt for Python (private networks), or run
   `New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`

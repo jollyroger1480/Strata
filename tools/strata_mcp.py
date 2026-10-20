@@ -1241,12 +1241,15 @@ class Strata:
 
     def api_key_for(self, port: int) -> str | None:
         """The key a config of this folder set for that port (used for our own requests; never shown)."""
+        def real(cfg):                                   # "api_key": "none" = served without a key on purpose
+            k = cfg.get("api_key")
+            return k if k and str(k).strip().lower() != "none" else None
         for c in self.configs():
             cfg = self.read_config(c)
-            if cfg.get("api_key") and int(cfg.get("port", DEFAULT_PORT)) == port:
+            if real(cfg) and int(cfg.get("port", DEFAULT_PORT)) == port:
                 return cfg["api_key"]
         for c in self.configs():
-            if self.read_config(c).get("api_key"):
+            if real(self.read_config(c)):
                 return self.read_config(c)["api_key"]
         return None
 

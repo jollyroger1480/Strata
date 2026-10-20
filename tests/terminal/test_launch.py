@@ -43,6 +43,17 @@ class SettingsRules(unittest.TestCase):
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=9), vram_gb=12)[0].level, "error")
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=2), vram_gb=24), [])
 
+    def test_no_key_warnings_are_plain_and_stronger_in_public(self):
+        lan = S.check_access(S.LaunchSettings(access="lan", no_key=True))
+        self.assertEqual([n.level for n in lan], ["warn"])
+        self.assertIn("anyone who can reach this port can use the model and its tools", lan[0].line())
+        pub = S.check_access(S.LaunchSettings(access="cloudflare", no_key=True))
+        self.assertEqual([n.level for n in pub], ["warn"])
+        self.assertIn("public address", pub[0].line())
+        self.assertIn("anyone on the internet", pub[0].line())
+        self.assertEqual(S.check_access(S.LaunchSettings(access="lan", api_key="k")), [])
+        self.assertEqual(S.check_access(S.LaunchSettings(access="local", no_key=True)), [])
+
     def test_access_notes(self):
         self.assertEqual(S.check_access(S.LaunchSettings(access="local")), [])
         lan = S.check_access(S.LaunchSettings(access="lan"))
@@ -293,6 +304,14 @@ class RunConfig(unittest.TestCase):
             cfg = derive_config(self.BASE, S.LaunchSettings(access=kind), bool_flags=frozenset())
             self.assertEqual(cfg["host"], "127.0.0.1")
             self.assertNotIn("api_key", cfg)
+
+    def test_no_key_is_written_as_none_and_a_key_wins(self):
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="lan", no_key=True), bool_flags=frozenset())
+        self.assertEqual((cfg["host"], cfg["api_key"]), ("0.0.0.0", "none"))
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="lan", no_key=True, api_key="sk-x"), bool_flags=frozenset())
+        self.assertEqual(cfg["api_key"], "sk-x")
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="local", no_key=True), bool_flags=frozenset())
+        self.assertNotIn("api_key", cfg)
 
     def test_installed_config_matching(self):
         d = {"context": 32768, "kv": "int8", "images": "off"}
@@ -740,6 +759,23 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("NOT_SET_ANYWHERE", err)
         p = self.plan("--model", "q2_0", "--new-key")
+        self.assertEqual(p["settings"]["api_key"], "set")
+
+    def test_no_api_key_flag(self):
+        p = self.plan("--model", "q2_0", "--access", "lan", "--no-api-key")
+        self.assertIsNone(p["settings"]["api_key"])
+        self.assertFalse(any("new API key was made" in w for w in p["warnings"]))
+        self.assertTrue(any("anyone who can reach this port can use the model and its tools" in w for w in p["warnings"]))
+        p = self.plan("--model", "q2_0", "--access", "cloudflare", "--no-api-key")
+        self.assertTrue(any("public address" in w and "anyone on the internet" in w for w in p["warnings"]))
+        p = self.plan("--model", "q2_0", "--access", "local", "--no-api-key")
+        self.assertEqual([w for w in p["warnings"] if "API key" in w], [])
+        # scripts that name LAN without a key flag keep getting a key, as before
+        p = self.plan("--model", "q2_0", "--access", "lan", "--yes")
+        self.assertEqual(p["settings"]["api_key"], "set")
+        self.assertTrue(any("new API key was made" in w for w in p["warnings"]))
+        # a key given as well wins over --no-api-key, with a note
+        p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-a", "--no-api-key")
         self.assertEqual(p["settings"]["api_key"], "set")
 
     def test_model_path_is_used_instead_of_a_catalog_model(self):

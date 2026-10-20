@@ -1167,8 +1167,8 @@ class AdvancedScreen(Base):
 class AccessScreen(Base):
     step_id = "access"
     hints = "↑↓ choose   Enter next   p port   k new key   t key on/off   Esc back   ? help"
-    help_text = ("Who can use the model. 'This computer only' is the safe default. Anything beyond it needs the API key: the server will not "
-                 "start on a network without one.")
+    help_text = ("Who can use the model. 'This computer only' is the safe default and never needs a key. Beyond it Strata makes an API key "
+                 "for you (recommended); press t if you would rather have no key: it still starts, but anyone who can reach it can use it.")
 
     BINDINGS = Base.BINDINGS + [Binding("p", "port", show=False), Binding("k", "newkey", show=False), Binding("t", "keytoggle", show=False)]
 
@@ -1203,7 +1203,7 @@ class AccessScreen(Base):
         t = Text()
         t.append(f"\n   Port      [ {s.port} ]   press p to change\n")
         t.append(f"   API key   [ {'on' if on else 'off'} ]   {acc.mask_key(s.api_key)}  ", style=FG if on else WARN)
-        t.append("(recommended for anything beyond this computer)" if beyond else "(optional on this computer)", style=MUTE)
+        t.append(("(recommended for anything beyond this computer; t = no key)" if on else "(t = make a key)") if beyond else "(not needed on this computer)", style=MUTE)
         self.query_one("#portkey", Static).update(t)
 
     def explain(self) -> Text:
@@ -1217,9 +1217,9 @@ class AccessScreen(Base):
             if fw:
                 out.append(fw + "\n", style=WARN)
             if cur.key == "cloudflare":
-                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so keep the API key on.", style=MUTE)
+                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so an API key keeps others out.", style=MUTE)
             elif cur.key == "lan":
-                out.append("Other computers on your network can use it at the address shown. Keep the API key on.", style=MUTE)
+                out.append("Other computers on your network can use it at the address shown. An API key is recommended.", style=MUTE)
             elif cur.key == "tailscale":
                 out.append("Only devices signed in to your Tailscale network can reach it.", style=MUTE)
             else:
@@ -1230,9 +1230,11 @@ class AccessScreen(Base):
         kind = self.menu().current.key
         s = self.ctx.settings
         s.access = kind
-        if kind != "local" and not s.api_key:
+        if kind != "local" and not s.api_key and not s.no_key:
             s.api_key = acc.new_key()
-            self.say("An API key was made for you, because this reaches beyond your computer.")
+            self.say("An API key was made for you (recommended beyond this computer). Press t if you want no key.")
+        elif kind != "local" and s.no_key:
+            self.say(S.NO_KEY_PUBLIC if kind == "cloudflare" else S.NO_KEY_NETWORK, True)
 
     def action_port(self) -> None:
         self.open_field("portfield", str(self.ctx.settings.port), "port number")
@@ -1253,6 +1255,7 @@ class AccessScreen(Base):
 
     def action_newkey(self) -> None:
         self.ctx.settings.api_key = acc.new_key()
+        self.ctx.settings.no_key = False
         self.say("A new API key was made. Apps that used the old one need the new one (strata connect shows it).")
         self.paint()
 
@@ -1260,9 +1263,10 @@ class AccessScreen(Base):
         s = self.ctx.settings
         if s.api_key:
             s.api_key = None
-            self.say("The API key is off." + (" The server will not start on a network without one." if s.access != "local" else ""), s.access != "local")
+            s.no_key = s.access != "local"
+            self.say("The API key is off." + ((" " + (S.NO_KEY_PUBLIC if s.access == "cloudflare" else S.NO_KEY_NETWORK)) if s.access != "local" else ""), s.access != "local")
         else:
-            s.api_key = acc.new_key()
+            s.api_key, s.no_key = acc.new_key(), False
             self.say("The API key is on.")
         self.paint()
 
@@ -1275,7 +1279,7 @@ class AccessScreen(Base):
     def commit(self) -> None:
         s = self.ctx.settings
         s.access = self.menu().current.key
-        if s.access != "local" and not s.api_key:
+        if s.access != "local" and not s.api_key and not s.no_key:
             s.api_key = acc.new_key()
 
     def action_back(self) -> None:
