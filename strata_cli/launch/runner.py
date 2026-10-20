@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -277,7 +278,7 @@ def write_private(path: Path, data: dict) -> None:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

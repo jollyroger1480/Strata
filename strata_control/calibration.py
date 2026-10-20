@@ -26,6 +26,7 @@ from pathlib import Path
 from strata_control import profiles
 from strata_control.doctor import inspect as inspect_components
 from strata_control.profiles import ProfileError
+from strata_control import atomic as _atomic_mod
 
 
 SUITE = "legacy-decode-v1"
@@ -412,7 +413,7 @@ def _replace_bytes(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        _atomic_mod.replace(temp, path)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)

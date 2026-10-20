@@ -6,12 +6,18 @@ CLI resolve the same saved connection without importing server or installer code
 
 from __future__ import annotations
 
+import os
 try:
     from strata_control.private_files import private_mkdir as _private_mkdir
 except ImportError:                                     # a thin bundle (monitor only) ships without strata_control
     def _private_mkdir(path, *, parents=False, exist_ok=True):
         path.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
         return path
+try:
+    from strata_control import atomic as _atomic_mod
+except ImportError:                                     # the same thin bundle: a plain replace
+    class _atomic_mod:                                  # noqa: N801
+        replace = staticmethod(os.replace)
 import hashlib
 import json
 import os
@@ -158,7 +164,7 @@ def _replace(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        _atomic_mod.replace(name, path)
         if os.name == "posix":
             try:
                 parent = os.open(path.parent, os.O_RDONLY)
