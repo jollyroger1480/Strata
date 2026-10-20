@@ -100,6 +100,12 @@ class LaunchSettings:
     last_used: str | None = None
     created: str | None = None
 
+    @property
+    def is_tuned(self) -> bool:
+        """Tuning was done for this preset: it saved faster settings (tuned_preset), or it measured that the standard settings are already the
+        fastest (only tuned_at is set). Either way the next start must not tune again."""
+        return bool(self.tuned_preset or self.tuned_at)
+
     def to_dict(self, *, with_key: bool = True) -> dict[str, Any]:
         d = {"schema": SCHEMA, **asdict(self)}
         if not with_key:

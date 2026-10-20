@@ -41,7 +41,8 @@ tag if you want updates only when you decide. The examples below use these image
 
 Each command runs Strata in the background, keeps your files in the volume `strata-data`, and listens only on this computer
 (`127.0.0.1:8080`). Replace `MODEL` and the key. The first start downloads the model (tens of GB): watch it with
-`docker logs -f strata`.
+`docker logs -f strata`. Already have the model's GGUF files? Add `-e MODEL_PATH=/models -v /your/folder:/models:ro` and nothing is
+downloaded for the model itself ([Files you already have](#files-you-already-have)).
 
 **NVIDIA**
 
@@ -141,6 +142,17 @@ container's user). Nothing large is written anywhere else in the container.
 
 Mount the folder with the model's GGUF files read-only and name it: `-v /srv/gguf/IQ3_XXS:/models:ro -e MODEL_PATH=/models
 -e MODEL=IQ3_XXS`. Nothing is downloaded for the model itself; the prepared pack is made in the volume.
+
+- The folder holds the shards of one model directly (`...-00001-of-00002.gguf`, `...-00002-of-00002.gguf`), not a folder of folders.
+  If you mount a parent folder, the container says which sub-folder to name in `MODEL_PATH`.
+- The folder has to be mounted: a `MODEL_PATH` that is not in the container, or a folder with no `.gguf` files, stops the start at
+  once with a message, and nothing is downloaded.
+- Read-only (`:ro`) is fine. The pack (about 40 GB for IQ3_XXS) and the draft layer (about 6 GB, fetched once) are written to the
+  volume, so it needs that room. With pictures on (the default) the picture reader (0.9 GB) is fetched too; `VISION=off` skips it.
+- Links to the files work when the links' targets are mounted too, and `MODEL` is set (without `MODEL`, Strata identifies the files itself
+  and does not follow links).
+- Without `MODEL_PATH`, files you put into the volume by hand (`/data/Strata-data/models/<model folder>/`) are found as well, if they have the
+  published names.
 
 ## The API key
 
@@ -260,8 +272,10 @@ package and start through `strata launch`. Mapping:
 | `HOST` | not needed: the server listens on every address inside the container; choose where it is reachable with `-p` |
 | `LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT`, `CONFIG`, `REINSTALL` | ignored with a warning; use `STRATA_SET` for engine settings and `strata launch --help` for the rest |
 
-The old volume layout (`/data/config`, `/data/models`) is not read; the model files are found again if you point `MODEL_PATH` at
-the old model folder. The container name, the volume and the port can stay as they were.
+A volume from the older image is picked up: the first start moves `/data/models`, `/data/packs` and `/data/mtp` into
+`/data/Strata-data` (a rename inside the volume: nothing is copied or downloaded again, and the prepared pack is kept). The old
+`/data/config` is not read; the run settings are made again from the files. A folder you mounted yourself at one of those places
+is left alone: point `MODEL_PATH` at it. The container name, the volume and the port can stay as they were.
 
 ## Build it yourself
 

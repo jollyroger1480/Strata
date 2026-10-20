@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
-import { alignModels, dataFolderFromPick, isDriveRoot, libraryFolderFromPick, makeFolder, rememberDataFolder } from '../server/model-folder.mjs';
+import { alignModels, dataFolderFromPick, isDriveRoot, libraryFolderFromPick, makeFolder, rememberDataFolder, syncDataFolder, readDataFolder, terminalSettingsFile } from '../server/model-folder.mjs';
 import { nativeFixture } from './helpers/native-fixture.mjs';
 
 const scratch = t => { const dir = realpathSync(mkdtempSync(join(tmpdir(), 'strata-folder-'))); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
@@ -46,10 +46,10 @@ test('models and Models are one folder; a disk that cannot hold the link gets a 
 test('the data folder is written into the Control settings file, merged and only when it changes', t => {
   const dir = scratch(t), file = join(dir, 'config', 'app-settings.json');
   assert.equal(rememberDataFolder(file, 'D:\\Strata'), true);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { data_dir: 'D:\\Strata' });
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).data_dir, 'D:\\Strata');
   writeFileSync(file, JSON.stringify({ installs: ['C:\\x'], data_dir: 'C:\\old' }));
   assert.equal(rememberDataFolder(file, 'D:\\Strata'), true);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { installs: ['C:\\x'], data_dir: 'D:\\Strata' });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).installs, ['C:\\x']);
   assert.equal(rememberDataFolder(file, 'D:\\Strata'), false);
   writeFileSync(file, '\uFEFF{"data_dir":"E:\\\\Strata","installs":[]}');
   assert.equal(rememberDataFolder(file, 'E:\\Strata'), false);
@@ -96,4 +96,40 @@ test('Windows: the model library on a whole drive goes to X:\\Strata\\Models', {
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim().toLowerCase(), `${drive}Strata\\Models`.toLowerCase());
   assert.equal(existsSync(join(dir, 'Strata', 'Models')), true);
+});
+
+test('the app and the Terminal share one models folder: the one changed last wins, the other file follows, nothing moves', t => {
+  const dir = scratch(t), appFile = join(dir, 'app-settings.json'), terminalFile = join(dir, 'roaming', 'settings.json');
+  const c = join(dir, 'on-c'), d = join(dir, 'on-d');
+  mkdirSync(c); mkdirSync(d);
+  const seed = (file, folder, at) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify({ data_dir: folder, data_dir_at: at, installs: ['keep'] })); };
+  // the Terminal chose D: after the app chose C:
+  seed(appFile, c, 1000); seed(terminalFile, d, 2000);
+  assert.deepEqual(syncDataFolder({ appFile, terminalFile }), { folder: d, from: 'terminal' });
+  assert.deepEqual(readDataFolder(appFile), { folder: d, at: 2000 });
+  assert.deepEqual(JSON.parse(readFileSync(appFile, 'utf8')).installs, ['keep']);
+  assert.deepEqual(syncDataFolder({ appFile, terminalFile }), { folder: d, from: null });
+  // the app chose C: later
+  seed(appFile, c, 3000);
+  assert.deepEqual(syncDataFolder({ appFile, terminalFile }), { folder: c, from: 'app' });
+  assert.deepEqual(readDataFolder(terminalFile), { folder: c, at: 3000 });
+  // the Terminal has none: nothing is written there; the app has none: it takes the Terminal's
+  const lone = join(dir, 'lone.json');
+  assert.deepEqual(syncDataFolder({ appFile: join(dir, 'none.json'), terminalFile: lone }), { folder: null, from: null });
+  assert.equal(existsSync(lone), false);
+  seed(lone, d, 10);
+  assert.deepEqual(syncDataFolder({ appFile: join(dir, 'none.json'), terminalFile: lone }), { folder: d, from: 'terminal' });
+  // the app's preference (native-host.json) counts when its file names none
+  assert.deepEqual(syncDataFolder({ appFile: join(dir, 'none2.json'), terminalFile: lone, app: { folder: c, at: 99 } }), { folder: c, from: 'app' });
+  // a Terminal folder on a disk that is not there is never adopted
+  seed(terminalFile, join(dir, 'unplugged'), 9999); seed(appFile, c, 5);
+  assert.deepEqual(syncDataFolder({ appFile, terminalFile }), { folder: c, from: 'app' });
+  assert.equal(readdirSyncSafe(c), 0);
+});
+const readdirSyncSafe = folder => execFileSync(process.execPath, ['-e', `console.log(require('fs').readdirSync(${JSON.stringify(folder)}).length)`]).toString().trim() * 1;
+
+test('the Terminal settings file is where setup.py and Control keep it', () => {
+  assert.equal(terminalSettingsFile({ APPDATA: 'C:\R' }, 'win32'), join('C:\R', 'Strata', 'settings.json'));
+  assert.equal(terminalSettingsFile({ XDG_CONFIG_HOME: '/x' }, 'linux'), join('/x', 'strata', 'settings.json'));
+  assert.equal(terminalSettingsFile({ STRATA_TERMINAL_SETTINGS_FILE: '/t.json' }, 'linux'), '/t.json');
 });
