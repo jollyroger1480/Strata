@@ -2986,6 +2986,7 @@ def engine_args(cfg: dict) -> list[str]:
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
+    args += pool_cores_args(cfg, args)
     return learned_profile_args(cfg, args)
 
 
@@ -3011,6 +3012,32 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         print(f'[strata] "parallel": {n} - the engine runs at most {PARALLEL_MAX} requests together; it will use '
               f"{PARALLEL_MAX}", flush=True)
     return ["--batch", str(n)]
+
+
+_POOL_CORES_OK = re.compile(r"^[0-9]+(-[0-9]+(:[0-9]+)?)?(,[0-9]+(-[0-9]+(:[0-9]+)?)?)*$")
+
+
+def pool_cores_args(cfg: dict, args: list[str]) -> list[str]:
+    """Experimental, off by default: "pool_cores": "0,2,4,6" (or "2-14:2", or a list of numbers) in the config pins the CPU
+    expert workers to exactly those logical processors (--pool-cores; docs/DETAILS.md, "Which logical processors the CPU
+    workers use").  The engine warns about two entries on one core or the host's own and leaves out processors the process may
+    not use; a text this cannot read is said here and ignored (recommend, never force).  An engine option already in the args wins."""
+    value = cfg.get("pool_cores")
+    if value is None or value is False or value == "" or value == []:
+        return []
+    if "--pool-cores" in args:
+        return []
+    if isinstance(value, list) and value and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value):
+        text = ",".join(str(v) for v in value)
+    elif isinstance(value, str):
+        text = value.replace(" ", "")
+    else:
+        text = ""
+    if not _POOL_CORES_OK.match(text):
+        print(f'[strata] "pool_cores" must be logical processor numbers like "0,2,4,6" or "2-14:2", not {value!r}: ignored '
+              "(the CPU workers keep their default placement)", flush=True)
+        return []
+    return ["--pool-cores", text]
 
 
 def profile_shape(path: str) -> tuple[int, int] | None:

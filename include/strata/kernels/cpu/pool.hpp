@@ -113,6 +113,18 @@ enum class HostCore { First, Last, Sibling };
 void set_host_core(HostCore where);
 HostCore host_core_setting();
 
+/// `--pool-cores LIST` / STRATA_POOL_CORES / the config's "pool_cores" (experimental, off by default): pin the pool's
+/// workers to exactly these logical processors, in this order, instead of one per physical core.  An empty list (the
+/// default) leaves the placement as it has always been.  Set before the pool is built.  Processors the process may not
+/// run on are left out with a warning; SMT siblings of one core and the host's processor are kept with a warning (a
+/// person who asks for them gets them).  The worker count is the list's length unless --pool-workers says otherwise.
+void set_pool_cores(const std::vector<int>& cpus);
+const std::vector<int>& pool_cores_setting();
+
+/// Every logical processor this process may run on and the physical core it belongs to (see LogicalCpuInfo).  Empty when
+/// the system does not say (macOS, a sandbox without the topology).
+std::vector<LogicalCpuInfo> logical_cpu_layout();
+
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
 
 /// The logical processor the host thread is pinned to under the current setting (-1: no topology).
@@ -198,6 +210,11 @@ public:
     /// What bounded the default worker count (pool_plan.hpp; "" when a count was configured), the physical cores
     /// and logical processors counted - for the start-up line.
     const char* plan_limit() const { return plan_limit_; }
+    /// True when the workers sit where `--pool-cores` said (the list, minus what could not be used).
+    bool explicit_cores() const { return explicit_cores_; }
+    /// The start-up line about where the workers and the host run ("CPU workers on logical processors 2,4,...,30 (15
+    /// workers, one per physical core; host on 0)"); "" without workers.
+    std::string placement_line() const;
     int plan_cores() const { return plan_cores_; }
     int plan_logical() const { return plan_logical_; }
     /// STRATA_NUMA_SPLIT: 2 when the native row phases are split per NUMA node, 0 when off.
@@ -283,6 +300,9 @@ private:
     void publish();
 
     int n_ = 0;
+    bool explicit_cores_ = false;
+    bool pinned_ = true;
+    std::vector<LogicalCpuInfo> layout_;   // the logical processors and their cores, read when the pool was built (the caller may be pinned later)
     const char* plan_limit_ = "";
     int plan_cores_ = 0;
     int plan_logical_ = 0;

@@ -794,6 +794,20 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(s["extra"], {"--prefill": "65536", "STRATA_PIN_BY_NEED": "1"})
         self.assertIn("--set prefill=65536", p["flags"])
 
+    def test_pool_cores_is_an_experimental_advanced_setting(self):
+        code, out, err = run_cli(["launch", "--help"])
+        self.assertIn("--pool-cores", out)
+        p = self.plan("--model", "q2_0", "--pool-cores", "2,4, 6,8")
+        self.assertEqual(p["settings"]["extra"], {"--pool-cores": "2,4,6,8"})
+        self.assertIn("--set pool-cores=2,4,6,8", p["flags"])                # the copyable line says the same
+        p = self.plan("--model", "q2_0", "--pool-cores", "2-14:2")
+        self.assertEqual(p["settings"]["extra"], {"--pool-cores": "2-14:2"})
+        p = self.plan("--model", "q2_0")                                    # off by default: nothing is added
+        self.assertNotIn("--pool-cores", p["settings"]["extra"])
+        p = self.plan("--model", "q2_0", "--pool-cores", "two,four")        # a list that cannot be read: a warning, never a refusal
+        self.assertNotIn("--pool-cores", p["settings"]["extra"])
+        self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
+
     def test_api_key_flags(self):
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-mine")
         self.assertEqual(p["settings"]["api_key"], "set")

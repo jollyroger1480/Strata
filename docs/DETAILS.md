@@ -2070,6 +2070,66 @@ the pairs in which the switched arm won). They are here so you can try them on y
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
 
+## Which logical processors the CPU workers use, and `--pool-cores` (experimental, off by default)
+
+The CPU expert workers read the experts that are not in graphics memory, and their speed is set by how many physical cores
+read memory at the same time. So the engine starts one worker per physical core, never two workers on the two hardware
+threads (SMT siblings) of one core, and keeps the first core for the main thread (the one that waits for the graphics
+card). The start-up log says where everything sits:
+
+```
+strata generate: CPU workers on logical processors 2,4,...,30 (15 workers, one per physical core; host on 0)
+```
+
+The numbers depend on the system. Windows numbers the two threads of a core next to each other (core k is logical
+processors 2k and 2k+1), so the workers sit on the even numbers. Linux usually numbers the first thread of every core first
+and the siblings after them (a 6-core, 12-thread CPU: cores 0 to 5, their siblings 6 to 11), so the workers sit on the low
+numbers. The engine does not guess: it reads the pairing from the system (Windows `GetLogicalProcessorInformationEx`, Linux
+`/sys/devices/system/cpu/cpu*/topology`). Where the system does not say (some containers), the line says so
+("the OS did not say which logical processors share a core") and the default count is half of the logical processors. The
+line also says when two workers do share a core. `ps -L -o tid,psr,comm` on Linux, and Process Explorer or any tool that reads
+thread names on Windows, show the workers as `strata-pool-N` and the main thread as `strata-host`; the other helper threads
+carry names too (`strata-stage`, `strata-adapt`, `strata-io`, ...).
+
+Only the workers and the main thread are pinned. Every other thread (the prompt copy threads, the adaptive tier's job thread,
+the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose threads
+are not pinned either. So a task manager that shows only the first few logical processors busy does not mean the pool is
+misplaced: while the experts are in graphics memory the workers have nothing to do. On Linux the helper threads the engine
+starts after the main thread is pinned inherit its single CPU; `--aux-cpus` (next section) moves them.
+
+What that looks like on a Ryzen AI MAX+ 395 (16 cores, 32 threads, Windows 11, Balanced power plan), with every expert in
+graphics memory: snapshots of four runs of the engine showed the unpinned threads on logical processors 0 to 15 only (the first
+eight cores, both threads of each) and 16 to 31 idle. Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing
+pinned ran there. The 15 workers sat on 2, 4, ..., 30 and did nothing. The CPU picture encoder (`strata-vision`, 16 threads
+there) did the same: 16 threads on logical processors 0 to 15, 10.1 s for a 1024x1024 picture. Pinning those 16 threads to one
+per core (2, 4, ..., 30) made it far slower (74 to 193 s), and 8 threads pinned to 8 real cores took 12.3 s, so the encoder
+stays where the operating system puts it (the cause was not looked into; the parked second chiplet is the obvious suspect).
+
+With the experts on the CPU, the workers of the same machine were each at 100% on exactly the even numbers (the CPU pool alone
+on random expert data, so only the placement and the memory traffic are real). Why the default is not "the first N logical
+processors": 8 workers on logical processors 1 to 8 (four cores, both threads) read 67 GB/s, 8 workers on real cores
+2, 4, ..., 16 read 94 GB/s, and the default 15 workers on 2, 4, ..., 30 read 146 GB/s (medians of three interleaved 10-second
+runs; 31 workers on 1 to 31 read 123 GB/s).
+
+**`--pool-cores LIST`** (or `STRATA_POOL_CORES=LIST`, or `"pool_cores": "2,4,6,8"` in the run config, or
+`strata launch --pool-cores 2,4,6,8`) pins the workers to exactly these logical processors, in this order. It is for people who
+want to choose the cores themselves (leave some for other programs, use one chiplet, test a layout); the default is what was
+measured. The list is numbers, ranges and `first-last:step`: `0,2,4,6`, `2-14:2`. The numbers are the ones Task Manager and
+`lscpu` show. The worker count is the length of the list; `--pool-workers N` takes the first N entries (more workers than
+entries: the extra ones run unpinned). Nothing is refused; the engine warns:
+
+```
+strata cpu pool: --pool-cores: logical processors 0 and 1 are the two hardware threads of one core: two workers on it share the core's memory bandwidth and slow each other down (one per physical core is the default)
+strata cpu pool: --pool-cores: logical processor 0 is also the host thread's: a worker there competes with the thread that waits for the graphics card
+strata cpu pool: --pool-cores: left out: 99 is not a logical processor this process may run on
+```
+
+Processors the process may not use (not there, or outside a `taskset` / affinity limit) are left out; if none is left the
+pool uses its default placement. A list that cannot be read (`two,four`) is said and ignored. The main thread keeps the first
+core (`--host-core` still decides that), so leave that processor out of the list. The option moves threads only and never
+changes a result. It applies to the main engine; the Qwen3.6 engine (`strata-q36`) keeps its own `--pool-workers` and the
+default placement.
+
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
 The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
