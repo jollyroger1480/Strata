@@ -223,6 +223,19 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("strata-a.json", out)
         self.assertIn("does not have", out)
 
+    def test_nvidia_card_without_gpu_access_ends_before_any_work(self):
+        dev = self.tmp / "dev"
+        dev.mkdir()
+        r = subprocess.run([SH, str(self.script)], env=self.env(STUB_BACKEND="cuda", STRATA_DEV_DIR=str(dev), MODEL="Q2_0"),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("--gpus all", r.stderr)
+        self.assertNotIn("launch --no-tui", self.log.read_text())
+        (dev / "nvidia0").write_text("")                                  # with the device files the start goes on
+        p = self.start(STUB_BACKEND="cuda", STRATA_DEV_DIR=str(dev), MODEL="Q2_0")
+        self.wait_for("launch --no-tui")
+        self.stop(p)
+
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,
                            text=True, timeout=30)
