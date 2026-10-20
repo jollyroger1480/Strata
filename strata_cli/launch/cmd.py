@@ -500,7 +500,7 @@ def run_launch(a: argparse.Namespace) -> int:
                     sm = store.summary(i)
                     _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
                          f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
-                         f"{('tuned ' + (i.tuned_at or '')) if i.tuned_preset else 'not tuned':<16} {i.last_used or ''}")
+                         f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
             return 0
         if a.delete_preset:
             store.delete(a.delete_preset)

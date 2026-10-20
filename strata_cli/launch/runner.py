@@ -812,6 +812,9 @@ class Runner:
                 return
             except presets.PresetError:
                 pass
+        elif s.tuned_at:                                     # measured before: the standard settings were already the fastest, nothing was saved
+            self.emit("tune", f"Already tuned on {s.tuned_at}: this computer runs best with the standard settings. Nothing to do.", 100)
+            return
         mode = "thorough" if s.tune == "thorough" else "quick"
         status_file = launch_dir() / f"{self.name}.tune.json"
         try:
