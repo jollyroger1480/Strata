@@ -149,7 +149,8 @@ export function cancel(id) {
 export function rateSample() {
   const done = requests.filter((r) => r.state === 'done' && r.tokensOut > 0);
   if (!done.length) return 0;
-  const tps = done.map((r) => r.tokensOut / Math.max(0.001, r.durationMs / 1000));
+  const tps = done.filter((r) => r.tps > 0).map((r) => r.tps);     // answer speeds (decode time), not tokens over the whole request
+  if (!tps.length) return 0;
   return round(tps.reduce((a, b) => a + b, 0) / tps.length, 1);
 }
 

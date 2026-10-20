@@ -709,6 +709,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
           durationMs: Date.now() - started,
           ttftMs: firstTokenMs ?? undefined,
           cachedTokens: result.cachedTokens,
+          tps: result.tps,
           usageSource: result.usageSource,
         });
         if(models.REAL){monitor.setRecordedContext({ ...result, requestId: entry.id, sessionId });monitor.idle();}
