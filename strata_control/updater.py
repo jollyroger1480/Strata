@@ -490,7 +490,9 @@ def check(ctx: Context) -> dict:
         state.data["last_check"] = {
             "at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(),
             "engine": report["engine"]["offered"]["version"] if report["engine"]["status"] in ("available", "install") and report["engine"]["offered"] else None,
-            "app": report["app"]["offered"] if report["app"]["status"] == "available" else None}
+            "app": report["app"]["offered"] if report["app"]["status"] == "available" else None,
+            # the versions this result is for, so a later Control, engine or app change drops the cached notice
+            "control": ec.runtime_version(), "engine_installed": ec.newest_installed_version(ctx.components)}
         state.save()
         return report
 

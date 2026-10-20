@@ -189,14 +189,38 @@ def engine_dir(root: Path | None = None) -> Path:
     return (root or components_dir()) / "engine"
 
 
+def newest_installed_version(root: Path | None = None) -> str | None:
+    """The highest engine version in the component folder, or None. A quick scan; nothing is hashed."""
+    try:
+        found, _ = scan(root)
+    except Exception:                                   # noqa: BLE001 - informational only
+        return None
+    return max((item.version for item in found), key=_version_key, default=None)
+
+
 def cached_notice(root: Path | None = None) -> str | None:
     """"update available (x.y.z): run `strata update`" from the last explicit check, or None. Reads one small local file; it never
-    touches the network, so showing it at a start does not break the rule that only an update step downloads."""
+    touches the network, so showing it at a start does not break the rule that only an update step downloads.
+
+    The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
+    recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
+    base = root or components_dir()
     try:
-        last = (json.loads(((root or components_dir()) / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
+        last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
         return None
-    parts = [f"engine {last['engine']}" for _ in [0] if last.get("engine")] + [f"app {last['app']}" for _ in [0] if last.get("app")]
+    if not isinstance(last, dict):
+        return None
+    control = runtime_version()
+    if "control" in last and last["control"] != control:
+        return None
+    engine, app = last.get("engine"), last.get("app")
+    installed = newest_installed_version(base)
+    if "engine_installed" in last and last["engine_installed"] != installed:
+        engine = None
+    if engine and installed and _version_key(str(engine)) <= _version_key(installed):
+        engine = None
+    parts = ([f"engine {engine}"] if engine else []) + ([f"app {app}"] if app else [])
     return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
 
 
