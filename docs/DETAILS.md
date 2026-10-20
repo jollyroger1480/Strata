@@ -2092,21 +2092,24 @@ thread names on Windows, show the workers as `strata-pool-N` and the main thread
 carry names too (`strata-stage`, `strata-adapt`, `strata-io`, ...).
 
 Only the workers and the main thread are pinned. Every other thread (the prompt copy threads, the adaptive tier's job thread,
-the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose
-threads are not pinned either. A task manager that shows only the first few logical processors busy is therefore not
-necessarily the pool: while the experts are in graphics memory the workers have nothing to do. On a Ryzen AI MAX+ 395 (16
-cores, 32 threads, Windows 11, Balanced power plan) with every expert in graphics memory, snapshots of four runs of the engine
-showed the unpinned threads on logical processors 0 to 15 only (the first eight cores, both threads of each) and 16 to 31
-idle; Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing pinned ran there. The 15 workers sat on 2, 4, ..., 30
-and did nothing. With the experts on the CPU the same machine's workers were each at 100% on exactly those even numbers (CPU
-pool alone on random expert data, so only the placement and the memory traffic are real). The CPU picture encoder
-(`strata-vision`, 16 threads there) showed the same picture: 16 threads on logical processors 0 to 15, 10.1 s for a
-1024x1024 picture. Pinning those 16 threads to one per core (2, 4, ..., 30) made it far slower (74 to 193 s) on that PC,
-and 8 threads pinned to 8 real cores took 12.3 s, so the encoder stays where the operating system puts it (the cause was
-not looked into; the parked second chiplet is the obvious suspect).
-That is why the default is not "the first N logical processors": on that machine, 8 workers on logical processors 1 to 8
-(four cores, both threads) read 67 GB/s, 8 workers on real cores 2, 4, ..., 16 read 94 GB/s, and the default 15 workers on
-2, 4, ..., 30 read 146 GB/s (median of three interleaved 10-second runs; 31 workers on 1 to 31 read 123 GB/s).
+the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose threads
+are not pinned either. So a task manager that shows only the first few logical processors busy does not mean the pool is
+misplaced: while the experts are in graphics memory the workers have nothing to do. On Linux the helper threads the engine
+starts after the main thread is pinned inherit its single CPU; `--aux-cpus` (next section) moves them.
+
+What that looks like on a Ryzen AI MAX+ 395 (16 cores, 32 threads, Windows 11, Balanced power plan), with every expert in
+graphics memory: snapshots of four runs of the engine showed the unpinned threads on logical processors 0 to 15 only (the first
+eight cores, both threads of each) and 16 to 31 idle. Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing
+pinned ran there. The 15 workers sat on 2, 4, ..., 30 and did nothing. The CPU picture encoder (`strata-vision`, 16 threads
+there) did the same: 16 threads on logical processors 0 to 15, 10.1 s for a 1024x1024 picture. Pinning those 16 threads to one
+per core (2, 4, ..., 30) made it far slower (74 to 193 s), and 8 threads pinned to 8 real cores took 12.3 s, so the encoder
+stays where the operating system puts it (the cause was not looked into; the parked second chiplet is the obvious suspect).
+
+With the experts on the CPU, the workers of the same machine were each at 100% on exactly the even numbers (the CPU pool alone
+on random expert data, so only the placement and the memory traffic are real). Why the default is not "the first N logical
+processors": 8 workers on logical processors 1 to 8 (four cores, both threads) read 67 GB/s, 8 workers on real cores
+2, 4, ..., 16 read 94 GB/s, and the default 15 workers on 2, 4, ..., 30 read 146 GB/s (medians of three interleaved 10-second
+runs; 31 workers on 1 to 31 read 123 GB/s).
 
 **`--pool-cores LIST`** (or `STRATA_POOL_CORES=LIST`, or `"pool_cores": "2,4,6,8"` in the run config, or
 `strata launch --pool-cores 2,4,6,8`) pins the workers to exactly these logical processors, in this order. It is for people who
