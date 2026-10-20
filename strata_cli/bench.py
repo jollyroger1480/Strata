@@ -33,6 +33,7 @@ from pathlib import Path
 
 from strata_cli.client import ClientError, Endpoint, _NoRedirect
 from strata_control.profiles import ProfileError
+from strata_control import atomic as _atomic_mod
 
 
 SCHEMA = 1
@@ -685,7 +686,7 @@ def _progress_write(path: Path, record: dict, *, first: bool = False) -> None:
     temporary = path.with_name(".progress-" + uuid.uuid4().hex + ".tmp")
     try:
         _write_new(temporary, encoded)
-        os.replace(temporary, path)
+        _atomic_mod.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

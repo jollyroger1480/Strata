@@ -383,7 +383,19 @@ def read_bytes_repairing(path: str | os.PathLike) -> bytes:
         return target.read_bytes()
 
 
-ACCESS_MESSAGE = "Strata can't open its settings file. Run Strata once as yourself (not as administrator) or press Repair."
+ACCESS_MESSAGE = ("Strata is not allowed to open one of its own files. Run `strata repair-access` (or press Repair in the app); "
+                "these files were probably made while Strata ran as administrator, so run it as your normal user from now on.")
+IN_USE_MESSAGE = ("A file Strata needs is in use by another program (usually antivirus, a backup or a sync tool). "
+                  "Wait a moment and run the same command again.")
+
+
+def is_sharing_violation(error: BaseException) -> bool:
+    """Windows "file in use" (WinError 32 or 33), as opposed to a real refusal (WinError 5): waiting helps, repairing does not."""
+    code = getattr(error, "winerror", None)
+    if code in (32, 33):
+        return True
+    text = str(error)
+    return "WinError 32" in text or "WinError 33" in text or "being used by another process" in text
 
 
 _SKIP_DIRS = {"models", "node_modules", "harness", "python", "host", "node", "control", "__pycache__", ".git"}

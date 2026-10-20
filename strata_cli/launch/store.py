@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import time
+from strata_control import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,7 @@ def _private_write(path: Path, payload: bytes) -> None:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

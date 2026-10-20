@@ -44,6 +44,7 @@ from typing import Callable
 
 from strata_control import acquisition, components, engine_component as ec, feed as feedmod, longpath, preset_marks, signing, transfer
 from strata_control.targets import host_platform
+from strata_control import atomic as _atomic_mod
 
 STATE_DIR = ".updates"
 STAGE_DIR = ".s"                 # staging is short on purpose: <components>\.s\<4 hex>\engine\<folder> (see longpath.py)
@@ -152,7 +153,7 @@ class State:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(self.data, stream, indent=1, sort_keys=True)
                 stream.write("\n")
-            os.replace(temp, self.path)
+            _atomic_mod.replace(temp, self.path)
         finally:
             if os.path.exists(temp):
                 os.unlink(temp)
@@ -948,7 +949,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         pointer = control_dir(root) / "active.json"
         temp = pointer.with_suffix(".tmp")
         temp.write_text(json.dumps({"version": pkg.version, "folder": pkg.version, "sha256": pkg.sha256}), encoding="utf-8")
-        os.replace(temp, pointer)
+        _atomic_mod.replace(temp, pointer)
         keep = {pkg.version} | ({previous["folder"]} if previous else set())
         for entry_dir in control_dir(root).iterdir():
             if entry_dir.is_dir() and entry_dir.name not in keep:
@@ -1022,7 +1023,7 @@ def update_app(ctx: Context, feed: feedmod.Feed) -> dict:
     target_dir.mkdir(parents=True, exist_ok=True)
     name = Path(transfer.resolve_ref(transfer.base_of(feed.source), entry["url"]).replace("\\", "/")).name or f"strata-app-{feed.app.version}"
     target = target_dir / name
-    os.replace(archive, target)
+    _atomic_mod.replace(archive, target)
     result.update({"changed": True, "status": "downloaded", "installed_after": None, "version": feed.app.version, "path": str(target),
                    "note": "Verified. Run the installer to finish; models and settings are kept."})
     return result
