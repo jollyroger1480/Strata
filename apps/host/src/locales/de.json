@@ -3346,5 +3346,18 @@
   "s8257": "alle {0} Min.",
   "s8258": "Diese Strata-Engine hat keinen Code für die Grafikkarte, die sie verwenden wollte.",
   "s8259": "Wähle unter „Ausführen auf“ eine andere Karte, oder öffne die Details: Dort steht, welche Karten gefunden wurden und wofür die Engine gebaut ist.",
-  "s8260": "Dieser Schalter bewirkt in der App nichts. Webseiten beliebiger Seiten können die unter „API-Server“ gezeigte API schon aufrufen. Um nur bestimmte Seiten zuzulassen oder den eigenen Server der Engine (Port 8080) zu nutzen, tragen Sie \"cors_origins\": [\"https://ihre.seite\"] in die Konfigurationsdatei des Modells ein."
+  "s8260": "Dieser Schalter bewirkt in der App nichts. Webseiten beliebiger Seiten können die unter „API-Server“ gezeigte API schon aufrufen. Um nur bestimmte Seiten zuzulassen oder den eigenen Server der Engine (Port 8080) zu nutzen, tragen Sie \"cors_origins\": [\"https://ihre.seite\"] in die Konfigurationsdatei des Modells ein.",
+  "s8301": "API-Schlüssel erstellen (empfohlen)",
+  "s8302": "Ohne API-Schlüssel kann jedes Gerät in diesem Netzwerk Ihr Modell nutzen.",
+  "s8303": "Es wird nur die Inferenz-API freigegeben. Clients brauchen Ihren API-Schlüssel, sofern einer gesetzt ist. Nutzen Sie ein vertrauenswürdiges lokales Netzwerk; diese Verbindung verwendet HTTP.",
+  "s8304": "Erstellen Sie einen Schlüssel, um Ihre API zu schützen. Danach kehren Sie hierher zurück. Sie können auch ohne Schlüssel fortfahren, dann kann aber jeder, der den Link findet, Ihr Modell nutzen.",
+  "s8305": "Sie haben schon ein unterstütztes Modell auf diesem Computer? Wählen Sie den Ordner mit den Dateien oder eine der .gguf-Dateien. Strata prüft sie, bereitet das Modell vor und lädt es. Es wird nichts kopiert oder heruntergeladen.",
+  "s8306": "Ordner mit den GGUF-Dateien oder eine .gguf-Datei",
+  "s8307": "Vollständiger Pfad zum Ordner oder zur Datei",
+  "s8308": "Ohne API-Schlüssel kann jeder, der diese Adresse erreicht, Ihr Modell nutzen.",
+  "s8309": "Strata konnte {0} nicht für Modelle verwenden ({1}); die Modelle werden daher in {2} abgelegt. Sie können in den Einstellungen einen anderen Ordner wählen.",
+  "s8310": "Port {0} wird bereits verwendet. Strata läuft vielleicht schon; schließen Sie es oder das andere Programm, oder starten Sie Strata mit einem anderen Port (STRATA_PORT).",
+  "s8311": "Windows oder eine Firewall erlaubt Strata nicht, Port {0} zu verwenden. Hyper-V, WSL und Docker reservieren Portbereiche für sich (siehe \"netsh int ipv4 show excludedportrange protocol=tcp\"). Starten Sie Strata mit einem anderen Port (STRATA_PORT), zum Beispiel 8801.",
+  "s8312": "{0} ist keine Adresse dieses Computers, daher kann Strata dort nicht lauschen. Prüfen Sie STRATA_BIND.",
+  "s8313": "Strata kann auf {0}:{1} nicht lauschen ({2})."
 }

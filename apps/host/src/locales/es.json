@@ -3346,5 +3346,18 @@
   "s8257": "cada {0} min",
   "s8258": "Este motor de Strata no tiene código para la tarjeta gráfica que intentó usar.",
   "s8259": "Elige otra tarjeta en «Ejecutar en», o abre los detalles para ver qué tarjetas se encontraron y para cuáles está compilado el motor.",
-  "s8260": "Este interruptor no hace nada en la app. Las páginas web de cualquier sitio ya pueden llamar a la API que se muestra en Servicio. Para permitir solo algunos sitios, o para usar el servidor propio del motor (puerto 8080), añada \"cors_origins\": [\"https://su.sitio\"] al archivo de configuración del modelo."
+  "s8260": "Este interruptor no hace nada en la app. Las páginas web de cualquier sitio ya pueden llamar a la API que se muestra en Servicio. Para permitir solo algunos sitios, o para usar el servidor propio del motor (puerto 8080), añada \"cors_origins\": [\"https://su.sitio\"] al archivo de configuración del modelo.",
+  "s8301": "Crear una clave de API (recomendado)",
+  "s8302": "Sin una clave de API, cualquier dispositivo de esta red puede usar tu modelo.",
+  "s8303": "Solo se comparte la API de inferencia. Los clientes necesitan tu clave de API si hay una. Usa una red local de confianza; esta conexión usa HTTP.",
+  "s8304": "Crea una clave para proteger tu API. Volverás aquí cuando esté lista. También puedes continuar sin ella, pero cualquiera que encuentre el enlace podrá usar tu modelo.",
+  "s8305": "¿Ya tienes un modelo compatible en este equipo? Elige la carpeta con sus archivos o uno de sus archivos .gguf. Strata los comprueba, prepara el modelo y lo carga. No se copia ni se descarga nada.",
+  "s8306": "Carpeta con los archivos GGUF, o un archivo .gguf",
+  "s8307": "Ruta completa de la carpeta o del archivo",
+  "s8308": "Sin una clave de API, cualquiera que pueda llegar a esta dirección podrá usar tu modelo.",
+  "s8309": "Strata no pudo usar {0} para los modelos ({1}), así que los modelos van a {2}. Puedes elegir otra carpeta en Ajustes.",
+  "s8310": "El puerto {0} ya está en uso. Puede que Strata ya se esté ejecutando; ciérralo o cierra el otro programa, o inicia Strata con otro puerto (STRATA_PORT).",
+  "s8311": "Windows o un cortafuegos no deja que Strata use el puerto {0}. Hyper-V, WSL y Docker reservan rangos de puertos para sí mismos (consulta \"netsh int ipv4 show excludedportrange protocol=tcp\"). Inicia Strata con otro puerto (STRATA_PORT), por ejemplo 8801.",
+  "s8312": "{0} no es una dirección de este equipo, así que Strata no puede escuchar en ella. Revisa STRATA_BIND.",
+  "s8313": "Strata no puede escuchar en {0}:{1} ({2})."
 }
