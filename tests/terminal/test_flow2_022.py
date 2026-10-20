@@ -212,5 +212,42 @@ class PlanWords(Base):
 
 
 
+class DownloadTotal(Base):
+    """Finding 4: the figure counts every shard (and the picture reader), in the folder the setup is really given."""
+
+    def run_lines(self, runner: Runner, lines: list[str]) -> list[str]:
+        seen: list[str] = []
+        runner.emit_cb = lambda ev: seen.append(ev.text)
+        proc = mock.Mock()
+        proc.stdout = iter(lines)
+        proc.wait.return_value = 1                               # stop after the lines: the failure path is not what is looked at
+        with mock.patch.object(Runner, "_spawn", return_value=proc), mock.patch.object(Runner, "adopt_prepared_files", return_value=None):
+            with self.assertRaises(LaunchError):
+                runner.ensure_model()
+        return seen
+
+    def test_the_total_is_the_whole_model_in_the_chosen_data_folder(self):
+        data = self.base / "mydata"
+        folder = data / "models" / "Q2_0"
+        folder.mkdir(parents=True)
+        first = folder / (Q2[0] + ".part")
+        first.write_bytes(bytes(100_000_000))
+        r = self.runner(family="qwen", model="Q2_0", data_dir=str(data), vision="on", context=32768)
+        job = r.progress_job()
+        self.assertEqual(Path(job["folder"]), folder)
+        self.assertEqual(len(job["files"]), 3)                                   # two shards and the picture reader
+        seen = self.run_lines(r, ["=== Step 5: Getting the model files ===", f"{Q2[0]}: 0.10 / 37.60 GB (0%)"])
+        text = [x for x in seen if "GB" in x]
+        self.assertTrue(text, seen)
+        self.assertIn("of 67.3 GB", text[-1])                                     # 66.4 GB of shards + 0.9 GB picture reader
+        self.assertNotIn("37.6", " ".join(text))
+
+    def test_the_default_data_folder_is_used_when_none_was_chosen(self):
+        r = self.runner(family="qwen", model="Q2_0", vision="off", context=32768)
+        self.assertEqual(Path(r.progress_job()["folder"]).parts[-2:], ("models", "Q2_0"))
+        self.assertEqual(len(r.progress_job()["files"]), 2)
+
+
+
 if __name__ == "__main__":
     unittest.main()

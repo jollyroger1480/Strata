@@ -624,6 +624,26 @@ class Runner:
         """(title, text) of the question before a download starts, naming exactly what is fetched."""
         return self.model_state().question()
 
+    def progress_job(self) -> dict:
+        """What the download figure is counted over: the folder setup writes the model into (the data folder it is GIVEN, which may be the
+        person's --data-dir and not the default one) and every file of the install with the catalog's total, so a model in several shards
+        shows 'of 66.4 GB' from the start and not the size of the file being fetched."""
+        s, cat = self.s, self.catalog
+        data = Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or cat.data_dir())
+        models_dir = data / "models"
+        job = {"folder": str(models_dir / cat.tag_of(s.family, s.model)),
+               "total_gb": float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)}
+        try:
+            setup_module = cat.strata.setup_module()
+            if setup_module is not None and not s.model_path:
+                job["files"] = cat.mcp.expected_files(setup_module, str(s.family), str(s.model), models_dir, self.vision_word() != "no")
+                first = next((f for f in job["files"] if f.get("role") == "model"), None)
+                if first:                                    # the folder setup names it (Q2_0), not the lower-case run-config tag (q2_0)
+                    job["folder"] = str(Path(first["path"]).parent)
+        except Exception:                                    # noqa: BLE001 - progress is a convenience; the folder scan still counts
+            pass
+        return job
+
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
         self.check_own_files()
@@ -657,8 +677,7 @@ class Runner:
         p = self._spawn(argv, env=env, cwd=str(cat.src))
         lines: list[str] = []
         already: bool | None = None                          # all the model's files were on disk before this run wrote anything
-        folder = str(cat.data_dir() / "models" / cat.tag_of(s.family, s.model))
-        total = float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)
+        job = self.progress_job()
         for line in p.stdout:                                # type: ignore[union-attr]
             if self.cancel.is_set():
                 self._stop_children()
@@ -669,7 +688,7 @@ class Runner:
             lines.append(line)
             lines[:] = lines[-1500:]
             prog = cat.mcp.install_progress(lines)
-            prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
+            prog = cat.mcp.combined_progress(prog, job)
             dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
             if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
                 if phase == "download" and already is None:
