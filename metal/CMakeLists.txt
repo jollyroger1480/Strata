@@ -31,7 +31,7 @@ set(GGML_COMMON "${STRATA_ROOT}/third_party/ggml/ggml-common.h")
 
 # ---- the kernel tree (mac-kern) ------------------------------------------------------------------------------------
 add_library(mtl_rt STATIC src/mtl_rt.mm src/ref_quant.cpp src/gguf_lite.cpp)
-target_include_directories(mtl_rt PUBLIC src ${STRATA_ROOT}/third_party/ggml)
+target_include_directories(mtl_rt PUBLIC src ${STRATA_ROOT}/third_party/ggml ${STRATA_ROOT}/include)
 target_compile_options(mtl_rt PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
 target_compile_definitions(mtl_rt PRIVATE
   STRATA_GGML_COMMON_DEFAULT="${GGML_COMMON}"
