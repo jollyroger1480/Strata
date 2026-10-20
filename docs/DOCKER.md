@@ -297,7 +297,10 @@ library inside the finished image. A package that fails any of these stops the b
 `docker/smoke-test.sh` runs the checks we ran on real cards (serves, key, chat, tool call, monitor, clean stop, memory freed, restart); see its first lines for the variables.
 
 **From source.** `docker build -t strata:src .` in the repository compiles the CUDA 13 engine inside Docker, makes the package
-and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For AMD and Intel
+and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For a GTX 10, P100 or
+V100 build the CUDA 12 variant: `docker build -t strata:src-cuda12 --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
+--build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .` (the build turns on the Pascal / Volta code by itself
+when an architecture below 75 is listed, and names the package `cuda12` with driver 575.51). For AMD and Intel
 builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result with
 `packaging/package_engine.py` and use `docker/build.sh`.
 
