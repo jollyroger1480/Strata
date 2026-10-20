@@ -100,7 +100,7 @@ def in_trash(path: str | os.PathLike) -> bool:
     """#3410: True when ``path`` is inside a Trash / Recycle Bin folder (a Strata folder that was deleted with the file manager
     is still a folder there, and was remembered as an install): ~/.local/share/Trash/files/.., /.Trash-1000/.., ~/.Trash/..,
     $RECYCLE.BIN\\.."""
-    parts = [x.lower() for x in Path(path).parts]
+    parts = [x.lower() for p in Path(path).parts for x in str(p).split("\\")]   # a Windows-shaped path read on Linux has no separators for Path
     for i, x in enumerate(parts):
         if x in (".trash", "$recycle.bin", "recycler", "$recycle.bin.old") or x.startswith(".trash-"):
             return True

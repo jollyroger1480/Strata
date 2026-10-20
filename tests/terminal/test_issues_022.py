@@ -405,5 +405,19 @@ class Issue3488IntegrityRetry(unittest.TestCase):
             self.assertEqual(ec._hash_settled(path, "good"), "bad")      # still wrong after the retry: refuse
 
 
+
+class Issue3501TrashOnPosix(unittest.TestCase):
+    """A Windows Recycle Bin path read on Linux: Path does not split backslashes there."""
+
+    def test_windows_path_on_a_posix_path_class(self):
+        from pathlib import PurePosixPath
+        from unittest import mock
+        from strata_control import discovery
+        with mock.patch.object(discovery, "Path", PurePosixPath):
+            self.assertTrue(discovery.in_trash(r"C:\$Recycle.Bin\S-1-5-21\$R123\Strata"))
+            self.assertTrue(discovery.in_trash("/mnt/d/$RECYCLE.BIN/S-1/Strata"))
+            self.assertFalse(discovery.in_trash(r"C:\Users\a\Strata"))
+
+
 if __name__ == "__main__":
     unittest.main()
