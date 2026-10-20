@@ -744,6 +744,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     : tasks_(tasks), host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     pinned_ = pin;
+    layout_ = logical_cpu_layout();   // now, before anything pins the caller (Linux reads the calling thread's allowed CPUs)
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     // STRATA_NUMA_SPLIT, read here for the worker count (the split itself is decided below, once the count is known).
@@ -762,7 +763,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     // --pool-cores (experimental, off by default): the person's own list of logical processors for the workers.  The plan above
     // was made from the real topology; only the cores the workers are pinned to (and, by default, their count) come from the list.
     if (!pool_cores_setting().empty()) {
-        const PoolCoresCheck chk = check_pool_cores(pool_cores_setting(), logical_cpu_layout(), topo_.host_core);
+        const PoolCoresCheck chk = check_pool_cores(pool_cores_setting(), layout_, topo_.host_core);
         static std::atomic<bool> told{false};   // (a throw-away pool of --pool-affinity measure builds the same list again)
         const bool say = !told.exchange(true);
         if (say)
@@ -939,7 +940,7 @@ std::string ExpertPool::placement_line() const {
     if (!pinned_) return "CPU workers: " + std::to_string(n_) + " workers, not pinned to logical processors (the OS places them)";
     // a worker beyond the cores listed runs unpinned (more --pool-workers than --pool-cores entries)
     std::vector<int> on(topo_.worker_cores.begin(), topo_.worker_cores.begin() + (std::min)((size_t) n_, topo_.worker_cores.size()));
-    std::string s = describe_worker_placement(on, topo_.host_core, logical_cpu_layout(), explicit_cores_);
+    std::string s = describe_worker_placement(on, topo_.host_core, layout_, explicit_cores_);
     if ((int) on.size() < n_) s += " (" + std::to_string(n_ - (int) on.size()) + " more workers run unpinned)";
     return s;
 }

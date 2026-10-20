@@ -302,6 +302,7 @@ private:
     int n_ = 0;
     bool explicit_cores_ = false;
     bool pinned_ = true;
+    std::vector<LogicalCpuInfo> layout_;   // the logical processors and their cores, read when the pool was built (the caller may be pinned later)
     const char* plan_limit_ = "";
     int plan_cores_ = 0;
     int plan_logical_ = 0;
