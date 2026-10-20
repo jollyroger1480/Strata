@@ -504,6 +504,14 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _file_words(exc: BaseException) -> str:
+    try:
+        from strata_control import longpath
+    except ImportError:
+        return f"local file operation failed ({type(exc).__name__})"
+    return longpath.file_words(exc)
+
+
 def _error(message: str, code: int, machine: bool = False) -> int:
     if machine:
         print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": message}}))
@@ -2048,8 +2056,8 @@ def _run(a: argparse.Namespace) -> int:
         if retried is not None:
             return retried
         if a.command == "serve" and a.output == "jsonl":
-            return _serve_error(a, f"local file operation failed ({type(e).__name__})", 6)
-        return _error(f"local file operation failed ({type(e).__name__})", 6,
+            return _serve_error(a, _file_words(e), 6)
+        return _error(_file_words(e), 6,
                       bool(getattr(a, "output", None) in ("json", "jsonl")))
     except ClientError as e:
         if a.command == "serve" and a.output == "jsonl":

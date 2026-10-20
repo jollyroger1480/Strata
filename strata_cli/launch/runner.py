@@ -397,7 +397,10 @@ class Runner:
             if ev.get("event") == "progress":
                 self.emit("engine", f"Downloading the engine… {ev.get('percent', 0)}%", float(ev.get("percent", 0)))
             elif ev.get("event") in ("phase", "waiting"):
-                self.emit("engine", str(ev.get("message") or ""))
+                if ev.get("phase") == "warn":
+                    self.emit("engine", str(ev.get("message") or ""), level="warn")
+                else:
+                    self.emit("engine", str(ev.get("message") or ""))
             last = ev
         code = p.wait()
         if code == 0:

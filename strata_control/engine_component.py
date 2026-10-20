@@ -48,7 +48,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from strata_control import acquisition
+from strata_control import acquisition, longpath
 from strata_control.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 2
@@ -361,19 +361,20 @@ def _sha256(path: Path) -> str:
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
     the entrypoint is hashed (sizes are always checked)."""
-    root = component.root.resolve()
+    # extended-length paths: under a long user name an AMD engine's files pass 259 characters, which Windows (long paths off)
+    # reports as "missing" for an ordinary path
+    folder = longpath.long_path(component.root)
+    root = folder.resolve()
     for rel, digest, size in component.files:
-        target = component.root / rel
+        target = folder / rel
         try:
             info = target.lstat()
         except OSError:
             raise IntegrityProblem(f"{rel} is missing") from None
         if target.is_symlink() or not target.is_file():
             raise IntegrityProblem(f"{rel} is not a regular file")
-        try:
-            target.resolve().relative_to(root)
-        except ValueError:
-            raise IntegrityProblem(f"{rel} resolves outside the component folder") from None
+        if not longpath.same_tree(target.resolve(), root):
+            raise IntegrityProblem(f"{rel} resolves outside the component folder")
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
         if (full or rel == component.entrypoint) and _sha256(target) != digest:
