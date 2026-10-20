@@ -992,6 +992,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(iq_multi_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(iq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
+  # the Gyro trellis decode kernels (TQ2_T / TQK6 / TQK7) on synthetic blocks: decode-once vs per-column bitwise, output
+  # checksums to compare two builds byte for byte, --bench for timings (GPU, no model)
+  add_executable(tq_pascal_bench src/kernels/tq_pascal_bench.cpp)
+  target_include_directories(tq_pascal_bench PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(tq_pascal_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME tq_pascal_bench COMMAND tq_pascal_bench)
   set_tests_properties(iq_multi_parity PROPERTIES ENVIRONMENT "STRATA_KQ_SPLIT=1")   # the Q4_K / Q5_K / Q8_0 Split path against the old kernels
   # the same Split path on the other routes it can meet: the generic multi kernels (no V2K) and the fused gate/up + SwiGLU kernel, and the sub-16-row
   # gate/up route switched off (a K-quant row has 160 dots, not the 80 the sub-16 rows assume: STRATA_KQ_SPLIT=1 must stay bitwise on all of them)
