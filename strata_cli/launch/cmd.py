@@ -30,6 +30,9 @@ examples:
 """
 
 
+PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the reader runs on the processor)", "gpu": "on (the reader runs on the graphics card)"}
+
+
 def _choice(label: str, options: tuple[str, ...]):
     def convert(value: str) -> str:
         v = str(value).strip().lower()
@@ -582,8 +585,14 @@ def run_launch(a: argparse.Namespace) -> int:
                 print(json.dumps({"schema_version": 1, "ok": True, "plan": plan}))
             else:
                 _say(f"Plan for '{s.name}':")
-                _say(f"  model     {s.family} {s.model}" if s.model else f"  model     your files at {s.model_path}")
-                _say(f"  context   {S.context_label(s.context)}    pictures {s.vision}    parallel {s.parallel or 'fit to your card'}")
+                m = plan.get("model") or {}
+                size = f", {m['model_gb']:.0f} GB" if m.get("model_gb") else ""
+                if s.model_path:
+                    _say(f"  model     {m.get('title') or 'your model files'}{size}   (your files in {s.model_path})")
+                else:
+                    _say(f"  model     {m.get('title') or f'{s.family} {s.model}'}{size}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {s.parallel or 'fit to your card'}")
+                _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
