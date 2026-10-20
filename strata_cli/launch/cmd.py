@@ -99,6 +99,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
+                   "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -209,8 +211,18 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.parallel = a.parallel
     if a.mtp:
         s.mtp = a.mtp
+    if a.gpu and getattr(a, "gpu_roles", None):
+        raise ValueError("Use --gpu (which cards) or --gpu-roles (a role for each card), not both.")
     if a.gpu:
         s.gpus = _gpus(a.gpu)
+        s.gpu_roles = None
+    if getattr(a, "gpu_roles", None):
+        from strata_control import gpu_roles as GR
+        try:
+            s.gpu_roles = {str(k): v for k, v in GR.parse_roles(a.gpu_roles).items()}
+        except ValueError as e:
+            raise ValueError(f"--gpu-roles: {e}") from None
+        s.gpus = None
     if a.tune:
         s.tune = a.tune
     if a.tune_allow_small:
@@ -304,6 +316,15 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
                                     f"A model cannot be split across {make} and {omake} cards. {gpu_fit.SECOND_MODEL_SENTENCE}",
                                     f"Name a {make} card (" + ", ".join(str(g.get("index")) for g in comp.usable_gpus) + f"), or install the {omake} "
                                     "build of Strata to use that card."))
+    if s.gpu_roles and vendor:
+        from strata_control import gpu_roles
+        have = {int(c.get("index", -1)): c for c in gpu_roles.rows(comp.gpus, vendor)}
+        for k in s.gpu_roles:
+            if int(k) not in have:
+                out.append(S.Notice("error", f"There is no card {k} that this build of Strata can use.",
+                                    "Cards: " + (", ".join(str(i) for i in sorted(have)) or "none") + "."))
+        if not any(r != "off" for r in s.gpu_roles.values()) and not out:
+            out.append(S.Notice("warn", gpu_roles.NO_CARD_LINE, ""))
     note = comp.other_vendor_note
     if note:
         out.append(S.Notice("warn", note, ""))
