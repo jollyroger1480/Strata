@@ -65,5 +65,47 @@ class Issue3298MtpDepth(unittest.TestCase):
         self.assertEqual(files_present({"args": ["--mtp", str(self.root / "gone")]}), [str(self.root / "gone")])
 
 
+@unittest.skipUnless(sys.platform == "win32", "SDDL aliases exist on Windows only")
+class Issue3302AdministratorAlias(unittest.TestCase):
+    """SDDL prints the built-in Administrator (RID 500) as `LA`; the owner-only checks must still accept it."""
+
+    def setUp(self):
+        from unittest import mock
+        from strata_control import private_files as pf
+        self.pf = pf
+        self.mock = mock
+        # the built-in Administrator's string SID on this machine: resolve the alias the same way the fix does
+        import ctypes
+        from ctypes import wintypes
+        pointer = ctypes.c_void_p()
+        pf._advapi.ConvertStringSidToSidW("LA", ctypes.byref(pointer))
+        text = wintypes.LPWSTR()
+        pf._advapi.ConvertSidToStringSidW(pointer.value, ctypes.byref(text))
+        self.admin_sid = text.value
+        self.assertTrue(self.admin_sid.endswith("-500"))
+
+    def test_alias_matches_the_account_it_names(self):
+        self.assertTrue(self.pf._same_sid("LA", self.admin_sid))
+        self.assertTrue(self.pf._same_sid(self.admin_sid, self.admin_sid))
+        self.assertFalse(self.pf._same_sid("LA", "S-1-5-21-1-2-3-1001"))
+        self.assertFalse(self.pf._same_sid("WD", self.admin_sid))
+        self.assertFalse(self.pf._same_sid("S-1-5-21-1-2-3-1001", self.admin_sid))
+
+    def test_private_and_unshared_hold_for_the_built_in_administrator(self):
+        pf = self.pf
+        with self.mock.patch.object(pf, "current_user_sid", return_value=self.admin_sid), \
+                self.mock.patch.object(pf, "dacl_sddl", return_value="D:PAI(A;OICI;FA;;;LA)"):
+            self.assertTrue(pf.is_private("x"))
+            self.assertTrue(pf.is_unshared("x"))
+        with self.mock.patch.object(pf, "current_user_sid", return_value=self.admin_sid), \
+                self.mock.patch.object(pf, "dacl_sddl", return_value="D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)"):
+            self.assertFalse(pf.is_private("x"))
+            self.assertFalse(pf.is_unshared("x"))
+        with self.mock.patch.object(pf, "current_user_sid", return_value=self.admin_sid), \
+                self.mock.patch.object(pf, "dacl_sddl", return_value="D:PAI(A;OICI;FA;;;LA)(A;OICI;FR;;;WD)"):
+            self.assertFalse(pf.is_private("x"))
+            self.assertFalse(pf.is_unshared("x"))
+
+
 if __name__ == "__main__":
     unittest.main()

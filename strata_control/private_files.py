@@ -95,6 +95,28 @@ def current_user_sid() -> str:
     return _sid_cache
 
 
+def _same_sid(sddl_trustee: str, sid: str) -> bool:
+    """True when an SDDL trustee names ``sid``. SDDL prints well-known accounts as two-letter aliases (the built-in
+    Administrator, RID 500, is ``LA``), so an alias is turned into its string SID before the compare (#3302)."""
+    if sddl_trustee == sid:
+        return True
+    if sddl_trustee.upper().startswith("S-1-") or not WINDOWS:
+        return False
+    pointer = ctypes.c_void_p()
+    if not _advapi.ConvertStringSidToSidW(sddl_trustee, ctypes.byref(pointer)):
+        return False
+    try:
+        text = wintypes.LPWSTR()
+        if not _advapi.ConvertSidToStringSidW(pointer.value, ctypes.byref(text)):
+            return False
+        try:
+            return text.value == sid
+        finally:
+            _kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        _kernel.LocalFree(pointer)
+
+
 def restrict_to_current_user(path: str | os.PathLike, *, directory: bool | None = None) -> None:
     """Make ``path`` readable and writable by the current user only.
 
@@ -171,7 +193,7 @@ def is_private(path: str | os.PathLike) -> bool:
     if not head.startswith("D:") or "P" not in head[2:] or len(entries) != 1:
         return False
     fields = entries[0].split(";")
-    return len(fields) >= 6 and fields[0] == "A" and fields[5] == current_user_sid()
+    return len(fields) >= 6 and fields[0] == "A" and _same_sid(fields[5], current_user_sid())
 
 
 _PRIVILEGED = {"SY", "BA", "OW", "CO", "CG", "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
@@ -188,10 +210,12 @@ def is_unshared(path: str | os.PathLike) -> bool:
     if not WINDOWS:
         return is_private(path)
     sddl = dacl_sddl(path)
-    allowed = _PRIVILEGED | {current_user_sid()}
+    me = current_user_sid()
+    allowed = _PRIVILEGED | {me}
     for entry in re.findall(r"\(([^()]*)\)", sddl):
         fields = entry.split(";")
-        if len(fields) >= 6 and fields[0] in ("A", "OA") and fields[5] not in allowed:
+        if (len(fields) >= 6 and fields[0] in ("A", "OA") and fields[5] not in allowed
+                and not _same_sid(fields[5], me)):
             return False
     return True
 
