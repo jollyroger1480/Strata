@@ -295,7 +295,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     if driver == "i915":
         # Arc A-series on i915 (the A750): the experts load into an ordinary RAM arena and the CPU computes the ones
         # the card does not hold; the n-gram table is kept in RAM (setup's rotational-disk rule) and no mirror is built.
-        if "--ple-io" not in args:
+        # Gyro: its n-gram table is half of the 58-92 GB file and stays on the SSD (read row by row); the RAM holds the
+        # experts' arena (24 GB for Gyro-S) and the CPU's work, so a table in RAM would not fit beside them on a 64 GB PC
+        gyro = "gyro" in (flag(args, "--native") or "").lower()
+        if "--ple-io" not in args and not gyro:
             args += ["--ple-io", "ram"]
         args += ["--vram-reserve-mib", reserve]
     else:

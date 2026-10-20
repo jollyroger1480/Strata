@@ -4221,9 +4221,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         auto xmx2_fmt = [&]() {
                             if (!lay.native) return false;
                             const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
+                            if ((gt == 144 || gt == 145) && (dt == 144 || dt == 146)) return true;   // Gyro's trellis experts (rotated above)
                             return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
                         };
-                        const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt() && !had_d;
+                        const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
                         // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
                         // held group of staged experts as above
                         const int i8m = i8_mode(m.cs);

@@ -1866,6 +1866,17 @@ template <> struct Multi<42> {   // q2_0 (down)
 // instead of once per entry.  Every entry keeps its own lane-strided k order and lanes_sum: the outputs are bitwise
 // those of row_dot_lanes (native_grouped_parity --kq checks it).  STRATA_KQ_SPLIT=0: the per-entry kernels.
 template <int TY> struct KqSplit { static constexpr bool has = false; };
+// APR trellis types: tq_load decodes the lane's 16 codebook values once, tq_apply is the activation side per entry (the same
+// operations as vec_dot_tq_q8_1, so the outputs are the per-entry kernels' bits)
+template <int TY> struct KqSplitTq {
+    static constexpr bool has = true;
+    using W = TqLane;
+    __dpct_inline__ static W load(const void* __restrict__ vbq, int kbx, int iqs) { return tq_load<TY>(vbq, kbx, iqs); }
+    __dpct_inline__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
+};
+template <> struct KqSplit<144> : KqSplitTq<144> {};
+template <> struct KqSplit<145> : KqSplitTq<145> {};
+template <> struct KqSplit<146> : KqSplitTq<146> {};
 template <> struct KqSplit<12> {   // Q4_K (vec_dot_q4_K_q8_1)
     static constexpr bool has = true;
     struct W { int v[2]; uint16_t aux[2]; sycl::half2 dm; };
@@ -5857,8 +5868,9 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
                     // the decoder thread that writes values [o, o + 8) of the superblock: the IQ2/IQ3/IQ4_NL/IQ1_M and
                     // Q2_0 decoders write [8 tid, 8 tid + 8) (coalesced runs); IQ4_XS and the rest keep the
                     // (sub-run, 32-block) split
+                    // (the trellis decoder thread tid writes values [8 tid, 8 tid + 8) of the 256-value call as well)
                     const bool run8 = ty == 16 || ty == 17 || ty == 18 || ty == 20 || ty == 21 || ty == 22 ||
-                                      ty == 29 || ty == 42;
+                                      ty == 29 || ty == 42 || ty == 144 || ty == 145 || ty == 146;
                     const int tid = run8 ? (o >> 3) : (sub * 8 + (o32 >> 5));
                     dq_dispatch<sycl::half>(ty, base, ibs, pb + r * LDB - o32, tid);
                 }

@@ -206,6 +206,15 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
         self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
 
+    def test_a_series_keeps_gyros_ngram_table_on_the_ssd(self):
+        # Gyro's table is half of the 58-92 GB file: --ple-io ram would not fit beside the experts' arena on a 64 GB PC
+        m = self.mod()
+        cfg = self.cfg(m)
+        cfg["args"][cfg["args"].index("--native") + 1] = str(m.MOUNT / "d" / "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf")
+        c = m.to_sycl(cfg, m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertNotIn("--ple-io", c["args"])
+        self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
+
     def test_split_short_rule(self):
         # #1980: 2x B60 24 GB - IQ3_XXS (42.9 GB) was refused under NO_HOST=1, IQ2_XS (35.5 GB) loads fully
         m = self.mod()

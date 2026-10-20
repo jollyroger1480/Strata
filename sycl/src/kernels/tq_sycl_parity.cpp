@@ -3,6 +3,7 @@
 //
 //   tq_sycl_parity <pack-dir> <model.gguf> [layer ...]
 //   tq_sycl_parity --synthetic [--hadamard] GU/DOWN ...      (random trellis codes and scales, e.g. 145/146 144/144)
+//   tq_sycl_parity --bench GU/DOWN [groups [entries-per-group [iterations]]]   (native_expert_grouped on distinct experts in VRAM)
 //
 // For one expert of each layer (the gate/up/down rows read from the GGUF, the Hadamard signs and block from the pack):
 //   (a) float reference: fp16-codebook weights, x and h rotated in double, SwiGLU in double.
@@ -27,6 +28,7 @@
 #include <dpct/dpct.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -231,6 +233,9 @@ int check_layer(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int s
             for (int64_t r = 0; r < FF; ++r) {
                 const float eg = emu_dot(f.gu_type, blob.data() + r * f.gu_row, hxq.data() + (size_t) k * H / 32 * 36, H);
                 const float eu = emu_dot(f.gu_type, blob.data() + f.up_off + r * f.gu_row, hxq.data() + (size_t) k * H / 32 * 36, H);
+                if (std::memcmp(&eg, &gate[k * FF + r], 4) != 0 && gu_diff < 4)
+                    std::printf("          [debug] gate k %d r %lld: device %g host replay %g (d of block 0: %g)\n", k, (long long) r,
+                                gate[k * FF + r], eg, h2f((uint16_t) (blob[r * f.gu_row] | (blob[r * f.gu_row + 1] << 8))));
                 gu_diff += std::memcmp(&eg, &gate[k * FF + r], 4) != 0;
                 gu_diff += std::memcmp(&eu, &up[k * FF + r], 4) != 0;
             }
@@ -293,15 +298,88 @@ std::vector<uint8_t> synthetic_blob(const cpu::NativeFmt& f, int seed) {
                 blk[1] = (uint8_t) (h >> 8);
             }
     };
-    fix(blob.data(), f.gu_type, f.gu_row, FF);
-    fix(blob.data() + f.up_off, f.gu_type, f.gu_row, FF);
-    fix(blob.data() + f.down_off, f.d_type, f.d_row, H);
+    if (f.gu_type >= 144 && f.d_type >= 144) {   // (the bench also times other formats on random bytes)
+        fix(blob.data(), f.gu_type, f.gu_row, FF);
+        fix(blob.data() + f.up_off, f.gu_type, f.gu_row, FF);
+        fix(blob.data() + f.down_off, f.d_type, f.d_row, H);
+    }
     return blob;
 }
 int type_of(const std::string& s) { return std::atoi(s.c_str()); }
 
+// the grouped expert kernels on `groups` distinct experts held in VRAM (more bytes than the card's L2), `epg` entries each:
+// microseconds per call and per expert, and the weight bytes read per second
+int bench(int gu, int dn, int groups, int epg, int iters, bool had, int phase) {
+    strata::kernels::native_expert_set_mode(7, phase);   // 0: all, 1: gate/up + SwiGLU + quantize, 2: down only
+    cpu::NativeFmt f;
+    std::string err;
+    if (!cpu::native_fmt(gu, dn, H, FF, f, err) || !strata::kernels::native_expert_supported(gu, dn, H, FF)) {
+        std::printf("%d/%d: not a pair the GPU expert kernels take\n", gu, dn);
+        return 1;
+    }
+    static std::vector<float> sx((size_t) H), sh((size_t) FF);
+    std::mt19937 srng(5);
+    for (auto& v : sx) v = (srng() & 1) ? 1.f : -1.f;
+    for (auto& v : sh) v = (srng() & 1) ? 1.f : -1.f;
+    if (had) { f.had_block = 128; f.had_gu = f.had_d = true; f.gu_signs = sx.data(); f.d_signs = sh.data(); }
+    sycl::queue* s = &dpct::get_in_order_queue();
+    const int ent = groups * epg, ntok = 4;
+    uint8_t* dblob = dmalloc<uint8_t>((size_t) groups * f.bytes);
+    for (int g = 0; g < groups; ++g) {
+        const std::vector<uint8_t> b = synthetic_blob(f, g);
+        to_dev(dblob + (size_t) g * f.bytes, b.data(), b.size());
+    }
+    std::vector<float> x((size_t) ntok * H);
+    std::mt19937 rng(7);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    for (auto& v : x) v = nd(rng);
+    float* dx = dmalloc<float>(x.size());
+    to_dev(dx, x.data(), x.size() * 4);
+    uint8_t* dxq = dmalloc<uint8_t>((size_t) ntok * H / 32 * 36);
+    uint8_t* dscr = dmalloc<uint8_t>(strata::kernels::native_expert_scratch_bytes(ent, FF));
+    float* dout = dmalloc<float>((size_t) ent * H);
+    std::vector<unsigned long long> ptr(groups);
+    std::vector<int32_t> st(groups + 1), dst(ent), tok(ent);
+    for (int g = 0; g < groups; ++g) { ptr[g] = (unsigned long long) (dblob + (size_t) g * f.bytes); st[g] = g * epg; }
+    st[groups] = ent;
+    for (int e = 0; e < ent; ++e) { dst[e] = e; tok[e] = e % ntok; }
+    unsigned long long* dptr = dmalloc<unsigned long long>(groups);
+    int32_t *dstart = dmalloc<int32_t>(groups + 1), *dn_ = dmalloc<int32_t>(1), *ddst = dmalloc<int32_t>(ent), *dtok = dmalloc<int32_t>(ent);
+    to_dev(dptr, ptr.data(), groups * 8);
+    to_dev(dstart, st.data(), (groups + 1) * 4);
+    to_dev(dn_, &groups, 4);
+    to_dev(ddst, dst.data(), ent * 4);
+    to_dev(dtok, tok.data(), ent * 4);
+    auto L = strata::kernels::native_expert_layout(gu, dn, H, FF);
+    if (had) { L.had_block = f.had_block; L.d_signs = strata::kernels::hadamard_device_signs(f.d_signs, (int) FF); }
+    strata::kernels::quantize_q8_1_rows(dx, ntok, H, dxq, s);
+    for (int i = 0; i < 3; ++i) strata::kernels::native_expert_grouped(L, dptr, dstart, dn_, ddst, dtok, groups, ent, dxq, dscr, dout, s);
+    s->wait();
+    std::vector<double> us;
+    for (int i = 0; i < iters; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        strata::kernels::native_expert_grouped(L, dptr, dstart, dn_, ddst, dtok, groups, ent, dxq, dscr, dout, s);
+        s->wait();
+        us.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::sort(us.begin(), us.end());
+    const double med = us[us.size() / 2];
+    std::printf("bench %d/%d%s: %d groups x %d entries, %zu B per expert: median %.0f us per call = %.1f us per expert, %.1f GB/s of weights (min %.0f us)\n",
+                gu, dn, had ? " hadamard" : "", groups, epg, f.bytes, med, med / groups, (double) groups * f.bytes / (med * 1e-6) / 1e9, us.front());
+    sycl::free(dblob, *s); sycl::free(dx, *s); sycl::free(dxq, *s); sycl::free(dscr, *s); sycl::free(dout, *s);
+    sycl::free(dptr, *s); sycl::free(dstart, *s); sycl::free(dn_, *s); sycl::free(ddst, *s); sycl::free(dtok, *s);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc >= 3 && std::string(argv[1]) == "--bench") {
+        const std::string arg = argv[2];
+        const size_t slash = arg.find('/');
+        const bool had = std::getenv("TQ_BENCH_HADAMARD") != nullptr;
+        return bench(type_of(arg.substr(0, slash)), type_of(arg.substr(slash + 1)), argc > 3 ? std::atoi(argv[3]) : 64,
+                     argc > 4 ? std::atoi(argv[4]) : 1, argc > 5 ? std::atoi(argv[5]) : 50, had, argc > 6 ? std::atoi(argv[6]) : 0);
+    }
     if (argc >= 2 && std::string(argv[1]) == "--synthetic") {
         int failures = 0, i = 2;
         const bool had = argc > 2 && std::string(argv[2]) == "--hadamard";
