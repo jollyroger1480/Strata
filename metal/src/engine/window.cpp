@@ -338,6 +338,7 @@ private:
     // H (s * x) and the down input H h, per block of 128; XR_ holds the rotated rows, hsx_/hsh_ the +/-1 signs
     bool had_on_ = false;
     int had_block_ = 128;
+    bool gyro_dense_ = false;   // a trellis-expert file: its dense K-quants get their own GEMV tiles (gemv() below)
     bool had_gu(int l) const { return had_on_ && strata::kernels::cpu::hadamard_spec().gu(l); }
     bool had_dn(int l) const { return had_on_ && strata::kernels::cpu::hadamard_spec().down(l); }
     mtl::Buffer XR_, hsx_, hsh_;
@@ -486,6 +487,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
+    if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"});
     rcounter_ = cx_->alloc(16);
@@ -651,6 +653,15 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
     if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
     else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
     else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { L = 32; Rr = 1; S = 4; K = 1; }
+    static const bool gyro_tiles = !(std::getenv("STRATA_METAL_GYRO_TILES") && std::string(std::getenv("STRATA_METAL_GYRO_TILES")) == "0");   // off: the A/B arm
+    if (gyro_dense_ && gyro_tiles && ntok >= 2) {
+        // Gyro's dense weights are Q5_K / Q6_K / Q8_0 (3.6 GB a token).  gemv_parity --one on the M4, 2 tokens: Q5_K 2560->10240
+        // 261 us with 16,1,4,1 against 210 with 2,1,4,1 (-20%), 2560->6144 158 -> 129, 6144->2560 162 -> 139, 2560->12288
+        // 313 -> 247, and the shared down Q8_0 640->2560 36 -> 19 us with 4,2,4,1.  (The tile changes the order of the lane sums.)
+        if (ty == ref::Q5_K && n_in == 2560 && n_out >= 6144) { L = 2; Rr = 1; S = 4; K = 1; }
+        else if (ty == ref::Q5_K && n_in == 6144) { L = 2; Rr = 1; S = 4; K = 1; }
+        else if (ty == ref::Q8_0 && n_in == 640) { L = 4; Rr = 2; S = 4; K = 1; }
+    }
     {
         // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
         // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.

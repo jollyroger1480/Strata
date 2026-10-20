@@ -37,9 +37,9 @@ the original model as for every Qwen3.8-Flash-Next file) and the start script. N
 APR port, and the released 0.1.45 stops at v4. A ready-made engine that is older is replaced by one compiled from this source
 (setup), or the app says the model needs a newer engine and offers Update engine.
 
-**Supported:** NVIDIA (CUDA, Linux and Windows) and AMD (HIP, experimental: the authors validated gfx1151; we ran
-gfx1201 with identical output to rc2). **Not supported:** Intel Arc (SYCL) and Apple Metal: the engines there have no
-trellis kernels; the Metal engine refuses the file at load with the reason.
+**Supported:** NVIDIA (CUDA, Linux and Windows), AMD (HIP, experimental: the authors validated gfx1151; we ran
+gfx1201 with identical output to rc2) and Apple Silicon Macs (Metal, from 0.2.2: [On a Mac](#on-a-mac)). **Not supported:**
+Intel Arc (SYCL): that engine has no trellis kernels.
 
 **Pictures.** Gyro reads pictures with the original model's picture reader file (the same one every Qwen3.8-Flash-Next
 model uses; setup downloads it with the model). The reader opens only the vocabulary and the header of the Gyro file, so
@@ -269,9 +269,8 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 
 - **Not in this port** (rc2 has them; see the list at the end of this page): the prompt helper on a second GPU for a Gyro
   pack. Setup of two cards still runs the layer split and the decode peer; the prompt peer says it is not used for a
-  Hadamard-folded pack and the prompt stays on the first card. Gyro-L, Intel Arc (SYCL) and Apple Metal are not supported.
-- **Source builds:** the SYCL tree builds with these sources (P1006, 0 errors) but has no trellis GPU kernels; the Metal
-  engine builds and refuses the file at load (`native_expert_supported`).
+  Hadamard-folded pack and the prompt stays on the first card. Gyro-L and Intel Arc (SYCL) are not supported.
+- **Source builds:** the SYCL tree builds with these sources (P1006, 0 errors) but has no trellis GPU kernels.
 
 - **Not measured yet:** token parity against llama.cpp.
 - **Benchmark mode only:** `strata --tokens-file ... --max-new N` decodes N tokens past the end of the answer;
