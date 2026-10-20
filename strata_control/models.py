@@ -294,6 +294,51 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}
 
 
+ISSUE_WORDS = {
+    "multiple_model_groups": "the folder holds more than one model",
+    "incomplete_or_invalid_shard_set": "some parts of the model are missing",
+    "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
+    "unsupported_or_missing_architecture": "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)",
+    "unsupported_or_incomplete_tokenizer_metadata": "the file has no usable tokenizer",
+    "missing_or_unexpected_expert_quantization": "its quantization is not one Strata knows",
+}
+# the checker's own sentences about one file, in words
+_REASON_WORDS = (
+    ("not a nonempty regular file", "the file is empty or is not a file"),
+    ("unreadable", "the file cannot be read (is it open in another program, or on a drive that is gone?)"),
+    ("could not be read", "the file cannot be read (is it open in another program, or on a drive that is gone?)"),
+    ("is missing", "the file is not there"),
+    ("link to a file that is not there", "this is a shortcut to a file that is not there any more"),
+    ("does not begin with a gguf header", "this is not a GGUF model file"),
+    ("header version", "this GGUF is from a format Strata does not read"),
+    ("requires gguf v3", "this GGUF is in an old format (version 2); Strata reads version 3"),
+    ("metadata is truncated", "the file is cut short (a download or copy that did not finish)"),
+    ("payload is shorter", "the file is shorter than its own header says (a download or copy that did not finish)"),
+    ("exceeds the bounded inspection limit", "its header is larger than Strata reads"),
+    ("too large to inspect", "its header is larger than Strata reads"),
+    ("unsupported encoding or shape", "it stores weights in a format Strata does not read"),
+    ("unsupported array type", "its header uses a type Strata does not read"),
+    ("unsupported value type", "its header uses a type Strata does not read"),
+    ("byte ranges overlap", "its header is damaged"),
+    ("unsupported_architecture", "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"),
+    ("symlink", "this is a shortcut (symbolic link) that cannot be followed"),
+)
+
+
+def plain_issue(code: str) -> str:
+    """One problem from the GGUF preview, in words, with the file's name when it is about one file
+    (`file.gguf: GGUF shard is not a nonempty regular file`)."""
+    code = str(code)
+    if code in ISSUE_WORDS:
+        return ISSUE_WORDS[code]
+    name, sep, reason = code.partition(": ")
+    if not (sep and name.lower().endswith(".gguf")):
+        name, reason = "", code
+    low = reason.lower()
+    words = next((w for key, w in _REASON_WORDS if key in low), reason.replace("_", " "))
+    return f"{name}: {words}" if name else words
+
+
 UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
                           "Add it as a Custom model API (llama-server) instead.")
 # The picture readers Strata ships a pinned copy of (setup downloads and checks one of these next to the model).
@@ -434,6 +479,23 @@ def _holds(groups_by_place: list) -> list[dict]:
     return rows
 
 
+def absolute(picked: str) -> str:
+    """The picked path as an absolute path, links left alone (a snapshot file in the Hugging Face cache keeps its model name)."""
+    return os.path.abspath(os.path.expanduser(str(picked)))
+
+
+def import_target(picked: str, plan: dict) -> str:
+    """What to hand on as the person's model files: the file when they picked a file (a folder of several sizes needs the name), else the
+    folder the model files are really in (they may have picked the folder above it)."""
+    picked = absolute(picked)
+    try:
+        if Path(picked).is_file():
+            return picked
+    except OSError:
+        pass
+    return plan.get("model_dir") or picked
+
+
 def plan_import(raw_path: str) -> dict:
     """Inspect a local candidate without copying, parsing tensors or adopting it.
 
@@ -549,7 +611,9 @@ def plan_import(raw_path: str) -> dict:
     projectors = [_assess_projector(model_dir / n) for n in sorted(ignored_auxiliary)[:8]]
     messages = list(notes)
     if folder_holds:
-        names = [f"{h['family']} {h['model']} ({h['file']})" if h.get("model") else h["file"] for h in folder_holds[:8]]
+        several = len({h.get("folder") for h in folder_holds}) > 1
+        names = [(f"{h['family']} {h['model']}" if h.get("model") else h["file"]) + (f" in {h['folder']}" if several else f" ({h['file']})")
+                 for h in folder_holds[:8]]
         messages.append(f"The folder holds {len(folder_holds)} models: " + "; ".join(names) + (" and more" if len(folder_holds) > 8 else "") +
                         ". Choose the folder of the one you want, or type the path of its .gguf file.")
     if any(i.endswith("unsupported_architecture") or i == "unsupported_or_missing_architecture" for i in issues):
@@ -570,6 +634,7 @@ def plan_import(raw_path: str) -> dict:
     return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
             "file_count": len(files), "total_bytes": sum(item["bytes"] for item in files),
             "metadata": metadata, "candidate_selection": candidate,
+            "plain_issues": list(dict.fromkeys(plain_issue(i) for i in issues)),
             "observed_expert_types": sorted(observed_experts),
             "observed_tensor_count": observed_tensor_count,
             "ignored_auxiliary_files": sorted(ignored_auxiliary),
