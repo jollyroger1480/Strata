@@ -139,5 +139,5 @@ def touch_used(name: str) -> None:
 def summary(s: LaunchSettings) -> dict[str, Any]:
     """The columns of the start screen."""
     return {"name": s.name, "model": s.model or ("own files" if s.model_path else "-"),
-            "context": s.context, "parallel": s.parallel, "tuned": bool(s.tuned_preset), "tuned_at": s.tuned_at,
+            "context": s.context, "parallel": s.parallel, "tuned": s.is_tuned, "tuned_at": s.tuned_at,
             "last_used": s.last_used, "access": s.access}

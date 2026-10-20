@@ -611,6 +611,20 @@ class AdoptRules(unittest.TestCase):
                 r.check_pictures(path)
             self.assertEqual(seen, [])
 
+    def test_tuning_that_found_the_standard_settings_fastest_is_not_run_again(self):
+        # "already fastest" saves no tuning preset, only tuned_at: the next start (a container restart with TUNE=quick) must not measure for 20 minutes again
+        with Home():
+            seen = []
+            s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, tune="quick", tuned_at="2026-10-20")
+            self.assertTrue(s.is_tuned)
+            r = Runner(s, catalog=catalog(HW_12), emit=seen.append)
+            with mock.patch.object(r, "_spawn", side_effect=AssertionError("tuned again")):
+                r.tune()
+            self.assertTrue(any("Already tuned on 2026-10-20" in e.text for e in seen))
+            self.assertFalse(S.LaunchSettings(tune="quick").is_tuned)
+            store.save(s, "Fastest")
+            self.assertTrue(store.summary(store.load("Fastest"))["tuned"])
+
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
         with Home() as h:
             d, m = self.files(h.base)

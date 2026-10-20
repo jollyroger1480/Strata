@@ -7663,6 +7663,26 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def with_current_reader(cfg: dict, package: Path) -> dict:
+    """The picture reader (vision "exe", "cpu_exe") is written into the run config as an absolute path inside the engine package's folder,
+    and that folder is named after the engine version: after an engine update, or in a container made for another card, the path is gone
+    and the server would stop with "server_exited". Use the same file of the package that is installed now (the reader ships in the package)."""
+    vision = cfg.get("vision")
+    if not isinstance(vision, dict):
+        return cfg
+    fixed = dict(vision)
+    for key in ("exe", "cpu_exe"):
+        old = fixed.get(key)
+        if isinstance(old, str) and old and not engine_component.is_reference(old) and os.path.isabs(old) and not os.path.exists(old):
+            new = package / old.replace("\\", "/").rsplit("/", 1)[-1]
+            if new.is_file():
+                print(f"[strata] the picture reader {old} is not there any more; using {new} from the engine package in use", flush=True)
+                fixed[key] = str(new)
+    if fixed == vision:
+        return cfg
+    return {**cfg, "vision": fixed}
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -7671,6 +7691,7 @@ def with_component_engine(cfg: dict) -> dict:
     cfg = dict(cfg)
     cfg["exe"] = _component_exe(cfg["exe"], cfg)
     cfg["lib_dirs"] = [*engine_component.package_lib_dirs(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    cfg = with_current_reader(cfg, Path(cfg["exe"]).parent)
     if cfg.get("backend") == "hip":     # AMD: the package's own hipBLASLt tuning table for this card, when its hipBLASLt version matches
         cfg = hipblaslt_tuning.apply(cfg, Path(cfg["exe"]).parent, say=lambda line: print(line, flush=True))
     return cfg
