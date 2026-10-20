@@ -359,6 +359,16 @@ def _stop_all(name: str | None) -> int:
     return 0
 
 
+def _can_ask() -> bool:
+    """A person may be typing although the streams are not a terminal (Git Bash, mintty): a normal Windows or Linux terminal session says so
+    through the environment. A pipe from a script or CI does not."""
+    if sys.stdin is None or sys.stdin.closed:
+        return False
+    if os.environ.get("CI") or os.environ.get("STRATA_NO_PROMPT"):
+        return False
+    return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
+
+
 def _ask_yes(title: str, text: str) -> bool:
     """Ask a yes/no question on the terminal. Enter means yes. When nobody can answer (no keyboard), the answer is yes: the person already
     named the model on the command line."""
@@ -533,9 +543,15 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
+        plain_questions = False
         if not have_choices and not interactive and not a.plan:
-            return fail("`strata launch` with no choices opens screens, and this is not a terminal. Name what to start: --preset NAME, or --model NAME "
-                        "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
+            if machine or catalog is None or not _can_ask():
+                return fail("`strata launch` with no choices opens screens, and this is not a terminal. Name what to start: --preset NAME, or --model NAME "
+                            "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
+            # Git Bash, mintty and some editor panels cannot show the screens although a person is typing: go on in plain lines, and ask first
+            plain_questions = True
+            _say("This window cannot show Strata's screens (Git Bash and similar windows do not pass the keyboard through). "
+                 "For the screens, open Windows Terminal, PowerShell or cmd, or run `winpty strata launch`. Going on with plain questions.")
         if interactive and not have_choices:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
@@ -578,6 +594,14 @@ def run_launch(a: argparse.Namespace) -> int:
         fw = _access.firewall_note(s.access)
         if fw and not machine:
             _say(f"[!] {fw}")
+        if plain_questions:
+            try:
+                answer = input("Start it now? Models can be tens of GB to download. [Y/n] ").strip().lower()
+            except EOFError:
+                return fail("There is nobody to answer. Name what to start: --preset NAME, or --model NAME (strata launch --help has examples).", 2)
+            if answer not in ("", "y", "yes"):
+                _say("Nothing was changed.")
+                return 0
         if interactive and have_choices:
             from strata_cli.launch import app
             return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open),
