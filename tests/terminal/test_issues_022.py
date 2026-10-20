@@ -65,6 +65,35 @@ class Issue3298MtpDepth(unittest.TestCase):
         self.assertEqual(files_present({"args": ["--mtp", str(self.root / "gone")]}), [str(self.root / "gone")])
 
 
+class Issue3188BenchStartsItsOwnServer(unittest.TestCase):
+    """tools/strata_bench.py named `port` in the start-a-server branch without ever setting it."""
+
+    def test_the_start_branch_runs_with_the_config_port(self):
+        from unittest import mock
+        from tools import strata_bench as sb
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "run.json"
+            cfg.write_text(json.dumps({"port": 18999, "args": []}), encoding="utf-8")
+            started = []
+            with mock.patch.object(sb, "is_strata", return_value=False), \
+                    mock.patch.object(sb, "try_json", return_value=None), \
+                    mock.patch.object(sb, "start_server", side_effect=lambda c, p, g, log: started.append(p) or object()), \
+                    mock.patch.object(sb, "wait_ready", return_value=False), \
+                    mock.patch.object(sb, "stop_server"):
+                out = io.StringIO()
+                with redirect_stdout(out), mock.patch("sys.stderr", io.StringIO()):
+                    code = sb.main(["--config", str(cfg)])
+                self.assertEqual(code, 1)
+                self.assertEqual(started, [18999])
+                self.assertIn("on port 18999", out.getvalue())
+                started.clear()
+                with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+                    sb.main(["--config", str(cfg), "--port", "18777"])
+                self.assertEqual(started, [18777])
+
+
 @unittest.skipUnless(sys.platform == "win32", "SDDL aliases exist on Windows only")
 class Issue3302AdministratorAlias(unittest.TestCase):
     """SDDL prints the built-in Administrator (RID 500) as `LA`; the owner-only checks must still accept it."""
