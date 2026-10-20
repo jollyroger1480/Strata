@@ -5824,6 +5824,9 @@ int main(int argc, char** argv) {
     if (pool.plan_limit()[0] != '\0')   // the default count: what it was bounded by (a configured count is never changed)
         std::fprintf(stderr, "strata generate: CPU pool: %d workers by default (%d physical cores, %d logical processors; bounded by %s)\n",
                      pool.workers(), pool.plan_cores(), pool.plan_logical(), pool.plan_limit());
+    if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test)
+        std::fprintf(stderr, "strata generate: NUMA split on, but this model's experts come from the arena path: memory is "
+                             "not placed per node (known limitation)\n");
     if (pool.is_hybrid() && pool.affinity() != strata::kernels::cpu::PoolAffinity::All) {
         const char* aff_str = pool.affinity() == strata::kernels::cpu::PoolAffinity::PCores ? "p-cores" :
                               pool.affinity() == strata::kernels::cpu::PoolAffinity::All ? "all" : "auto";
@@ -5832,9 +5835,11 @@ int main(int argc, char** argv) {
     }
     {   // where the threads run (--host-core)
         const strata::kernels::cpu::CpuTopology ht = strata::kernels::cpu::detect_cpu_topology(true, o.pool_affinity);
+        // the pool's own order, not a fresh detection's: STRATA_NUMA_SPLIT interleaves the sockets
+        const std::vector<int>& wc = pool.worker_cores();
         std::string on;
-        for (int i = 0; i < pool.workers() && i < (int) ht.worker_cores.size(); ++i)
-            on += (i > 0 ? "," : "") + std::to_string(ht.worker_cores[(size_t) i]);
+        for (int i = 0; i < pool.workers() && i < (int) wc.size(); ++i)
+            on += (i > 0 ? "," : "") + std::to_string(wc[(size_t) i]);
         std::fprintf(stderr, "strata generate: %d pool workers on logical processors %s, the host thread on %d%s "
                              "(--host-core %s)\n", pool.workers(), on.c_str(), ht.host_core,
                      pool.host_works() ? " (draining too)" : "",
@@ -5843,10 +5848,9 @@ int main(int argc, char** argv) {
                                                                                                              : "first");
         // --aux-cpus: the plan, now the workers' CPUs are known; the threads that exist already (the CUDA driver's) move
         // now when it is on, the ones created later pin themselves (strata/platform/aux_cpus.hpp)
-        const size_t nw = std::min<size_t>((size_t) pool.workers(), ht.worker_cores.size());
+        const size_t nw = std::min<size_t>((size_t) pool.workers(), wc.size());
         std::fprintf(stderr, "%s\n",
-                     strata::aux_cpus::set_topology(ht.host_core, std::vector<int>(ht.worker_cores.begin(),
-                                                                                   ht.worker_cores.begin() + (long) nw)).c_str());
+                     strata::aux_cpus::set_topology(ht.host_core, std::vector<int>(wc.begin(), wc.begin() + (long) nw)).c_str());
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
@@ -7985,6 +7989,17 @@ int main(int argc, char** argv) {
                 if (!region.empty()) stage_lends.push_back(std::move(region));
             }
             src.stage_lend_regions(std::move(stage_lends));
+        }
+        {   // the pack's and the MTP head's files: read at start, their cache is given back by the complement's drop
+            std::vector<std::string> drop;
+            for (const std::string& d : {o.pack, o.mtp}) {
+                std::error_code ec;
+                if (d.empty()) continue;
+                if (std::filesystem::is_regular_file(d, ec)) { drop.push_back(d); continue; }
+                for (const auto& f : std::filesystem::directory_iterator(d, ec))
+                    if (f.is_regular_file(ec)) drop.push_back(f.path().string());
+            }
+            src.set_extra_drop_files(std::move(drop));
         }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
@@ -16304,10 +16319,13 @@ int main(int argc, char** argv) {
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
-                        "CPU pool call %.3f ms/round\n", "pool multi", pool.ms_multi_gu / rounds,
+                        "CPU pool call %.3f ms/round", "pool multi", pool.ms_multi_gu / rounds,
                         pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
                         (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
                         (drive.cpu_ms - pool_ms0) / rounds);
+        if (rounds > 0 && pool.numa_slices() == 2)   // STRATA_NUMA_SPLIT: each slice's drain, publish to its last task
+            std::printf("; numa slices: s0 %.3f ms  s1 %.3f ms", pool.numa_slice_ms(0) / rounds, pool.numa_slice_ms(1) / rounds);
+        if (rounds > 0) std::printf("\n");
         if (rounds > 0)
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,

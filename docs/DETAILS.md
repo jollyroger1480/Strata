@@ -649,7 +649,7 @@ when the sockets wait for each other's counters. Prompt speed did not change in 
 with it translating every DMA (`cat /sys/kernel/iommu_groups/*/type | sort | uniq -c` shows `DMA-FQ`), pinned host-to-device copies ran at
 7.7 to 9.2 GB/s on PCIe 3.0 x16 and at 12.3 GB/s with `iommu=pt` on the kernel command line, which moved prompt speed by about 30% there.
 A NUMA-aware pool (one slice of workers per socket, each reading its own socket's copy of the CPU experts) gave +10 to +14% on
-the first box in a contributor's branch; it is not in this build. Do not wrap the server in `numactl --cpunodebind` when you test
+the first box in a contributor's branch; 0.2.2 has it (on by itself with 2 or more NUMA nodes, `STRATA_NUMA_POOL=0` turns it off: see "NUMA-split CPU expert pool" below). Do not wrap the server in `numactl --cpunodebind` when you test
 workers across sockets: it pins them to one node.
 
 ### Running it at startup (Task Scheduler)
@@ -2109,6 +2109,29 @@ never changes a result.
   restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
   stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
   loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
+
+**NUMA-split CPU expert pool (0.2.2: on by itself when the machine has 2 or more NUMA nodes; off with `STRATA_NUMA_POOL=0`):** on a 2-socket Linux box it splits the CPU expert pool into
+one slice per NUMA node, each with its own task counter and barrier, and at load it places each node's half of every
+CPU-side expert's rows in that node's memory (first touch by threads pinned to that node; the model file's page cache is
+released first), so a slice reads its own socket's memory. Under the split the default worker count is the physical cores
+of both sockets minus the host core, minus one more kept free from 16 workers on, capped at 32 (22 on 2x12 cores); an explicit `--pool-workers N` is spread alternately across the
+sockets. Measured on a dual Xeon Gold 6226 (2x12 cores, 64 GB, 4 of 6 memory channels per socket populated), RTX 3090,
+PCIe 3.0 with the kernel's IOMMU in passthrough (`iommu=pt`), `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the
+IQ4_XS pack) at 262K context, server decode median over 12 samples: 59.3 tok/s with the split against 54.05 for the 0.2.0
+default (11 workers, one socket), +9.7% (+14% and +11.5% in two earlier sessions with the IOMMU translating DMA). Without
+the split, 22 workers gave 43.25 tok/s, and the split at 12 workers gave 51.45; prompt speed is unchanged. It needs Linux, exactly 2
+NUMA nodes and enough free memory on each node for its half: otherwise the log warns `NUMA placement at risk`, and after
+the load it judges the placement from move_pages samples and prints FAILED when a node holds under 95% of its slice. Only
+native expert layers are split (`ArenaExpertSource` and the `cudaHostAlloc` path are not, and the engine says so at start-up
+for the arena path). The pool refuses the split with `STRATA_EXCHANGE_ROTATE=1` and when the two sockets' worker counts are
+lopsided, logs the reason (`NUMA split off: ...`) and runs as usual. `STRATA_NUMA_SPLIT=test` builds the same slices by
+alternating the threads between two slices on any machine, with no node lookup, no pinning requirement and no memory
+placement; it is for testing the per-slice scheduling, not for speed.
+
+*0.2.2: when it runs.* The split was a contributor's opt-in (`STRATA_NUMA_SPLIT=1`, issue #3201, measured on one dual Xeon Gold 6226 box). From 0.2.2 the pool counts the NUMA nodes that have CPUs (Linux: `/sys/devices/system/node/node*/cpulist`; Windows: `GetNumaHighestNodeNumber`) and, with 2 or more and neither `STRATA_NUMA_POOL` nor `STRATA_NUMA_SPLIT` set, tries the split by itself. **One node is exactly the pool as before: nothing is read, nothing is logged, no worker count changes.** On 2 or more nodes the split runs only when it can (Linux, exactly 2 nodes holding the pool's threads, balanced slices, pinned threads, no `STRATA_EXCHANGE_ROTATE=1`); otherwise the pool keeps its old worker count and cores and logs why: `strata cpu pool: NUMA pool off: <reason> (N NUMA nodes found), the pool runs as before` (a 4-node machine, a container that sees one node's CPUs, Windows). When it runs the log says `strata cpu pool: NUMA pool on: N NUMA nodes found, one slice of the pool per node (STRATA_NUMA_POOL=0 turns it off)`, then the `NUMA split on: slice 0 = node ...` line. **Off switch: `STRATA_NUMA_POOL=0`** (also `off`, `false`, `no`); it wins over `STRATA_NUMA_SPLIT=1`, and on a 2-node machine logs `NUMA pool off (STRATA_NUMA_POOL=0)`. `STRATA_NUMA_SPLIT=1` still asks for the split on any machine (and keeps the contributor's worker counts when it cannot run), `STRATA_NUMA_SPLIT=0` is off. On Windows the node count is read but the split itself is Linux-only for now: a Windows machine with 2 nodes logs the reason and runs as before. The 0.2.2 default was built from the report and tested on one-node machines only (identity gate and speed A/B unchanged there; the node logic runs in `numa_pool_test` on made-up topologies); it has not been run on a two-socket machine by us. Log: `strata cpu pool: NUMA split on: slice 0 = node 0 (N threads), slice 1 =
+node 1 (M threads)` at start, then `FileExpertSource: NUMA placement: node 0 <GiB> (xx.x % of its slices), node 1
+<GiB> (xx.x % of its slices); free before: ...; after the drop: ...; pages taken and page-locked in N s since the
+placement started`.
 
 ---
 
