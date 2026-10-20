@@ -266,6 +266,30 @@ int main(int argc, char** argv) {
             if (bad) { std::fprintf(stderr, "numa-split did not refuse STRATA_NUMA_SPLIT=%s\n", v); return 1; }
         }
     }
+    {   // 0.2.2: STRATA_NUMA_POOL=0 is the off switch of the split, STRATA_NUMA_SPLIT=1 or test included; and with neither set the
+        // plan is empty on a host with one NUMA node (the code path of the pool before the split) and, on two or more, on only
+        // when it says why or says the nodes (the pool then runs as before)
+        for (const char* v : {"1", "test"}) {
+            put_env("STRATA_NUMA_POOL", "0");
+            put_env("STRATA_NUMA_SPLIT", v);
+            bool off = false;
+            {
+                cpu::ExpertPool pool(4, true, true);
+                off = !cpu::active_numa_split().on && cpu::active_numa_split().why.empty() && pool.numa_slices() == 0;
+            }
+            unset_env("STRATA_NUMA_POOL");
+            unset_env("STRATA_NUMA_SPLIT");
+            if (!off) { std::fprintf(stderr, "STRATA_NUMA_POOL=0 did not switch the split off (STRATA_NUMA_SPLIT=%s)
+", v); return 1; }
+        }
+        unset_env("STRATA_NUMA_SPLIT");
+        cpu::ExpertPool pool(4, true, true);
+        const auto& plan = cpu::active_numa_split();
+        std::printf("pool tasks: nothing set: split %s%s
+", plan.on ? "on" : "off", plan.why.empty() ? "" : (": " + plan.why).c_str());
+        if (!plan.on && !plan.why.empty()) { std::fprintf(stderr, "an automatic split that did not run left a refusal reason
+"); return 1; }
+    }
 #endif
     std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode (%d with modes 0-4 "
                 "interleaved)\n", checks + split_checks + mixed_checks, split_checks + mixed_checks, mixed_checks);
