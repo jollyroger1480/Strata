@@ -1,8 +1,9 @@
 import { tr } from '../lib/i18n';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Screen } from './layout';
 import { Btn, ErrorNotice, Icon } from './ui';
 import { api } from '../lib/client';
+import { parseLocation } from '../lib/router';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 import { sizeGb } from '../lib/format';
@@ -49,6 +50,8 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
         finally { setPending(false); }
     }
+    /* The first-run page hands over the folder the person chose (#3507): it is checked at once, as if they had pressed Check files. */
+    useEffect(() => { const path = parseLocation(window.location.hash).query.get('path'); if (path) { setTyped(path); void check(path); } }, []);
     /* Files that sit in a Strata data folder (<data>/models/<tag>) with their prepared model data beside them: that folder is used as the data
      * folder, so the prepared data is not made a second time. A folder the installer would not accept as a data folder is not passed. */
     const ownDataFolder = (() => { const d = checked?.preview.already_set_up?.pack ? checked.preview.already_set_up.data_dir : null; return d && /strata/i.test(d.split(/[\\/]/).filter(Boolean).pop() ?? '') ? d : null; })();
