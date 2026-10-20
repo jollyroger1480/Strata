@@ -16,7 +16,7 @@ export function recommendationLine(cards: RoleCard[], vendor?: string | null): s
   const byi = new Map(cards.map(c => [c.index, c]));
   const m = byi.get(rec.main)!;
   if (cards.length === 1) return tr('Strata will use your {0}.', [shortName(m)]);
-  const why = { same: 'the cards are alike, so the lower number is Main', memory: 'it has more memory', faster: 'it is faster', only: 'it is the only card', none: '' }[rec.why];
+  const why = { same: 'the cards are alike', memory: 'it has more memory', faster: 'it is faster', only: 'it is the only card', none: '' }[rec.why];
   let s = tr('{0} is Main: {1}.', [shortName(m), tr(why)]);
   const helpers = Object.keys(rec.roles).map(Number).filter(i => rec.roles[i] === 'helper').map(i => shortName(byi.get(i)!));
   if (helpers.length) s += ' ' + tr(helpers.length > 1 ? '{0} help.' : '{0} helps.', [helpers.join(', ')]);

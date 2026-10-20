@@ -866,7 +866,7 @@ class CardsStep(Base):
             self.assertIn("Which graphics cards should it use?", t)
             self.assertIn("Step 2 of 10", t)
             flat = " ".join(t.split())
-            self.assertIn("[ Main ]", flat)                          # equal cards: the lower number is Main
+            self.assertIn("[ Main ]", flat)                          # equal cards: the highest number is Main (the engine order stays [0, 1])
             self.assertIn("[ Helper ]", flat)
             self.assertIn("recommended", flat)
             self.assertIn("M Main", flat)
@@ -880,14 +880,14 @@ class CardsStep(Base):
     def test_m_h_o_set_the_role_of_the_card_under_the_cursor_and_r_goes_back(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
-            await press(pilot, "down", "o")                          # card 2 Off
+            await press(pilot, "o")                                  # card 1 (a Helper) Off
             flat = " ".join(text_of(app).split())
             self.assertIn("recommended: helper", flat)               # the muted tag says what was recommended
-            await press(pilot, "m")                                  # Main on card 2: card 1 becomes a Helper, one quiet line says so
+            await press(pilot, "m")                                  # Main on card 1: card 2 becomes a Helper, one quiet line says so
             flat = " ".join(text_of(app).split())
             self.assertIn("is now a Helper.", flat)
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.gpu_roles, {"0": "helper", "1": "main"})
+            self.assertEqual(ctx.settings.gpu_roles, {"0": "main", "1": "helper"})
             self.assertIsNone(ctx.settings.gpus)
         self.run_app(case, ctx=make_ctx(HW_2X16))
 

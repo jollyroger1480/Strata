@@ -79,6 +79,7 @@ export function pickMain(cs: RoleCard[]): { main: RoleCard | null; why: MainWhy 
   const byMem = (a: RoleCard, b: RoleCard) => rnd(mem(b)) - rnd(mem(a)) || a.index - b.index;
   let main = [...group].sort(byMem)[0];
   let why: MainWhy = group.length === 1 ? 'faster' : 'same';
+  if (group.length > 1 && new Set(group.map(c => `${c.name}|${rnd(mem(c))}`)).size === 1) main = [...group].sort((a, b) => b.index - a.index)[0]; // identical cards: the HIGHEST number is Main
   if (top <= 0 && new Set(pool.map(c => rnd(mem(c)))).size > 1) why = 'memory';
   const bigger = pool.filter(c => rnd(mem(c)) > rnd(mem(main)) && (top <= 0 || speed(c) >= MEMORY_GUARD_SPEED * top));
   if (bigger.length) { main = [...bigger].sort(byMem)[0]; why = 'memory'; }
@@ -238,7 +239,7 @@ export function sentence(cards: RoleCard[] | null | undefined, vendor?: string |
   const byi = new Map(cs.map(c => [c.index, c]));
   const m = byi.get(rec.main)!;
   if (cs.length === 1) return `Strata will use your ${shortName(m)}.`;
-  const why = { same: 'the cards are alike, so the lower number is Main', memory: 'it has more memory', faster: 'it is faster', only: 'it is the only card', none: '' }[rec.why];
+  const why = { same: 'the cards are alike', memory: 'it has more memory', faster: 'it is faster', only: 'it is the only card', none: '' }[rec.why];
   let s = `${shortName(m)} is Main: ${why}.`;
   const helpers = byNumber(rec.roles).filter(i => rec.roles[i] === 'helper').map(i => shortName(byi.get(i)!));
   if (helpers.length) s += ` ${helpers.join(' and ')} ${helpers.length > 1 ? 'help' : 'helps'}.`;

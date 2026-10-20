@@ -15,7 +15,7 @@
   "recommend": [
     {"hw": "one", "roles": {"0": "main"}, "main": 0, "why": "only"},
     {"hw": "two", "roles": {"0": "helper", "1": "main"}, "main": 1, "why": "faster"},
-    {"hw": "equal", "roles": {"0": "main", "1": "helper"}, "main": 0, "why": "same"},
+    {"hw": "equal", "roles": {"0": "helper", "1": "main"}, "main": 1, "why": "same"},
     {"hw": "three", "roles": {"0": "helper", "1": "main", "2": "off"}, "main": 1, "why": "faster"},
     {"hw": "igpu", "roles": {"0": "off", "1": "main"}, "main": 1, "why": "only"},
     {"hw": "igpu_only", "roles": {"0": "main"}, "main": 0, "why": "only"},

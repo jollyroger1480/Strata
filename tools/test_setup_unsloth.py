@@ -647,7 +647,7 @@ class LayerSplit(unittest.TestCase):
         self.assertIn("--resident-budget-gib", cfg["args"])
         code, out, cfg, asked = install(165.0, self.found, argv, answers={f"{M}: which GPUs?": "2"})
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["gpu"], [1, 0])
+        self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
         self.assertNotIn("--resident-budget-gib", cfg["args"])
 

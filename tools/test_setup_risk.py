@@ -241,7 +241,7 @@ class LowRamGpus(unittest.TestCase):
                                         answers={"Low-RAM mode: which GPUs?": "2"})     # the roles are the default (Main last); the low-RAM question still defaults to one card
         self.assertEqual(code, 0, out)
         self.assertTrue(any("Low-RAM mode: which GPUs? [1]" in q for q in asked), asked)
-        self.assertEqual(cfg["gpu"], [1, 0])
+        self.assertEqual(cfg["gpu"], [0, 1])
         self.assertIn("--mmap-experts", cfg["args"])
         self.assertIn("1) GPU 0 (NVIDIA GeForce RTX 3090, 24 GB) only", out)
 
@@ -278,7 +278,7 @@ class LowRamGpus(unittest.TestCase):
             code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
                                             answers={"Use these roles?": "y"})     # the recommended roles: Main 0 (last), Helper 1
             self.assertEqual(code, 0, out)
-            self.assertEqual(cfg["gpu"], [1, 0])
+            self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-experts", cfg["args"])
             self.assertFalse(any("Low-RAM mode" in q for q in asked), asked)
             self.assertIn("stay in RAM", out)

@@ -180,7 +180,7 @@ class Golden(unittest.TestCase):
         lowram_multi = self.golden["32GB-2x24GB qwen IQ3_XXS"]["config"]   # #364 -> #642: low-RAM, two cards -> both
         self.assertIn("--resident-experts" if "--resident-experts" in lowram_multi["args"] else "--mmap-experts",
                       lowram_multi["args"])
-        self.assertEqual(lowram_multi.get("gpu"), [1, 0])                   # 0.1.40 (#642): resident on both cards; roles: Main 0 goes last
+        self.assertEqual(lowram_multi.get("gpu"), [0, 1])                   # 0.1.40 (#642): resident on both cards; roles: Main 1 goes last, as before
 
     def test_yes(self):
         for key, ram, found, family, model in self.cases():

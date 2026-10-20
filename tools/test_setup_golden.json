@@ -295,13 +295,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -355,13 +355,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -415,13 +415,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -475,13 +475,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -590,13 +590,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -649,13 +649,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -707,13 +707,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",
@@ -766,13 +766,13 @@
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
-    1,
-    0
+    0,
+    1
    ],
    "gpu_order": "as_given",
    "gpu_roles": {
-    "0": "main",
-    "1": "helper"
+    "0": "helper",
+    "1": "main"
    },
    "gpus_asked": true,
    "layer_split": "auto",

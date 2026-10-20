@@ -40,6 +40,10 @@ def _speed(c: dict) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else 0.0
 
 
+def rnd_(x: float) -> int:
+    return round(x)
+
+
 def _shares(c: dict) -> bool:
     return gpu_fit._shares_memory(c)
 
@@ -80,7 +84,7 @@ def _eligible(cs: list[dict]) -> list[dict]:
 
 def pick_main(cs: list[dict]) -> tuple[dict | None, str]:
     """(the Main card, why) why: only | faster | same | memory. The faster card, cards within 5% being the same card (the one with more memory,
-    then the lower number); a card with clearly more memory wins when it is at least half as fast (#1576)."""
+    then, for identical cards, the HIGHEST number - so the engine order stays [0, 1] - else the lower number); a card with clearly more memory wins when it is at least half as fast (#1576)."""
     pool = _eligible(cs)
     if not pool:
         return None, "none"
@@ -90,6 +94,8 @@ def pick_main(cs: list[dict]) -> tuple[dict | None, str]:
     group = [c for c in pool if _speed(c) * SAME_SPEED >= top] if top > 0 else list(pool)
     main = sorted(group, key=lambda c: (-round(_mem(c)), _idx(c)))[0]
     why = "faster" if len(group) == 1 else "same"
+    if len(group) > 1 and len({(str(c.get("name")), rnd_(_mem(c))) for c in group}) == 1:
+        main = max(group, key=_idx)       # identical cards: the HIGHEST number is Main, so the engine order stays [0, 1] as it always was
     if top <= 0 and len({round(_mem(c)) for c in pool}) > 1:
         why = "memory"              # speeds unknown: the card with the most memory
     bigger = [c for c in pool if round(_mem(c)) > round(_mem(main)) and (top <= 0 or _speed(c) >= MEMORY_GUARD_SPEED * top)]
@@ -338,7 +344,7 @@ def sentence(cards: list[dict], vendor: str | None = None) -> str:
     if len(cs) == 1:
         return f"Strata will use your {short_name(m)}."
     helpers = [byi[i] for i, r in rec["roles"].items() if r == "helper"]
-    why = {"same": "the cards are alike, so the lower number is Main", "memory": "it has more memory", "faster": "it is faster", "only": "it is the only card"}[rec["why"]]
+    why = {"same": "the cards are alike", "memory": "it has more memory", "faster": "it is faster", "only": "it is the only card"}[rec["why"]]
     s = f"{short_name(m)} is Main: {why}."
     if helpers:
         s += " " + " and ".join(short_name(h) for h in helpers) + (" help." if len(helpers) > 1 else " helps.")

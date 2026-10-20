@@ -44,12 +44,12 @@ class SetupFitRule(unittest.TestCase):
         self.assertEqual(cfg["gpu_roles"], {"0": "helper", "1": "main"})
         self.assertEqual(cfg["layer_split"], "auto")
 
-    def test_two_equal_cards_start_as_main_and_helper_with_the_lower_number_main(self):
+    def test_two_equal_cards_start_with_the_highest_number_as_main(self):
         found = [card(0, "NVIDIA GeForce RTX 3060", 12.0, "86"), card(1, "NVIDIA GeForce RTX 3060", 12.0, "86")]
         code, out, cfg, asked = run(26.0, found, "IQ3_XXS")
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["gpu"], [1, 0])
-        self.assertEqual(cfg["gpu_roles"], {"0": "main", "1": "helper"})
+        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertEqual(cfg["gpu_roles"], {"0": "helper", "1": "main"})
         self.assertEqual(cfg["gpu_order"], "as_given")
         self.assertEqual(cfg["layer_split"], "auto")
 

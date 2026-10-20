@@ -56,7 +56,7 @@ the picture reader. (Older versions of this page said "the first is the main one
 
 **Recommended roles** (the same rule in the app, `strata launch` and setup; `strata_control/gpu_roles.py`): the faster card
 is Main (speed is multiprocessors x max clock, the engine's own measure; cards within 5% are the same card, and the one with
-more memory, then the lower number, wins; a card with clearly more memory beats a faster one that is at least half as fast).
+more memory wins, then the lower number; two identical cards: the highest number is Main, so the engine order stays 0, 1 as it always was; a card with clearly more memory beats a faster one that is at least half as fast).
 Every other card starts as Helper, except a card with **8 GB or less** (Off), built-in graphics beside a card with memory of
 its own (Off) and a card the engine cannot run (Off). Every role is one click (the app), one key (`strata launch`: M, H, O;
 R goes back to the recommendation) or one line (below).

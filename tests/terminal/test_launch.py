@@ -585,7 +585,7 @@ class AdoptRules(unittest.TestCase):
             # which cards: named ones win (one card too: --gpu 1 on a box that has them), else the fit rule on a box with several cards
             two = catalog(HW_2X16)
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[1, 0]), two), [1, 0])
-            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), two), [1, 0])     # roles: card 0 Main (last), card 1 Helper
+            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), two), [0, 1])     # roles: card 0 Main (last), card 1 Helper
             one = catalog(HW_12)
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[1]), one), [1])
             self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), one))
@@ -614,7 +614,7 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(installed_cards({**chosen, "gpus_asked": False}))               # never asked: setup's default, not a choice
             self.assertIsNone(installed_cards({"gpu": 1}))
             self.assertIsNone(cards_for_launch(plain, two, base=chosen))                      # the installed choice stays
-            self.assertEqual(cards_for_launch(plain, two, base={**chosen, "gpus_asked": False}), [1, 0])    # no choice recorded: the recommended roles
+            self.assertEqual(cards_for_launch(plain, two, base={**chosen, "gpus_asked": False}), [0, 1])    # no choice recorded: the recommended roles
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[0]), two, base=chosen), [0])   # --gpu 0 wins
             if True:
                 installed = h.base / "strata-iq3_xxs.json"
