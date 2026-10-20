@@ -317,6 +317,17 @@ def _say(line: str = "") -> None:
     sys.stdout.flush()
 
 
+def _interrupted_move_notice() -> None:
+    """One line when a move of the models folder was left unfinished (never blocks the launch)."""
+    try:
+        from strata_control import discovery, models_move
+        st = models_move.interrupted(discovery.data_dir(Path.home() / "Strata")[0])
+    except Exception:
+        return
+    if st:
+        _say("A move of your models was interrupted. Finish it with `strata models move --resume`, or keep them where they are with `strata models move --leave`.")
+
+
 def _printer(quiet: bool = False):
     """An emit callback that prints readable lines: new text once, progress in steps of 10% when not on a terminal."""
     state = {"last": None, "pct": -10, "stage": None}
@@ -547,6 +558,8 @@ def run_launch(a: argparse.Namespace) -> int:
             if a.model or a.model_path:
                 return fail(str(e), 5)
         s, notices = settings_from_args(a, catalog)
+        if not machine:
+            _interrupted_move_notice()
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False

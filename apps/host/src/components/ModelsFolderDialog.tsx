@@ -54,6 +54,8 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
     const [outcome, setOutcome] = useState<{ job: NativeJob } | null>(null);
     const [notice, setNotice] = useState('');
     const [stopping, setStopping] = useState(false);
+    const [unfinished, setUnfinished] = useState<{ from: string; to: string } | null>(null);
+    const [resumed, setResumed] = useState<{ from: string; to: string } | null>(null);
     const folder = native?.downloadDirectory ?? '';
     const free = native?.downloadFreeBytes ?? null;
     const usage = native?.installed?.usage?.total_bytes ?? 0;
@@ -63,6 +65,41 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
     const total = native?.downloadTotalBytes ?? null;
     const used = free !== null && total ? Math.min(100, Math.max(1, ((total - free) / total) * 100)) : 0;
     useEffect(() => { if (moving && !jobId) setJobId(moving.id); }, [moving, jobId]);
+
+    /* A move that a crash or a stop left half done: found again at the next start, with its two choices. */
+    useEffect(() => {
+        if (moving || outcome) return;
+        let live = true;
+        api.get<{ interrupted: { from: string; to: string } | null }>('/api/native/models-folder/interrupted')
+            .then(r => { if (live) setUnfinished(r.interrupted); }).catch(() => { if (live) setUnfinished(null); });
+        return () => { live = false; };
+    }, [moving, outcome, folder]);
+    async function finishMove() {
+        if (!unfinished) return;
+        setPending(true);
+        setError(null);
+        try {
+            const result = await api.post<NativeJob>('/api/native/models-folder/resume', { stopRunning: true });
+            setResumed(unfinished);
+            setUnfinished(null);
+            if (result.id) { setJobId(result.id); setOutcome(null); await refreshNative(true); }
+        }
+        catch (e) { setError({ message: (e as Error).message, details: ((e as ApiError).body as { details?: string } | undefined)?.details }); }
+        finally { setPending(false); }
+    }
+    async function leaveMove() {
+        if (!unfinished) return;
+        setPending(true);
+        setError(null);
+        try {
+            await api.post('/api/native/models-folder/leave', {});
+            setNotice(tr('The partial copies were removed. Your models are in {0}.', [unfinished.from]));
+            setUnfinished(null);
+            await refreshNative(true);
+        }
+        catch (e) { setError({ message: (e as Error).message, details: ((e as ApiError).body as { details?: string } | undefined)?.details }); }
+        finally { setPending(false); }
+    }
 
     function leave() { setPlan(null); setStage(null); setError(null); setTyping(false); }
     async function pick(path = '') {
@@ -106,7 +143,7 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
         try { await nativeAction(`operations/${moving.id}/cancel`); }
         catch (e) { setError({ message: (e as Error).message }); }
     }
-    function closeResult() { setOutcome(null); setJobId(null); leave(); setNotice(''); }
+    function closeResult() { setOutcome(null); setJobId(null); setResumed(null); leave(); setNotice(''); }
 
     const progress = moving?.progress as { done: number; total: number; file: string; group: string; index: number; count: number; secondsLeft: number; sameDrive: boolean } | null | undefined;
     const percent = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
@@ -125,6 +162,12 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
         <input id="models-folder-path" className="st-input" value={typed} onChange={e => setTyped(e.target.value)} placeholder={tr('Full path to an existing folder')} spellCheck={false} autoFocus/>
         <div className="row"><Btn variant="primary" type="submit" disabled={pending || !typed.trim()}>{tr('Use this directory')}</Btn></div>
       </form> : null}
+      {unfinished && !moving ? <div className="models-notice models-notice--info" role="alert"><Icon name="info" size={18}/><div>
+        <strong>{tr('A move was interrupted. Finish it or leave it.')}</strong><br/>
+        {tr('Strata was moving your models from {0} to {1} when it stopped. Nothing is lost.', [unfinished.from, unfinished.to])}
+        <p className="small muted">{tr('Finishing puts all your models in {1}. Leaving it keeps them in {0} and removes the partial copies from {1}.', [unfinished.from, unfinished.to])}</p>
+        <div className="row"><Btn variant="primary" size="sm" disabled={pending || blocked} onClick={() => void finishMove()}>{tr('Finish the move')}</Btn><Btn size="sm" disabled={pending || blocked} onClick={() => void leaveMove()}>{tr('Leave it')}</Btn></div>
+      </div></div> : null}
       {notice ? <p className="small storage-directory__notice" role="status"><Icon name="check" size={15}/>{notice}</p> : null}
       {error && !stage ? <Failure message={error.message} details={error.details}/> : null}
     </section>
@@ -155,7 +198,7 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
       <p className="small">{tr('Keep Strata open. You can keep using other apps. Your models cannot be loaded until the move is done.')}</p>
       {progress ? <details className="models-details"><summary>{tr('Details')}</summary><ul>
         <li>{tr('Now copying: {0}, file {1} of {2}', [modelName(progress.group, native) ?? progress.group, progress.index, progress.count])}</li>
-        <li>{tr('From {0} to {1}', [savedPlan?.current ?? '', savedPlan?.folder ?? ''])}</li></ul></details> : null}
+        <li>{tr('From {0} to {1}', [savedPlan?.current ?? resumed?.from ?? '', savedPlan?.folder ?? resumed?.to ?? ''])}</li></ul></details> : null}
     </Dialog>
 
     <ResultDialog outcome={outcome?.job ?? null} plan={savedPlan} native={native} onClose={closeResult} onAgain={() => { closeResult(); void pick(); }}/>
@@ -199,7 +242,7 @@ function ChooseBody({ plan, choice, setChoice, names, error }: { plan: Plan; cho
 function ResultDialog({ outcome, plan, native, onClose, onAgain }: { outcome: NativeJob | null; plan: Plan | null; native: NativeState | null; onClose: () => void; onAgain: () => void }) {
     if (!outcome) return null;
     const result = (outcome.result ?? {}) as Outcome;
-    const sized = (groups: string[]) => list(groups.map(g => { const m = plan?.models.find(x => x.group === g); const name = modelName(g, native); return name ? `${name} (${gb(m?.bytes ?? 0)})` : null; }).filter((x): x is string => !!x));
+    const sized = (groups: string[]) => list(groups.map(g => { const m = plan?.models.find(x => x.group === g); const name = modelName(g, native); return name ? (m ? `${name} (${gb(m.bytes)})` : name) : null; }).filter((x): x is string => !!x));
     if (outcome.state === 'error') {
         const full = result.code === 'disk_full';
         const where = driveOf(result.to ?? '');

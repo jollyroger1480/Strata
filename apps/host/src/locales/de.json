@@ -3437,5 +3437,11 @@
   "s8413": "Ein Modell läuft. Stoppen Sie es zuerst und ändern Sie dann den Ordner.",
   "s8414": "Wählen Sie einen Modellordner.",
   "s8415": "Wählen Sie, was mit Ihren Modellen geschehen soll.",
-  "s8416": "Diese Möglichkeit gibt es hier nicht."
+  "s8416": "Diese Möglichkeit gibt es hier nicht.",
+  "s8417": "Ein Verschieben wurde unterbrochen. Beenden Sie es oder lassen Sie es sein.",
+  "s8418": "Strata hat Ihre Modelle von {0} nach {1} verschoben, als es angehalten wurde. Es ist nichts verloren.",
+  "s8419": "Verschieben beenden",
+  "s8420": "Belassen",
+  "s8421": "Beenden legt alle Ihre Modelle in {1} ab. Belassen lässt sie in {0} und entfernt die unvollständigen Kopien aus {1}.",
+  "s8422": "Die unvollständigen Kopien wurden entfernt. Ihre Modelle liegen in {0}."
 }

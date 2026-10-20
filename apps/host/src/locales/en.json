@@ -3437,5 +3437,11 @@
   "s8413": "A model is running. Stop it first, then change the folder.",
   "s8414": "Choose a models folder.",
   "s8415": "Choose what to do with your models.",
-  "s8416": "That choice is not possible here."
+  "s8416": "That choice is not possible here.",
+  "s8417": "A move was interrupted. Finish it or leave it.",
+  "s8418": "Strata was moving your models from {0} to {1} when it stopped. Nothing is lost.",
+  "s8419": "Finish the move",
+  "s8420": "Leave it",
+  "s8421": "Finishing puts all your models in {1}. Leaving it keeps them in {0} and removes the partial copies from {1}.",
+  "s8422": "The partial copies were removed. Your models are in {0}."
 }
