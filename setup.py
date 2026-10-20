@@ -3764,7 +3764,14 @@ def amd_parse_gpus(text, amd) -> list:
     architectures: the engine is compiled for each).  Returns the cards, the main one first."""
     usable = [g for g in amd if amd_problem(g) is None]
     if str(text).strip().lower() == "all":
-        sel = [g["index"] for g in sorted(usable, key=amd_rank)]
+        # "all" means the cards that help: a Strix Halo / APU beside a card with memory of its own adds no memory (its memory is the RAM),
+        # draws the desktop, and as a stage it only slows the split down.  Named by number (--gpus 1,0) it is still taken as asked.
+        own = [g for g in usable if not g.get("uma")]
+        sel = [g["index"] for g in sorted(own if len(own) >= 2 else usable, key=amd_rank)]
+        left = [g for g in usable if g["index"] not in sel]
+        if left and len(own) >= 2:
+            say("  --gpus all leaves out " + ", ".join(f"GPU {g['index']} ({g['name']})" for g in left)
+                + ": it shares the system memory and draws the desktop. Name it (--gpus ...) to use it anyway")
     else:
         try:
             sel = [int(x) for x in str(text).split(",") if x.strip()]

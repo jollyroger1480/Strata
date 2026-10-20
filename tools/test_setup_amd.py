@@ -136,6 +136,16 @@ class GpuLists(unittest.TestCase):
     def test_all_is_every_supported_card_most_vram_first(self):
         self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", self.AMD)], [1, 3, 0])
 
+    def test_all_leaves_out_the_apu_beside_two_cards(self):
+        """Strix Halo beside two discrete cards: "all" is the two cards (the APU shares the RAM and draws the desktop); with ONE card it is both
+        (two are needed for a split) and a number list still takes the APU as asked."""
+        apu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 64.0, "arch": "gfx1151", "uma": True}
+        r9700 = {"index": 1, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "arch": "gfx1201"}
+        r9070 = {"index": 2, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "arch": "gfx1201"}
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", [apu, r9700, r9070])], [1, 2])
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", [apu, r9700])], [1, 0])
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("0,1", [apu, r9700, r9070])], [0, 1])
+
     def test_refusals(self):
         for text in ("1,2", "1,7", "1", "1,1", "x,y"):
             with self.assertRaises(SystemExit, msg=text):
