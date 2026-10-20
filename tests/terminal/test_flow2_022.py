@@ -201,6 +201,19 @@ class PlanWords(Base):
             out = self.plan_text("--model-path", str(folder), "--vision", "off")
         self.assertIn("About 5.2 GB to download: the draft layer (5.2 GB). Your model files are used where they are.", out)
 
+    def test_a_model_whose_files_are_all_on_disk_does_not_list_a_zero_download(self):
+        from strata_cli.launch.modelstate import ModelState, Part
+        data = self.base / "d"
+        (data / "mtp" / "rt").mkdir(parents=True)
+        (data / "mtp" / "rt" / "experts.bin").write_bytes(b"x")
+        whole = ModelState(installed=False, parts=[Part("weights", "the model", 0.0)], on_disk_gb=66.4, total_gb=66.4)
+        with mock.patch.object(Runner, "model_state", return_value=whole):
+            out = self.plan_text("--model", "q2_0", "--data-dir", str(data), "--vision", "off")
+            self.assertIn("download  Nothing to download: the model is already on this computer.", out)
+            out = self.plan_text("--model", "q2_0", "--data-dir", str(self.base / "other"), "--vision", "off")
+        self.assertIn("About 5.2 GB to download: the draft layer (5.2 GB). 66 GB of the model is already in its folder.", out)
+        self.assertNotIn("0.0 GB", out)
+
     def test_json_plan_carries_the_numbers(self):
         code, out, err = run_cli(["launch", "--plan", "--output", "json", "--model", "q2_0", "--mtp", "off", "--vision", "off"])
         self.assertEqual(code, 0, err)

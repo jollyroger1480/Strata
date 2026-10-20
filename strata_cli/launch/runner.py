@@ -1049,24 +1049,20 @@ class Runner:
         from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
         s = self.s
         st = self.model_state()
-        parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts]
-        fresh = any(p.kind == "weights" for p in st.parts) and not st.own_files
+        parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts if p.gb >= 0.05]     # a part already on disk is not a download
         row = self.row()
         helpers = s.family in ("qwen", "swift", "coder", "unsloth")
         wants_pictures = s.vision not in (None, "off") and row is not None and bool(row.images)
-        have = {p["kind"] for p in parts}
-        if fresh and helpers:
-            if s.mtp != "off":
-                parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
-            if wants_pictures:
-                parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
-        elif st.own_files and helpers:
-            # the person's files come with no draft layer or picture reader: setup fetches them next to the prepared data, unless they are there
+        if helpers and (st.own_files or not st.installed):
+            # a model that is not set up yet (or the person's own files) comes without the draft layer and the picture reader: setup fetches them
+            # next to the prepared data, unless they are there already
+            have = {p["kind"] for p in parts}
             try:
-                data = Path(st.folder) if st.folder else (self.existing_data_dir() or self.catalog.data_dir())
+                data = Path(st.folder) if st.folder else (Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir()))
                 if s.mtp != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
                     parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
-                if wants_pictures and "mmproj" not in have and not list((data / "models").glob("mmproj*.gguf")):
+                has_reader = list((data / "models").glob("mmproj*.gguf")) or list((data / "Models").glob("mmproj*.gguf"))
+                if wants_pictures and "mmproj" not in have and not has_reader:
                     parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
             except OSError:
                 pass
