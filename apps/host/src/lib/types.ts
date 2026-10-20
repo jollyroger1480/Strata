@@ -355,6 +355,7 @@ export interface ChatMessage {
   reasoningOpen?: boolean;
   tokens?: number;
   tps?: number;
+  promptTps?: number;
   durationMs?: number;
   error?: string;
   tools?: ToolCall[];
