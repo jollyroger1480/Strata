@@ -113,6 +113,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     a.add_argument("--no-api-key", action="store_true", help="share beyond this computer without an API key (a warning is shown, nothing is refused)")
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
+    o.add_argument("--retune", action="store_true",
+                   help="with --tune (quick is used when --tune is not given): measure again even when this model was already tuned on this computer "
+                        "(by default a stored tuning result is reused and no measuring is done)")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
     o.add_argument("--open", action="store_true", help="open the server's web page in your browser once it is serving (nothing opens a browser without this)")
     o.add_argument("--yes", action="store_true", help="do not ask questions (for one: whether to download the model on a computer with no engine yet)")
@@ -562,7 +565,10 @@ def run_launch(a: argparse.Namespace) -> int:
             return _tui(app.run_tui, None, catalog=catalog, feed=a.feed, open_page=bool(a.open))
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes)
+        if getattr(a, "retune", False) and s.tune == "skip":
+            s.tune = "quick"
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes,
+                        retune=bool(getattr(a, "retune", False)))
         try:
             runner.check_own_files()                         # the person's own files: a wrong path is said now, and the files name the model
         except LaunchError as e:
@@ -618,7 +624,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if interactive and have_choices:
             from strata_cli.launch import app
             return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open),
-                         move_data=move_data)
+                         move_data=move_data, retune=bool(getattr(a, "retune", False)))
         try:
             result = runner.run()
         except LaunchError as e:

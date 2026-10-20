@@ -323,8 +323,10 @@ class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
                  components_dir: str | None = None, hardware: dict | None = None,
-                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False):
+                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False,
+                 retune: bool = False):
         self.s = s
+        self.retune = retune                  # --retune: measure again even when a tuning result for this model on this computer is stored
         self.move_data = move_data            # --move-data / the answer "move": the model files already here go to the new --data-dir
         self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
         self.assume_yes = assume_yes          # --yes: no questions
@@ -890,16 +892,23 @@ class Runner:
         if s.tune == "skip":
             return
         from strata_control import presets
-        if s.tuned_preset:
-            try:
-                presets.find(s.tuned_preset)
-                self.emit("tune", "This preset is already tuned for this computer.", 100)
+        if not self.retune:
+            if s.tuned_preset:
+                try:
+                    presets.find(s.tuned_preset)
+                    self.emit("tune", "This preset is already tuned for this computer.", 100)
+                    return
+                except presets.PresetError:
+                    pass
+            elif s.tuned_at:                                 # measured before: the standard settings were already the fastest, nothing was saved
+                self.emit("tune", f"Already tuned on {s.tuned_at}: this computer runs best with the standard settings. Nothing to do.", 100)
                 return
-            except presets.PresetError:
-                pass
-        elif s.tuned_at:                                     # measured before: the standard settings were already the fastest, nothing was saved
-            self.emit("tune", f"Already tuned on {s.tuned_at}: this computer runs best with the standard settings. Nothing to do.", 100)
-            return
+            stored = self.stored_tuning()
+            if stored:                                       # the same model and choices were tuned on this computer before (a run by flags, no preset)
+                s.tuned_preset, s.tuned_at = stored["id"], stored["date"]
+                self.emit("tune", f"This model was already tuned for this computer on {stored['date']} ('{stored['name']}'), so that result is used "
+                                  "and nothing is measured again. Add --retune to measure again.", 100)
+                return
         mode = "thorough" if s.tune == "thorough" else "quick"
         status_file = launch_dir() / f"{self.name}.tune.json"
         try:
@@ -944,6 +953,22 @@ class Runner:
         elif result and result.get("outcome") == "default_confirmed":
             s.tuned_at = time.strftime("%Y-%m-%d")
         self.emit("tune", f"Tuning result: {word}. {sentence}", 100, level="info" if word in ("faster", "already fastest") else "warn", word=word)
+
+    def stored_tuning(self) -> dict | None:
+        """The tuning result stored for this launch's model, choices and computer (the active preset of its slot in the shared presets store,
+        which the start applies), or None. A result whose computer changed in a way that matters (a different card, processor or memory,
+        another model file) is not reused: it is measured again."""
+        if self.config_path is None:
+            return None
+        from strata_control import presets
+        try:
+            _cfg, info = presets.overlay(read_config(self.config_path))
+            if not info.get("applied") or not info.get("preset"):
+                return None
+            made = str(presets.load(info["preset"]["id"]).get("created") or "")[:10]
+            return {"id": info["preset"]["id"], "name": info["preset"]["name"], "date": made or time.strftime("%Y-%m-%d")}
+        except Exception:                                    # noqa: BLE001 - an unreadable store means: measure
+            return None
 
     tune_word: str | None = None
 
