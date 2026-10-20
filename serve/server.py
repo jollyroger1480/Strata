@@ -70,6 +70,7 @@ from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
 from strata_control import user_args  # noqa: E402
+from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -2812,11 +2813,48 @@ class Vision:
 def gpu_list(cfg: dict) -> list[int]:
     """The config's "gpu": one card (2), or several for a layer split ([0, 2] or "0,2"), numbered as nvidia-smi
     numbers them; [] when it names none."""
-    g = cfg.get("gpu")
+    roles, _ = gpu_roles.saved_roles(cfg)       # "gpu_roles" (Main / Helper / Off per card) wins unless "gpu" was edited by hand
+    if roles is not None:
+        legacy = _gpu_numbers(cfg.get("gpu"))
+        return legacy if legacy else gpu_roles.engine_order(roles)     # Main LAST; Off cards left out; [] when every card is Off
+    return _gpu_numbers(cfg.get("gpu"))
+
+
+def _gpu_numbers(g) -> list[int]:
     if g is None or g == "":
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+
+
+def gpu_roles_active(cfg: dict) -> bool:
+    """True when the run settings carry usable "gpu_roles": the card order is the person's (Main last), never re-sorted by speed."""
+    return gpu_roles.saved_roles(cfg)[0] is not None
+
+
+def gpu_all_off(cfg: dict) -> bool:
+    """Every card is set to Off ("gpu_roles" with no card on, or "gpu_none": true)."""
+    roles, _ = gpu_roles.saved_roles(cfg)
+    return roles is not None and not any(r != "off" for r in roles.values())
+
+
+def card_roles_lines(cfg: dict) -> list[str]:
+    """The plain lines printed at start: the roles (cards numbered as nvidia-smi numbers them), a hand-edited "gpu" that beat them, and the
+    all-Off case.  SystemExit when every card is Off and the engine cannot start without one (the CUDA, HIP and SYCL engines)."""
+    roles, problem = gpu_roles.saved_roles(cfg)
+    out = [f"[strata] {problem}"] if problem else []
+    if roles is None:
+        return out
+    if gpu_all_off(cfg):
+        if cfg.get("backend") in ("cpu", "metal") or sys.platform == "darwin":
+            out.append("[strata] every graphics card is Off: " + gpu_roles.CPU_ONLY_LINE)
+            return out
+        raise SystemExit("[strata] every graphics card is set to Off, and this engine cannot start without one. Turn a card on "
+                         "(Main or Helper) in the app or with strata launch --gpu-roles.")
+    word = {"main": "Main", "helper": "Helper", "off": "Off"}
+    out.append("[strata] card roles: " + ", ".join(f"{word[r]} GPU {i}" for r in ("main", "helper", "off")
+                                                    for i in sorted(roles) if roles[i] == r) + " (numbers as nvidia-smi gives them)")
+    return out
 
 
 def engine_binary(exe: str, cfg: dict | None = None) -> str:
@@ -3109,7 +3147,7 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     draft and verify have a floor the smaller card cannot afford.  scores/vrams: {index: value} (tests); None asks
     the driver - injected scores without injected vrams means no VRAM check (a test seam is a test seam)."""
     gl = gpu_list(cfg)
-    if len(gl) < 2 or cfg.get("gpu_order") == "as_given":
+    if len(gl) < 2 or cfg.get("gpu_order") == "as_given" or gpu_roles_active(cfg):
         return gl
     args = cfg.get("args") or []
     if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
@@ -3189,7 +3227,7 @@ def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
     """HIP_VISIBLE_DEVICES for a start that names no card (see pick_hip_devices), asked of the engine package's own `strata-device`.
     None leaves everything as it was: a card the config or the environment names, no probe next to the engine, or a probe that fails.
     SystemExit with the plain line when no card of this computer can run."""
-    if cfg.get("backend") != "hip" or gpu_list(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
+    if cfg.get("backend") != "hip" or gpu_list(cfg) or gpu_all_off(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
             or env.get("HIP_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES"):
         return None
     exe = cfg.get("exe")
@@ -3220,7 +3258,10 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
-    if hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
+    if gpu_all_off(cfg):                             # every card Off: the engine sees none (a CPU engine runs; the others say so at start)
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        env["HIP_VISIBLE_DEVICES"] = ""
+    elif hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
@@ -7954,6 +7995,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
+        for line in card_roles_lines(cfg):             # the card roles: said first; every card Off stops here, before anything touches a card
+            print(line, flush=True)
         if cfg.get("vision"):
             elastic = cfg["vision"].get("elastic") is True and cfg.get("vram_elastic") is True
             print("the vision encoder starts with the first picture (elastic) ..." if elastic else

@@ -298,6 +298,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -353,6 +358,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -404,8 +414,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -448,15 +467,24 @@
     "131072",
     "--kv",
     "int8",
-    "--mmap-experts",
+    "--resident-experts",
     "--vision",
     "--vram-reserve-mib",
     "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -509,6 +537,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"
@@ -561,6 +593,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -611,8 +648,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -660,8 +706,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -705,13 +760,22 @@
     "65536",
     "--kv",
     "int8",
-    "--mmap-experts",
+    "--resident-experts",
     "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -763,6 +827,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"
