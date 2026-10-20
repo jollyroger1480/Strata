@@ -62,6 +62,7 @@ strata launch --model iq3_xxs --context 128k --parallel 4 --vision off --tune qu
               --access lan --port 8080 --save-preset "Office" --no-tui   # serve and print the address
 strata launch --model-path /data/models/IQ3_XXS --no-tui               # files you already have
 strata launch --preset Office --set prefill=65536 --set STRATA_PIN_BY_NEED=1 --no-tui
+strata launch --model q2_0 --pool-cores 2-14:2 --no-tui               # experimental: pin the CPU workers to these logical processors (see DETAILS.md)
 strata launch --plan --model q2_0                                      # what would happen; nothing changes
 strata launch --model q2_0 --yes --no-tui                              # no questions (for one: download on a computer with no engine yet)
 strata launch --model q2_0 --open                                      # also open the server's page in your browser once it serves

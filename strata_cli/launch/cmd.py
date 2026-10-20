@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -103,6 +104,10 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
+    g.add_argument("--pool-cores", metavar="LIST",
+                   help="experimental: pin the CPU workers to exactly these logical processors, e.g. 2,4,6,8 or 2-14:2 (the numbers Task Manager or "
+                        "lscpu show). The default is one worker per physical core, which the engine's start line names; "
+                        "two entries on one core are kept with a warning")
     a = p.add_argument_group("who can use it")
     a.add_argument("--access", type=_choice("a way to share Strata", S.ACCESS_KINDS), metavar="local|lan|cloudflare|tailscale",
                    help="local: this computer only; lan: your network; cloudflare: a quick tunnel; tailscale: your tailnet")
@@ -235,6 +240,13 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if a.pool_cores:
+        text = a.pool_cores.replace(" ", "")
+        if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):
+            notices.append(S.Notice("warn", f"'{a.pool_cores}' is not a list of logical processor numbers, so --pool-cores is left out.",
+                                    "Write it like 2,4,6,8 or 2-14:2. The CPU workers keep their default placement."))
+        else:
+            s.extra = {**s.extra, "--pool-cores": text}
     if a.save_preset:
         s.name = a.save_preset
     return s, notices
@@ -587,6 +599,7 @@ def run_launch(a: argparse.Namespace) -> int:
         except LaunchError as e:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
+        notes = [*notices, *notes]                           # what the flags themselves said (a --pool-cores list that could not be read, a key beside --no-api-key)
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
