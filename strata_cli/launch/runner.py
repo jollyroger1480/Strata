@@ -310,6 +310,15 @@ def download_text(dl: dict, already: bool, label: str | None = None) -> str:
     return f"{label}: {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB" if label else f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
 
 
+_END = object()
+
+
+def _elapsed(seconds: float) -> str:
+    """'40 s', '3 min' (plain, rounded down)."""
+    seconds = int(seconds)
+    return f"{seconds} s" if seconds < 90 else f"{seconds // 60} min"
+
+
 class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
@@ -624,6 +633,32 @@ class Runner:
         """(title, text) of the question before a download starts, naming exactly what is fetched."""
         return self.model_state().question()
 
+    #: seconds of silence from setup before a "still working" line (packing a 40 GB model prints nothing for minutes)
+    HEARTBEAT_S = 30.0
+
+    def _read_lines(self, p: subprocess.Popen):
+        """The lines setup prints, and None whenever a second passes with none, so a silent step can say it is still going and a cancel is
+        seen at once."""
+        import queue
+        q: queue.Queue = queue.Queue()
+
+        def pump() -> None:
+            try:
+                for ln in p.stdout:                          # type: ignore[union-attr]
+                    q.put(ln)
+            finally:
+                q.put(_END)
+        threading.Thread(target=pump, daemon=True).start()
+        while True:
+            try:
+                ln = q.get(timeout=min(1.0, max(0.05, self.HEARTBEAT_S / 2)))
+            except queue.Empty:
+                yield None
+                continue
+            if ln is _END:
+                return
+            yield ln
+
     def progress_job(self) -> dict:
         """What the download figure is counted over: the folder setup writes the model into (the data folder it is GIVEN, which may be the
         person's --data-dir and not the default one) and every file of the install with the catalog's total, so a model in several shards
@@ -678,10 +713,17 @@ class Runner:
         lines: list[str] = []
         already: bool | None = None                          # all the model's files were on disk before this run wrote anything
         job = self.progress_job()
-        for line in p.stdout:                                # type: ignore[union-attr]
+        step_seen, step_since, quiet_since, said = None, time.monotonic(), time.monotonic(), None
+        for line in self._read_lines(p):
             if self.cancel.is_set():
                 self._stop_children()
                 raise Cancelled()
+            if line is None:                                 # nothing printed for a while: the long steps (packing, converting) are silent
+                if said and said[1] != "download" and time.monotonic() - quiet_since >= self.HEARTBEAT_S:
+                    quiet_since = time.monotonic()
+                    self.emit("model", f"{said[0]} (still working, {_elapsed(time.monotonic() - step_since)} so far)", None, step=step_seen)
+                continue
+            quiet_since = time.monotonic()
             line = line.rstrip()
             if not line:
                 continue
@@ -690,6 +732,12 @@ class Runner:
             prog = cat.mcp.install_progress(lines)
             prog = cat.mcp.combined_progress(prog, job)
             dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
+            if prog.get("step") != step_seen:
+                step_seen, step_since = prog.get("step"), time.monotonic()
+            if label and not dl:
+                said = (label, phase)
+            else:
+                said = None
             if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
                 if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
