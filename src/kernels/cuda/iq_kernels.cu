@@ -626,11 +626,19 @@ __device__ __forceinline__ void tq_step(uint32_t s, float2& a, float2& b) {
     b = make_float2(tq_h2f(pb & 0xFFFFu), tq_h2f(pb >> 16));
 }
 // the states of steps 4l..4l+3 of one block (qs is 2-byte aligned: every trellis block has an even size)
+// Compute capability 6.0 (Tesla P100): the block's words are read with ld.global.nc (the weights are read-only; a generic
+// pointer made these LD.E), and TQK6's lane window needs only three words (34 bits from a bit offset of 0 or 8), TQK7's
+// four.  The same bits either way.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
+#define STRATA_TQ_LD16(p) ((uint32_t) __ldg((const unsigned short*) (p)))
+#else
+#define STRATA_TQ_LD16(p) ((uint32_t) *(p))
+#endif
 template<int TY>
 __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[4]) {
     const uint16_t* qs16 = (const uint16_t*) qs;
     if constexpr (TY == 144) {   // s_t = qs[(t + 31) % 32] << 8 | qs[t]
-        const uint32_t w01 = qs16[2 * l + 0], w23 = qs16[2 * l + 1];
+        const uint32_t w01 = STRATA_TQ_LD16(qs16 + 2 * l + 0), w23 = STRATA_TQ_LD16(qs16 + 2 * l + 1);
         const uint32_t prev = qs[(4 * l + 31) & 31];
         const uint32_t b0 = w01 & 0xFF, b1 = w01 >> 8, b2 = w23 & 0xFF, b3 = w23 >> 8;
         s[0] = (prev << 8) | b0;
@@ -645,8 +653,13 @@ __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[
         const int wi1 = wb + 1 >= nwords ? wb + 1 - nwords : wb + 1;
         const int wi2 = wb + 2 >= nwords ? wb + 2 - nwords : wb + 2;
         const int wi3 = wb + 3 >= nwords ? wb + 3 - nwords : wb + 3;
-        const uint64_t v = (uint64_t) qs16[wb] | ((uint64_t) qs16[wi1] << 16) | ((uint64_t) qs16[wi2] << 32) |
-                           ((uint64_t) qs16[wi3] << 48);
+        uint64_t v = (uint64_t) STRATA_TQ_LD16(qs16 + wb) | ((uint64_t) STRATA_TQ_LD16(qs16 + wi1) << 16) |
+                     ((uint64_t) STRATA_TQ_LD16(qs16 + wi2) << 32);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
+        if constexpr (K == 6) {   // r is 0 or 8 here: bits r .. r + 33 < 48, the fourth word is never read
+        } else
+#endif
+        v |= (uint64_t) STRATA_TQ_LD16(qs16 + wi3) << 48;
 #pragma unroll
         for (int i = 0; i < 4; ++i) s[i] = (uint32_t) (v >> (r + (3 - i) * K)) & 0xFFFFu;
     }
@@ -685,7 +698,7 @@ __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx,
         const uint32_t x = (s[i] & TQ_STATE_MASK) * 0x9e3779b1u;
         r.q[i] = (int) ((uint32_t) lut[x >> 21] | ((uint32_t) lut[(x >> 10) & 2047u] << 16));
     }
-    r.d = tq_h2f(b->d);
+    r.d = tq_h2f(STRATA_TQ_LD16(&b->d));
     return r;
 }
 __device__ __forceinline__ float tq_apply(const TqLane& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
