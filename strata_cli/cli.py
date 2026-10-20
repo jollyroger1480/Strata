@@ -591,11 +591,8 @@ def _models(a: argparse.Namespace) -> int:
 
 def _import_problem(plan: dict) -> str:
     """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
-    from strata_cli.launch.runner import plain_issue
-    issues = [str(x) for x in plan.get("issues") or []]
-    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
-        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
-    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    from strata_control import models as own_models
+    words = own_models.problem_words(plan.get("issues") or [])
     text = f"These files cannot be used as they are: {words}."
     holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
