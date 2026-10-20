@@ -255,8 +255,10 @@ KV, layers 0-25 / 26-47; 512-token greedy answers, median of 8 runs:
 | decode, code prompt | 53 tok/s | 70.1 tok/s | ~70 tok/s |
 | decode, prose prompt | 45 tok/s | 55.9 tok/s | ~68 tok/s |
 
-Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). Not measured on
-NVIDIA yet, where a sync and a graph launch cost less.
+Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). On NVIDIA it
+gives nothing: 2x RTX A4000 (IQ3_XXS, 5 interleaved pairs, 0.2.1 engine), decode story +0.3 %, code +2.1 %, facts -0.3 % against
++2.8 % of noise, prompts +0.1 %, with the same tokens. A sync and a graph launch cost less there. The second card then reads about 94 %
+busy in `nvidia-smi` (a kernel waiting for the flag), against 58 % without the flag, with no more tokens per second.
 
 The reading stage's wait for the flag is bounded on the GPU: `STRATA_SPLIT_WAIT_MS` (default 30000, 0 = no bound).
 If the flag does not arrive in time, the wait marks an error word and returns, the window's graph completes, and the
