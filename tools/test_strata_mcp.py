@@ -653,6 +653,22 @@ class Helpers(unittest.TestCase):
         self.assertEqual(r["context"], 32768)
 
 
+class PhysicalCores(unittest.TestCase):
+    """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""
+
+    def test_physical_not_logical(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"model": "x", "logical": 16, "physical": 8, "hybrid": False}),                 mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 8)
+
+    def test_unknown_falls_back_to_threads(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"physical": None}), mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 16)
+        with mock.patch.object(tune_machine, "cpu", side_effect=OSError("no")), mock.patch.object(M.os, "cpu_count", return_value=4):
+            self.assertEqual(M.physical_cores(), 4)
+
+
 class MacCatalog(unittest.TestCase):
     """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
 
