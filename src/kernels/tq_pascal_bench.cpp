@@ -245,6 +245,24 @@ void bench(cudaStream_t s, std::mt19937& rng) {
         std::printf("\n");
         cudaFree(dw); cudaFree(dx); cudaFree(dxq); cudaFree(dy);
     }
+    // the same 21M weights as rows of different lengths: a per-row cost shows as a falling time with longer rows
+    for (int t : {145}) {
+        for (auto rc : {std::pair<int, int>{8192, 2560}, {4096, 5120}, {2048, 10240}, {1024, 20480}}) {
+            const int ni = rc.second, no = rc.first;
+            const auto w = random_rows(t, no, ni, rng);
+            uint8_t* dw = dalloc<uint8_t>(w.size());
+            ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
+            const auto x = random_x((size_t) 8 * ni, rng);
+            float* dx = dalloc<float>(x.size());
+            ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
+            uint8_t* dxq = dalloc<uint8_t>((size_t) 8 * (ni / 32) * 36);
+            k::quantize_q8_1_rows(dx, 8, ni, dxq, s);
+            float* dy = dalloc<float>((size_t) 8 * no);
+            const float us = 1e3f * time_ms(s, it, [&] { k::iq_mmvq(t, dw, dxq, dy, ni, no, 1, s); });
+            std::printf("BENCH rows %-6s %5d x %5d nc1 %.1f us\n", name_of(t), no, ni, us);
+            cudaFree(dw); cudaFree(dx); cudaFree(dxq); cudaFree(dy);
+        }
+    }
     // the verify window's shape: 2560 x 640 experts, 16 groups of m entries each
     for (auto gd : {std::pair<int, int>{145, 146}, {145, 144}, {144, 144}, {144, 146}}) {
         std::printf("BENCH grouped %-6s/%-6s 16 groups of m entries:", name_of(gd.first), name_of(gd.second));
