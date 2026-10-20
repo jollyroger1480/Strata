@@ -97,6 +97,37 @@ class Issue3403MacBuildTools(unittest.TestCase):
             self.assertIn("S.ensure_build_tools()", inspect.getsource(fn), fn.__name__)
 
 
+class Issue3410TrashIsNotAnInstall(unittest.TestCase):
+    def test_trash_folders_are_recognised(self):
+        from strata_control.discovery import in_trash
+        for p in ("/home/u/.local/share/Trash/files/strata", "/mnt/d/.Trash-1000/files/Strata", "/Users/u/.Trash/Strata",
+                  "C:\\$Recycle.Bin\\S-1-5-21\\$R123\\Strata", "/home/u/.local/share/trash/files/strata/x"):
+            self.assertTrue(in_trash(p), p)
+        for p in ("/home/u/bin/strata", "/home/u/Trash-talk/strata", "/home/u/trash/strata", "/opt/Strata",
+                  "C:\\Users\\u\\Strata"):
+            self.assertFalse(in_trash(p), p)
+
+    def test_remembered_installs_in_the_trash_are_not_listed(self):
+        from strata_control import discovery
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "bin" / "strata"
+            trash = Path(tmp) / ".local" / "share" / "Trash" / "files" / "strata"
+            got = discovery._installs_in({"installs": [str(trash), str(good)]})
+            self.assertEqual(got, [good])
+
+    def test_setup_does_not_pass_a_trash_folder_on(self):
+        import setup
+        with tempfile.TemporaryDirectory() as tmp:
+            trash = Path(tmp) / ".local" / "share" / "Trash" / "files" / "strata"
+            trash.mkdir(parents=True)
+            (trash / "setup.py").write_text("x")
+            from unittest import mock
+            nowhere = Path(tmp) / "none" / "none" / "home"            # no Strata* folders beside it on this PC
+            with mock.patch.object(setup, "home", return_value=nowhere):
+                self.assertEqual(setup.other_installs({"installs": [str(trash)]}), [])
+                self.assertEqual(setup.other_installs({"installs": [str(trash)] + [str(trash.parent.parent)]}), [])
+
+
 class Issue2971WebToolRowFitsPhones(unittest.TestCase):
     """A tool row widened the whole page on a phone (752 px page at a 412 px viewport, measured in Chrome). The three rules
     that keep it inside the viewport; a long tool name is cut with an ellipsis instead of pushing the page."""
