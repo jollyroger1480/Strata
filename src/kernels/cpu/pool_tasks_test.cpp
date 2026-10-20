@@ -279,16 +279,13 @@ int main(int argc, char** argv) {
             }
             unset_env("STRATA_NUMA_POOL");
             unset_env("STRATA_NUMA_SPLIT");
-            if (!off) { std::fprintf(stderr, "STRATA_NUMA_POOL=0 did not switch the split off (STRATA_NUMA_SPLIT=%s)
-", v); return 1; }
+            if (!off) { std::fprintf(stderr, "STRATA_NUMA_POOL=0 did not switch the split off (STRATA_NUMA_SPLIT=%s)\n", v); return 1; }
         }
         unset_env("STRATA_NUMA_SPLIT");
         cpu::ExpertPool pool(4, true, true);
         const auto& plan = cpu::active_numa_split();
-        std::printf("pool tasks: nothing set: split %s%s
-", plan.on ? "on" : "off", plan.why.empty() ? "" : (": " + plan.why).c_str());
-        if (!plan.on && !plan.why.empty()) { std::fprintf(stderr, "an automatic split that did not run left a refusal reason
-"); return 1; }
+        std::printf("pool tasks: nothing set: split %s%s\n", plan.on ? "on" : "off", plan.why.empty() ? "" : (": " + plan.why).c_str());
+        if (!plan.on && !plan.why.empty()) { std::fprintf(stderr, "an automatic split that did not run left a refusal reason\n"); return 1; }
     }
 #endif
     std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode (%d with modes 0-4 "
