@@ -346,6 +346,17 @@ class Validation(FakeRoot):
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
 
+    def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
+        """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
+        folder still needs a Strata... name."""
+        chosen = self.root.parent / "my-big-disk"
+        chosen.mkdir()
+        self.assertRejected("strata_install", {"data_dir": str(chosen)}, "named Strata")
+        settings = self.tools.s.settings_path()
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"data_dir": str(chosen)}))
+        self.assertEqual(M.norm(self.tools.check_data_dir(str(chosen))), M.norm(chosen))
+
     def test_other_tools_arguments(self):
         self.assertRejected("strata_start", {"model": "../../etc/passwd"}, "not valid")
         self.assertRejected("strata_start", {"model": "q2_0"}, "no model is installed")

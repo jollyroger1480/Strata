@@ -510,6 +510,8 @@ class Runner:
             args += ["--data-dir", str(data)]
             if self.move_data and s.data_dir:             # only when the person said so: setup moves nothing otherwise
                 args.append("--move-data")
+            if s.data_dir:                                # a folder the person chose is remembered for the next start and for the app
+                args.append("--set-default-data-dir")
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
@@ -517,8 +519,9 @@ class Runner:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
-            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data"}
-            flags = ("--yes", "--no-start", "--move-data")
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
+                    "--set-default-data-dir"}
+            flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
             while i < len(args):
                 if args[i] in keep:

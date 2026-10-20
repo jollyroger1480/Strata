@@ -1,6 +1,7 @@
 import { migrateSetup } from './setup.mjs';
 /** Tiny persisted state for the host: one JSON file under STRATA_HOME. */
 import { accessSync, constants, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync, readdirSync, statSync, statfsSync, symlinkSync } from 'node:fs';
+import { alignModels, isDriveRoot, libraryFolderFromPick, makeFolder } from './model-folder.mjs';
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { defaultModelDirectory } from './model-directory-default.mjs';
@@ -75,12 +76,9 @@ export function nativeDataDirectory(input) {
  if(!input||process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY))return input;
  const root=realpathSync(DEFAULT_MODELS_DIRECTORY);
  if(resolve(input)!==resolve(DEFAULT_MODELS_DIRECTORY)&&realpathSync(input)!==root)return input;
- const data=dirname(root),nativeModels=join(data,'models');
- // On Windows/macOS case-insensitive volumes, Models already resolves as models.
- // On Linux, a relative alias keeps the native layout inside the requested folder.
- if(!existsSync(nativeModels))symlinkSync(process.platform==='win32'?root:'Models',nativeModels,process.platform==='win32'?'junction':'dir');
- const a=statSync(nativeModels),b=statSync(root);
- if(realpathSync(nativeModels)!==root&&!(a.ino&&a.ino===b.ino&&a.dev===b.dev))throw new Error('The default model folder conflicts with another library. Choose a different folder.');
+ const data=dirname(root);
+ // `models` and `Models` are one folder on Windows and macOS; where they are not (Linux) a link makes them one, and where no link can be made (exFAT, a share) models go in `models`.
+ alignModels(data,root);
  return data;
 }
 
@@ -95,6 +93,8 @@ export function validateModelsDirectory(input) {
     if (!statSync(directory).isDirectory()) throw new Error();
     accessSync(directory, constants.R_OK | constants.W_OK | constants.X_OK);
   } catch { throw new Error('This folder is unavailable or not writable. Check the path and folder permissions.'); }
+  // A whole drive (D:\) is not filled with models: D:\Strata\Models is made and used.
+  if (isDriveRoot(directory)) directory = realpathSync(makeFolder(libraryFolderFromPick(directory).path));
   const data = realpathSync(DATA_DIR);
   const contains = (parent, child) => { const r = relative(parent, child); return !r || !r.startsWith('..') && !isAbsolute(r); };
   if (directory === parse(directory).root || contains(directory, data) || contains(data, directory)) throw new Error('Choose a separate folder for models, outside Strata’s app data.');
