@@ -931,7 +931,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         ctx.say("test", f"Test-starting Control {pkg.version}", component="control")
         try:
             done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, timeout=120, cwd=str(stage),
-                                  env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1"},
+                                  env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"},
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError) as exc:
             raise TestStartFailed(f"Control {pkg.version}", f"{type(exc).__name__}: {exc}") from None
@@ -957,7 +957,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                        "from": decision["installed"], "to": pkg.version, "ok": True})
         archive.unlink(missing_ok=True)
         result.update({"changed": True, "status": "updated", "installed_after": pkg.version,
-                       "note": "Control switches on the next start of the app or the terminal"})
+                       "note": "the Terminal hands over to it from the next command; the app uses it from its next start"})
         return result
     finally:
         shutil.rmtree(longpath.long_path(stage), ignore_errors=True)
