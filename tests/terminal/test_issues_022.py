@@ -419,5 +419,43 @@ class Issue3501TrashOnPosix(unittest.TestCase):
             self.assertFalse(discovery.in_trash(r"C:\Users\a\Strata"))
 
 
+
+class Issue3504MultiValueArgs(unittest.TestCase):
+    """Advanced settings: a two-value option is two argv entries, `off` removes all of its values, an empty value is no bare flag."""
+
+    ARGS = ["--max-context", "131072", "--control-vector-layer-range", "4", "44", "--cvec-dir", "per-layer",
+            "--conversation-cache-mib", "8192"]
+
+    def test_two_values_are_two_entries(self):
+        from strata_control import tune_knobs
+        for typed in ("4,44", "4 44", "4-44"):
+            out = tune_knobs.apply_to_argv(self.ARGS, {"--control-vector-layer-range": typed})
+            i = out.index("--control-vector-layer-range")
+            self.assertEqual(out[i + 1:i + 3], ["4", "44"], typed)
+            self.assertEqual(out.count("--control-vector-layer-range"), 1)
+
+    def test_off_removes_the_option_and_every_value(self):
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        extra = {"--control-vector-layer-range": "off", "--cvec-dir": "off"}
+        a, _ = S.as_argv_changes(extra, tune_knobs.BOOL_FLAGS)
+        out = tune_knobs.apply_to_argv(self.ARGS, a)
+        self.assertEqual(out, ["--max-context", "131072", "--conversation-cache-mib", "8192"])
+
+    def test_an_empty_value_is_no_bare_flag(self):
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        a, _ = S.as_argv_changes({"--cvec-dir": "", "--kv-grow": ""}, tune_knobs.BOOL_FLAGS)
+        self.assertEqual(a, {"--kv-grow": True})
+        self.assertEqual(tune_knobs.apply_to_argv(self.ARGS, a)[:-1].count("--cvec-dir"), 1)
+
+    def test_set_flag_and_the_table_keep_both_values(self):
+        from strata_cli.launch import params
+        from strata_control import user_args
+        self.assertEqual(user_args.set_flag([], "--control-vector-layer-range", "4,44"),
+                         ["--control-vector-layer-range", "4", "44"])
+        self.assertEqual(params.argv_to_dict(self.ARGS)["--control-vector-layer-range"], "4 44")
+
+
 if __name__ == "__main__":
     unittest.main()

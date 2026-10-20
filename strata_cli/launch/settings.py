@@ -252,6 +252,8 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
     for key, value in extra.items():
         if key.startswith("--"):
             low = value.lower()
+            if low == "" and key not in bool_flags:
+                continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
             if key in bool_flags or low in ("on", "true", "yes", ""):
                 args[key] = None if low in ("off", "false", "no", "none") else True
             elif low in ("off", "false", "no", "none"):
