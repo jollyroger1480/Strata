@@ -974,6 +974,9 @@ async function api(req, res, path, method, url) {
    if(picked.cancelled)return json(res,200,{cancelled:true});
    return json(res,200,{plan:await native.planModelsFolder(picked.path)});}
   if(path==='/api/native/models-folder/start'&&method==='POST'){const body=await readBody(req);const result=await native.startModelsFolder({folder:body.path,choice:body.choice,stopRunning:body.stopRunning===true});return json(res,result.id?202:200,result);}
+  if(path==='/api/native/models-folder/interrupted'&&method==='GET')return json(res,200,{interrupted:await native.interruptedMove()});
+  if(path==='/api/native/models-folder/resume'&&method==='POST'){const body=await readBody(req);return json(res,202,await native.finishInterruptedMove({stopRunning:body.stopRunning===true}));}
+  if(path==='/api/native/models-folder/leave'&&method==='POST')return json(res,200,await native.leaveInterruptedMove());
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});

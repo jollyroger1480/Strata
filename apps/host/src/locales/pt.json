@@ -3437,5 +3437,11 @@
   "s8413": "Há um modelo em execução. Pare-o primeiro e depois altere a pasta.",
   "s8414": "Escolha uma pasta de modelos.",
   "s8415": "Escolha o que fazer com seus modelos.",
-  "s8416": "Essa opção não é possível aqui."
+  "s8416": "Essa opção não é possível aqui.",
+  "s8417": "Uma mudança foi interrompida. Termine-a ou deixe como estava.",
+  "s8418": "O Strata estava mudando seus modelos de {0} para {1} quando parou. Nada foi perdido.",
+  "s8419": "Terminar a mudança",
+  "s8420": "Deixar como está",
+  "s8421": "Terminar coloca todos os seus modelos em {1}. Deixar como está mantém os modelos em {0} e remove as cópias parciais de {1}.",
+  "s8422": "As cópias parciais foram removidas. Seus modelos estão em {0}."
 }
