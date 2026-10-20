@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import sys
 import tempfile
 import types
@@ -186,6 +187,8 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "free_gb", lambda p: free),
+            # whatever else asks the disk (shutil.disk_usage) gets the same answer: the tests never depend on this PC's free space
+            mock.patch.object(shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(int(max(free, 1000) * 1e9), int(max(free, 1000) * 1e9 - free * 1e9), int(free * 1e9))),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: not the test PC's disk
             mock.patch.object(setup, "is_wsl", lambda: False),            # #974: the tests are not run inside WSL
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
