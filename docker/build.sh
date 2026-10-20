@@ -57,7 +57,7 @@ cleanup() { if [ -n "$own_ctx" ] && [ -z "$ctxonly" ]; then rm -rf "$ctx"; fi; }
 trap cleanup EXIT
 
 # the commit the sources are from (the build context has no .git; package_terminal.py writes it into the archive's COMMIT)
-commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+commit=${STRATA_BUILD_COMMIT:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)}
 case "$commit" in *[!0-9a-f]*|"") commit="" ;; esac
 
 # 1. the Terminal's sources: exactly what packaging/package_terminal.py copies (the working tree, so local edits are in the image)
