@@ -212,8 +212,8 @@ reading needs a new protocol ID.
   A different tokenizer or template breaks that and makes the run `nonconforming`.
 - **Truncation.** `finish_reason: "length"` is `truncated`. It stays in the speed summaries and fails a sanity case.
   Any other finish reason except `stop` and `tool_calls` is a failure.
-- **Reading it out.** On the first real runs (RTX 3060, 2x RTX A4000) every 4K and 16K performance request stopped at the
-  512-token cap while still reasoning, and so did one of three `short` requests. Their total time is the time to the cap, and
+- **Reading it out.** On the first real runs (RTX 3060, 2x RTX A4000, six runs) 35 of 36 4K and 16K performance
+  requests stopped at the 512-token cap while still reasoning, and so did 5 of 18 `short` requests. Their total time is the time to the cap, and
   they have no first-answer time. The plain summary and the README therefore carry a `Capped` column (how many of a case's
   requests reached the cap). The `short` prompt is about 80 tokens, so its prompt rate (130 to 190 tok/s there) measures the
   fixed cost of a request and is left out of those two readouts; `results.json` keeps it. Changing the cap or the prompts
