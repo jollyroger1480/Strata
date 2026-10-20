@@ -159,3 +159,23 @@ test('a move needs the app: the Control command line is built from the plan and 
   const failing = createControl({ control: { dir: '/c', python: '/c/py', cli: '/c/strata.py' }, run: async () => ({ code: 5, json: { ok: false, error: { code: 'disk_full', message: 'The drive ran out of space.', details: 'ENOSPC' }, moved: [] }, text: '', stderr: '' }) });
   await assert.rejects(failing.moveModels('/o', '/n'), e => e.code === 'disk_full' && e.details === 'ENOSPC' && /ran out of space/.test(e.message));
 });
+
+test('the models folder strings exist in all 8 languages with the same placeholders', () => {
+  const read = lang => JSON.parse(readFileSync(new URL(`../src/locales/${lang}.json`, import.meta.url), 'utf8'));
+  const en = read('en');
+  const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8261 && Number(k.slice(1)) <= 8338);
+  assert.equal(ours.length, 78);
+  for (const lang of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) {
+    const text = read(lang);
+    for (const key of ours) {
+      assert.ok(text[key], `${lang} ${key}`);
+      assert.deepEqual((text[key].match(/\{\d\}/g) ?? []).sort(), (en[key].match(/\{\d\}/g) ?? []).sort(), `${lang} ${key} placeholders`);
+    }
+  }
+  // every string the dialog shows through tr() is in the catalogue
+  const source = readFileSync(new URL('../src/components/ModelsFolderDialog.tsx', import.meta.url), 'utf8');
+  const values = new Set(Object.values(en));
+  for (const text of ['Models folder', 'Change folder', 'Move my models', 'Use both folders', 'Start empty', 'Stop moving', 'Your models are moved', 'Moving stopped']) {
+    assert.ok(source.includes(text) && values.has(text), text);
+  }
+});

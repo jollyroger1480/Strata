@@ -102,6 +102,9 @@ def _near(path: Path) -> Path:
 
 
 def same_drive(a: Path, b: Path) -> bool:
+    """Both folders are on one volume (a move is then a rename). STRATA_MOVE_ALWAYS_COPY=1 copies anyway: for testing the copy path on one disk."""
+    if os.environ.get("STRATA_MOVE_ALWAYS_COPY") == "1":
+        return False
     try:
         return os.stat(_near(a)).st_dev == os.stat(_near(b)).st_dev
     except OSError:

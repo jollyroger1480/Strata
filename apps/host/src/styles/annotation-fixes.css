@@ -768,3 +768,6 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .models-details ul { margin:8px 0 0; padding-left:18px; color:var(--st-ink-soft); font-size:var(--st-fs-sm); }
 .models-ok { display:flex; align-items:center; gap:12px; }
 .models-ok__mark { display:grid; place-items:center; flex:none; width:44px; height:44px; border-radius:50%; background:var(--st-accent-tint); color:var(--st-accent-text); }
+.models-dialog .dialog-body { display:grid; gap:14px; }
+.models-path { font-family:var(--st-font-mono); font-size:12px; font-weight:400; background:var(--st-surface-2); padding:2px 6px; border-radius:6px; overflow-wrap:anywhere; }
+.models-dialog .storage-directory__path { margin:0; }

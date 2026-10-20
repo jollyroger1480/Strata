@@ -129,27 +129,27 @@ export function ModelsFolderCard({ blocked }: { blocked: boolean }) {
       {error && !stage ? <Failure message={error.message} details={error.details}/> : null}
     </section>
 
-    <Dialog open={stage === 'issue' && !!plan?.issue} compact title={tr(plan?.issue?.code === 'not_found' ? "That folder isn't there" : "That folder can't be used")} onClose={leave}
+    <Dialog className="models-dialog" open={stage === 'issue' && !!plan?.issue} compact title={tr(plan?.issue?.code === 'not_found' ? "That folder isn't there" : "That folder can't be used")} onClose={leave}
       actions={<>{plan?.issue?.code === 'not_found' ? null : <Btn onClick={leave}>{tr('Cancel')}</Btn>}<Btn variant="primary" onClick={() => { leave(); void pick(); }}>{tr('Choose another folder')}</Btn></>}>
       {plan?.issue ? <Failure message={plan.issue.message} details={plan.issue.details}
         next={plan.issue.code === 'not_writable' ? 'Choose a folder you own, for example one in Documents or on another drive.' : plan.issue.code === 'not_found' ? 'Check that the drive is plugged in, then pick the folder again. Your models were not touched.' : undefined}/> : null}
     </Dialog>
 
-    <Dialog open={stage === 'drive' && !!plan} compact title={tr('Use this folder for your models?')} onClose={leave}
+    <Dialog className="models-dialog" open={stage === 'drive' && !!plan} compact title={tr('Use this folder for your models?')} onClose={leave}
       actions={<><Btn onClick={leave}>{tr('Cancel')}</Btn><Btn variant="primary" onClick={() => setStage('choose')}>{tr('Continue')}</Btn></>}>
       {plan ? <>
         <div className="models-picked"><span className="small muted">{tr('New folder')}</span><code className="storage-directory__path">{plan.shown}</code><span className="small muted">{tr('{0} free on this drive', [gb(plan.free_bytes)])}</span></div>
         <div className="models-notice models-notice--info"><Icon name="info" size={18}/><div>{tr('You picked the whole drive {0}. Strata keeps its files in a folder of their own, so your models go in {1}.', [plan.picked, plan.shown])}</div></div>
-        <p className="small muted">{tr('The three choices follow, as in step 2.')}</p>
+        <p className="small muted">{tr('The three choices come next.')}</p>
       </> : null}
     </Dialog>
 
-    <Dialog open={stage === 'choose' && !!plan} title={tr('Use this folder for your models?')} onClose={() => { if (!pending) leave(); }}
+    <Dialog className="models-dialog" open={stage === 'choose' && !!plan} title={tr('Use this folder for your models?')} onClose={() => { if (!pending) leave(); }}
       actions={plan ? <>{plan.choices.move.possible ? <Btn disabled={pending} onClick={leave}>{tr('Cancel')}</Btn> : <Btn disabled={pending} onClick={() => { leave(); void pick(); }}>{tr('Choose another folder')}</Btn>}<Btn variant="primary" disabled={pending} onClick={() => void start()}>{tr(pending ? 'Working…' : choice === 'move' ? 'Move my models' : choice === 'keep' ? 'Use both folders' : 'Start empty')}</Btn></> : null}>
       {plan ? <ChooseBody plan={plan} choice={choice} setChoice={setChoice} names={planNames} error={error}/> : null}
     </Dialog>
 
-    <Dialog open={!!moving && !outcome} compact noClose title={tr('Moving your models')} onClose={() => undefined}
+    <Dialog className="models-dialog" open={!!moving && !outcome} compact noClose title={tr('Moving your models')} onClose={() => undefined}
       actions={<Btn disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop moving')}</Btn>}>
       <div className="models-free"><Bar value={percent} label={tr('Progress')}/><div className="models-free__row small"><span><strong>{tr('{0} of {1} GB', [progress ? (progress.done / 1e9 >= 10 ? Math.round(progress.done / 1e9) : (progress.done / 1e9).toFixed(1)) : 0, Math.round((progress?.total ?? 0) / 1e9)])}</strong></span><span className="muted">{progress && !progress.sameDrive ? timeLeft(progress.secondsLeft) : null}</span></div></div>
       <p className="small">{tr('Keep Strata open. You can keep using other apps. Your models cannot be loaded until the move is done.')}</p>
@@ -224,7 +224,7 @@ function ResultDialog({ outcome, plan, native, onClose, onAgain }: { outcome: Na
         </Dialog>;
     }
     return <Dialog open compact title={tr('Your models are moved')} onClose={onClose} actions={<Btn variant="primary" onClick={onClose}>{tr('Done')}</Btn>}>
-      <div className="models-ok"><span className="models-ok__mark"><Icon name="check" size={20}/></span><div><strong>{tr('{0} now live in {1}', [gb(result.total ?? 0), plan?.shown ?? result.to ?? ''])}</strong>
+      <div className="models-ok"><span className="models-ok__mark"><Icon name="check" size={20}/></span><div><strong>{(() => { const [before, after] = tr('{0} now live in {1}', [gb(result.total ?? 0), '@@']).split('@@'); return <>{before}<code className="models-path">{plan?.shown ?? result.to ?? ''}</code>{after}</>; })()}</strong>
         {result.sameDrive ? null : <><br/><span className="small muted">{tr('The old copies were removed and {0} is free again on {1}.', [gb(result.total ?? 0), driveOf(result.from ?? '')])}</span></>}</div></div>
     </Dialog>;
 }
