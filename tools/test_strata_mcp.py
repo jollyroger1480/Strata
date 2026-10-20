@@ -768,7 +768,7 @@ class MixedGraphics(unittest.TestCase):
             M.Strata._engine_code(hw)
         by = {g["name"]: g for g in hw["gpus"]}
         self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
-        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", by["AMD Radeon RX 6800 XT"]["problem"])
+        self.assertIn("no code for gfx1030", by["AMD Radeon RX 6800 XT"]["problem"])
         self.assertEqual(by["AMD Radeon 760M"]["problem"], "integrated", "an earlier reason stays")
         self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
         self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])

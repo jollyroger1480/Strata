@@ -1802,7 +1802,6 @@ class GpuChoice(unittest.TestCase):
         self.assertIn("none of this computer's graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201)", problem)
         self.assertIn("AMD Radeon RX 6800 XT (gfx1030)", problem)
         self.assertIn("760M Graphics (gfx1103, integrated)", problem)
-        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", problem)
         # through the engine's own program, and never over a card the config or the environment names
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / ("strata.exe" if os.name == "nt" else "strata")
