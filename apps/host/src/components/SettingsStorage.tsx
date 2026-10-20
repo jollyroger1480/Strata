@@ -95,6 +95,7 @@ export function SettingsStorage() {
         <div className="row"><Btn variant="primary" type="submit" disabled={directoryPending || directoryBlocked || !directory.trim()}>{tr(directoryPending ? 'Checking files…' : changing && loadedCount > 0 ? 'Unload and change directory' : changing ? 'Use this directory' : 'Check folder')}</Btn></div>
       </form> : <Btn size="sm" icon="refresh" disabled={directoryPending || directoryBlocked || !currentDirectory} onClick={() => void saveDirectory(currentDirectory)}>{tr(directoryPending ? 'Checking files…' : 'Check folder')}</Btn>)}
       {tr(directoryBlocked && !directoryPending ? <p className="small muted">{tr(!lifecycle.allowed ? lifecycle.reason : 'Finish or cancel downloads and loading to change the directory.')}</p> : null)}
+      {tr(state.setup?.app.modelsDirNotice && !notice ? <p className="small storage-directory__notice" role="status"><Icon name="info" size={15}/>{tr(state.setup.app.modelsDirNotice)}</p> : null)}
       {tr(notice ? <p className="small storage-directory__notice" role="status"><Icon name="check" size={15}/>{tr(notice)}</p> : null)}
       {tr(directoryError ? <ErrorNotice message={directoryError}/> : null)}
     </section>
