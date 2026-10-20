@@ -250,7 +250,10 @@ trap on_term TERM INT
 RESET_INT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])'
 
 phase preparing
-say "Starting Strata: ${MODEL:-recommended model}${model_path:+ from $model_path} (preset '$PRESET')."
+if [ -n "${MODEL:-}" ]; then what="$MODEL${model_path:+ from $model_path}"
+elif [ -n "$model_path" ]; then what="the model files in $model_path"
+else what="the recommended model"; fi
+say "Starting Strata: $what (preset '$PRESET')."
 if [ -n "$key" ]; then
   STRATA_LAUNCH_KEY="$key" "$PYBIN" -c "$RESET_INT" "$STRATA" "$@" &
 else
@@ -263,7 +266,7 @@ launch_pid=""
 [ -n "$stopping" ] && exit 0
 if [ "$rc" -ne 0 ]; then
   phase failed
-  die "strata launch stopped with code $rc (the lines above say why). The container ends; a restart continues where it stopped (downloads resume)." "$rc"
+  die "strata launch stopped with code $rc (the lines above say why). The container ends. Fix that and start it again: finished steps are not repeated, and an interrupted download continues where it stopped." "$rc"
 fi
 
 # keep the key where `docker exec ... strata monitor` and the health check can read it (private file on the volume)

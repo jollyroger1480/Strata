@@ -255,6 +255,14 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("Set MODEL_PATH=" + str(empty / "IQ3_XXS"), r.stderr)
         self.assertNotIn("launch --no-tui", self.log.read_text() if self.log.exists() else "")
 
+    def test_own_files_without_a_model_name_do_not_say_recommended_model(self):
+        (self.tmp / "g").mkdir()
+        (self.tmp / "g" / "m-00001-of-00001.gguf").write_text("x")
+        p = self.start(MODEL_PATH=str(self.tmp / "g"))
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        self.assertIn("Starting Strata: the model files in " + str(self.tmp / "g"), out)
+
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,
                            text=True, timeout=30)
