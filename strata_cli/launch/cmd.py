@@ -296,6 +296,24 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     return s, notices
 
 
+def roles_line(s: S.LaunchSettings, catalog) -> str | None:
+    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None."""
+    if not (s.gpu_roles or s.gpus) or catalog is None:
+        return None
+    try:
+        from strata_control import gpu_roles
+        comp = catalog.computer()
+        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        if s.gpu_roles:
+            named = {int(k): v for k, v in s.gpu_roles.items()}
+            roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
+        else:
+            roles = gpu_roles.from_legacy(list(s.gpus), cards)
+        return gpu_roles.describe(roles, cards)
+    except Exception:                                        # noqa: BLE001 - a summary line must never stop a launch
+        return None
+
+
 def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
     make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
@@ -637,12 +655,19 @@ def run_launch(a: argparse.Namespace) -> int:
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
                     _say(f"  [!] {n.line()}")
+                line = roles_line(s, catalog)
+                if line:
+                    _say(f"  cards     {line}")
                 _say(f"  same as   {S.flags_text(s)}")
                 _say("Nothing was changed.")
             return 0
         for n in notes:
             if not machine:
                 _say(f"[!] {n.line()}")
+        if not machine:
+            line = roles_line(s, catalog)
+            if line:
+                _say(line)
         from strata_cli.launch import access as _access
         fw = _access.firewall_note(s.access)
         if fw and not machine:

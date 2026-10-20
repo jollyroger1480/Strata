@@ -1190,5 +1190,66 @@ class ConnectCommand(unittest.TestCase):
         self.assertIn('"reserveTokens": 50536', out)
 
 
+class GpuRolesFlag(unittest.TestCase):
+    """--gpu-roles: a role for each card (strata_control/gpu_roles.py); unnamed cards are Off."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+        p = mock.patch.object(Catalog, "hardware", lambda self, fresh=False: dict(HW_2X16, disk_free_gb=500.0))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_roles_reach_the_settings_and_the_plan_says_who_does_what(self):
+        code, out, err = run_cli(["launch", "--plan", "--output", "json", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
+        self.assertEqual(code, 0, err or out)
+        s = json.loads(out)["plan"]["settings"]
+        self.assertEqual(s["gpu_roles"], {"1": "main", "0": "helper"})
+        self.assertIsNone(s["gpus"])
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
+        self.assertEqual(code, 0, err or out)
+        self.assertIn("cards     Main: GPU 2 RTX A4000. Helper: GPU 1 RTX A4000.", out)
+        self.assertIn("--gpu-roles 0=helper,1=main", out)                 # the copyable line says the same
+
+    def test_one_card_named_leaves_the_other_off(self):
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main"])
+        self.assertEqual(code, 0, err or out)
+        self.assertIn("Main: GPU 2 RTX A4000. Off: GPU 1 RTX A4000.", out)
+
+    def test_bad_roles_are_plain_sentences(self):
+        for argv, word in ((["--gpu-roles", "1=boss"], "main, helper, off"), (["--gpu-roles", "0=main,1=main"], "only one card can be Main"),
+                           (["--gpu-roles", "1"], "number=role"), (["--gpu", "0", "--gpu-roles", "1=main"], "not both")):
+            code, out, err = run_cli(["launch", "--plan", *argv])
+            self.assertEqual(code, 2, argv)
+            self.assertIn(word, err, argv)
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "7=main"])
+        self.assertIn("There is no card 7", out + err)
+
+    def test_the_launch_config_gets_the_roles_and_the_mirror_with_main_last(self):
+        from strata_cli.launch.runner import cards_for_launch
+        two = catalog(HW_2X16)
+        mirror = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"1": "main", "0": "helper"}), two)
+        self.assertEqual((mirror["gpu"], mirror["gpu_order"]), ([0, 1], "as_given"))
+        self.assertEqual(mirror["gpu_roles"], {"0": "helper", "1": "main"})
+        base = {"exe": "x", "args": [], "gpu": 1, "gpus_asked": True, "hip_ordinal": 0, "gpu_roles": {"0": "off", "1": "main"}}
+        cfg = derive_config(base, S.LaunchSettings(family="qwen", model="IQ3_XXS"), bool_flags=frozenset(), gpus=mirror)
+        self.assertEqual((cfg["gpu"], cfg["layer_split"], cfg["gpu_order"]), ([0, 1], "auto", "as_given"))
+        self.assertNotIn("hip_ordinal", cfg)
+        one = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"0": "main"}), two)
+        cfg = derive_config(base, S.LaunchSettings(family="qwen", model="IQ3_XXS"), bool_flags=frozenset(), gpus=one)
+        self.assertEqual((cfg["gpu"], cfg["gpu_roles"], "layer_split" in cfg), (0, {"0": "main", "1": "off"}, False))
+        none = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"0": "off", "1": "off"}), two)
+        self.assertEqual((none["gpu"], none["gpu_none"]), ([], True))
+
+    def test_a_plain_card_list_replaces_an_earlier_roles_choice_and_the_installed_roles_are_kept(self):
+        from strata_cli.launch.runner import apply_cards, cards_for_launch, installed_cards
+        cfg = {"gpu": 1, "gpu_roles": {"0": "off", "1": "main"}, "gpu_cards": {}, "gpus_asked": True}
+        apply_cards(cfg, [0, 1])
+        self.assertEqual((cfg["gpu"], "gpu_roles" in cfg), ([0, 1], False))
+        saved = {"gpu": [0, 1], "gpu_order": "as_given", "gpu_roles": {"0": "helper", "1": "main"}}
+        self.assertEqual(installed_cards(saved), [0, 1])
+        self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), catalog(HW_2X16), base=saved))
+
+
 if __name__ == "__main__":
     unittest.main()
