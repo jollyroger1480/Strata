@@ -671,16 +671,19 @@ __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[
 // sum|gpu - ref| / sum|ref| < 3e-2 (the bound every expert type's CPU and GPU paths get there); the prompt path's
 // fp16 dequantizers against to_float at < 1e-6, their fp16 output equal to the fp16 of the float one.
 struct TqLane { int q[4]; float d; };
-template<int TY>
-__device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs) {
+// STAGED: the int8 codebook is read from shared memory (s_lut: the 2048 u16 of tq_lut_i8, copied by stage_iq_grid)
+// instead of the global table.  The same 16-bit entries, so the same weights.
+template<int TY, bool STAGED = false>
+__device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs, const uint16_t* __restrict__ s_lut = nullptr) {
     const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
     uint32_t s[4];
     tq_states4<TY>(b->qs, iqs / 4, s);
     TqLane r;
+    const uint16_t* lut = STAGED ? s_lut : tq_lut_i8;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
         const uint32_t x = (s[i] & TQ_STATE_MASK) * 0x9e3779b1u;
-        r.q[i] = (int) ((uint32_t) tq_lut_i8[x >> 21] | ((uint32_t) tq_lut_i8[(x >> 10) & 2047u] << 16));
+        r.q[i] = (int) ((uint32_t) lut[x >> 21] | ((uint32_t) lut[(x >> 10) & 2047u] << 16));
     }
     r.d = tq_h2f(b->d);
     return r;
@@ -813,7 +816,9 @@ template<int TY> inline constexpr bool kSplit = false;
 template<int TY> inline constexpr bool kq_type = (TY == 12 || TY == 13 || TY == 8);   // not Q5_1: its Split apply is not bitwise the old dot (FMA contraction), see notes-151-amd
 inline bool g_kq_split = [] { const char* v = std::getenv("STRATA_KQ_SPLIT"); return v != nullptr && v[0] == '1'; }();
 template<int TY> inline bool split_off() { return kq_type<TY> && !g_kq_split; }
-template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 21 || TY == 22 || TY == 29);
+template<int TY> inline constexpr bool kTqType = (TY == 144 || TY == 145 || TY == 146);
+// the trellis types stage their int8 codebook (4 KB) too, but only where it pays: tq_stage_on() below (compute capability 6.0)
+template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 21 || TY == 22 || TY == 29 || kTqType<TY>);
 
 template<> inline constexpr bool kSplit<16> = true;
 template<> struct Split<16> {   // IQ2_XXS
@@ -1363,9 +1368,9 @@ template<> inline constexpr bool kSplit<145> = true;
 template<> inline constexpr bool kSplit<146> = true;
 template<int TY> struct SplitTq {
     using W = TqLane;
-    template<bool STAGE_GRID = false>   // (no grid table to stage: the codebook is read where it is)
-    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
-        return tq_load<TY>(vbq, kbx, iqs);
+    template<bool STAGE_GRID = false>   // STAGE_GRID: the codebook in shared memory (s_grid, see stage_iq_grid)
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ s_grid = nullptr) {
+        return tq_load<TY, STAGE_GRID>(vbq, kbx, iqs, (const uint16_t*) s_grid);
     }
     __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
 };
@@ -1397,23 +1402,23 @@ __device__ __forceinline__ void row_dot_multi(const uint8_t* row, const block_q8
 
 // 8-lane sub-warp row dot for K = nb * ipb == 40 (TD == 20, IQ4_NL with n_ff == 640):
 // 4 rows per warp (32 rows per 256-thread block), 100% active lanes, bitwise identical addition tree to row_dot_multi.
-template<int TY, int NC, bool EXACT_N = false>
+template<int TY, int NC, bool EXACT_N = false, bool STAGE_GRID = false>
 __device__ __forceinline__ void row_dot_40_sub8(const uint8_t* row, const block_q8_1* x, const int (&off)[NC], int n,
-                                                int t, float (&s)[NC]) {
+                                                int t, float (&s)[NC], const uint32_t* __restrict__ s_grid = nullptr) {
     using F = Fmt<TY>;
     using S = Split<TY>;
 #pragma unroll
     for (int c = 0; c < NC; ++c) s[c] = 0.0f;
     for (int k = t; k < 40; k += 32) {
         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-        const typename S::W w = S::load(row, kbx, iqs);
+        const typename S::W w = S::template load<STAGE_GRID>(row, kbx, iqs, s_grid);
 #pragma unroll
         for (int c = 0; c < NC; ++c)
             if (EXACT_N || c < n) s[c] += S::apply(w, x + off[c] + kbx * (F::qk / 32), iqs);
     }
     {
         const int k = t + 16, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-        const typename S::W w = S::load(row, kbx, iqs);
+        const typename S::W w = S::template load<STAGE_GRID>(row, kbx, iqs, s_grid);
 #pragma unroll
         for (int c = 0; c < NC; ++c) {
             if (EXACT_N || c < n) {
@@ -1428,14 +1433,14 @@ __device__ __forceinline__ void row_dot_40_sub8(const uint8_t* row, const block_
     for (int c = 0; c < NC; ++c) s8[c] = 0.0f;
     {
         const int k = t + 8, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-        const typename S::W w = S::load(row, kbx, iqs);
+        const typename S::W w = S::template load<STAGE_GRID>(row, kbx, iqs, s_grid);
 #pragma unroll
         for (int c = 0; c < NC; ++c)
             if (EXACT_N || c < n) s8[c] += S::apply(w, x + off[c] + kbx * (F::qk / 32), iqs);
     }
     {
         const int k = t + 24, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-        const typename S::W w = S::load(row, kbx, iqs);
+        const typename S::W w = S::template load<STAGE_GRID>(row, kbx, iqs, s_grid);
 #pragma unroll
         for (int c = 0; c < NC; ++c) {
             if (EXACT_N || c < n) {
@@ -1691,6 +1696,12 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         stage_iq3xxs_masks(s_buf, tid, nthreads);
         __syncthreads();
         return s_buf;
+    } else if constexpr (kTqType<TY>) {
+        // the trellis types' int8 codebook: 2048 u16 (4 KB), read by 8 random lookups per 16 weights
+        const uint32_t* src = (const uint32_t*) tq_lut_i8;
+        for (int i = tid; i < 1024; i += nthreads) s_buf[i] = src[i];
+        __syncthreads();
+        return s_buf;
     } else if constexpr (TY == 21) {
         // 512 codebook words, then two 256-word tables: the byte masks of a sign byte's bits 0-3 and of its bits
         // 4-7 (IQ3_S stores one sign byte per 8 values).  As for IQ3_XXS, one pass per block replaces the
@@ -1706,7 +1717,7 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 struct IqGridWords {
-    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17 || TY == 21) ? 1024 : (TY == 16 || TY == 18) ? 512 : 4;
+    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17 || TY == 21 || kTqType<TY>) ? 1024 : (TY == 16 || TY == 18) ? 512 : 4;
 };
 
 // mmvq_kernel with the columns taken NC at a time.  After warp_sum every lane holds the same sum, so lane c stores
@@ -1955,15 +1966,15 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
 }
 
 // the 8-lane down rows: IQ4_NL's K = 40, NVFP4's K = 20
-template<int TD, int NC, bool EXACT_N = false>
+template<int TD, int NC, bool EXACT_N = false, bool STAGE_GRID = false>
 __device__ __forceinline__ void row_dot_sub8(const uint8_t* row, const block_q8_1* x, const int (&off)[NC], int n, int t,
-                                             float (&s)[NC]) {
+                                             float (&s)[NC], const uint32_t* __restrict__ s_grid = nullptr) {
     if constexpr (TD == 40) row_dot_20_sub8<TD, NC, EXACT_N>(row, x, off, n, t, s);
-    else row_dot_40_sub8<TD, NC, EXACT_N>(row, x, off, n, t, s);
+    else row_dot_40_sub8<TD, NC, EXACT_N, STAGE_GRID>(row, x, off, n, t, s, s_grid);
 }
 
 // native_down_kernel with the entries taken GRP_NC at a time
-template<int TD, bool SUB_DOWN = true>
+template<int TD, bool SUB_DOWN = true, bool STAGE_TQ = false>
 __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                                 const int32_t* __restrict__ grp_start,
                                                                 const int32_t* __restrict__ n_groups,
@@ -1972,9 +1983,11 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                                                                 float* __restrict__ out) {
     const int ng = *n_groups;
     if (blockIdx.y >= ng) return;
+    STRATA_SHARED_ALIGN16_U32(s_grid_buf, IqGridWords<TD, STAGE_TQ>::value);   // the trellis codebook on a cc 6.0 card, else 4 unused words
+    const uint32_t* s_grid = stage_iq_grid<TD, STAGE_TQ>(s_grid_buf, threadIdx.x, 256);
     __shared__ uint32_t s_hq_buf[GRP_NC * 20 * 9];
     const int nb = (int) (L.n_ff / Fmt<TD>::qk), hb = (int) (L.n_ff / 32);
-    if constexpr (SUB_DOWN && (TD == 20 || TD == 40)) {   // IQ4_NL (K 40) and NVFP4 (K 20): 8-lane rows
+    if constexpr (SUB_DOWN && (TD == 20 || TD == 40 || (kTqType<TD> && STAGE_TQ))) {   // IQ4_NL (K 40), NVFP4 (K 20), and with the staged codebook the trellis types (K 40 at n_ff 640): 8-lane rows
         if (hb == 20) {
             const int r = blockIdx.x * 32 + (threadIdx.x >> 3);
             const int t = threadIdx.x & 7;
@@ -1996,22 +2009,22 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                         if (n == 1) {
                             const int off1[1] = { 0 };
                             float s1[1];
-                            row_dot_sub8<TD, 1, true>(wr, s_hq, off1, 1, t, s1);
+                            row_dot_sub8<TD, 1, true, STAGE_TQ>(wr, s_hq, off1, 1, t, s1, s_grid);
                             if (t == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = s1[0] * sd;
                         } else if (n == 2) {
                             const int off2[2] = { 0, 20 };
                             float s2[2];
-                            row_dot_sub8<TD, 2, true>(wr, s_hq, off2, 2, t, s2);
+                            row_dot_sub8<TD, 2, true, STAGE_TQ>(wr, s_hq, off2, 2, t, s2, s_grid);
                             if (t < 2) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s2[t] * sd;
                         } else if (n == 3) {
                             const int off3[3] = { 0, 20, 40 };
                             float s3[3];
-                            row_dot_sub8<TD, 3, true>(wr, s_hq, off3, 3, t, s3);
+                            row_dot_sub8<TD, 3, true, STAGE_TQ>(wr, s_hq, off3, 3, t, s3, s_grid);
                             if (t < 3) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s3[t] * sd;
                         } else {
                             const int off4[4] = { 0, 20, 40, 60 };
                             float s4[4];
-                            row_dot_sub8<TD, 4, true>(wr, s_hq, off4, 4, t, s4);
+                            row_dot_sub8<TD, 4, true, STAGE_TQ>(wr, s_hq, off4, 4, t, s4, s_grid);
                             if (t < 4) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s4[t] * sd;
                         }
                     }
@@ -2086,19 +2099,19 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                     if (n == 1) {
                         const int off1[1] = { 0 };
                         float s1[1];
-                        row_dot_multi<TD, 1, true>(wr, s_hq, off1, 1, nb, lane, s1);
+                        row_dot_multi<TD, 1, true, STAGE_TQ>(wr, s_hq, off1, 1, nb, lane, s1, s_grid);
                         if (lane == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = s1[0] * sd;
                     } else if (n == 2) {
                         const int off2[2] = { 0, 20 };
                         float s2[2];
-                        row_dot_multi<TD, 2, true>(wr, s_hq, off2, 2, nb, lane, s2);
+                        row_dot_multi<TD, 2, true, STAGE_TQ>(wr, s_hq, off2, 2, nb, lane, s2, s_grid);
                         if (lane < 2) out[(size_t) ent_dst[e + lane] * L.n_embd + r] = s2[lane] * sd;
                     } else {
                         int off[GRP_NC];
 #pragma unroll
                         for (int c = 0; c < GRP_NC; ++c) off[c] = min(c, n - 1) * 20;
                         float s[GRP_NC];
-                        row_dot_multi<TD, GRP_NC>(wr, s_hq, off, n, nb, lane, s);
+                        row_dot_multi<TD, GRP_NC, false, STAGE_TQ>(wr, s_hq, off, n, nb, lane, s, s_grid);
 #pragma unroll
                         for (int c = 0; c < GRP_NC; ++c)
                             if (c < n && lane == c) out[(size_t) ent_dst[e + c] * L.n_embd + r] = s[c] * sd;
@@ -2112,7 +2125,7 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
 #pragma unroll
                 for (int c = 0; c < GRP_NC; ++c) off[c] = (e + min(c, n - 1)) * hb;
                 float s[GRP_NC];
-                row_dot_multi<TD, GRP_NC>(wr, hq, off, n, nb, lane, s);
+                row_dot_multi<TD, GRP_NC, false, STAGE_TQ>(wr, hq, off, n, nb, lane, s, s_grid);
 #pragma unroll
                 for (int c = 0; c < GRP_NC; ++c)
                     if (c < n && lane == c) out[(size_t) ent_dst[e + c] * L.n_embd + r] = s[c] * sd;
@@ -3089,6 +3102,31 @@ bool stage_tables_on() {
     return on;
 }
 
+// The trellis types (Gyro: TQ2_T / TQK6 / TQK7) read a 4 KB int8 codebook with 8 random lookups per 16 weights.  The
+// grouped expert kernels stage it in shared memory on compute capability 6.0 (Tesla P100: no dp4a, ~28 ALU ops per
+// weight in the decode, the global lookups are replayed per distinct line) and leave it in global memory elsewhere
+// (the newer cards' L1 absorbs it).  STRATA_TQ_STAGE=1 / 0 forces it either way; bitwise the same result both ways.
+bool tq_stage_on() {
+    static const int env = [] { const char* v = std::getenv("STRATA_TQ_STAGE"); return v != nullptr && v[0] != '\0' ? (v[0] != '0' ? 1 : 0) : -1; }();
+    if (env >= 0) return env == 1 && g_stage_grid;
+#if defined(__HIPCC__)
+    return false;
+#else
+    if (!g_stage_grid) return false;
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (!per_dev[dev]) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = ok && maj * 10 + mnr < 61 ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
+#endif
+}
+
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 void launch_mmvq_multi_nc(dim3 grid, dim3 block, cudaStream_t s, const uint8_t* W, size_t rb, const block_q8_1* X,
                           float* y, int n_in, int n_out, int ncols) {
@@ -3815,7 +3853,7 @@ void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, con
     if constexpr (!kSplit<TG>) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if (g_old_kernels || split_off<TG>()) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if constexpr (kStageIqGrid<TG>) {
-        if (!g_stage_grid || ((TG == 18 || TG == 21) && !stage_tables_on())) {
+        if (!g_stage_grid || ((TG == 18 || TG == 21) && !stage_tables_on()) || (kTqType<TG> && !tq_stage_on())) {
             if (g_no_sub16_gu) native_gu_multi_kernel<TG, false, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             else native_gu_multi_kernel<TG, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             return;
@@ -3865,7 +3903,7 @@ bool launch_gu_swiglu(const NativeExpertLayout& L, int64_t gy, cudaStream_t s, c
         if ((L.n_embd / Fmt<TG>::qk) * Fmt<TG>::ipb != 80) return false;
         const dim3 grid((unsigned) (L.n_ff / 32), (unsigned) gy);
         bool stage = false;
-        if constexpr (kStageIqGrid<TG>) stage = g_stage_grid && !((TG == 18 || TG == 21) && !stage_tables_on());
+        if constexpr (kStageIqGrid<TG>) stage = g_stage_grid && !((TG == 18 || TG == 21) && !stage_tables_on()) && !(kTqType<TG> && !tq_stage_on());
         if constexpr (kStageIqGrid<TG>) {
             if (stage) native_gu_swiglu_kernel<TG, true><<<grid, 512, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq);
             else native_gu_swiglu_kernel<TG, false><<<grid, 512, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq);
@@ -3882,6 +3920,13 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
                  float* out) {
     if constexpr (!kSplit<TD>) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else if (g_old_kernels || split_off<TD>()) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    else if constexpr (kTqType<TD>) {   // the trellis down types: the codebook staged where tq_stage_on()
+        if (tq_stage_on()) {
+            if (g_no_sub16_gu) native_down_multi_kernel<TD, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+            else native_down_multi_kernel<TD, true, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        }
+        else native_down_multi_kernel<TD, true, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    }
     else if (g_no_sub16_gu) native_down_multi_kernel<TD, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else native_down_multi_kernel<TD, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
 }
@@ -4948,7 +4993,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/swiglu");
     }
     if (g_exp_phase == 1) return;
-    const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
+    const bool tq_sub8 = (L.d_type == 144 || L.d_type == 146) && tq_stage_on();   // the trellis down rows as 8-lane rows (cc 6.0)
+    const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 || tq_sub8 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
     const int em0d = sm75_down_em(em0, cap_groups);
