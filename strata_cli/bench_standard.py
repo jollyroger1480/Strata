@@ -694,6 +694,24 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
     return proc
 
 
+def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Path:
+    """The log to keep with a result when the runner started the engine. `strata serve --quiet` prints nothing, so the
+    console capture is empty; the engine's own lines are in the run config's `log` file, from `offset` (its size before
+    the start). Falls back to the console capture when there is no such file or nothing new in it."""
+    try:
+        if run_log is not None and run_log.is_file() and run_log.stat().st_size > offset:
+            with run_log.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read()
+            if data.strip():
+                merged = console_log.with_name("engine-run.log")
+                merged.write_bytes(data)
+                return merged
+    except OSError:
+        pass
+    return console_log
+
+
 def stop_engine(proc) -> None:
     """Stop only the process this run started."""
     if proc is None:
@@ -732,7 +750,7 @@ def slug(text: str, limit: int = 40) -> str:
 
 def run(target: Target, out: Path | None, *, out_root: Path | None = None, optional_concurrency: bool = False,
         corpus: Corpus | None = None, declared: dict | None = None, plan: dict | None = None,
-        engine_log: Path | None = None, command: str = "strata bench run --suite standard-v1",
+        engine_log: Path | None = None, engine_run_log: tuple[Path | None, int] | None = None, command: str = "strata bench run --suite standard-v1",
         log=lambda message: None, timeout_s: float = REQUEST_TIMEOUT_S, started_engine: bool = False,
         hash_model: bool = True) -> tuple[dict, Path]:
     """Run the protocol against `target` and write the report into the new directory `out` (or a new folder named
@@ -780,7 +798,8 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
     hardware_block, machine_facts = facts.hardware(why, selected=selected, served_gpu=served_gpu, model_dir=model_dir,
                                                    declared_background=list(declared.get("background") or []))
     software_block = facts.software(why, machine_facts, engine_version=engine_version,
-                                    build_options=declared.get("build_options"))
+                                    build_options=declared.get("build_options"),
+                                    engine_build=facts.engine_build_runtime(plan.get("engine_exe")))
     model_block = facts.model(why, props=props, status=status, files=files, declared=declared, log=log)
     template_ref = {"path": "provenance/chat_template.jinja", "sha256": facts.sha256_text(template_text)} if template_text else None
     configuration_block, other_options = facts.configuration(
@@ -878,6 +897,8 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                                       "source": "effective engine arguments of the profile" if options is not None
                                       else "the server was already running; its engine options are not exposed"}, redact)
     put("config", "config.json", (json.dumps(config_doc, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8"))
+    if engine_log is not None and engine_run_log is not None:
+        engine_log = engine_log_since(engine_log, *engine_run_log)
     if engine_log is not None and engine_log.is_file():
         text = engine_log.read_text(encoding="utf-8", errors="replace")[-2_000_000:]
         put("engine_log", "engine.log", redact(text).encode("utf-8"))
@@ -1177,7 +1198,9 @@ def report_markdown(doc: dict, redact=lambda text: text) -> str:
               "the quantization repository's revision; see `missing` in results.json for every value it could not read.",
               f"- The server had answered {doc['extensions']['server_requests_before_run']} request(s) before this run."
               if doc["extensions"]["server_requests_before_run"] else
-              "- The runner could not tell whether the server was freshly loaded.", ""]
+              ("- The server had answered no request before this run (a freshly loaded engine)."
+               if doc["extensions"]["server_requests_before_run"] == 0 else
+               "- The runner could not tell whether the server was freshly loaded."), ""]
     return redact("\n".join(lines))
 
 

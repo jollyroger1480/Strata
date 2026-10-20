@@ -1175,7 +1175,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     import shutil
     import tempfile
     lease = benchmark_lease(saved["id"], out) if saved else contextlib.nullcontext()
-    proc, scratch, engine_log = None, None, None
+    proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
     try:
         with lease, contextlib.redirect_stdout(sys.stderr):
             def log(message: str) -> None:
@@ -1185,11 +1185,14 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
                     raise ProfileError("no server is answering at the profile's address and --no-start was given", 5)
                 scratch = Path(tempfile.mkdtemp(prefix="strata-bench-"))
                 engine_log = scratch / "engine.log"
+                run_log = Path(str(plan["config"]["log"])).expanduser() if isinstance(plan["config"].get("log"), str) else None
+                log_start = run_log.stat().st_size if run_log is not None and run_log.is_file() else 0
                 proc = bench_standard.start_engine(a.profile, target, engine_log, log, a.load_timeout)
             elif a.profile:
                 log("using the server that is already running at this profile's address; it will not be stopped")
             doc, out_dir = bench_standard.run(target, out, out_root=out_root, optional_concurrency=a.optional_concurrency,
                                               declared=declared, plan=plan, engine_log=engine_log, command=command, log=log,
+                                              engine_run_log=(run_log, log_start) if proc is not None else None,
                                               started_engine=proc is not None, hash_model=not a.skip_model_hash)
     finally:
         bench_standard.stop_engine(proc)
