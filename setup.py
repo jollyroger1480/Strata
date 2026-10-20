@@ -64,6 +64,7 @@ from pathlib import Path
 
 from strata_control import acquisition
 from strata_control import draft_layer
+from strata_control.discovery import in_trash
 from strata_control import user_args
 
 ROOT = Path(__file__).resolve().parent
@@ -1738,7 +1739,7 @@ def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
     plain helper path).  The engine uses it only with a helper cache; a layer split runs as before.  A recommendation:
     `off` (setup's --no-remote-expert-opt) or "remote_expert_opt": false in the config keeps it out, and a single-GPU
     config is not touched."""
-    if not isinstance(cfg.get("gpu"), list) or len(cfg["gpu"]) < 2:
+    if len(gpu_sel(cfg.get("gpu"))) < 2:
         return
     args = cfg.setdefault("args", [])
     if off or cfg.get("remote_expert_opt") is False:
@@ -4910,8 +4911,9 @@ def install_build_tools(gpu, yes):
     return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
-def cmake_build(src, bdir, target, defs, vcvars, bat_name):
-    acquisition.require("a compile (cmake)")
+def ensure_build_tools():
+    """cmake and ninja for a local compile, installed from requirements-build.txt when missing (#3403: the Mac setup
+    compiles without cmake_build(), so it calls this too).  Returns (cmake, ninja)."""
     # The ready-made engine path never calls this function. Keep build helpers out of
     # the normal serving environment, and use already installed tools offline.
     build_packages = requirement_lines(BUILD_REQUIREMENTS) if BUILD_REQUIREMENTS.exists() else BUILD_PACKAGES
@@ -4921,6 +4923,12 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install -r requirements-build.txt")
+    return cmake, ninja
+
+
+def cmake_build(src, bdir, target, defs, vcvars, bat_name):
+    acquisition.require("a compile (cmake)")
+    cmake, ninja = ensure_build_tools()
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
@@ -5382,7 +5390,7 @@ def has_data(folder: Path) -> bool:
 def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
-    cands = [Path(p) for p in settings.get("installs", [])]
+    cands = [Path(p) for p in settings.get("installs", []) if not in_trash(p)]
     for base in dict.fromkeys(() if app_settings_file() else (home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
@@ -5559,7 +5567,8 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
             warn(f"some model files are still in {folder} (in use, or already in {dest})")
         else:
             ok(f"model files from {folder} moved to {dest} (a new copy of Strata finds them there)")
-    installs = [str(home())] + [p for p in settings.get("installs", []) if p != str(home()) and Path(p).is_dir()]
+    installs = [str(home())] + [p for p in settings.get("installs", [])
+                                if p != str(home()) and Path(p).is_dir() and not in_trash(p)]
     save_settings({**settings, "data_dir": str(dest), "installs": installs[:20]})
     return dest, elsewhere
 
@@ -5983,11 +5992,29 @@ def hip_config_cards(sel) -> list[dict]:
     return cards
 
 
+def gpu_sel(value) -> list:
+    """A config's "gpu" as a list of card numbers: 0, [0, 2] or the string form "0,2" (which serve splits
+    the same way).  [] when it names none.  Without this, a string "0,1" reached gpu_info() whole and
+    calibrate died with "there is no GPU 0,1" on a dual-GPU config."""
+    if value is None or value == "":
+        return []
+    items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    sel = []
+    for x in items:
+        x = str(x).strip()
+        if x == "":
+            continue
+        sel.append(int(x) if x.isdigit() else x)
+    return sel
+
+
 def hardware_key(cfg: dict) -> str:
     """What a calibration is valid for: this GPU, CPU and RAM, and the model with its context and images setting
     (the context's KV cache and the image encoder take VRAM from the expert cache).  #566: a HIP config's cards are
     AMD's (hip_config_cards) - nvidia-smi's list named them "?" (or another card with that number) before."""
     sel = cfg.get("gpu")
+    if isinstance(sel, str):
+        sel = gpu_sel(sel)
     if cfg.get("backend") == "hip":
         gl = hip_config_cards(sel)
     else:

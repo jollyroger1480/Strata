@@ -290,8 +290,10 @@ def _measure_locked(ref: str, path: Path, profile: dict | None, revision: str | 
     _exclusive_preflight(cfg, profile)
     if output.exists() or output.is_symlink():
         raise ProfileError("calibration report path already exists", 2)
+    if not output.parent.is_dir():                    # before the 19 minute sweep, not after it (#3187)
+        raise ProfileError("report output directory does not exist", 5)
     identity = _identity(path, cfg, profile, revision)
-    cal = _full_folder("tools.calibrate")
+    cal =_full_folder("tools.calibrate")
     execute = runner or cal.run
     runner_cfg = _runtime_cfg(cfg, profile)
     runner_cfg["exe"] = str(_resolved(cfg["exe"], cfg, path))

@@ -1015,8 +1015,15 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
-        self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env, **pin)
+        try:
+            self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env,
+                              **pin)
+        except OSError:                                  # nothing started: the narrator stops, the log handle goes back
+            loading.set()
+            if log:
+                self.log.close()
+            raise
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
@@ -2560,6 +2567,13 @@ class Vision:
             args += ["--min-tokens", str(cfg["min_tokens"])]
         return args
 
+    def _ensure_dir(self):
+        """#3370: a temp cleaner (Windows Storage Sense) removes the empty work folder while the encoder is unloaded; the next
+        start then failed with WinError 267 for as long as the server lived.  Make it again; pictures cached in it are gone."""
+        if not self.dir.is_dir():
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self.cache.clear()
+
     def _start(self):
         """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
@@ -2577,6 +2591,7 @@ class Vision:
 
     def _start_reader(self):
         args, log, env = self.spawn
+        self._ensure_dir()
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
         self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
@@ -2739,6 +2754,7 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
+            self._ensure_dir()
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
@@ -3776,10 +3792,13 @@ class Service:
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
     def reasoning_budget(self, req) -> int | None:
-        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
-        config's.  0 (or less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for
-        anything that is not a whole number."""
-        value = (req or {}).get("reasoning_budget_tokens") if isinstance(req, dict) else None
+        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
+        llama.cpp reads it, `thinking_budget_tokens`), else the config's.  0 (or less) means no budget, so a request can
+        turn a configured one off.  ValueError (a 400) for anything that is not a whole number."""
+        req = req if isinstance(req, dict) else {}
+        value = req.get("reasoning_budget_tokens")
+        if value is None:                                # a null does not hide the other name
+            value = req.get("thinking_budget_tokens")
         if value is None:
             value = self.reasoning_budget_tokens
         if isinstance(value, float) and value.is_integer():
@@ -3951,9 +3970,13 @@ class Service:
                   "(a minute or two) ...", flush=True)
         try:
             self.engine.restart()
-        except Exception:
+        except Exception as e:
             if vision_started:
                 self.vision.unload()
+            # the program could not be started at all (missing, not executable, or blocked by Windows - #735): the
+            # request path answers EngineDied with a 503, but takes a bare OSError for a client that went away (#2496)
+            if isinstance(e, OSError):
+                raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
@@ -5599,14 +5622,14 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
-            # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
-            # which is cache_read_input_tokens (message_start could only say the whole prompt).  At least the last
-            # prompt token is always read, and Claude Code takes an input_tokens of 0 as "not given" and keeps
-            # message_start's whole prompt beside cache_read_input_tokens: the prompt counted twice (#1013)
+            # the final counts (message_start could only say the whole prompt): what was read now stays for the next
+            # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
+            read_now = len(ids) - reused
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
                                                                        "stop_sequence": x.get("stop_sequence")},
-                                    "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
+                                    "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
+                                              "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
