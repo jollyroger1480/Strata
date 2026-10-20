@@ -979,7 +979,7 @@ async function api(req, res, path, method, url) {
    return json(res,200,{path:file});}
   if(path==='/api/native/local/preview'&&method==='POST'){
    /* "Use a local GGUF": pick (or type) the folder, and Control says what is in it. Nothing is copied or changed. */
-   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute,fileType:/\.gguf$/i});
    const picked=typed?{path:typed}:await chooseFolder('Choose the folder that holds your GGUF files');
    if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
    if(picked.cancelled)return json(res,200,{cancelled:true});
