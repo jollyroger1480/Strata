@@ -3437,5 +3437,11 @@
   "s8413": "Hay un modelo en ejecución. Deténlo primero y después cambia la carpeta.",
   "s8414": "Elige una carpeta de modelos.",
   "s8415": "Elige qué hacer con tus modelos.",
-  "s8416": "Esa opción no es posible aquí."
+  "s8416": "Esa opción no es posible aquí.",
+  "s8417": "Se interrumpió un traslado. Termínelo o déjelo como estaba.",
+  "s8418": "Strata estaba trasladando sus modelos de {0} a {1} cuando se detuvo. No se ha perdido nada.",
+  "s8419": "Terminar el traslado",
+  "s8420": "Dejarlo",
+  "s8421": "Terminar pone todos sus modelos en {1}. Dejarlo los mantiene en {0} y elimina las copias parciales de {1}.",
+  "s8422": "Se eliminaron las copias parciales. Sus modelos están en {0}."
 }

@@ -214,17 +214,36 @@ def apply_cards(cfg: dict, gpus: list[int] | None) -> None:
     gpus = [int(g) for g in gpus]
     cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
     cfg["gpus_asked"] = True
+    cfg.pop("hip_ordinal", None)                             # an old AMD config's ordinal of ITS card would win over the card named now
     if len(gpus) > 1:
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
     else:
         cfg.pop("layer_split", None)
 
 
-def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None) -> list[int] | None:
-    """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the recommended ones by the shared fit rule
-    (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None (one card: the installed config's own)."""
+def installed_cards(base: dict | None) -> list[int] | None:
+    """The cards the installed model's own config names after a choice (setup --gpu / --gpus, the app's card pick: "gpus_asked"), in its order;
+    None when it names none or was never asked."""
+    if not isinstance(base, dict) or not base.get("gpus_asked"):
+        return None
+    g = base.get("gpu")
+    if g is None or g == "":
+        return None
+    try:
+        cards = [int(str(x).strip()) for x in (g if isinstance(g, (list, tuple)) else str(g).split(",")) if str(x).strip() != ""]
+    except ValueError:
+        return None
+    return cards or None
+
+
+def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, base: dict | None = None) -> list[int] | None:
+    """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the cards the installed config was set to (a person's
+    earlier choice, "gpu": 1 or [1, 0] - never replaced by the automatic pick, which would put the first of equal cards back), else the
+    recommended ones by the shared fit rule (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None."""
     if s.gpus:
         return [int(g) for g in s.gpus]
+    if installed_cards(base):
+        return None
     try:
         from strata_control import gpu_fit
         comp = catalog.computer()
@@ -854,7 +873,7 @@ class Runner:
         from strata_control import tune_knobs
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
-                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog))
+                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
         out = launch_dir() / f"{self.name}.json"
         write_private(out, cfg)
         self.config_path = out

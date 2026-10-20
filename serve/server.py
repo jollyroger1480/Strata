@@ -3293,6 +3293,22 @@ def hip_env_guard(env: dict, cfg: dict) -> list[str]:
     return said
 
 
+def card_note(cfg: dict, env: dict) -> str | None:
+    """One plain line that ties the engine's own numbering to the person's: the engine counts the cards it is given from 0 ("GPU 0",
+    "CUDA0" in its log), so a person who chose GPU 1 would read "GPU 0" and think the choice was lost.  Said only when the two differ
+    (NVIDIA, numbered as nvidia-smi numbers them); None otherwise."""
+    if cfg.get("backend") == "hip" or not gpu_list(cfg):
+        return None
+    mine = [x.strip() for x in str((env or {}).get("CUDA_VISIBLE_DEVICES", "")).split(",") if x.strip() != ""]
+    if not mine or mine == [str(i) for i in range(len(mine))]:
+        return None
+    names = [f"CUDA{i}" for i in range(len(mine))]
+    if len(mine) == 1:
+        return f"[strata] running on GPU {mine[0]} (as nvidia-smi numbers it); the engine's log calls it GPU 0 / CUDA0"
+    return (f"[strata] cards in stage order: GPU {', then GPU '.join(mine)} (as nvidia-smi numbers them); the engine's log calls them "
+            f"{', '.join(names)} - the first runs the first layers and the picture reader, the last runs the head and the draft layer")
+
+
 def vision_env(cfg: dict, env: dict) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
@@ -7958,6 +7974,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
+        note = card_note(cfg, env)
+        if note:
+            print(note, flush=True)
         if layer_split_of(cfg):
             try:
                 split = layer_split_value(cfg)          # #644: before the (minutes-long) start

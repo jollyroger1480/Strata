@@ -8,7 +8,7 @@ import { createNativeControl } from '../server/native-control.mjs';
 import { createControl } from '../server/control-runtime.mjs';
 
 /** The host in the packaged app with a stand-in for Strata Control: the move itself is Control's (tests/terminal/test_models_move.py). */
-function fixture(t, { plan = {}, move = null } = {}) {
+function fixture(t, { plan = {}, move = null, unfinished = null } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'strata-mfolder-')));
   const install = join(root, 'install'), data = join(root, 'host'), oldFolder = join(root, 'old'), newFolder = join(root, 'new');
   for (const d of [install, data, oldFolder, newFolder]) mkdirSync(d, { recursive: true });
@@ -34,6 +34,13 @@ function fixture(t, { plan = {}, move = null } = {}) {
       options.onEvent({ event: 'progress', done: 5e9, total: 74e9, file: 'models/gyro-s/a.gguf', group: 'gyro-s', index: 1, count: 3, seconds_left: 300, same_drive: false });
       return { ok: true, event: 'result', done: true, stopped: false, moved: ['gyro-s', 'coder'], remaining: [], bytes_moved: 74e9, total_bytes: 74e9, files_moved: 3, same_drive: false };
     },
+    async interruptedModelsMove(from) { calls.push(['status', from]); return unfinished; },
+    async resumeModelsMove(from, options) {
+      calls.push(['resume', from, options.installDir]);
+      options.onEvent({ event: 'progress', done: 20e9, total: 74e9, file: 'models/coder/c.gguf', group: 'coder', index: 2, count: 3, seconds_left: 120, same_drive: false });
+      return { ok: true, event: 'result', done: true, stopped: false, moved: ['coder'], remaining: [], bytes_moved: 74e9, total_bytes: 74e9, files_moved: 2, same_drive: false };
+    },
+    async leaveModelsMove(from, options) { calls.push(['leave', from, options.installDir]); return { ok: true, removed: 1, restored: 1, bytes_removed: 5 }; },
     async stop() { return { ok: true }; },
   };
   const spawnProcess = () => { throw new Error('the host starts no process here'); };
@@ -160,11 +167,45 @@ test('a move needs the app: the Control command line is built from the plan and 
   await assert.rejects(failing.moveModels('/o', '/n'), e => e.code === 'disk_full' && e.details === 'ENOSPC' && /ran out of space/.test(e.message));
 });
 
+test('an unfinished move is found at the next start, and Finish resumes it as a job that changes the folder only when done', async t => {
+  const f = fixture(t);
+  f.control.interruptedModelsMove = async from => { f.calls.push(['status', from]); return { state: 'failed', from: f.oldFolder, to: f.newFolder, bytes: 74e9 }; };
+  assert.equal((await f.native.interruptedMove()).to, f.newFolder);
+  assert.deepEqual(f.calls[0], ['status', f.oldFolder]);
+  const job = await f.native.finishInterruptedMove({ stopRunning: true });
+  const done = await finish(f.native, job.id);
+  assert.equal(done.state, 'done');
+  assert.equal(f.calls.find(c => c[0] === 'resume')[1], f.oldFolder);
+  assert.equal(f.native.state().downloadDirectory, f.newFolder);
+});
+
+test('Leave it keeps the old folder and asks Control to remove the partial copies; nothing interrupted means nothing to do', async t => {
+  const f = fixture(t);
+  assert.equal(await f.native.interruptedMove(), null);
+  await assert.rejects(f.native.leaveInterruptedMove(), /No move was interrupted/);
+  f.control.interruptedModelsMove = async () => ({ state: 'running', from: f.oldFolder, to: f.newFolder, bytes: 1 });
+  const result = await f.native.leaveInterruptedMove();
+  assert.equal(result.folder, f.oldFolder);
+  assert.deepEqual(f.calls.find(c => c[0] === 'leave').slice(0, 2), ['leave', f.oldFolder]);
+  assert.equal(f.native.state().downloadDirectory, f.oldFolder);
+});
+
+test('the Control command lines for status, resume and leave', async () => {
+  const seen = [];
+  const control = createControl({ control: { dir: '/c', python: '/c/py', cli: '/c/strata.py' }, run: async args => { seen.push(args); return args.includes('--status') ? { code: 0, json: { ok: true, interrupted: { from: '/o', to: '/n' } }, text: '', stderr: '' } : args.includes('--leave') ? { code: 0, json: { ok: true, removed: 0 }, text: '', stderr: '' } : { code: 0, json: { ok: true, event: 'result', done: true }, text: '', stderr: '' }; } });
+  assert.equal((await control.interruptedModelsMove('/o')).to, '/n');
+  await control.resumeModelsMove('/o', { installDir: '/i', cancelFile: '/c.cancel' });
+  await control.leaveModelsMove('/o', { installDir: '/i' });
+  assert.deepEqual(seen[0], ['models', 'move', '--status', '--from', '/o', '--output', 'json']);
+  assert.deepEqual(seen[1], ['models', 'move', '--resume', '--from', '/o', '--install-dir', '/i', '--cancel-file', '/c.cancel', '--output', 'jsonl']);
+  assert.deepEqual(seen[2], ['models', 'move', '--leave', '--from', '/o', '--install-dir', '/i', '--output', 'json']);
+});
+
 test('the models folder strings exist in all 8 languages with the same placeholders', () => {
   const read = lang => JSON.parse(readFileSync(new URL(`../src/locales/${lang}.json`, import.meta.url), 'utf8'));
   const en = read('en');
-  const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8339 && Number(k.slice(1)) <= 8416);
-  assert.equal(ours.length, 78);
+  const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8339 && Number(k.slice(1)) <= 8422);
+  assert.equal(ours.length, 84);
   for (const lang of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) {
     const text = read(lang);
     for (const key of ours) {
