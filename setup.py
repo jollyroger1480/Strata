@@ -3624,16 +3624,36 @@ def engine_env(eng: Path) -> dict:
     return env
 
 
+def hip_probe_path() -> Path:
+    """Where the installed engine's `strata-device` is: engine/ beside setup.py (a checkout), else the HIP engine package in the
+    component folder (the app and `strata update` keep it there, #3418: with only engine/ looked at, the app numbered the cards in
+    display-adapter order and an iGPU on HIP ordinal 0 made "GPU 0" the wrong card)."""
+    name = "strata-device.exe" if WIN else "strata-device"
+    own = ROOT / "engine" / name
+    if own.exists():
+        return own
+    try:
+        from strata_control import engine_component as EC
+        found = EC.resolve(backend="hip", full=False)
+        return Path(found.root) / name
+    except Exception:                                  # noqa: BLE001 - no component, a damaged one: the old answer
+        return own
+
+
 def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict] | None:
     """The GPUs the HIP runtime enumerates, numbered as HIP_VISIBLE_DEVICES numbers them, from the installed engine's
     `strata-device --list-devices`; None when there is no HIP engine here or it does not answer.  text: its output
     (tests)."""
     if text is None:
-        probe = probe or ROOT / "engine" / ("strata-device.exe" if WIN else "strata-device")
-        try:
-            hip_engine = json.loads((probe.parent / "BUILD.json").read_text(encoding="utf-8")).get("backend") == "hip"
-        except (OSError, ValueError):
-            hip_engine = False
+        probe = probe or hip_probe_path()
+        hip_engine = False
+        for record in ("BUILD.json", "engine-component.json"):     # a checkout's build record, or a component's manifest
+            try:
+                hip_engine = json.loads((probe.parent / record).read_text(encoding="utf-8-sig")).get("backend") == "hip"
+            except (OSError, ValueError, AttributeError):
+                continue
+            if hip_engine:
+                break
         if not probe.exists() or not hip_engine:
             return None
         try:

@@ -341,6 +341,35 @@ class WindowsDetection(unittest.TestCase):
                 mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: ["display"]):
             self.assertEqual(setup.amd_gpus(), ["hip"])
 
+    def test_probe_in_the_component_folder(self):
+        """#3418: the app keeps the engine in the component folder, not in control/engine; the cards must be numbered by the
+        HIP runtime there too (an iGPU on ordinal 0 made the display-order "GPU 0" the wrong card)."""
+        from strata_control import engine_component as EC
+        name = "strata-device.exe" if setup.WIN else "strata-device"
+        with tempfile.TemporaryDirectory() as d:
+            root, comp = Path(d) / "control", Path(d) / "components" / "0.2-hip"
+            root.mkdir()
+            comp.mkdir(parents=True)
+            (comp / name).write_text("x")
+            (comp / "engine-component.json").write_text('{"backend": "hip"}')      # no BUILD.json in this package
+            found = mock.Mock(root=comp)
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(EC, "resolve", return_value=found) as res:
+                self.assertEqual(setup.hip_probe_path(), comp / name)
+                self.assertEqual(res.call_args.kwargs["backend"], "hip")
+                ran = mock.Mock(returncode=0, stdout=self.LIST)
+                with mock.patch.object(setup.subprocess, "run", return_value=ran) as run, \
+                        mock.patch.object(setup, "hip_runtime_beside_exe", lambda *a: None):
+                    cards = setup.hip_devices()
+                self.assertEqual(run.call_args.args[0][0], str(comp / name))
+                self.assertEqual([c["index"] for c in cards], [0, 1, 2])
+            (root / "engine").mkdir()
+            (root / "engine" / name).write_text("x")
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(EC, "resolve", side_effect=AssertionError):
+                self.assertEqual(setup.hip_probe_path(), root / "engine" / name)    # a checkout's own engine wins
+            with mock.patch.object(setup, "ROOT", Path(d) / "none"), \
+                    mock.patch.object(EC, "resolve", side_effect=EC.EngineMissing("none")):
+                self.assertFalse(setup.hip_probe_path().exists())                  # no engine anywhere: no probe
+
     def test_no_hip_engine_no_probe(self):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d)
