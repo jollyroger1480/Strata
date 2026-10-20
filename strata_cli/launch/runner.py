@@ -164,6 +164,8 @@ def files_present(cfg: dict) -> list[str]:
             missing.append(tok)
     for flag in ("--pack", "--mtp"):
         args = [str(a) for a in cfg.get("args") or []]
+        if flag == "--mtp" and flag in args and args.index(flag) + 1 < len(args) and args[args.index(flag) + 1].isdigit():
+            continue                                      # Qwen3.6: a number is the draft depth, not a folder (#3298)
         if flag in args and args.index(flag) + 1 < len(args) and not Path(args[args.index(flag) + 1]).exists():
             missing.append(args[args.index(flag) + 1])
     vision = cfg.get("vision")
