@@ -726,18 +726,22 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen"], "no Unsloth, Swift or NVFP4 on a Mac in the app")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro"], "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
+        gy = {x["model"]: x for x in fams[1]["sizes"]}
+        self.assertEqual(list(gy), ["Gyro-S", "Gyro-M"])
+        self.assertEqual(gy["Gyro-S"]["download_gb"], 58.5)
+        self.assertTrue(all(v["on_this_pc"] and "SSD" in v["on_this_pc"] for v in gy.values()), "32 GB: both stream (said, not refused)")
         self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
         self.assertIn("slower", by["Q2_0"]["on_this_pc"])
         self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"fits"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"does not fit"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"does not fit"})
 
     def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
         s, hw = self.hw(32)

@@ -459,7 +459,9 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         // the chunks of a model bigger than one Metal buffer overlap by the largest range bound at one offset: a tensor,
         // or a layer's routed experts (gate, up and down, bound together at the first of them: moe_rebase)
         size_t span = 0;
-        for (const auto& kv : f_.tensors) span = std::max<size_t>(span, kv.second.bytes);
+        // (not the n-gram table: the host reads it from the SSD, the GPU never binds it - in a Gyro file it is 28.8 GB of the one file)
+        for (const auto& kv : f_.tensors)
+            if (kv.first != "per_layer_token_embd.weight") span = std::max<size_t>(span, kv.second.bytes);
         for (int l = 0; l < 48; ++l) {
             const std::string b = "blk." + std::to_string(l) + ".";
             const gguf::Tensor *g = f_.find(b + "ffn_gate_exps.weight"), *u = f_.find(b + "ffn_up_exps.weight"),
@@ -896,7 +898,10 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         a.topk = TOPK;
         a.n_expert = NEXP;
         const bool dq2 = td.type == ref::Q2_0;
-        const int gl = 32, gr = 1, gs = 4, ds_ = 4;
+        // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
+        // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
+        const bool tq_ = tg_.type >= 144;
+        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
