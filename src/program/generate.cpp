@@ -2233,7 +2233,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 // it is the fast one).  Streams are destroyed again; the runtime keeps the queues.
 //   Two queues are enough (R9700, "nn": 0 slow of 32 fresh starts, unprimed 10 of 32); five (nnnnh) fixed the starts too but cost
 //   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
-//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn"; "0": off; any other string is a spec
+//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn" (not when GPU_MAX_HW_QUEUES is 1 or 2, #3480); "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
 static void prime_hw_queues() {
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
@@ -2250,6 +2250,16 @@ static void prime_hw_queues() {
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) {
             (void) cudaGetLastError();
+            return;
+        }
+        // #3480: with the runtime capped to two hardware queues (GPU_MAX_HW_QUEUES=1 or 2, the user's own setting) the two
+        // primed queues are all of them: the high-priority draft stream and the side stream share them and a 4K prompt
+        // reads 39% slower (RX 9060 XT, 681-753 against 1188-1238 tok/s).  Not primed then; a spec in
+        // STRATA_HIP_QUEUE_PRIME still is.
+        const char* cap = std::getenv("GPU_MAX_HW_QUEUES");
+        if (cap != nullptr && std::atoi(cap) >= 1 && std::atoi(cap) <= 2) {
+            std::fprintf(stderr, "strata generate: GPU queues not primed: GPU_MAX_HW_QUEUES=%s leaves none for the draft stream "
+                                 "(STRATA_HIP_QUEUE_PRIME=nn primes them anyway)\n", cap);
             return;
         }
         spec = "nn";
