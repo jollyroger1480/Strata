@@ -212,8 +212,10 @@ inline bool parse_pool_cores(const std::string& text, std::vector<int>& out, std
                 if (!number(step) || step < 1) { err = "'" + text + "' has a step that is not a positive number"; out.clear(); return false; }
             }
         }
-        for (long c = lo; c <= hi; c += step)
+        for (long c = lo; c <= hi; c += step) {
             if (std::find(out.begin(), out.end(), (int) c) == out.end()) out.push_back((int) c);
+            if (out.size() > 4096) { err = "the list has more than 4096 logical processors"; out.clear(); return false; }
+        }
         skip();
         if (i == text.size()) break;
         if (text[i] != ',') { err = "'" + text + "' is not a list of logical processor numbers (write it like 0,2,4,6 or 2-14:2)"; out.clear(); return false; }

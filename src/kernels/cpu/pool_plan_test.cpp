@@ -219,6 +219,8 @@ int main() {
         expect(!cpu::parse_pool_cores("6-2", v, err), "list: a range that goes down");
         expect(!cpu::parse_pool_cores("0-8:0", v, err), "list: a step of 0");
         expect(!cpu::parse_pool_cores("-3", v, err), "list: a negative number");
+        expect(!cpu::parse_pool_cores("0-99999", v, err) && v.empty(), "list: a silly range is refused with a message, not expanded");
+        expect(cpu::parse_pool_cores("0-4095", v, err) && v.size() == 4096, "list: 4096 entries are fine");
         expect(cpu::format_cpu_list({2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30}) == "2,4,...,30", "format: a stride");
         expect(cpu::format_cpu_list({0, 1, 2, 3, 4}) == "0-4", "format: a run");
         expect(cpu::format_cpu_list({2, 4, 7}) == "2,4,7", "format: short and irregular lists in full");
