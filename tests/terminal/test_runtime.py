@@ -1167,7 +1167,17 @@ class RuntimeTests(unittest.TestCase):
         if done.returncode != 0:
             self.skipTest("icacls could not widen the test directory")
         with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(shared)}):
-            with self.assertRaisesRegex(profiles.ProfileError, "owner-only"):
+            # a folder that names Everyone is the user's own state folder: it is locked down once and used (never a stop)
+            self.assertEqual(runtime.runtime_dir(), shared)
+            self.assertTrue(private_files.is_unshared(shared))
+        again = Path(self.temp.name) / "shared-runtime-2"
+        again.mkdir()
+        subprocess.run(["icacls", str(again), "/grant", "*S-1-1-0:(OI)(CI)R"], capture_output=True)
+        with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(again)}), \
+                mock.patch.object(private_files, "restrict_to_current_user"), \
+                mock.patch.object(private_files, "repair_access", return_value=False):
+            # when the lock-down does not happen it still refuses, in plain words and naming who can open it
+            with self.assertRaisesRegex(profiles.ProfileError, "Everyone"):
                 runtime.runtime_dir()
 
     def test_exclusive_lease_waits_for_shared_holders_and_shared_holders_coexist(self):

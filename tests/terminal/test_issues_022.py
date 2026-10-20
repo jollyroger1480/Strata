@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -95,6 +96,174 @@ class Issue3403MacBuildTools(unittest.TestCase):
         import setup_mac as M
         for fn in (M.build_engine, M.build_vision):
             self.assertIn("S.ensure_build_tools()", inspect.getsource(fn), fn.__name__)
+
+
+@unittest.skipUnless(sys.platform == "win32", "ACLs are Windows only")
+class WindowsRuntimeFolderRefused(unittest.TestCase):
+    """The owner's fresh Windows PC: `strata launch` stopped with "runtime directory must be owner-only" on a folder that was already
+    there with another account in its ACL.  Fake SDDL strings for each way an ACL can look."""
+
+    def setUp(self):
+        from unittest import mock
+        from strata_control import private_files as pf
+        self.pf, self.mock = pf, mock
+        self.me = "S-1-5-21-1-2-3-1001"
+        patch = mock.patch.object(pf, "current_user_sid", return_value=self.me)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def offenders(self, sddl):
+        return self.pf.unshared_offenders(sddl)
+
+    def test_the_usual_acls_are_fine(self):
+        for sddl in ("D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)",
+                     "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)",
+                     "D:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)",               # the built-in Administrator's alias
+                     "D:P(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)(A;OICIIO;GA;;;CO)(A;OICI;FA;;;OW)"):
+            self.assertEqual(self.offenders(sddl), [], sddl)
+
+    def test_another_account_is_named(self):
+        self.assertEqual(self.offenders("D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FR;;;BU)"), ["BU"])
+        self.assertEqual(self.offenders("D:PAI(A;;FA;;;WD)(A;;FA;;;AU)"), ["WD", "AU"])
+        self.assertEqual(self.offenders("D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1002)"), ["S-1-5-21-1-2-3-1002"])
+
+    def test_an_inherit_only_entry_is_not_for_the_folder_itself(self):
+        self.assertEqual(self.offenders("D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICIIO;FR;;;BU)(A;CIIO;GR;;;WD)"), [])
+        # the same entry without the IO flag does apply
+        self.assertEqual(self.offenders("D:PAI(A;OICI;FR;;;BU)"), ["BU"])
+
+    def test_deny_entries_do_not_make_it_reachable(self):
+        self.assertEqual(self.offenders("D:PAI(D;;FA;;;BU)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)"), [])
+
+    def test_plain_names(self):
+        self.assertEqual(self.pf.account_name("BU"), "Users")
+        self.assertEqual(self.pf.account_name("WD"), "Everyone")
+        self.assertEqual(self.pf.account_name("S-1-5-32-545"), "Users")
+
+    def test_runtime_dir_repairs_a_folder_that_names_other_accounts(self):
+        from strata_control import runtime
+        pf = self.pf
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "runtime"
+            base.mkdir()
+            state = {"fixed": False}
+
+            def sddl(_path):
+                return "D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)" if state["fixed"] else \
+                    "D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;0x1200a9;;;BU)"
+
+            def restrict(path, directory=None):
+                state["fixed"] = True
+
+            env = {"STRATA_RUNTIME_DIR": str(base)}
+            with self.mock.patch.dict(os.environ, env), self.mock.patch.object(pf, "dacl_sddl", side_effect=sddl), \
+                    self.mock.patch.object(pf, "restrict_to_current_user", side_effect=restrict) as r, \
+                    self.mock.patch.object(pf, "private_mkdir"), self.mock.patch.object(runtime, "_private_mkdir"):
+                self.assertEqual(runtime.runtime_dir(), base)
+                self.assertEqual(r.call_count, 1)
+
+    def test_runtime_dir_still_refuses_and_says_who_when_the_repair_fails(self):
+        from strata_control import profiles, runtime
+        pf = self.pf
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "runtime"
+            base.mkdir()
+            with self.mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(base)}), \
+                    self.mock.patch.object(pf, "dacl_sddl", return_value="D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FR;;;BU)"), \
+                    self.mock.patch.object(pf, "restrict_to_current_user", side_effect=OSError("denied")), \
+                    self.mock.patch.object(runtime, "_private_mkdir"):
+                with self.assertRaises(profiles.ProfileError) as cm:
+                    runtime.runtime_dir()
+            self.assertIn("Users", str(cm.exception))
+            self.assertIn(str(base), str(cm.exception))
+            self.assertIn("Properties", str(cm.exception))
+
+
+@unittest.skipUnless(sys.platform == "win32", "ACLs are Windows only")
+class WindowsRuntimeFolderMoreCases(unittest.TestCase):
+    """The cases beyond the first repair (audit-refusals-022.md item 5): a data drive's inherited Users entries, an ACL that cannot be
+    read, a folder made by an elevated run, a drive without permissions, and a message in plain words."""
+
+    ME = "S-1-5-21-1-2-3-1001"
+
+    def run_dir(self, *, sddl, restrict=None, repair=None, acls=True):
+        from unittest import mock
+        from strata_control import private_files as pf, runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "runtime"
+            base.mkdir()
+            calls = {"restrict": 0, "repair": 0}
+
+            def r(path, directory=None):
+                calls["restrict"] += 1
+                if restrict:
+                    return restrict(calls)
+            def rp(path, tree=True):
+                calls["repair"] += 1
+                return repair(calls) if repair else False
+            with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(base)}), \
+                    mock.patch.object(pf, "current_user_sid", return_value=self.ME), \
+                    mock.patch.object(pf, "dacl_sddl", side_effect=sddl), \
+                    mock.patch.object(pf, "restrict_to_current_user", side_effect=r), \
+                    mock.patch.object(pf, "repair_access", side_effect=rp), \
+                    mock.patch.object(pf, "volume_has_acls", return_value=acls), \
+                    mock.patch.object(runtime, "_private_mkdir"), mock.patch.object(runtime, "_NO_ACL_WARNED", set()), \
+                    mock.patch("sys.stderr", new_callable=lambda: __import__("io").StringIO()) as err:
+                try:
+                    return runtime.runtime_dir(), calls, None, err.getvalue()
+                except Exception as exc:     # noqa: BLE001 - the test looks at the ProfileError text
+                    return None, calls, exc, err.getvalue()
+
+    def test_a_data_drive_folder_with_users_and_authenticated_users_is_repaired_once(self):
+        state = {"fixed": False}
+        def sddl(_):
+            return f"D:PAI(A;OICI;FA;;;{self.ME})" if state["fixed"] else \
+                f"D:PAI(A;OICI;FA;;;{self.ME})(A;OICI;0x1301bf;;;AU)(A;OICI;0x1200a9;;;BU)"
+        base, calls, exc, _ = self.run_dir(sddl=sddl, restrict=lambda c: state.update(fixed=True))
+        self.assertIsNone(exc)
+        self.assertEqual(calls["restrict"], 1)
+
+    def test_an_acl_that_cannot_be_read_is_repaired_then_refused_in_plain_words(self):
+        def sddl(_):
+            raise OSError("access denied")
+        base, calls, exc, _ = self.run_dir(sddl=sddl)
+        self.assertIsNotNone(exc)
+        self.assertEqual((calls["restrict"], calls["repair"]), (1, 1))      # tried both, once each
+        self.assertIn("cannot read the permissions", str(exc))
+        self.assertNotIn("0700", str(exc))
+
+    def test_a_folder_made_by_an_elevated_run_gets_ownership_taken_back(self):
+        state = {"fixed": False}
+        def sddl(_):
+            if not state["fixed"]:
+                raise OSError("access denied")
+            return f"D:PAI(A;OICI;FA;;;{self.ME})"
+        def restrict(calls):
+            raise PermissionError("denied")
+        base, calls, exc, _ = self.run_dir(sddl=sddl, restrict=restrict, repair=lambda c: state.update(fixed=True) or True)
+        self.assertIsNone(exc)
+        self.assertEqual((calls["restrict"], calls["repair"]), (1, 1))
+
+    def test_a_drive_without_permissions_is_used_with_one_warning(self):
+        def sddl(_):
+            raise AssertionError("FAT has no ACL to read")
+        base, calls, exc, err = self.run_dir(sddl=sddl, acls=False)
+        self.assertIsNone(exc)
+        self.assertEqual((calls["restrict"], calls["repair"]), (0, 0))
+        self.assertIn("no file permissions", err)
+
+    def test_the_refusal_names_the_accounts_and_never_says_mode_0700(self):
+        sddl = lambda _: f"D:PAI(A;OICI;FA;;;{self.ME})(A;OICI;FR;;;AU)(A;OICI;FR;;;WD)"   # noqa: E731
+        base, calls, exc, _ = self.run_dir(sddl=sddl)
+        text = str(exc)
+        self.assertIn("Authenticated Users", text)
+        self.assertIn("Everyone", text)
+        self.assertNotIn("0700", text)
+        self.assertEqual(calls["restrict"], 1)
+
+    def test_the_real_system_drive_has_permissions(self):
+        from strata_control import private_files as pf
+        self.assertTrue(pf.volume_has_acls(os.environ.get("SystemRoot", "C:\\Windows")))
 
 
 class Issue3410TrashIsNotAnInstall(unittest.TestCase):
