@@ -1260,7 +1260,10 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     static const bool pad_on = [] { const char* v = std::getenv("STRATA_PF_PAD"); return v && v[0] == '1'; }();
     static const bool pf_on = [] { const char* v = std::getenv("STRATA_PF_GEMM"); return v && v[0] == '1'; }();
     static const int64_t pf_min_t = [] { const char* v = std::getenv("STRATA_PF_SWITCH_MIN_T"); return v ? (int64_t) std::atoll(v) : (int64_t) 0; }();
-    if (pad_on && pf_on && T >= pf_min_t && T >= 64 && N >= 512 && K % 32 == 0 && N * (K + 64) <= scratch_elems_) {
+    // (strata_pf_padded_gemm_available(): the CURRENT device runs the padded gfx11 product.  On a gfx1151 + gfx1201 split the process-wide switch
+    // is on for both stages; the gfx12 stage would dequantize the weight padded, find no product, and do it again unpadded below.)
+    if (pad_on && pf_on && T >= pf_min_t && T >= 64 && N >= 512 && K % 32 == 0 && N * (K + 64) <= scratch_elems_ &&
+        strata_pf_padded_gemm_available()) {
         const int64_t ldw = K + 64;
         if (strata::kernels::dequant_f16_ld(ggml_type, W_blocks, 0, N, K, ldw, scratch_, stream_) &&
             strata_pf_gemm_f16_ld(X, ldx > 0 ? ldx : K, scratch_, ldw, Y, T, N, K, ldy, beta, stream_)) {
@@ -1273,7 +1276,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         // X arrived padded but the weight cannot be (an i-quant without a strided dequant, or the scratch is too
         // small for N x (K + 64)): the weight unpadded, X read at its stride - the same products, the same bits
         const int64_t rows = scratch_elems_ / K;
-        bool ok = rows > 0;
+        bool ok = rows > 0 && strata_pf_padded_gemm_available();
         if (ldy <= 0) ldy = N;
         for (int64_t r0 = 0; ok && r0 < N; r0 += rows) {
             const int64_t n = (N - r0 < rows) ? N - r0 : rows;
