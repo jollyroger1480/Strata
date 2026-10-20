@@ -64,5 +64,30 @@ class OwnFileChecks(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class CheckingShowsItsProgress(unittest.TestCase):
+    def test_a_big_file_is_hashed_with_a_progress_line_of_its_own(self):
+        """Hashing a 60 GB shard takes minutes: the app and the Terminal show it as 'checking', with a figure (not a download stuck at 99%)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "big-00001-of-00002.gguf"
+            size = (1 << 30) + 4096
+            with open(f, "wb") as g:
+                g.truncate(size)
+            sha = hashlib.sha256()
+            with open(f, "rb") as g:
+                for block in iter(lambda: g.read(16 << 20), b""):
+                    sha.update(block)
+            import time
+            original = time.time
+            ticks = iter(range(0, 10_000, 3))
+            setup.time.time = lambda: float(next(ticks))             # every read looks 3 s later: the progress line prints
+            try:
+                code, text = run(setup.verify_sha256, f, size, sha.hexdigest())
+            finally:
+                setup.time.time = original
+        self.assertEqual(code, 0)
+        self.assertIn("checking big-00001-of-00002.gguf (SHA-256", text)
+        self.assertRegex(text, r"checking big-00001-of-00002\.gguf: +\d+\.\d\d / 1\.07 GB \(\d+%\)")
+
+
 if __name__ == "__main__":
     unittest.main()

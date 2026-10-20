@@ -278,11 +278,12 @@ def launch_dir() -> Path:
 # ----------------------------------------------------------------------------------------------- the runner
 
 
-def download_text(dl: dict, already: bool) -> str:
-    """The step line for the model download. A model whose files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
+def download_text(dl: dict, already: bool, label: str | None = None) -> str:
+    """The step line for a download or a check. `label` is what is being fetched, in words (strata_control/progress_words.py). A model whose
+    files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
     if already:
-        return f"Model already downloaded ({dl['total_gb']:.1f} GB), checking the files"
-    return f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+        return f"The model files are already on this computer ({dl['total_gb']:.1f} GB); checking them"
+    return f"{label}: {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB" if label else f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
 
 
 class Runner:
@@ -630,15 +631,17 @@ class Runner:
             if not line:
                 continue
             lines.append(line)
-            lines[:] = lines[-400:]
+            lines[:] = lines[-1500:]
             prog = cat.mcp.install_progress(lines)
             prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
-            dl = prog.get("download")
-            if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
-                if already is None:
+            dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
+            if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
+                if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
-                text = download_text(dl, already)
+                text = download_text(dl, bool(already) and phase == "download", label)
                 self.emit("model", text, float(dl["percent"]), step=prog.get("step"))
+            elif label:
+                self.emit("model", label, None, step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))
         code = p.wait()
