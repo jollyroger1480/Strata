@@ -163,7 +163,7 @@ test('a move needs the app: the Control command line is built from the plan and 
 test('the models folder strings exist in all 8 languages with the same placeholders', () => {
   const read = lang => JSON.parse(readFileSync(new URL(`../src/locales/${lang}.json`, import.meta.url), 'utf8'));
   const en = read('en');
-  const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8261 && Number(k.slice(1)) <= 8338);
+  const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8339 && Number(k.slice(1)) <= 8416);
   assert.equal(ours.length, 78);
   for (const lang of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) {
     const text = read(lang);
