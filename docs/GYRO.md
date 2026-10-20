@@ -66,9 +66,11 @@ fork (`-DSTRATA_GGML_DIR=<agentionai/llama.cpp>`, as rc2 does) uses the fork's o
 
 Gyro-S and Gyro-M run on Intel Arc cards on Linux, with the SYCL engine that setup builds from this source ([INTEL.md](INTEL.md)).
 Setup lists them for an Arc like for any card and warns, never refuses, when VRAM and RAM together are short. Tested on one
-card: an Arc A750 (8 GB, i915 driver) in a PC with a Ryzen 5 5600X (6 cores, AVX2) and 62 GB of RAM, on the old-release files of Gyro-S and
-Gyro-M (the same size as the pinned ones, a different SHA-256; the pinned Gyro-S was still downloading when this was written).
-Not tested: a B-series card, two Arc cards (the second-card expert helper refuses a Gyro pack and says so), an Arc on the xe driver.
+card: an Arc A750 (8 GB, i915 driver) in a PC with a Ryzen 5 5600X (6 cores, AVX2) and 62 GB of RAM, on the first-release files of Gyro-S and
+Gyro-M (the same size as the pinned ones, a different SHA-256). The pinned Gyro-S passes the same parity run (16 cases, 0 failures) and
+answers correctly through the server; it was not compared with CUDA.
+Not tested: a B-series card, two Arc cards (the second-card expert helper refuses a Gyro pack and says so), an Arc on the xe driver. The Battlemage AOT build
+(`bmg-g31`) compiles with the trellis kernels; it was not run.
 
 The trellis decode kernels do the same integer and float operations in the same order as the CUDA ones (int8 codebook, q8_1 activations),
 the Hadamard rotation of the expert input and of the SwiGLU output runs on the card, and the prompt takes the grouped XMX path,
@@ -86,7 +88,7 @@ experts of the file (layers 0-3, 10, 20, 30 and 47, two experts each) and compar
   int16 codebook and Q8_0 activations, the card the int8 codebook and q8_1, as on CUDA.
 
 **Against CUDA.** The same Gyro-S file on an RTX 3060 (the f-022-int engine) and on the A750, both with 64 cached experts, no PCIe share and
-no CPU prompt share, ten prompts of 26-100 tokens, 48 greedy tokens with the MTP draft: 7 of the 10 prompts give the same 48 tokens. The other three (prompts 5, 7 and 8) agree for 9, 9 and 6 tokens and then differ at a near-tie. The first-token KL is 1.3e-4 to 1.1e-2 and the top token is always the same. The two SYCL prompt paths (oneMKL and XMX) also flip prompt 7 against each other, so the prompt-path rounding alone moves it.
+no CPU prompt share, ten prompts of 26-100 tokens, 48 greedy tokens with the MTP draft: 7 of the 10 prompts give the same 48 tokens. The other three (prompts 5, 7 and 8) agree for 9, 9 and 6 tokens and then differ at a near-tie. The first-token KL is 1.3e-4 to 1.1e-2 and the top token is always the same. The two SYCL prompt paths (oneMKL and XMX) also flip prompt 7 against each other, so the prompt-path rounding alone moves it. A 1,406-token prompt gives the same 16 tokens on both.
 
 **Measured** (A750, setup's config: 32K context, 300 MiB VRAM reserve, MTP draft of 4, PCIe probe 10.4 GB/s, median of 5 interleaved pairs):
 
