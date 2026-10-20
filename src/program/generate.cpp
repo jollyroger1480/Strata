@@ -2220,7 +2220,9 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 // switch queues, and a 4K prompt reads 13% slower (p620, 1,980 vs 2,290 tok/s).  Opening the queues here, one after
 // the other on the main thread and before any other thread exists, makes the placement the same in every start (and
 // it is the fast one).  Streams are destroyed again; the runtime keeps the queues.
-//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nnnnh"; "0": off; any other string is a spec
+//   Two queues are enough (R9700, "nn": 0 slow of 32 fresh starts, unprimed 10 of 32); five (nnnnh) fixed the starts too but cost
+//   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
+//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn"; "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
 static void prime_hw_queues() {
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
@@ -2239,7 +2241,7 @@ static void prime_hw_queues() {
             (void) cudaGetLastError();
             return;
         }
-        spec = "nnnnh";
+        spec = "nn";
 #endif
     }
     if (dev != 0 && cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
