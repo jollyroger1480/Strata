@@ -50,6 +50,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -2610,6 +2611,11 @@ int main(int argc, char **argv) try {
                 return 1;
             }
         }
+        // APR (prism.hadamard) packs (Gyro): every expert path rotates its activations (CPU pool: native_quant_act / _h;
+        // GPU verify and the prompt's FP16 chain: hadamard_rows).  Validated on the Arc A750 (SYCL, JIT build).
+        if (strata::kernels::cpu::hadamard_spec().any())
+            std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d)\n",
+                         strata::kernels::cpu::hadamard_spec().block);
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
