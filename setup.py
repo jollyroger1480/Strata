@@ -4869,8 +4869,9 @@ def install_build_tools(gpu, yes):
     return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
-def cmake_build(src, bdir, target, defs, vcvars, bat_name):
-    acquisition.require("a compile (cmake)")
+def ensure_build_tools():
+    """cmake and ninja for a local compile, installed from requirements-build.txt when missing (#3403: the Mac setup
+    compiles without cmake_build(), so it calls this too).  Returns (cmake, ninja)."""
     # The ready-made engine path never calls this function. Keep build helpers out of
     # the normal serving environment, and use already installed tools offline.
     build_packages = requirement_lines(BUILD_REQUIREMENTS) if BUILD_REQUIREMENTS.exists() else BUILD_PACKAGES
@@ -4880,6 +4881,12 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install -r requirements-build.txt")
+    return cmake, ninja
+
+
+def cmake_build(src, bdir, target, defs, vcvars, bat_name):
+    acquisition.require("a compile (cmake)")
+    cmake, ninja = ensure_build_tools()
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
