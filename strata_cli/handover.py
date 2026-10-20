@@ -21,6 +21,12 @@ from pathlib import Path
 
 ENV_GUARD = "STRATA_HANDOVER"
 ENV_OFF = "STRATA_NO_HANDOVER"
+ENV_CHECKOUT = "STRATA_HANDOVER_IN_CHECKOUT"         # tests only: allow a hand-over from a source checkout
+
+
+def running_from_checkout() -> bool:
+    """True when this Terminal runs from a git checkout (the source route) rather than an installed bundle."""
+    return (Path(__file__).resolve().parents[1] / ".git").exists()
 _FOLDER = re.compile(r"^[\w.+-]+$")
 _VERSION = re.compile(r"^[0-9]+(\.[0-9]+){1,3}$")
 
@@ -109,6 +115,8 @@ def maybe_hand_over(argv, environ=None, root=None, running=None, execv=None, run
     environ = os.environ if environ is None else environ
     if environ.get(ENV_GUARD) or environ.get(ENV_OFF):
         return None
+    if root is None and not environ.get(ENV_CHECKOUT) and running_from_checkout():
+        return None                                      # a source checkout runs its own code, never an installed Control
     if running is None:
         import strata_cli
         running = strata_cli.version()

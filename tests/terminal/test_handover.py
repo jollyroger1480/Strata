@@ -36,7 +36,7 @@ class Handover(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.comp = Path(self.temp.name) / "components"
         self.comp.mkdir()
-        self.env = {"STRATA_COMPONENTS_DIR": str(self.comp)}
+        self.env = {"STRATA_COMPONENTS_DIR": str(self.comp), handover.ENV_CHECKOUT: "1"}
         self.calls, self.warnings = [], []
 
     def go(self, running="0.1.46", env=None, argv=("status",)):
@@ -45,6 +45,19 @@ class Handover(unittest.TestCase):
             return 7
         env = {**self.env, **(env or {})}
         return handover.maybe_hand_over(list(argv), environ=env, running=running, execv=fake, run=fake, warn=self.warnings.append)
+
+    def test_a_source_checkout_never_hands_over(self):
+        make_control(self.comp, "0.1.46.1")
+        env = {k: v for k, v in self.env.items() if k != handover.ENV_CHECKOUT}
+        original = handover.running_from_checkout
+        handover.running_from_checkout = lambda: True
+        try:
+            result = handover.maybe_hand_over(["status"], environ=env, running="0.1.46", execv=None,
+                                              run=lambda *a, **k: self.fail("handed over"), warn=self.warnings.append)
+        finally:
+            handover.running_from_checkout = original
+        self.assertIsNone(result)
+        self.assertEqual(self.warnings, [])
 
     def test_a_newer_control_takes_over_with_its_own_interpreter_and_the_same_arguments(self):
         d = make_control(self.comp, "0.1.46.1")
@@ -137,7 +150,7 @@ class Handover(unittest.TestCase):
         (newer / "strata.py").write_text("import os,sys\nprint('control 99', os.environ.get('STRATA_HANDOVER'), sys.argv[1:])\nraise SystemExit(3)\n",
                                          encoding="utf-8")
         done = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True,
-                              env={**os.environ, "STRATA_COMPONENTS_DIR": str(self.comp)})
+                              env={**os.environ, "STRATA_COMPONENTS_DIR": str(self.comp), handover.ENV_CHECKOUT: "1"})
         self.assertEqual(done.returncode, 3, done.stderr)
         self.assertIn("control 99 1 ['--version']", done.stdout)
         # with the guard set the current Control runs, and says its own version
@@ -149,7 +162,7 @@ class Handover(unittest.TestCase):
     def test_the_entry_point_falls_back_when_the_target_is_broken(self):
         make_control(self.comp, "99.0.0", whole=False)
         done = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True,
-                              env={**os.environ, "STRATA_COMPONENTS_DIR": str(self.comp)})
+                              env={**os.environ, "STRATA_COMPONENTS_DIR": str(self.comp), handover.ENV_CHECKOUT: "1"})
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(done.stdout.startswith("strata "), done.stdout)
         self.assertEqual(len(done.stderr.strip().splitlines()), 1, done.stderr)
