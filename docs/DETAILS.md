@@ -2095,10 +2095,15 @@ Only the workers and the main thread are pinned. Every other thread (the prompt 
 the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose
 threads are not pinned either. A task manager that shows only the first few logical processors busy is therefore not
 necessarily the pool: while the experts are in graphics memory the workers have nothing to do. On a Ryzen AI MAX+ 395 (16
-cores, 32 threads, Windows 11) with every expert in graphics memory, five snapshots of a running engine showed the
-unpinned threads on logical processors 0 to 15 only (the first eight cores, both threads of each) and 16 to 31 idle, while
-the 15 workers sat parked on 2, 4, ..., 30. With the experts on the CPU the same machine's workers were each at 100% on
-exactly those even numbers (CPU pool alone on random expert data, so only the placement and the memory traffic are real).
+cores, 32 threads, Windows 11, Balanced power plan) with every expert in graphics memory, snapshots of four runs of the engine
+showed the unpinned threads on logical processors 0 to 15 only (the first eight cores, both threads of each) and 16 to 31
+idle; Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing pinned ran there. The 15 workers sat on 2, 4, ..., 30
+and did nothing. With the experts on the CPU the same machine's workers were each at 100% on exactly those even numbers (CPU
+pool alone on random expert data, so only the placement and the memory traffic are real). The CPU picture encoder
+(`strata-vision`, 16 threads there) showed the same picture: 16 threads on logical processors 0 to 15, 10.1 s for a
+1024x1024 picture. Pinning those 16 threads to one per core (2, 4, ..., 30) made it far slower (74 to 193 s) on that PC,
+and 8 threads pinned to 8 real cores took 12.3 s, so the encoder stays where the operating system puts it (the cause was
+not looked into; the parked second chiplet is the obvious suspect).
 That is why the default is not "the first N logical processors": on that machine, 8 workers on logical processors 1 to 8
 (four cores, both threads) read 67 GB/s, 8 workers on real cores 2, 4, ..., 16 read 94 GB/s, and the default 15 workers on
 2, 4, ..., 30 read 146 GB/s (median of three interleaved 10-second runs; 31 workers on 1 to 31 read 123 GB/s).
