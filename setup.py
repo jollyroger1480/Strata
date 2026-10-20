@@ -5383,6 +5383,8 @@ def load_settings() -> dict:
 
 
 def save_settings(s: dict) -> None:
+    if s.get("data_dir") and s.get("data_dir") != load_settings().get("data_dir"):
+        s = {**s, "data_dir_at": time.time()}           # when the models folder was chosen: the app and the Terminal keep the newer choice
     try:
         settings_path().parent.mkdir(parents=True, exist_ok=True)
         settings_path().write_text(json.dumps(s, indent=1), encoding="utf-8")

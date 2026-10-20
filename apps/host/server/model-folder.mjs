@@ -10,7 +10,8 @@
  *   made (exFAT, FAT, a network share) the models simply go in `<data>/models`.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, parse, resolve } from 'node:path';
 
 export const isDriveRoot = path => { const p = resolve(path); return p === parse(p).root; };
@@ -48,18 +49,64 @@ export function alignModels(data, library, { link = symlinkSync } = {}) {
   return { data, linked: false };
 }
 
-/** Write the person's data folder into the Control settings file (merged, atomically); returns whether it changed. Never throws: the folder
- *  still works for the app, only the Terminal and the installer's own check lose the shared setting. */
-export function rememberDataFolder(file, folder) {
+
+function readSettings(file) {
+  try { const parsed = JSON.parse(readFileSync(file, 'utf8').replace(/^﻿/, '')); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; }
+}
+
+/** The data folder a settings file names and when it was last changed (`data_dir_at`, seconds; the file's own time for a file that has none). */
+export function readDataFolder(file) {
+  if (!file) return null;
+  const current = readSettings(file);
+  if (typeof current.data_dir !== 'string' || !current.data_dir) return null;
+  let at = Number(current.data_dir_at);
+  if (!Number.isFinite(at) || at <= 0) { try { at = statSync(file).mtimeMs / 1000; } catch { at = 0; } }
+  return { folder: current.data_dir, at };
+}
+
+/** The settings file the Terminal (command-line Strata) keeps: the same place setup.py and strata_control/discovery.py use. */
+export function terminalSettingsFile(env = process.env, platform = process.platform) {
+  if (env.STRATA_TERMINAL_SETTINGS_FILE) return env.STRATA_TERMINAL_SETTINGS_FILE;
+  if (platform === 'win32') return join(env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Strata', 'settings.json');
+  return join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'strata', 'settings.json');
+}
+
+/** Write the person's data folder into a settings file (merged, atomically) with the time of the change; returns whether it changed. Never
+ *  throws: the folder still works for the app, only the Terminal and the installer's own check lose the shared setting. */
+export function rememberDataFolder(file, folder, at = Date.now() / 1000, touch = false) {
   if (!file || !folder) return false;
   try {
-    let current = {};
-    try { const parsed = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = parsed; } catch { /* a new file */ }
-    if (current.data_dir === folder) return false;
+    const current = readSettings(file);
+    if (current.data_dir === folder && !touch) return false;
     mkdirSync(dirname(file), { recursive: true });
     const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, JSON.stringify({ ...current, data_dir: folder }, null, 1) + '\n', { mode: 0o600 });
+    writeFileSync(temp, JSON.stringify({ ...current, data_dir: folder, data_dir_at: at }, null, 1) + '\n', { mode: 0o600 });
     renameSync(temp, file);
     return true;
   } catch { return false; }
+}
+
+const same = (a, b) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
+
+/**
+ * One models folder for the app and the Terminal. The app keeps its choice in its own settings file (`appFile`), the Terminal in `terminalFile`;
+ * whichever was changed last wins and the other file is brought up to date. Nothing is moved. A folder that is gone (a disk that is not
+ * connected) is never adopted. `app` is the app's own answer when its file names none (`{ folder, at }`).
+ * Returns `{ folder, from }`: the shared folder (null when neither names one) and `from` = 'terminal' when the app has to take over the
+ * Terminal's folder, 'app' when the Terminal's file was updated, null when nothing changed.
+ */
+export function syncDataFolder({ appFile, terminalFile, app = null, exists = path => existsSync(path) }) {
+  const mine = readDataFolder(appFile) ?? app;
+  const theirs = readDataFolder(terminalFile);
+  const theirsUsable = theirs && exists(theirs.folder);
+  if (!theirsUsable) {
+    if (mine && theirs && !same(mine.folder, theirs.folder)) { rememberDataFolder(terminalFile, mine.folder, mine.at); return { folder: mine.folder, from: 'app' }; }
+    return { folder: mine?.folder ?? null, from: null };
+  }
+  if (!mine || (!same(mine.folder, theirs.folder) && theirs.at > mine.at)) {
+    rememberDataFolder(appFile, theirs.folder, theirs.at);
+    return { folder: theirs.folder, from: 'terminal' };
+  }
+  if (!same(mine.folder, theirs.folder)) { rememberDataFolder(terminalFile, mine.folder, mine.at); return { folder: mine.folder, from: 'app' }; }
+  return { folder: mine.folder, from: null };
 }
