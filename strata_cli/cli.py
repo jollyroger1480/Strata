@@ -159,6 +159,13 @@ def parser() -> argparse.ArgumentParser:
     models_import.add_argument("--plan", action="store_true", required=True,
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
+    models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
+    models_move.add_argument("to", metavar="NEW_FOLDER")
+    models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help="the folder the models are in now (default: the data folder in use)")
+    models_move.add_argument("--install-dir", help="absolute path to a Strata installation whose run configs should follow the files")
+    models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
+    models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
+    models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
     engine = sp.add_parser("engine", help="engine tuning and component actions")
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
     calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
@@ -495,7 +502,7 @@ def parser() -> argparse.ArgumentParser:
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
-                     components_verify, models_list, models_inspect, models_import, calibrate,
+                     components_verify, models_list, models_inspect, models_import, models_move, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
@@ -547,6 +554,8 @@ def _models(a: argparse.Namespace) -> int:
                 print(_import_problem(result), file=sys.stderr)
             return 5
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
+    if a.models_command == "move":
+        return _models_move(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -601,6 +610,47 @@ def _import_problem(plan: dict) -> str:
     if holds:
         text += " " + holds
     return text
+
+
+def _models_move(a: argparse.Namespace) -> int:
+    from strata_control import discovery, models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    old = Path(a.source) if a.source else discovery.data_dir(Path.home() / "Strata")[0]
+    new = Path(a.to).expanduser()
+    if a.plan:
+        result = mm.plan(old, new)
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": result["ok"], "plan": result}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(result["issue"]["message"] if result["issue"] else
+                  f"{len(result['models'])} model(s), {result['models_bytes'] / 1e9:.1f} GB; {result['free_bytes'] / 1e9:.1f} GB free in {new}.")
+        return 0 if result["ok"] else 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    cancel = Path(a.cancel_file) if a.cancel_file else None
+
+    def show(event: dict) -> None:
+        if a.output == "jsonl":
+            print(json.dumps(event, ensure_ascii=False, allow_nan=False), flush=True)
+        elif not machine:
+            print(f"\r{event['done'] / 1e9:.1f} of {event['total'] / 1e9:.1f} GB  {event['file']}", end="", flush=True)
+    try:
+        summary = mm.move(old, new, on_progress=show, cancelled=(lambda: cancel.exists()) if cancel else None, configs=configs)
+    except mm.MoveError as e:
+        extra = getattr(e, "summary", {})
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}, **extra}, ensure_ascii=False))
+        else:
+            print(f"\nstrata: {e} {e.details}".rstrip(), file=sys.stderr)
+        return 5
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": True, "event": "result", **summary}, ensure_ascii=False))
+    else:
+        print("\n" + ("Your models are moved." if summary["done"] else "Moving stopped. Nothing was lost."))
+    return 0 if summary["done"] else 6
 
 
 def _import_words(plan: dict) -> str:
