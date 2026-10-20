@@ -241,9 +241,9 @@ class StartScreen(Base):
         for p in self.presets:
             sm = store.summary(p)
             req = (f"{p.parallel} request" + ("s" if p.parallel != 1 else "")) if p.parallel else "fit to card"
-            tuned = f"tuned {p.tuned_at[5:]}" if p.tuned_preset and p.tuned_at else "not tuned"
+            tuned = f"tuned {p.tuned_at[5:]}" if p.is_tuned and p.tuned_at else "not tuned"
             used = f"last used {p.last_used[5:10]}" if p.last_used else "not used yet"
-            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.tuned_preset else ""),
+            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.is_tuned else ""),
                                Cell(used, MUTE)], key=("preset", p.name)))
         items.append(Item([Cell("Set up from the beginning", "")], key=("new", None)))
         items.append(Item([Cell("Use model files I already have", "")], key=("own", None)))
@@ -919,11 +919,11 @@ class TuningScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        first = self.ctx.fresh_setup and not s.tuned_preset
+        first = self.ctx.fresh_setup and not s.is_tuned
         items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
                  Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
                  Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
-        if not self.ctx.tune_chosen and s.tune == "skip" and not s.tuned_preset and self.ctx.fresh_setup:
+        if not self.ctx.tune_chosen and s.tune == "skip" and not s.is_tuned and self.ctx.fresh_setup:
             s.tune = "quick"
         self.query_one(Menu).set_items(items, {"quick": 0, "thorough": 1, "skip": 2}.get(s.tune, 0))
         self.paint()
