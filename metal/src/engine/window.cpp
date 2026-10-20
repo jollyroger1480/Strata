@@ -455,7 +455,18 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         st_ = std::make_unique<ExpertStream>();
         if (!st_->open(f_, err)) return false;
     } else {
-        madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
+        {   // read ahead the weights, not the n-gram table: in a Gyro file it is 28.8 GB in the middle of the one file, read by the host from
+            // the SSD a few rows at a time (src/ngram/ple_reader.cpp), and must not fill the page cache
+            const gguf::Tensor* ple = f_.find("per_layer_token_embd.weight");
+            if (ple == nullptr) {
+                madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
+            } else {
+                const size_t page = 16384;
+                const size_t lo = (size_t) ple->offset / page * page, hi = ((size_t) (ple->offset + ple->bytes) + page - 1) / page * page;
+                if (lo > 0) madvise(f_.map, lo, MADV_WILLNEED);
+                if (hi < f_.map_bytes) madvise((uint8_t*) f_.map + hi, f_.map_bytes - hi, MADV_WILLNEED);
+            }
+        }
         // the chunks of a model bigger than one Metal buffer overlap by the largest range bound at one offset: a tensor,
         // or a layer's routed experts (gate, up and down, bound together at the first of them: moe_rebase)
         size_t span = 0;
@@ -593,6 +604,10 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                         src = raw.data();
                     }
                     ref::dequant(x.type, src, tmp.data(), ne);
+                    // a Q6_K / IQ4_NL matrix (Gyro) goes through BF16 first: the form the pack gives the CUDA engine
+                    // (tools/iq_pack.py --compat-bf16), so the Q8_0 copy below is made from the same numbers
+                    if (x.type != ref::BF16)
+                        for (uint64_t i = 0; i < ne; ++i) tmp[i] = ref::bf16_to_f32(ref::f32_to_bf16(tmp[i]));
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
