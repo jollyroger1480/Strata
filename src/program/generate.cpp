@@ -5845,7 +5845,7 @@ int main(int argc, char** argv) {
                  o.pool_tasks ? o.pool_tasks : 3 * (pool.workers() + (pool.host_works() ? 1 : 0)),
                  o.pool_tasks ? " (capped by rows)" : " (automatic)",
                  pool.workers() + (pool.host_works() ? 1 : 0));
-    if (pool.plan_limit()[0] != '\0')   // the default count: what it was bounded by (a configured count is never changed)
+    if (pool.plan_limit()[0] != '\0' && !pool.explicit_cores())   // the default count: what it was bounded by (a configured count is never changed; --pool-cores has its own line below)
         std::fprintf(stderr, "strata generate: CPU pool: %d workers by default (%d physical cores, %d logical processors; bounded by %s)\n",
                      pool.workers(), pool.plan_cores(), pool.plan_logical(), pool.plan_limit());
     if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test)
