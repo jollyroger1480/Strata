@@ -205,6 +205,18 @@ kernels reproduce a double-precision reference to 1e-7 relative on real experts 
 and 47 of Gyro-M (the 92 GB file was read by range requests, 16 experts a layer: it does not fit this Mac's disk). Run it with
 `metal/tests/gyro_parity.sh`.
 
+**Against the CUDA engine, same file** (the pinned Gyro-S; `tools/quant_quality.py`, teacher-forced over the 5 text segments of
+`data/quant_quality/v1`, 4,995 positions; CUDA = an RTX 3060 with the engine of this release, run twice: experts on the GPU, experts on the CPU):
+
+| Reference -> run | top-1 agreement | mean KL | KL p99 | perplexity of the text |
+|---|---|---|---|---|
+| CUDA GPU experts -> CUDA CPU experts (the noise floor: two numerics of one engine) | 95.80 % | 0.0186 | 0.195 | 4.462 / 4.477 |
+| CUDA GPU experts -> Mac | 95.46 % | 0.0207 | 0.241 | 4.486 / 4.477 |
+| CUDA CPU experts -> Mac | 95.38 % | 0.0187 | 0.272 | 4.486 / 4.462 |
+
+The Mac is as far from either CUDA run as the two CUDA runs are from each other (the CUDA GPU path quantizes the activations to q8_1 and
+reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplies fp16 codebook values with the float activations).
+
 ### Quality
 
 - **The Q8_0 hyper-connection read is the default on Mac.** It keeps a Q8_0 copy of the hyper-connection matrices instead of BF16. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read.
