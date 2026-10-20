@@ -1627,8 +1627,8 @@ catch (sycl::exception const &exc) {
 // what the x16 share costs.  Continuous (#485): before, 19.9 GB/s gave 0.42 and 20.0 the full 0.55 (and 4.0 GB/s
 // gave 0.08, 3.9 none), so a reading near either edge moved the share by a quarter of its range.  From 20 GB/s up
 // (an x16 PCIe 4/5 link: ~26-28 GB/s) the share is unchanged.
-double pcie_frac_for_gbps(double gbps, double base) {
-    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / 20.0);
+double pcie_frac_for_gbps(double gbps, double base, double ref_gbps = 20.0) {
+    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / ref_gbps);
 }
 
 // 0.1.42 (CUDA) / 0.1.48 (SYCL, opt-in STRATA_PCIE_FRAC_DEFAULT=auto): the share refined from what the CPU pool measures in
@@ -2647,7 +2647,16 @@ int main(int argc, char **argv) try {
         if (!native_pack) {
             o.pcie_frac = base;
         } else if (bw > 0.0) {
-            o.pcie_frac = pcie_frac_for_gbps(bw, base);
+            // Gyro's trellis experts: the CPU pool decodes them at ~8 GB/s (48 cycles a block on AVX2, compute bound, a third of the
+            // i-quants' rate), so the link carries a bigger share of the misses than the 20 GB/s reference says.  Measured on the
+            // Arc A750 (10.5 GB/s link): 0.29 -> 12.8 tok/s, 0.45 -> 15.5, 0.60 -> 15.2 (5 interleaved pairs each).  The reference
+            // for these packs is 12 GB/s: 10.5 GB/s gives 0.48; from 12 GB/s up the measured 0.55 stays.
+            bool trellis = false;
+            {
+                const auto& lay = strata::kernels::cpu::expert_layout();
+                for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l) trellis = trellis || lay.fmt[l].gu_type >= 144;
+            }
+            o.pcie_frac = pcie_frac_for_gbps(bw, base, trellis ? 12.0 : 20.0);
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s) -> pcie_frac %.2f "
                                  "(default %.2f)\n", bw, bursts.c_str(), o.pcie_frac, base);
             {   // PcieAuto on SYCL: opt-in (STRATA_PCIE_FRAC_DEFAULT=auto), one card, not the xe NO_HOST path
