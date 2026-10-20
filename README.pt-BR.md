@@ -158,7 +158,7 @@ O [Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF) (da age
 | **Gyro-S** | 27,6 GB | 58,5 GB | Para PCs onde nenhum outro tamanho cabe. A qualidade é menor que a do IQ2_XS. |
 | **Gyro-M** | 35 GB | 92,0 GB | Qualidade próxima à do IQ3_XXS, com cerca de 20% menos memória da GPU. Ele escreve as respostas 17 a 21% mais devagar que o Q2_0 numa placa de 12 GB e numa R9700. |
 
-O Gyro roda em placas NVIDIA e AMD (AMD é experimental), e não roda em Intel Arc nem no Mac. Detalhes e medições:
+O Gyro roda em placas NVIDIA e AMD (AMD é experimental) e em placas Intel Arc no Linux (testado numa Arc A750), e não roda no Mac. Detalhes e medições:
 [docs/GYRO.md](docs/GYRO.md). Inicie com `strata launch --model gyro-s`.
 
 ### Os outros tamanhos

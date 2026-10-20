@@ -19,7 +19,7 @@ other size stays a choice. A PC with a card of 12 GB and 32 GB of RAM is in the 
 | Your memory (RAM + VRAM) | Pre-selected | Notes |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**, or the **Coder** for code | The Coder needs 32 GB of RAM and keeps half of the experts, so it is weaker outside code ([why](#coder)). Gyro-S has lower quality than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster |
-| **40 GB** | **Swift 1.5** IQ2_XS (39.2 GB) | Gyro-M (35 GB) is the other choice: close to IQ3_XXS in quality, but it writes answers 17-21% slower than Q2_0. Gyro runs on NVIDIA and AMD cards, not on Intel Arc or the Mac |
+| **40 GB** | **Swift 1.5** IQ2_XS (39.2 GB) | Gyro-M (35 GB) is the other choice: close to IQ3_XXS in quality, but it writes answers 17-21% slower than Q2_0. Gyro runs on NVIDIA, AMD and Intel Arc cards, not on the Mac |
 | **48 GB** | **IQ3_XXS** (47.0 GB) | Slower, better |
 | **64 GB** | **IQ3_S** (54.8 GB), the original. Swift 1.5's IQ3_S is an equal choice | The slowest, the best: it matches the full model on the published tests |
 | **96 GB or more** | [Unsloth's UD-IQ4_XS to Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0), 4 to 8 bit | UD-IQ4_XS keeps every expert in RAM from about 80 GB of RAM, Q8_0 from about 136 GB. Up to 192 GB, the 5-8-bit files fit in RAM. Setup still pre-selects IQ3_S here, except on a Strix Halo |
@@ -183,7 +183,7 @@ experts in a rotated basis. They are the smallest options and never setup's defa
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
 | **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory; decodes about 20% slower than Q2_0 on 12 GB cards |
 
-NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Gyro reads pictures (the same rule as above). It needs
+Gyro runs on NVIDIA and AMD (experimental) cards and on Intel Arc cards on Linux (tested on an Arc A750; the Arc engine is built from this release's source, see [INTEL.md](INTEL.md)); not on the Mac. Gyro reads pictures (the same rule as above). On NVIDIA and AMD it needs
 engine 0.1.45.1 or newer; if the engine is older, the app says "This model needs a newer engine" and offers Update
 engine. Gyro gives correct output on RTX 50 cards with engine 0.1.45.3. Details, measurements and credit:
 [GYRO.md](GYRO.md).

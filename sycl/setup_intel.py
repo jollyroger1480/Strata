@@ -88,6 +88,12 @@ def intel_gpus():
     return found
 
 
+def real_mem_have(mem_have, real_ram: float, fake_ram: float):
+    """setup.mem_have for the Intel path: the RAM it is given is the 1024 GB stand-in of setup's RAM rule, so a model that counts VRAM + RAM
+    (Gyro) would never warn; it gets the real RAM."""
+    return lambda model, ram, vram=0.0: mem_have(model, real_ram if ram >= fake_ram else ram, vram)
+
+
 def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
@@ -406,8 +412,7 @@ def install(argv) -> None:
     # Gyro (mem_total) counts VRAM + RAM together and is the one family whose experts are NOT streamed from the file into VRAM: on
     # an Arc they sit in the RAM arena and the CPU computes what the card does not hold.  Its memory warning ("needs 27.6 GB of VRAM +
     # RAM together, you have ...", never a refusal) therefore reads the real RAM, not the 1024 GB above.
-    mem_have = S.mem_have
-    S.mem_have = lambda model, ram, vram=0.0: mem_have(model, real_ram if ram >= fake_ram else ram, vram)
+    S.mem_have = real_mem_have(S.mem_have, real_ram, fake_ram)
 
     bench_tips = S.bench_tips
 
