@@ -64,6 +64,7 @@ from pathlib import Path
 
 from strata_control import acquisition
 from strata_control import draft_layer
+from strata_control.discovery import in_trash
 from strata_control import user_args
 
 ROOT = Path(__file__).resolve().parent
@@ -5348,7 +5349,7 @@ def has_data(folder: Path) -> bool:
 def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
-    cands = [Path(p) for p in settings.get("installs", [])]
+    cands = [Path(p) for p in settings.get("installs", []) if not in_trash(p)]
     for base in dict.fromkeys(() if app_settings_file() else (home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
@@ -5525,7 +5526,8 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
             warn(f"some model files are still in {folder} (in use, or already in {dest})")
         else:
             ok(f"model files from {folder} moved to {dest} (a new copy of Strata finds them there)")
-    installs = [str(home())] + [p for p in settings.get("installs", []) if p != str(home()) and Path(p).is_dir()]
+    installs = [str(home())] + [p for p in settings.get("installs", [])
+                                if p != str(home()) and Path(p).is_dir() and not in_trash(p)]
     save_settings({**settings, "data_dir": str(dest), "installs": installs[:20]})
     return dest, elsewhere
 
