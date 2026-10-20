@@ -715,9 +715,30 @@ class AccessStep(Base):
             self.assertNotEqual(ctx.settings.api_key, first)
             await press(pilot, "t")
             self.assertIsNone(ctx.settings.api_key)
-            self.assertIn("will not start on a network without one", text_of(app))
+            self.assertTrue(ctx.settings.no_key)
+            self.assertIn("anyone who can reach this port can use the model and its tools", text_of(app))
             await press(pilot, "t")
             self.assertTrue(ctx.settings.api_key)
+            self.assertFalse(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_default_is_a_key_and_no_key_survives_moving_on(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach(), "down")
+            self.assertTrue(ctx.settings.api_key)                       # default: Strata makes a key
+            await press(pilot, "t")                                     # one keypress: no key
+            await press(pilot, "down")                                  # moving the cursor does not bring the key back
+            await press(pilot, "up")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertTrue(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_local_never_asks_for_a_key(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach())
+            self.assertEqual(ctx.settings.access, "local")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertNotIn("An API key was made", text_of(app))
         self.run_app(case)
 
 

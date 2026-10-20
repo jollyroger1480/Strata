@@ -684,13 +684,14 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, key_list
-    try:
-        has_key = bool(key_list(api_key_of(os.environ.get("STRATA_API_KEY") or cfg.get("api_key", ""))))
-    except ValueError:
-        raise ProfileError("the inference API key is invalid", 5) from None
-    if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
-        raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
+    from serve.server import api_key_of, explicit_no_key, key_list
+    raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
+    if not explicit_no_key(raw_key):
+        try:
+            key_list(api_key_of(raw_key))
+        except ValueError:
+            raise ProfileError("the inference API key is invalid", 5) from None
+    # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
     if cli is not None:
@@ -1161,7 +1162,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
         url = f"http://{authority}:{plan['effective']['port']}"
-        if not key and cfg.get("api_key"):
+        if not key and cfg.get("api_key") and str(cfg["api_key"]).strip().lower() != "none":
             from serve.server import api_key_of, key_list
             keys = key_list(api_key_of(cfg["api_key"]))
             key = keys[0] if keys else None

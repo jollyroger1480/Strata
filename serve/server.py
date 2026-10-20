@@ -7200,6 +7200,22 @@ def key_list(value) -> list[str]:
     return [k.strip() for k in str(value).split(",") if k.strip()]
 
 
+def explicit_no_key(value) -> bool:
+    """The owner chose to serve without a key: "api_key": "none" in the config, STRATA_API_KEY=none or --api-key none
+    (or --no-api-key, handled by the caller).  Never a key called "none"."""
+    return isinstance(value, str) and value.strip().lower() == "none"
+
+
+def open_server_warning(port, public=False, tools=False) -> str:
+    """The one plain warning for a server on the network with no API key (recommend, never force)."""
+    msg = f"no API key: anyone who can reach port {port} can use the model" + (" and its tools" if tools else "") + "."
+    if tools:
+        msg += " The tools can read and change files on this computer."
+    if public:
+        msg += " This address is on the public internet, so anyone who finds it can use it."
+    return msg + " Add an API key to keep others out."
+
+
 def api_key_of(value):
     """The key as a client can send it (#725).  An HTTP header loses the spaces and line ends around its value, so a
     key kept with them (a config file or an environment file with CRLF line ends, a quoted " key ") matched no
@@ -7698,6 +7714,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY. "
                          "Several keys: separate them with commas (key1,key2), as llama.cpp does")
+    ap.add_argument("--no-api-key", action="store_true",
+                    help="serve on the network without an API key (anyone who can reach the port can use the model; "
+                         "also \"api_key\": \"none\" in the config). Warns once, never refuses")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
@@ -7803,14 +7822,16 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 x.strip() == "--api-key=" for i, x in enumerate(supplied_args)):
         print("[strata] an API key was given but it is empty: set a key, or leave it out", file=sys.stderr)
         return 2
+    raw_key = a.api_key or cfg.get("api_key", "")
+    no_key_chosen = bool(getattr(a, "no_api_key", False)) or explicit_no_key(raw_key)
+    if explicit_no_key(raw_key):
+        raw_key = ""
     try:
-        preflight_api_key = api_key_of(a.api_key or cfg.get("api_key", ""))
+        preflight_api_key = api_key_of(raw_key)
     except ValueError as e:
         print(f"[strata] {e}: set a key, or leave it out", file=sys.stderr)
         return 2
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not preflight_api_key:
-        print("[strata] a non-loopback bind requires an inference API key", file=sys.stderr, flush=True)
-        return 2
+    # A key is recommended on a network, never required (owner decision 2026-10-20): the banner below warns once.
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
@@ -7992,7 +8013,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if set(key_list(svc.api_key)) & set(key_list(svc.telemetry_key)):
         print("[strata] telemetry_read_key must differ from every inference API key", file=sys.stderr)
         return 2
-    if not svc.api_key and "api_key" in cfg:             # #569: written, but empty: the server has none (a warning, not a stop)
+    if not svc.api_key and "api_key" in cfg and not no_key_chosen:             # #569: written, but empty: the server has none (a warning, not a stop)
         print("[strata] the api_key in the config is empty: this server has no API key (anyone who can reach it can "
               "use it); set one, or leave api_key out", file=sys.stderr, flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
@@ -8116,8 +8137,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not ips:
             print("       from other devices: http://<this PC's IP address>:" + str(bound_port) + "/", flush=True)
         if not svc.api_key:
-            print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
-                  "to the config (clients send it as their API key; the web page asks for it)", flush=True)
+            print("       WARNING: " + open_server_warning(bound_port, tools=svc.mcp is not None),
+                  flush=True)
         if os.name == "nt":
             print("       nothing arrives? Windows Firewall blocks it until allowed: accept its prompt for Python, or run "
                   "in an admin PowerShell:\n         New-NetFirewallRule -DisplayName \"Strata " + str(bound_port) + "\" "

@@ -107,6 +107,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     a.add_argument("--api-key", metavar="KEY", help="the key clients must send (made for you when you share beyond this computer)")
     a.add_argument("--api-key-env", metavar="NAME", help="read the key from this environment variable")
     a.add_argument("--new-key", action="store_true", help="make a new API key")
+    a.add_argument("--no-api-key", action="store_true", help="share beyond this computer without an API key (a warning is shown, nothing is refused)")
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
@@ -219,6 +220,13 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         if not val:
             raise ValueError(f"The environment variable {a.api_key_env} is empty or not set.")
         s.api_key = val
+    if a.no_api_key:
+        if a.api_key or a.api_key_env:
+            notices.append(S.Notice("warn", "An API key was given as well as --no-api-key, so the key is kept.", ""))
+        else:
+            s.api_key, s.no_key = None, True             # also drops a key a saved preset had
+    elif s.api_key:
+        s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
     if a.save_preset:
@@ -258,7 +266,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
-    if s.access != "local" and not s.api_key:
+    if s.access != "local" and not s.api_key and not s.no_key:
         from strata_cli.launch import access
         s.api_key = access.new_key()
         notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
@@ -462,7 +470,7 @@ def launch_info(name: str | None = None) -> dict | None:
     if pick is None and preset is None:
         return None
     port = (pick or {}).get("port") or (preset.port if preset else S.DEFAULT_PORT)
-    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": cfg.get("api_key") or (preset.api_key if preset else None),
+    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": (cfg.get("api_key") if str(cfg.get("api_key") or "").strip().lower() != "none" else None) or (preset.api_key if preset else None),
             "model": cfg.get("model_name") or "strata", "context": _cfg_context(cfg), "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
             "port": port, "access": preset.access if preset else None}
 
@@ -541,7 +549,7 @@ def run_launch(a: argparse.Namespace) -> int:
             return fail(errors[0].line(), 2)
         if a.new_key:
             from strata_cli.launch import access
-            s.api_key = access.new_key()
+            s.api_key, s.no_key = access.new_key(), False
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
         move_data = _move_data_choice(a, s, catalog, machine)

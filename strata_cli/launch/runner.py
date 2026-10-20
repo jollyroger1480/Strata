@@ -221,6 +221,8 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     cfg["port"] = int(s.port)
     if s.api_key:
         cfg["api_key"] = s.api_key
+    elif s.no_key and s.access != "local":
+        cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
     cfg.setdefault("exe", "component:strata-engine")
