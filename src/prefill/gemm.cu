@@ -560,6 +560,28 @@ bool prompt_f16() {
 #endif
 }
 
+// A padded X (ldx > K) no kernel took: its rows copied to a contiguous FP16 buffer of stride K.  Grown, never shrunk
+// (one buffer per Gemm; a padded X only arrives from STRATA_PF_PAD's producers).  One 2-D copy: the same values, and
+// the ordinary paths below then read them exactly as if the producer had written them unpadded.
+const uint16_t* Gemm::unpad_x(const uint16_t* X, int64_t T, int64_t K, int64_t ldx) {
+    if (X == nullptr || T <= 0 || K <= 0 || ldx <= K) return nullptr;
+    const int64_t need = T * K;
+    if (need > unpadded_x_elems_) {
+        if (unpadded_x_ != nullptr) { cudaFree(unpadded_x_); unpadded_x_ = nullptr; unpadded_x_elems_ = 0; }
+        void* p = nullptr;
+        if (cudaMalloc(&p, (size_t) need * sizeof(uint16_t)) != cudaSuccess) { cudaGetLastError(); return nullptr; }
+        unpadded_x_ = (uint16_t*) p;
+        unpadded_x_elems_ = need;
+    }
+    if (cudaMemcpy2DAsync(unpadded_x_, (size_t) K * sizeof(uint16_t), X, (size_t) ldx * sizeof(uint16_t),
+                          (size_t) K * sizeof(uint16_t), (size_t) T, cudaMemcpyDeviceToDevice,
+                          (cudaStream_t) stream_) != cudaSuccess) {
+        cudaGetLastError();
+        return nullptr;
+    }
+    return unpadded_x_;
+}
+
 Gemm::~Gemm() {
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
@@ -574,6 +596,7 @@ Gemm::~Gemm() {
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
     if (tc_w_) cudaFree(tc_w_);
     if (tc_x_) cudaFree(tc_x_);
+    if (unpadded_x_) cudaFree(unpadded_x_);
     if (!external_) {
         if (scratch_) cudaFree(scratch_);
         if (workspace_) cudaFree(workspace_);
@@ -1259,8 +1282,17 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         }
         if (ok) return;
 #endif
-        std::fprintf(stderr, "prefill gemm: a padded X (ldx %lld, K %lld) needs STRATA_PF_PAD's path\n",
-                     (long long) ldx, (long long) K);
+        // Nothing took a padded X: the padded product is the gfx11 matrix cores' (STRATA_PF_PAD asks
+        // strata_pf_padded_gemm_available() before padding now, so this is a stale producer or another card's
+        // activation).  Copy the rows unpadded and run the ordinary paths - the same products, the same bits - rather
+        // than ending the engine.
+        const uint16_t* Xu = unpad_x(X, T, K, ldx);
+        if (Xu != nullptr) {
+            native(Xu, ggml_type, W_blocks, Y, T, N, K, ldy, beta, 0);
+            return;
+        }
+        std::fprintf(stderr, "prefill gemm: a padded X (ldx %lld, K %lld) has no path on this card and could not be "
+                             "copied unpadded (no device memory)\n", (long long) ldx, (long long) K);
         std::exit(1);
     }
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
