@@ -249,5 +249,57 @@ class DownloadTotal(Base):
 
 
 
+class QuietStep(Base):
+    """Finding 5: setup step 6 (packing) prints nothing for minutes: the person sees the plain sentence and a 'still working' line."""
+
+    def slow(self, steps):
+        import time
+        for delay, line in steps:
+            time.sleep(delay)
+            yield line + "\n"
+
+    def run_steps(self, steps, heartbeat=0.3):
+        r = self.runner(family="qwen", model="Q2_0", vision="off", context=32768)
+        r.HEARTBEAT_S = heartbeat
+        seen = []
+        r.emit_cb = lambda ev: seen.append(ev.text)
+        proc = mock.Mock()
+        proc.stdout = self.slow(steps)
+        proc.wait.return_value = 1
+        with mock.patch.object(Runner, "_spawn", return_value=proc), mock.patch.object(Runner, "adopt_prepared_files", return_value=None):
+            with self.assertRaises(LaunchError):
+                r.ensure_model()
+        return seen
+
+    def test_a_silent_pack_step_says_what_it_does_and_that_it_is_still_going(self):
+        seen = self.run_steps([(0, "=== Step 5: Getting the model files ==="), (0, "all model files present"),
+                               (0, "=== Step 6: Preparing the model for Strata ==="),
+                               (0, "> python tools/iq_pack.py --gguf x --out y --experts-bin"), (1.6, "[X] stopped for the test")])
+        pack = [x for x in seen if x.startswith("Packing the experts into one file")]
+        self.assertTrue(pack, seen)
+        self.assertEqual(pack[0], "Packing the experts into one file for low-memory mode (one time)")
+        beats = [x for x in pack if "still working" in x]
+        self.assertGreaterEqual(len(beats), 2, seen)                    # a line every interval of silence
+        self.assertNotIn("Setup step 6", " ".join(seen))
+
+    def test_no_heartbeat_while_lines_keep_coming(self):
+        seen = self.run_steps([(0, "=== Step 6: Preparing the model for Strata ==="), (0, "> python tools/iq_pack.py --gguf x --out y --experts-bin")] +
+                              [(0.1, f"  layer {i}") for i in range(5)] + [(0, "[X] stopped")], heartbeat=2.0)
+        self.assertFalse([x for x in seen if "still working" in x])
+
+    def test_the_plain_printer_shows_each_heartbeat(self):
+        import io
+        from strata_cli.launch import cmd
+        from strata_cli.launch.runner import Event
+        buf = io.StringIO()
+        with mock.patch.object(cmd.sys, "stdout", buf):
+            emit = cmd._printer()
+            emit(Event("model", "Packing (still working, 30 s so far)"))
+            emit(Event("model", "Packing (still working, 60 s so far)"))
+            emit(Event("model", "Packing (still working, 60 s so far)"))
+        self.assertEqual(buf.getvalue().count("still working"), 2)
+
+
+
 if __name__ == "__main__":
     unittest.main()
