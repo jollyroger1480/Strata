@@ -1446,3 +1446,23 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
 }
 
 }  // namespace strata::kernels::cpu
+
+#if defined(_WIN32)
+// strata/platform/thread_name.hpp: the Windows half lives here, where <windows.h> is already included.  SetThreadDescription
+// (Windows 10 1607 and later) is looked up, not linked: older SDKs and toolchains lack the import.
+namespace strata::platform {
+void name_this_thread(const char* base, int index) {
+    char name[64];
+    if (index >= 0) std::snprintf(name, sizeof name, "%s-%d", base, index);
+    else std::snprintf(name, sizeof name, "%s", base);
+    using SetDesc = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+    static const SetDesc fn = (SetDesc) GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
+    if (fn == nullptr) return;
+    wchar_t wide[64];
+    int i = 0;
+    for (; name[i] != '\0' && i < 63; ++i) wide[i] = (wchar_t) (unsigned char) name[i];
+    wide[i] = L'\0';
+    (void) fn(GetCurrentThread(), wide);
+}
+}  // namespace strata::platform
+#endif
