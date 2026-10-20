@@ -1076,14 +1076,32 @@ def _minutes(seconds: float | None) -> str:
     return f"{int(seconds // 60)} min {int(seconds % 60)} s"
 
 
+SHORT_PROMPT_NOTE = ("short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not "
+                     "shown; read prompt speed from prompt-4k and prompt-16k")
+CAP_NOTE = ("Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the "
+            "time to the cap, not to an answer, and it has no first-answer time when it was still reasoning")
+
+
+def capped(doc: dict, phase: str, case: str) -> str:
+    """'k/n': how many of the case's measured requests stopped at the output cap."""
+    rows = [r for r in doc["requests"] if r["phase"] == phase and r["case_id"] == case]
+    return f"{sum(1 for r in rows if r['status'] == 'truncated')}/{len(rows)}"
+
+
+def prompt_cell(doc: dict, phase: str, case: str, digits: int = 1) -> str:
+    return "n/a" if case == "short" else _span(_find(doc, phase, case, "prompt_tps"), digits)
+
+
 def table_lines(doc: dict, phase: str, cases: tuple[str, ...]) -> list[str]:
-    head = ["Case", "Prompt tok/s", "Decode tok/s", "TTFT s", "Total s"]
+    head = ["Case", "Prompt tok/s", "Decode tok/s", "TTFT s", "Total s", "Capped"]
     rows = [head]
     for case in cases:
-        rows.append([case, _span(_find(doc, phase, case, "prompt_tps")), _span(_find(doc, phase, case, "decode_tps")),
-                     _span(_find(doc, phase, case, "ttft_s"), 2), _span(_find(doc, phase, case, "total_s"), 1)])
+        rows.append([case, prompt_cell(doc, phase, case), _span(_find(doc, phase, case, "decode_tps")),
+                     _span(_find(doc, phase, case, "ttft_s"), 2), _span(_find(doc, phase, case, "total_s"), 1),
+                     capped(doc, phase, case)])
     widths = [max(len(r[i]) for r in rows) for i in range(len(head))]
-    return ["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+    return (["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+            + ["  " + SHORT_PROMPT_NOTE + ".", "  " + CAP_NOTE + "."])
 
 
 def format_plain(doc: dict) -> str:
@@ -1167,12 +1185,13 @@ def report_markdown(doc: dict, redact=lambda text: text) -> str:
         "monotonic clock from dispatch to the first nonempty reasoning, answer or tool-call delta. No request was retried. "
         f"Time after the model loaded: {_minutes(run_block['required_duration_s'])}.", "",
         "## Results", ""]
-    lines += ["| Case | Prompt tok/s | Decode tok/s | TTFT s | First answer s | Total s |", "| --- | --- | --- | --- | --- | --- |"]
+    lines += ["| Case | Prompt tok/s | Decode tok/s | TTFT s | First answer s | Total s | Capped |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for case in PERFORMANCE_CASES:
-        lines.append(f"| {case} | " + " | ".join(
-            _span(_find(doc, "performance", case, m), d) for m, d in (("prompt_tps", 1), ("decode_tps", 1), ("ttft_s", 2),
-                                                                      ("first_answer_s", 2), ("total_s", 1))) + " |")
-    lines += ["", "Cells are median (min-max) n=samples.", "",
+        lines.append(f"| {case} | " + prompt_cell(doc, "performance", case) + " | " + " | ".join(
+            _span(_find(doc, "performance", case, m), d) for m, d in (("decode_tps", 1), ("ttft_s", 2),
+                                                                      ("first_answer_s", 2), ("total_s", 1)))
+            + f" | {capped(doc, 'performance', case)} |")
+    lines += ["", "Cells are median (min-max) n=samples. " + SHORT_PROMPT_NOTE[0].upper() + SHORT_PROMPT_NOTE[1:] + ". " + CAP_NOTE + ".", "",
               "| Phase | Planned | Completed | Truncated | Failed | Skipped |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
     for phase in PHASES:
         c = counts[phase]

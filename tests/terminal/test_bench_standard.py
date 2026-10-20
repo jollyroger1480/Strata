@@ -705,6 +705,24 @@ class RunTests(StandardBase):
         self.assertIn("Prompt tok/s", text)
         self.assertIn("1000.0 (1000.0-1000.0) n=3", text)
 
+    def test_the_summary_says_what_the_short_prompt_and_the_cap_mean(self):
+        doc, _ = self.run_standard()
+        for text in (bs.format_plain(doc), bs.report_markdown(doc)):
+            self.assertIn("Capped", text)
+            self.assertIn("not shown; read prompt speed from prompt-4k and prompt-16k", text)
+            self.assertIn("time to the cap, not to an answer", text)
+        short_row = next(line for line in bs.format_plain(doc).splitlines() if line.strip().startswith("short "))
+        self.assertIn("n/a", short_row)
+        self.assertNotIn("1000.0", short_row)
+        self.assertIn("0/3", short_row)
+        # the data keeps the short case's prompt rate: only the readable summaries leave it out
+        self.assertIsNotNone(self.summary(doc, "short", "prompt_tps"))
+        # a request that stopped at the cap is counted
+        record = next(r for r in doc["requests"] if r["id"] == "performance-prompt-4k-r1")
+        record["status"] = "truncated"
+        row = next(line for line in bs.format_plain(doc).splitlines() if line.strip().startswith("prompt-4k "))
+        self.assertTrue(row.rstrip().endswith("1/3"))
+
     def test_the_server_is_not_asked_for_anything_outside_the_protocol(self):
         self.run_standard()
         self.assertTrue(all(body["messages"] == corpus_specs()[rid]["messages"] for body, rid in zip(self.server.bodies, self.server.order)))
