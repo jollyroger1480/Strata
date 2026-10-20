@@ -366,11 +366,26 @@ def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int, *,
         raise UpdateError(f"the package could not be unpacked: {longpath.describe_oserror(exc)}", 6) from None
 
 
-def _free_space_check(root: Path, need: int) -> None:
+def _free_space_check(root: Path, need: int, ctx: "Context | None" = None, sha256: str = "", component: str = "") -> None:
+    """Stop only when the drive cannot hold the bytes that are still to be written (the package not yet downloaded plus its unpacked
+    size). The 1.15 margin is a guess at working room, not a need: below it the update warns and goes on. A resumed download's
+    partial file is already on the drive, so it is not counted a second time."""
     root.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(root).free
-    if free < need * SKEW_FREE_BYTES:
-        raise UpdateError(f"not enough free space in {root}: {free // (1 << 20)} MiB free, about {int(need * SKEW_FREE_BYTES) // (1 << 20)} MiB needed", 6)
+    have = 0
+    if ctx is not None and sha256:
+        try:
+            have = (updates_dir(ctx.components) / "partial" / f"{sha256[:16]}.part").stat().st_size
+        except OSError:
+            have = 0
+    real = max(need - have, 0)
+    drive = root.anchor or str(root)
+    if free < real:
+        raise UpdateError(f"not enough free space on {drive}: {free // (1 << 20)} MiB free, {real // (1 << 20)} MiB needed. "
+                          f"Free up some space on {drive} and run the update again", 6)
+    if free < real * SKEW_FREE_BYTES and ctx is not None:
+        ctx.say("warn", f"Little free space on {drive}: {free // (1 << 20)} MiB free for about {real // (1 << 20)} MiB. "
+                        "The update goes on and should fit; free up space if it stops.", component=component or "update")
 
 
 def _download(ctx: Context, state_name: str, url_ref: str, size: int, sha256: str, label: str, feed: feedmod.Feed) -> Path:
@@ -752,7 +767,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         return result
     root = ctx.components
     _warn_if_deep(ctx, ec.engine_dir(root) / folder_name(pkg), longpath.LONGEST_IN_PACKAGE.get(pkg.backend, longpath.LONGEST_IN_PACKAGE_DEFAULT) + 1)
-    _free_space_check(root, pkg.size + pkg.installed_bytes)
+    _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "engine")
     archive = _download(ctx, "engine", pkg.url, pkg.size, pkg.sha256, f"engine {pkg.label}", feed)
     # busy check after the long download: a model may have been started meanwhile; the verified archive is kept for the retry
     wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
@@ -918,7 +933,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         return result
     pkg = next(p for p in feed.control if p.platform == ctx.hardware["platform"])
     root = ctx.components
-    _free_space_check(root, pkg.size + pkg.installed_bytes)
+    _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "control")
     archive = _download(ctx, "control", pkg.url, pkg.size, pkg.sha256, f"Control {pkg.version}", feed)
     stage = new_stage(root, "c")
     try:
@@ -1008,7 +1023,7 @@ def update_app(ctx: Context, feed: feedmod.Feed) -> dict:
     if not key:
         raise UpdateError("this build has no app update key (update_keys.json app_minisign_public); the app installer cannot be verified, so it was not downloaded", 5)
     root = ctx.components
-    _free_space_check(root, entry["size"])
+    _free_space_check(root, entry["size"], ctx, entry["sha256"], "app")
     archive = _download(ctx, "app", entry["url"], entry["size"], entry["sha256"], f"Strata app {feed.app.version}", feed)
 
     def chunks():
