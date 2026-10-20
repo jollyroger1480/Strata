@@ -257,8 +257,10 @@ package and start through `strata launch`. Mapping:
 | `HOST` | not needed: the server listens on every address inside the container; choose where it is reachable with `-p` |
 | `LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT`, `CONFIG`, `REINSTALL` | ignored with a warning; use `STRATA_SET` for engine settings and `strata launch --help` for the rest |
 
-The old volume layout (`/data/config`, `/data/models`) is not read; the model files are found again if you point `MODEL_PATH` at
-the old model folder. The container name, the volume and the port can stay as they were.
+A volume from the older image is picked up: the first start moves `/data/models`, `/data/packs` and `/data/mtp` into
+`/data/Strata-data` (a rename inside the volume: nothing is copied or downloaded again, and the prepared pack is kept). The old
+`/data/config` is not read; the run settings are made again from the files. A folder you mounted yourself at one of those places
+is left alone: point `MODEL_PATH` at it. The container name, the volume and the port can stay as they were.
 
 ## Build it yourself
 

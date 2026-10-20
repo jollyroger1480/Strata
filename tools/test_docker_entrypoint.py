@@ -23,7 +23,7 @@ STUB = r"""#!/bin/sh
 # records every call; answers the few read-only queries the entrypoint makes
 echo "$*" >> "$STUB_LOG"
 case "$1 $2" in
-  "components engine") if [ "${STUB_ENGINE:-ok}" = ok ]; then echo '{"usable": true}'; else echo '{"usable": false}'; echo "no engine for this card" >&2; fi; exit 0 ;;
+  "components engine") if [ "${STUB_ENGINE:-ok}" = ok ]; then echo "{\"usable\": true, \"backend\": \"${STUB_BACKEND:-}\"}"; else echo '{"usable": false}'; echo "no engine for this card" >&2; fi; exit 0 ;;
 esac
 case "$*" in
   *"--list-presets --output json"*) if [ -n "${STUB_PRESET:-}" ]; then echo '{"presets": [{"name": "docker"}]}'; fi; exit 0 ;;
@@ -165,6 +165,63 @@ class Entrypoint(unittest.TestCase):
         self.wait_for("--show-key")
         self.stop(p)
         self.assertTrue((install / "strata-q2_0.json").exists())
+
+    def test_a_volume_of_the_older_image_is_moved_not_downloaded_again(self):
+        data = self.tmp / "data"
+        (data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS").mkdir(parents=True)
+        shard = data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf"
+        shard.write_text("weights")
+        (data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf.done").write_text("x")
+        (data / "packs" / "qwen3.8-flash-next-iq3_xxs").mkdir(parents=True)
+        (data / "packs" / "qwen3.8-flash-next-iq3_xxs" / "experts.bin").write_text("pack")
+        (data / "mtp" / "rt").mkdir(parents=True)
+        (data / "mtp" / "rt" / "experts.bin").write_text("mtp")
+        ino = shard.stat().st_ino
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        new = data / "Strata-data"
+        moved = new / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf"
+        self.assertEqual(moved.read_text(), "weights")
+        self.assertEqual(moved.stat().st_ino, ino)                          # renamed, not copied
+        self.assertTrue((moved.parent / "a-00001-of-00002.gguf.done").exists())
+        self.assertTrue((new / "packs" / "qwen3.8-flash-next-iq3_xxs" / "experts.bin").exists())
+        self.assertTrue((new / "mtp" / "rt" / "experts.bin").exists())
+        self.assertFalse((data / "models").exists())
+        self.assertIn("moved them into", out)
+
+    def test_a_file_already_in_the_new_place_is_never_overwritten(self):
+        data = self.tmp / "data"
+        (data / "models" / "t").mkdir(parents=True)
+        (data / "models" / "t" / "f.gguf").write_text("old")
+        (data / "Strata-data" / "models" / "t").mkdir(parents=True)
+        (data / "Strata-data" / "models" / "t" / "f.gguf").write_text("new")
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        self.stop(p)
+        self.assertEqual((data / "Strata-data" / "models" / "t" / "f.gguf").read_text(), "new")   # never overwritten
+        self.assertEqual((data / "models" / "t" / "f.gguf").read_text(), "old")
+
+    def test_run_settings_that_name_another_images_engine_folder_are_made_again(self):
+        install = self.tmp / "data" / "install"
+        install.mkdir(parents=True)
+        here = self.tmp / "opt" / "components" / "engine" / "0.1.46-cuda12"
+        here.mkdir(parents=True)
+        (here / "strata-vision").write_text("x")
+        gone = self.tmp / "opt" / "components" / "engine" / "0.1.46-cuda13"
+        (install / "strata-a.json").write_text('{"exe": "component:strata-engine", "vision": {"exe": "%s/strata-vision"}}' % gone)
+        (install / "strata-b.json").write_text('{"exe": "component:strata-engine", "vision": {"exe": "%s/strata-vision"}}' % here)
+        (install / "strata-c.json").write_text('{"exe": "component:strata-engine", "args": []}')
+        (install / "strata-bad.json").write_text("not json")
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        self.assertFalse((install / "strata-a.json").exists())
+        self.assertTrue((install / "strata-b.json").exists())
+        self.assertTrue((install / "strata-c.json").exists())
+        self.assertTrue((install / "strata-bad.json").exists())
+        self.assertIn("strata-a.json", out)
+        self.assertIn("does not have", out)
 
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,

@@ -69,6 +69,57 @@ for legacy in HOST LOW_RAM REINSTALL RESIDENT_BUDGET_GIB KV_STREAMING LAYER_SPLI
   [ -n "$v" ] && warn "$legacy is from the older image and is ignored here. See docs/DOCKER.md (\"From the older image\")."
 done
 
+# ---- a volume from the older (0.1.x) image: its models, packs and draft layer are in /data/models, /data/packs and /data/mtp.
+# This image keeps them in /data/Strata-data. Move them over (a rename inside one volume: instant, no copy, no download).
+# A folder that is its own mount (a bind mount of yours) is never touched.
+legacy_moved=""
+for d in models packs mtp; do
+  [ -d "/data/$d" ] || continue
+  grep -q " /data/$d " /proc/self/mountinfo 2>/dev/null && continue
+  [ -n "$(ls -A "/data/$d" 2>/dev/null)" ] || continue
+  mkdir -p "/data/Strata-data/$d" 2>/dev/null || continue
+  for item in "/data/$d"/* "/data/$d"/.[!.]*; do
+    [ -e "$item" ] || continue
+    name=${item##*/}
+    [ -e "/data/Strata-data/$d/$name" ] && continue
+    if mv "$item" "/data/Strata-data/$d/$name" 2>/dev/null; then legacy_moved="$legacy_moved $d/$name"
+    else warn "Could not move $item into /data/Strata-data/$d (the model is downloaded again unless you set MODEL_PATH=/data/$d/...)."; fi
+  done
+  rmdir "/data/$d" 2>/dev/null || true
+done
+[ -n "$legacy_moved" ] && say "Found model files from the older image in the volume and moved them into /data/Strata-data (no copy, nothing is downloaded again):$legacy_moved"
+
+# ---- run settings made by an image for another card or another engine version name that image's engine folder
+# (/opt/strata/components/engine/<package>/...): in this image that folder is not there, so the server would stop at the start. Drop
+# them; the next step writes them again from the model files, which are kept.
+for c in /data/install/strata-*.json; do
+  [ -f "$c" ] || continue
+  gone=$("$PYBIN" -c '
+import json, os, sys
+def walk(v):
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, dict):
+        for x in v.values():
+            yield from walk(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from walk(x)
+try:
+    cfg = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+except (OSError, ValueError):
+    sys.exit(0)
+for s in walk(cfg):
+    if s.startswith("/opt/strata/components/") and not os.path.exists(s):
+        print(s)
+        break
+' "$c" 2>/dev/null)
+  if [ -n "$gone" ]; then
+    say "The saved run settings $(basename "$c") name $gone, which this image does not have (made by an image for another card or engine version): making them again. The model files are kept."
+    rm -f "$c"
+  fi
+done
+
 # ---- is there an engine for this card?
 phase checking
 engine_json=$("$STRATA" components engine --output json 2>/dev/null || true)
@@ -87,9 +138,10 @@ fi
 
 # the card is found through sysfs even when no device file was passed in: say so now instead of failing when the engine starts
 backend=$(printf '%s' "$engine_json" | sed -n 's/.*"backend": *"\([a-z0-9]*\)".*/\1/p' | head -1)
+dev="${STRATA_DEV_DIR:-/dev}"
 case "$backend" in
-  hip)  [ -e /dev/kfd ] || { echo "[X] This is an AMD card, but /dev/kfd is not in the container. Add: --device /dev/kfd --device /dev/dri --group-add video --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
-  sycl) ls /dev/dri/renderD* >/dev/null 2>&1 || { echo "[X] This is an Intel card, but /dev/dri is not in the container. Add: --device /dev/dri --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+  hip)  [ -e "$dev/kfd" ] || { echo "[X] This is an AMD card, but /dev/kfd is not in the container. Add: --device /dev/kfd --device /dev/dri --group-add video --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+  sycl) ls "$dev"/dri/renderD* >/dev/null 2>&1 || { echo "[X] This is an Intel card, but /dev/dri is not in the container. Add: --device /dev/dri --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
 esac
 
 # ---- the API key
