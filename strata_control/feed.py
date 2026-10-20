@@ -375,5 +375,6 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
             fitting.append(pkg)
     if not fitting:
         return None, reasons
-    best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0"))))
+    best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
+                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1))
     return best, reasons
