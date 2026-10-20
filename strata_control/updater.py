@@ -72,9 +72,16 @@ class Busy(UpdateError):
 class TestStartFailed(UpdateError):
     __test__ = False                       # not a pytest class
 
+    #: reasons that say the graphics card or memory was busy, not that the engine is broken
+    BUSY = re.compile(r"timed?[ -]?out|out of memory|\boom\b|not enough (gpu |video |free )?memory|vram|memory allocation|"
+                      r"cudaerrormemory|device (is )?(busy|in use)|resource busy|no free (gpu|memory)", re.I)
+
     def __init__(self, label: str, reason: str):
+        self.busy = bool(self.BUSY.search(reason))
         super().__init__(f"The new engine {label} did not pass its test start ({reason}). It was not installed; "
-                         "your current engine is unchanged.", 6)
+                         "your current engine is unchanged."
+                         + (" The graphics card or memory looks busy: close programs that use the card (games, video, other models) "
+                            "and run `strata update` again." if self.busy else ""), 6)
         self.label = label
         self.reason = reason
 
@@ -476,6 +483,8 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
     else:
         report["status"] = "available"
     bad = (section.get("failed") or {}).get(offered.version)
+    if bad and _failed_mark_is_old(bad, ctx):
+        bad = None                                           # a failure is held against a version for a day, not for ever
     if report["status"] == "available" and not ctx.force:
         if bad and bad.get("manifest_sha256") == offered.manifest_sha256:
             report["status"] = "failed-before"
@@ -786,10 +795,11 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             smoke = runner(stage_root, staged, ctx)
         except TestStartFailed as exc:
             section = state.section("engine")
-            section.setdefault("failed", {})[pkg.version] = {
-                "manifest_sha256": pkg.manifest_sha256, "reason": exc.reason[:300],
-                "at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()}
-            state.history({"at": section["failed"][pkg.version]["at"], "action": "update-engine", "to": pkg.version,
+            at = (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()
+            if not exc.busy:                                 # a busy card says nothing about the engine: the next update tries again
+                section.setdefault("failed", {})[pkg.version] = {
+                    "manifest_sha256": pkg.manifest_sha256, "reason": exc.reason[:300], "at": at}
+            state.history({"at": at, "action": "update-engine", "to": pkg.version,
                            "from": before_installed.version if before_installed else None, "ok": False,
                            "detail": f"test start failed: {exc.reason[:200]}"})
             state.save()
@@ -924,6 +934,40 @@ def decide_control(feed: feedmod.Feed, ctx: Context, state: State) -> dict:
     return report
 
 
+CONTROL_VERSION_TIMEOUTS = (240, 360)       # seconds: antivirus scans a fresh python.exe on its first run, which can take minutes
+
+
+def _control_version(interpreter: str, entry: Path, stage: Path, ctx: Context, version: str):
+    """Run `--version` of the staged Control; once more, with more time, when the first try timed out, failed to start or said nothing."""
+    last_error = None
+    done = None
+    for attempt, timeout in enumerate(CONTROL_VERSION_TIMEOUTS):
+        try:
+            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(stage),
+                                  env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"},
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            last_error = None
+            if done.returncode == 0 and version in done.stdout:
+                return done
+        except (OSError, subprocess.SubprocessError) as exc:
+            last_error = exc
+        if attempt + 1 < len(CONTROL_VERSION_TIMEOUTS):
+            ctx.say("test", f"Control {version} did not answer yet (a virus scanner may be checking it); trying once more", component="control")
+    if last_error is not None:
+        raise TestStartFailed(f"Control {version}", f"{type(last_error).__name__}: {last_error}") from None
+    return done
+
+
+def _failed_mark_is_old(mark: dict, ctx: Context, hours: float = 24.0) -> bool:
+    try:
+        then = dt.datetime.fromisoformat(str(mark.get("at")))
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=dt.timezone.utc)
+        return (ctx.now or dt.datetime.now(dt.timezone.utc)) - then > dt.timedelta(hours=hours)
+    except (TypeError, ValueError):
+        return False
+
+
 def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     """Stage a newer Control bundle beside the running one, run it once (`--version`), and only then point the app and the
     terminal at it (``components/control/active.json``). The running Control is never modified."""
@@ -945,12 +989,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         python = stage / "python" / ("python.exe" if os.name == "nt" else "bin/python3")
         interpreter = str(python) if python.is_file() else sys.executable
         ctx.say("test", f"Test-starting Control {pkg.version}", component="control")
-        try:
-            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, timeout=120, cwd=str(stage),
-                                  env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"},
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise TestStartFailed(f"Control {pkg.version}", f"{type(exc).__name__}: {exc}") from None
+        done = _control_version(interpreter, entry, stage, ctx, pkg.version)
         if done.returncode != 0 or pkg.version not in done.stdout:
             raise TestStartFailed(f"Control {pkg.version}", f"--version said {done.stdout.strip()[:120]!r} (exit {done.returncode})")
         final = control_dir(root) / pkg.version
