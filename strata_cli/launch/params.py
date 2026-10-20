@@ -40,6 +40,7 @@ PLAIN = {
     "--suffix-draft": "Guess the next words from text already in the conversation.",
     "--port": "The network port the server listens on.",
     "--gpu": "Which graphics card to use.",
+    "--gpu-roles": "A role for each graphics card: main, helper or off.",
     "--gpus": "Which graphics cards to use together.",
 }
 _CODE = re.compile(r"\b[RTS]\d{1,2}\b[:,)]?\s*")

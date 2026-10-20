@@ -22,7 +22,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 1. **Start**: saved presets (name, model, context, parallel requests, tuned or not, last used) or "Set up from the beginning" or "Use model files I already have".
 2. **Model**: the catalog of the app and `setup.py` (one source), with download size, what it needs (graphics memory + RAM) and "fits / tight / does not fit this computer".
    A warning, never a block. The n-gram table stays on your SSD and is not counted. `o` = your own files (a folder or a .gguf; checked with the fingerprint table).
-   *(Cards: only with two or more usable graphics cards.)*
+   *(Cards: only with two or more usable graphics cards. Each card gets a role: M Main, H Helper, O Off, R back to the recommendation, D details. `--gpu-roles 1=main,0=helper` does the same from the command line; see [MULTI_GPU.md](MULTI_GPU.md).)*
 3. **Folder**: where model files are stored, free space shown. For a model that is already installed (also one the desktop app installed) it starts where the model is, says
    "Already downloaded" and lists only what is really missing with its size (the draft layer, about 5.2 GB; the picture reader, 0.9 GB). It never says "download the model" when only
    a helper file is missing.

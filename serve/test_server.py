@@ -1726,6 +1726,19 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_card_note_ties_the_engines_numbering_to_the_persons(self):
+        """The engine counts the cards it is given from 0, so GPU 1 reads "GPU 0 / CUDA0" in its log: one line says which is which."""
+        from serve.server import card_note, child_env
+        one = {"gpu": 1, "args": []}
+        self.assertIn("GPU 1", card_note(one, child_env(one)))
+        self.assertIn("GPU 0 / CUDA0", card_note(one, child_env(one)))
+        both = {"gpu": [1, 0], "args": [], "gpu_order": "as_given"}
+        line = card_note(both, child_env(both))
+        self.assertIn("GPU 1, then GPU 0", line)
+        self.assertIn("CUDA0, CUDA1", line)
+        for same in ({"gpu": 0, "args": []}, {"gpu": [0, 1], "args": [], "gpu_order": "as_given"}, {"args": []}, {"gpu": 1, "backend": "hip"}):
+            self.assertIsNone(card_note(same, child_env(same)), same)       # the numbers agree, or no card was chosen, or AMD (its own numbering)
+
     def test_card_order(self):
         """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
         measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""

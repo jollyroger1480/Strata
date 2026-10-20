@@ -88,6 +88,12 @@ def intel_gpus():
     return found
 
 
+def real_mem_have(mem_have, real_ram: float, fake_ram: float):
+    """setup.mem_have for the Intel path: the RAM it is given is the 1024 GB stand-in of setup's RAM rule, so a model that counts VRAM + RAM
+    (Gyro) would never warn; it gets the real RAM."""
+    return lambda model, ram, vram=0.0: mem_have(model, real_ram if ram >= fake_ram else ram, vram)
+
+
 def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
@@ -295,7 +301,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     if driver == "i915":
         # Arc A-series on i915 (the A750): the experts load into an ordinary RAM arena and the CPU computes the ones
         # the card does not hold; the n-gram table is kept in RAM (setup's rotational-disk rule) and no mirror is built.
-        if "--ple-io" not in args:
+        # Gyro: its n-gram table is half of the 58-92 GB file and stays on the SSD (read row by row); the RAM holds the
+        # experts' arena (24 GB for Gyro-S) and the CPU's work, so a table in RAM would not fit beside them on a 64 GB PC
+        gyro = "gyro" in (flag(args, "--native") or "").lower()
+        if "--ple-io" not in args and not gyro:
             args += ["--ple-io", "ram"]
         args += ["--vram-reserve-mib", reserve]
     else:
@@ -370,6 +379,7 @@ def install(argv) -> None:
         where = ("the experts the card does not hold are computed on the CPU" if alch
                  else "the experts are streamed into VRAM")
         msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB ({where})")
+        msg = msg.replace(f"({fake_ram:.0f} GB RAM +", f"({real_ram:.0f} GB RAM +").replace(f"you have {fake_ram:.0f} GB RAM", f"you have {real_ram:.0f} GB RAM")
         if re.match(r"\s+\S+\s+needs ~\d+ GB RAM:", msg):   # --check's CUDA verdicts: replaced by the Intel one
             m = msg.split()[0]
             d = S.MODELS.get(m, {})
@@ -399,6 +409,10 @@ def install(argv) -> None:
     S.build_engine_hip = build_engine_hip
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
+    # Gyro (mem_total) counts VRAM + RAM together and is the one family whose experts are NOT streamed from the file into VRAM: on
+    # an Arc they sit in the RAM arena and the CPU computes what the card does not hold.  Its memory warning ("needs 27.6 GB of VRAM +
+    # RAM together, you have ...", never a refusal) therefore reads the real RAM, not the 1024 GB above.
+    S.mem_have = real_mem_have(S.mem_have, real_ram, fake_ram)
 
     bench_tips = S.bench_tips
 

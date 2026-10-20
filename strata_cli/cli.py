@@ -160,7 +160,10 @@ def parser() -> argparse.ArgumentParser:
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
     models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
-    models_move.add_argument("to", metavar="NEW_FOLDER")
+    models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
+    models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
+    models_move.add_argument("--leave", action="store_true", help="give up an interrupted move: keep the old folder and remove the partial copies")
+    models_move.add_argument("--status", action="store_true", help="say whether a move was interrupted (changes nothing)")
     models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help="the folder the models are in now (default: the data folder in use)")
     models_move.add_argument("--install-dir", help="absolute path to a Strata installation whose run configs should follow the files")
     models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
@@ -613,6 +616,11 @@ def _models_move(a: argparse.Namespace) -> int:
     from strata_control import discovery, models, models_move as mm
     machine = a.output in ("json", "jsonl")
     old = Path(a.source) if a.source else discovery.data_dir(Path.home() / "Strata")[0]
+    if a.status or a.resume or a.leave:
+        return _models_move_unfinished(a, old)
+    if not a.to:
+        print("strata: name the new folder, or use --resume / --leave / --status for an interrupted move.", file=sys.stderr)
+        return 2
     new = Path(a.to).expanduser()
     if a.plan:
         result = mm.plan(old, new)
@@ -648,6 +656,51 @@ def _models_move(a: argparse.Namespace) -> int:
     else:
         print("\n" + ("Your models are moved." if summary["done"] else "Moving stopped. Nothing was lost."))
     return 0 if summary["done"] else 6
+
+
+def _interrupted_words(st: dict) -> str:
+    return (f"A move of your models was interrupted. They are in {st['from']} and {st['to']}. "
+            "Finish it: strata models move --resume. Leave it (keep the models in the first folder): strata models move --leave.")
+
+
+def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
+    """`strata models move --status | --resume | --leave`: the move the last run left unfinished (A move was interrupted. Finish it or leave it)."""
+    from strata_control import models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    st = mm.interrupted(old)
+    if a.status:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "interrupted": st}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(_interrupted_words(st) if st else "No move was interrupted.")
+        return 0
+    if not st:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "nothing", "message": "No move was interrupted.", "details": ""}}))
+        else:
+            print("strata: no move was interrupted.", file=sys.stderr)
+        return 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    if a.leave:
+        try:
+            result = mm.leave(Path(st["from"]), Path(st["to"]), configs=configs)
+        except mm.MoveError as e:
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}}, ensure_ascii=False))
+            else:
+                print(f"strata: {e} {e.details}".rstrip(), file=sys.stderr)
+            return 5
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "event": "result", "left": True, **result}, ensure_ascii=False))
+        else:
+            print(f"Done. Your models stay in {st['from']}; the partial copies in {st['to']} were removed.")
+        return 0
+    a.to, a.source, a.resume, a.status, a.leave = st["to"], st["from"], False, False, False
+    return _models_move(a)
 
 
 def _import_words(plan: dict) -> str:

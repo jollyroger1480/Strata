@@ -221,7 +221,7 @@ pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 
 Every card must be an RTX 20 series or newer with 8 GB or more. See [MULTI_GPU.md](MULTI_GPU.md).
 
 **Several AMD cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
-`--gpus 1,0` splits the model's layers across them, the first one the main card (numbers as setup lists them). A
+`--gpus 1,0` splits the model's layers across them, the faster card goes last and is the Main card (`--gpu-roles 1=main,0=helper` says it yourself; docs/MULTI_GPU.md; numbers as setup lists them). A
 split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
 
 ## Docker (Linux)

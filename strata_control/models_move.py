@@ -272,12 +272,6 @@ def _read_state(new: Path) -> dict:
         return {}
 
 
-def interrupted(data: Path) -> dict | None:
-    """The unfinished move recorded in a data folder (``models-move.json``), for 'A move was interrupted'."""
-    st = _read_state(data)
-    return st if st.get("state") == "running" else None
-
-
 def _write_state(new: Path, **fields) -> None:
     try:
         tmp = new / (STATE_FILE + ".tmp")
@@ -285,6 +279,50 @@ def _write_state(new: Path, **fields) -> None:
         os.replace(tmp, new / STATE_FILE)
     except OSError:
         pass
+
+
+def _save_state(old: Path, new: Path, **fields) -> None:
+    """The state goes in the new folder and, as a pointer, in the old one: the old folder stays the data folder until the move is done,
+    so that is where the next start looks."""
+    _write_state(new, **fields)
+    _write_state(old, **fields)
+
+
+def _clear_state(*folders: Path) -> None:
+    for f in folders:
+        _quiet_remove(Path(f) / STATE_FILE)
+
+
+def _same_path(a, b) -> bool:
+    try:
+        return _same(Path(a), Path(b))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def interrupted(data: Path) -> dict | None:
+    """The unfinished move recorded in the data folder (``models-move.json``), for 'A move was interrupted. Finish it or leave it'.
+
+    A move that is running right now (its process is alive) is not interrupted.  A stopped or failed move that left files in both folders is.
+    Returns ``{state, from, to, bytes}`` or None.
+    """
+    data = Path(data)
+    st = _read_state(data)
+    if st.get("state") not in ("running", "stopped", "failed") or not st.get("from") or not st.get("to"):
+        return None
+    if not _same_path(st["from"], data):                       # a pointer left in some other folder is not ours
+        return None
+    if not Path(st["from"]).is_dir():
+        return None
+    pid, token = st.get("pid"), st.get("token")
+    if st["state"] == "running" and isinstance(pid, int) and token and pid != os.getpid():
+        try:
+            from strata_control import procs
+            if procs.start_token(pid) == token:
+                return None
+        except Exception:
+            pass
+    return st
 
 
 def repoint_config(cfg_file: Path, old: Path, new: Path) -> bool:
@@ -366,8 +404,17 @@ def move(old: Path, new: Path, *, on_progress: Callable[[dict], None] | None = N
         todo[e.group].append(e)
     left = {g: len(v) for g, v in todo.items()}
     moved_groups: list[str] = []
-    state = {"state": "running", "from": str(old), "to": str(new), "started": now(), "bytes": total}
-    _write_state(new, **state)
+    before = _read_state(old)
+    if not (_same_path(before.get("from", ""), old) and _same_path(before.get("to", ""), new)):
+        before = {}
+    try:
+        from strata_control import procs
+        token = procs.start_token(os.getpid())
+    except Exception:
+        token = None
+    state = {"state": "running", "from": str(old), "to": str(new), "started": now(), "bytes": total, "pid": os.getpid(), "token": token,
+             "files": sorted({e.rel for e in entries} | set(before.get("files") or []))}
+    _save_state(old, new, **state)
     done_bytes = 0
     files_moved = 0
     last_emit = [0.0]
@@ -459,22 +506,68 @@ def move(old: Path, new: Path, *, on_progress: Callable[[dict], None] | None = N
                 repoint()
         repoint()
         state.update(state="done", finished=now())
-        _write_state(new, **state)
-        _quiet_remove(new / STATE_FILE)
+        _clear_state(old, new)
         return {"done": True, "stopped": False, "moved": moved_groups, "remaining": [], "bytes_moved": done_bytes, "total_bytes": total,
                 "files_moved": files_moved, "same_drive": same}
     except Stopped:
         repoint()
         state.update(state="stopped")
-        _write_state(new, **state)
-        _quiet_remove(new / STATE_FILE) if not moved_groups and not files_moved else None
+        if files_moved:
+            _save_state(old, new, **state)
+        else:
+            _clear_state(old, new)
         remaining = [g for g, n in left.items() if n > 0]
         return {"done": False, "stopped": True, "moved": moved_groups, "remaining": remaining, "bytes_moved": done_bytes, "total_bytes": total,
                 "files_moved": files_moved, "same_drive": same}
     except MoveError as err:
         repoint()
         state.update(state="failed", error=err.code)
-        _write_state(new, **state)
+        if files_moved:
+            _save_state(old, new, **state)
+        else:
+            _clear_state(old, new)
         err.summary = {"moved": moved_groups, "remaining": [g for g, n in left.items() if n > 0], "bytes_moved": done_bytes, "total_bytes": total,
                        "files_moved": files_moved}
         raise
+
+
+def leave(old: Path, new: Path, *, configs: list[Path] | None = None) -> dict:
+    """'Leave it': give up an unfinished move and keep the old folder as the complete one.
+
+    Only the files the move itself listed are touched.  A copy in the new folder whose original is still in the old one is removed; a file
+    that exists only in the new folder (its original went after a checked copy) is put back in the old folder, so nothing is lost.
+    ``.part`` files are removed and the run configs point at the old folder again.  Returns ``{removed, restored, bytes_removed}``.
+    """
+    old, new = Path(old), Path(new)
+    st = _read_state(old) or _read_state(new)
+    rels = [r for r in (st.get("files") or []) if isinstance(r, str) and r and ".." not in Path(r).parts and not Path(r).is_absolute()]
+    removed = restored = bytes_removed = 0
+    for rel in rels:
+        src, dst = old / rel, new / rel
+        _quiet_remove(Path(str(dst) + ".part"))
+        if not dst.exists():
+            continue
+        try:
+            size = dst.stat().st_size
+            if src.exists():
+                os.remove(dst)
+                removed += 1
+                bytes_removed += size
+            else:
+                src.parent.mkdir(parents=True, exist_ok=True)
+                if same_drive(old, new):
+                    os.replace(dst, src)
+                else:
+                    _copy_verified(dst, src, size, lambda: False, lambda n: None)
+                    os.remove(dst)
+                restored += 1
+        except OSError as e:
+            raise MoveError("io", f"Strata could not clean up {dst.name}.", f"{type(e).__name__}: {e}") from e
+        _prune(dst.parent, new)
+    for cfg in (configs or []):
+        try:
+            repoint_config(cfg, new, old)
+        except OSError:
+            pass
+    _clear_state(old, new)
+    return {"removed": removed, "restored": restored, "bytes_removed": bytes_removed}

@@ -1616,7 +1616,7 @@ def start_gpus(text):
 
 def choose_gpus(a, found) -> list:
     """Which cards this install uses: --gpus / --gpu, or asked when two or more can share the model (the two best
-    together recommended), else the supported card with the most VRAM.  Returns their numbers, the main one first."""
+    together recommended), else the supported card with the most VRAM.  Returns their numbers, in the engine order, the Main card last when roles are chosen."""
     if a.gpus:
         sel = parse_gpus(a.gpus, found)
         check_gpus(sel, found, yes=a.yes, named=str(a.gpus).strip().lower() != "all")
@@ -1631,34 +1631,66 @@ def choose_gpus(a, found) -> list:
     can = together_ok(found)
     if not can:
         return [single[0]["index"]]
-    # the owner's rule (strata_control/gpu_fit.py, shared with the app and `strata launch`): the model goes on the LARGEST card + RAM first;
-    # the second card is offered as a layer split and recommended only when the model does not fit one card (with RAM) or would be too tight
-    from strata_control import gpu_fit
-    mem = None
-    d = MODELS.get(getattr(a, "model", None) or "")
-    if d:
-        mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
-    cards = [{"index": g["index"], "name": g["name"], "vram_gb": g["vram_gb"], "usable": gpu_problem(g) is None} for g in found]
-    res = gpu_fit.options(mem if mem is not None else 0.0, ram_gb(), cards)
-    by_key = {o["key"]: o for o in res["options"]}
+    return choose_roles(a, found)
+
+
+def fallback_card(a, gpu, chosen):
+    """A model that cannot share its memory across cards keeps ONE card: the one setup always chose (the most VRAM, then the lower number),
+    not the Main card of the roles - unless the person named the roles (--gpu-roles), then their Main card."""
+    if getattr(a, "_roles_explicit", False) or not getattr(a, "_roles", None):
+        return gpu
+    return min(chosen, key=lambda g: (-round(g["vram_gb"]), g["index"]))
+
+
+def card_speeds() -> dict:
+    """{card number: SMs x max clock} of the NVIDIA cards (strata_control/gpu_roles.py); {} when it cannot say."""
+    from strata_control import gpu_roles
+    return gpu_roles.nvidia_speeds()
+
+
+def roles_cards(found) -> list:
+    sp = card_speeds()
+    return [{"index": g["index"], "name": g["name"], "vram_gb": g["vram_gb"], "usable": gpu_problem(g) is None, "vendor": "nvidia",
+             **({"speed": sp[g["index"]]} if g["index"] in sp else {})} for g in found]
+
+
+def choose_roles(a, found) -> list:
+    """Two or more cards can share the model: the recommended role of each (the best card Main, the others Helper, a card with 8 GB or less
+    Off) and ONE question, "Use these roles?".  n takes the person's own: 1=main,0=helper (cards left out are Off).  Returns the card
+    numbers in the engine's order (Main last) and keeps the roles in a._roles for the config (docs/MULTI_GPU.md)."""
+    from strata_control import gpu_roles
+    cards = roles_cards(found)
+    roles = dict(gpu_roles.recommend(cards)["roles"])
     say()
-    say("  Strata first tries the model on your largest GPU plus the PC's memory; a second GPU is offered as a layer split")
-    say("  (each card holds the experts of its own layers: more room, prompts read about 20% faster; details: docs/MULTI_GPU.md).")
-    if mem is None:
-        say("  (the model is chosen below; the numbers here are for the recommended size when you name one: --model)")
-    opts = [[g for g in found if g["index"] in o["cards"]] for o in res["options"]]
-    rec = next((i for i, o in enumerate(res["options"], 1) if o["recommended"]), 1) if mem is not None else 1
-    for i, o in enumerate(res["options"], 1):
-        say(f"  {i}) {o['summary'] if mem is not None else o['label']}" + ("   (recommended)" if i == rec else ""))
-        for n in o["notes"]:
-            say(f"       {n}")
+    say("  Strata recommends a role for each graphics card. Main does the last steps of every answer; a Helper holds part of the model;")
+    say("  Off leaves the card alone (a card with 8 GB or less starts Off). Details: docs/MULTI_GPU.md.")
+    by = {c["index"]: c for c in cards}
+    for i in sorted(roles):
+        say(f"    GPU {i + 1}  {gpu_roles.short_name(by[i]):<22} {by[i]['vram_gb']:>4.0f} GB   {roles[i].capitalize()}")
     for g in found:
-        if gpu_problem(g, together=True) is not None:
-            say(f"     (GPU {g['index']}, {g['name']}: {gpu_problem(g, together=True)})")
-    for g in split_short(can[:2]):                     # #448: the note for a second card that cannot lend a 4096-token chunk
-        say(f"     ({split_short_note(g)})")
-    pick = opts[int(ask("Which GPUs?", [str(i) for i in range(1, len(opts) + 1)], str(rec), a.yes or a.check)) - 1]
-    return [g["index"] for g in pick]
+        if gpu_problem(g, together=True) is not None and roles.get(g["index"]) == "off":
+            say(f"     (GPU {g['index'] + 1}, {g['name']}: {gpu_problem(g, together=True)})")
+    if ask("Use these roles?", ["y", "n"], "y", a.yes or a.check) == "n":
+        while True:
+            try:
+                text = input("Roles, e.g. " + ",".join(f"{i}={r}" for i, r in sorted(roles.items())) + " (cards you leave out are Off): ").strip()
+            except EOFError:
+                fail("input ended before a setup answer was received", "run setup in a terminal, or pass --yes to accept the recommended roles")
+            if not text:
+                break
+            try:
+                roles = gpu_roles.roles_from_text(text, cards)
+                break
+            except ValueError as e:
+                say(f"  {e}")
+    roles = gpu_roles.normalize(roles, cards)
+    lst = gpu_roles.order(roles, cards)
+    if not lst:
+        fail("every graphics card is Off", "setup needs one card for Main (the app and `strata launch` can start with all cards Off)")
+    a._roles = roles
+    a._roles_cards = cards
+    ok(gpu_roles.describe(roles, cards))
+    return lst
 
 
 def split_mmap(cfg: dict) -> bool:
@@ -7478,8 +7510,10 @@ def main() -> int:
     ap.add_argument("--gpu", help="one GPU, numbered as nvidia-smi numbers them (AMD: as setup lists them) (default: asked when several can be "
                                   "used; with --setup it is saved, when starting it is for that start only)")
     ap.add_argument("--gpus", help="several GPUs sharing one model, as nvidia-smi numbers them (AMD: as setup lists "
-                                   "them): \"0,2\", or \"all\" (every card that can); the first is the main one. "
-                                   "Saved, also when starting (see docs/MULTI_GPU.md)")
+                                   "them): \"0,2\", or \"all\" (every card that can); Strata puts the faster card last, "
+                                   "and the last card is the Main one. Saved, also when starting (see docs/MULTI_GPU.md)")
+    ap.add_argument("--gpu-roles", metavar="LIST", help="a role for each GPU: main, helper or off, e.g. 1=main,0=helper (cards you do not "
+                                                        "name are off). Main does the last steps of every answer. Saved (docs/MULTI_GPU.md)")
     ap.add_argument("--layer-split", help="with --gpus: where each later GPU's layers start (\"18\", \"16,32\"), one "
                                           "rising number per GPU after the first - not layers per card; default "
                                           "auto, placed from each GPU's free VRAM")
@@ -7588,6 +7622,27 @@ def main() -> int:
             a.gpu = int(a.gpu)
         else:
             ap.error(f"--gpu takes a GPU number as nvidia-smi numbers them, e.g. --gpu 1 (or --gpus 0,2), not {a.gpu!r}")
+    a._roles = None
+    if a.gpu_roles:
+        if a.gpu is not None or a.gpus:
+            ap.error("use --gpu-roles (a role for each card) or --gpu / --gpus (which cards), not both")
+        from strata_control import gpu_roles as GR
+        try:
+            named = GR.parse_roles(a.gpu_roles)
+        except ValueError as e:
+            ap.error(f"--gpu-roles: {e}")
+        on = [i for i, r in named.items() if r != "off"]
+        if not on:
+            ap.error("--gpu-roles: setup needs at least one card that is Main or Helper")
+        mains = [i for i, r in named.items() if r == "main"] or [sorted(on)[-1]]
+        helpers = sorted(i for i in on if i != mains[0])
+        a._roles_explicit = True
+        a._roles = {**{i: "off" for i in named}, **{i: "helper" for i in helpers}, mains[0]: "main"}
+        order = helpers + [mains[0]]
+        if len(order) > 1:
+            a.gpus = ",".join(str(i) for i in order)
+        else:
+            a.gpu = order[0]
     say("Strata - Qwen3.8-Flash-Next on a normal PC (a GPU + system RAM + CPU)")
     have = installed_configs()
     # A plain start of an installed model finds everything where it already is: it creates, moves and copies nothing
@@ -7781,7 +7836,7 @@ def main() -> int:
             gpu_table(found)
         sel = choose_gpus(a, found)                    # asked when two or more cards can share the model
         multi = sel if len(sel) > 1 else []
-        a.gpu = sel[0]                                 # the main GPU: the checks and the sizing below are its
+        a.gpu = sel[-1] if getattr(a, "_roles", None) else sel[0]   # the main GPU: the checks and the sizing below are its (roles: Main is last)
         GPU_PICK = a.gpu
         gpu = gpu_info(a.gpu)
         chosen = [gpu_info(i) for i in sel]
@@ -7983,7 +8038,8 @@ def main() -> int:
             warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
         if in_budget:
             budget = budget_choice(model, ram, a.resident_budget_gib)
-            if multi and not unsloth_together(a, model, ram, gpu, chosen):
+            if multi and not unsloth_together(a, model, ram, fallback_card(a, gpu, chosen), chosen):
+                gpu = fallback_card(a, gpu, chosen)
                 multi, sel, chosen = [], [gpu["index"]], [gpu]
             q4_split = bool(multi) and not resident_split()   # #498: on several GPUs without the RAM budget (#642: kept)
             if not q4_split:
@@ -7999,7 +8055,8 @@ def main() -> int:
              "the low-RAM mode")
     low_ram = low_ram_wanted(model, ram, a.low_ram)
     # #642: the engines from RESIDENT_SPLIT_ENGINE run the low-RAM mode on the chosen cards as on one (decided below)
-    if low_ram and multi and not resident_split() and not low_ram_together(a, model, ram, gpu, chosen):
+    if low_ram and multi and not resident_split() and not low_ram_together(a, model, ram, fallback_card(a, gpu, chosen), chosen):
+        gpu = fallback_card(a, gpu, chosen)
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one
     # before RESIDENT_SPLIT_ENGINE, #642)
@@ -8604,8 +8661,18 @@ def main() -> int:
     if multi:                                          # a layer split across these cards (the server adds the flag)
         cfg["gpu"] = multi
         cfg["layer_split"] = a.layer_split or "auto"
+        if getattr(a, "_roles", None):                 # roles chosen: the card list is Main last, in this order, and the server keeps it
+            cfg["gpu_order"] = "as_given"
         ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
         recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
+    if getattr(a, "_roles", None):                     # the roles themselves (strata_control/gpu_roles.py); "gpu" above is their mirror
+        final = cfg["gpu"] if isinstance(cfg.get("gpu"), list) else [cfg["gpu"]]      # what the checks above left (a model that cannot share keeps one card)
+        main = final[-1]
+        cfg["gpu_roles"] = {str(i): ("main" if i == main else "helper" if i in final else "off") for i in sorted(set(a._roles) | set(final))}
+        cfg["gpus_asked"] = True
+        cfg.pop("gpu_none", None)
+        if isinstance(cfg.get("gpu"), list) and len(final) > 1:
+            cfg["gpu_order"] = "as_given"
     if a.replicas is not None and a.replicas >= 2:      # data-parallel replicas (serve/replicas.py), opt-in
         cards = multi if multi else []
         if not cards or len(cards) % a.replicas:
