@@ -996,7 +996,7 @@ def linux_core_classes(sys_root: str = "/sys"):
     one under 90% of the largest - Turbo Boost Max 3.0 gives the "favored" P-cores a slightly higher capacity (1024
     against 1012), so "below the maximum" counted 2 of a Core Ultra 7 270K Plus's 8 P-cores."""
     pmu = linux_hybrid_pmu(sys_root + "/devices")
-    seen = {}
+    seen, top = {}, 0
     for cpu in sorted((Path(sys_root) / "devices" / "system" / "cpu").glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
         cap = cpu / "cpu_capacity"
         pkg, core = cpu / "topology" / "physical_package_id", cpu / "topology" / "core_id"
@@ -1004,15 +1004,17 @@ def linux_core_classes(sys_root: str = "/sys"):
             return None
         key = (pkg.read_text(encoding="utf-8").strip(), core.read_text(encoding="utf-8").strip()) \
             if pkg.exists() and core.exists() else cpu.name
-        if pmu is not None:
-            seen.setdefault(key, 0 if int(cpu.name[3:]) in pmu[1] else 1)
-        else:
-            seen.setdefault(key, int(cap.read_text(encoding="utf-8").strip()))
-    classes = list(seen.values())
-    if pmu is None:
-        top = max(classes, default=0)
-        classes = [1 if c * 10 >= top * 9 else 0 for c in classes]
-    return classes
+        num = int(cpu.name[3:])
+        capacity = int(cap.read_text(encoding="utf-8").strip()) if cap.exists() else 0
+        top = max(top, capacity)
+        if pmu is not None and num in pmu[1]:
+            seen.setdefault(key, None)           # a listed E-core (the atom list and, #3262, the LP-E list)
+        elif pmu is not None and num in pmu[0]:
+            seen.setdefault(key, False)          # a listed P-core
+        else:                                    # in no list (or no lists at all): its capacity decides
+            seen.setdefault(key, capacity)
+    # an E-core is under 90% of the largest capacity; the PMU lists (None: E, False: P) decide where they say
+    return [0 if c is None else 1 if c is False else (1 if c * 10 >= top * 9 else 0) for c in seen.values()]
 
 
 def cpulist(text: str) -> set:
@@ -1033,6 +1035,10 @@ def linux_hybrid_pmu(root: str = "/sys/devices"):
         e = cpulist((Path(root) / "cpu_atom" / "cpus").read_text(encoding="utf-8"))
     except OSError:
         return None
+    try:   # #3262: Meteor Lake / Arrow Lake-H list their LP-E cores in a third set, in neither of the two above
+        e |= cpulist((Path(root) / "cpu_lowpower" / "cpus").read_text(encoding="utf-8"))
+    except OSError:
+        pass
     return (p, e) if p and e else None
 
 
