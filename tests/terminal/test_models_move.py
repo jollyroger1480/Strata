@@ -52,6 +52,22 @@ class MoveCase(unittest.TestCase):
         """Another drive: the files are copied, whatever this machine's volumes are."""
         return mock.patch.object(mm, "same_drive", return_value=False)
 
+    def break_after(self, n):
+        """A copy that works n times, then fails: a move cut off part way."""
+        real, calls = mm._copy_verified, [0]
+
+        def flaky(*args, **kw):
+            calls[0] += 1
+            if calls[0] > n:
+                raise mm.MoveError("io", "cut off")
+            return real(*args, **kw)
+        return mock.patch.object(mm, "_copy_verified", side_effect=flaky)
+
+    def cut_off(self, n=1):
+        with self.copy_mode(), self.break_after(n):
+            with self.assertRaises(mm.MoveError):
+                self.run_move()
+
     def run_move(self, **kw):
         events = []
         summary = mm.move(self.old, self.new, on_progress=events.append, configs=[self.config], **kw)
@@ -222,13 +238,68 @@ class MoveTests(MoveCase):
         self.check_whole()
 
     def test_an_interrupted_move_is_remembered(self):
+        self.cut_off(1)
+        st = mm.interrupted(self.old)                                               # the old folder is still the data folder: it holds the pointer
+        self.assertEqual(st["to"], str(self.new))
+        self.assertEqual(st["state"], "failed")
+        self.assertEqual(mm.interrupted(self.base / "elsewhere"), None)
+        mm._write_state(self.old, state="running", pid=os.getpid() + 7, token=None, **{"from": str(self.old), "to": str(self.new)})
+        self.assertEqual(mm.interrupted(self.old)["state"], "running")
+
+    def test_a_move_that_is_running_now_is_not_interrupted(self):
+        from strata_control import procs
+        mm._write_state(self.old, state="running", pid=os.getpid() + 7, token="t", **{"from": str(self.old), "to": str(self.new)})
+        with mock.patch.object(procs, "start_token", return_value="t"):
+            self.assertIsNone(mm.interrupted(self.old))
+        with mock.patch.object(procs, "start_token", return_value=None):
+            self.assertIsNotNone(mm.interrupted(self.old))
+
+    def test_nothing_moved_leaves_nothing_to_ask_about(self):
+        self.cut_off(0)
+        self.assertIsNone(mm.interrupted(self.old))
+        self.assertFalse((self.new / mm.STATE_FILE).exists())
+
+    def test_finish_resumes_the_move(self):
+        self.cut_off(1)
+        st = mm.interrupted(self.old)
         with self.copy_mode():
-            with self.assertRaises(mm.MoveError):
-                with mock.patch.object(mm, "_copy_verified", side_effect=mm.MoveError("io", "x")):
-                    self.run_move()
-        self.assertEqual(mm.interrupted(self.new), None)                            # failed is not "running"
-        mm._write_state(self.new, state="running", **{"from": str(self.old), "to": str(self.new)})
-        self.assertEqual(mm.interrupted(self.new)["from"], str(self.old))
+            summary = mm.move(Path(st["from"]), Path(st["to"]), configs=[self.config])
+        self.assertTrue(summary["done"])
+        self.check_whole()
+        self.assertIsNone(mm.interrupted(self.old))
+        self.assertFalse((self.old / mm.STATE_FILE).exists() or (self.new / mm.STATE_FILE).exists())
+
+    def test_leave_keeps_the_old_folder_complete(self):
+        self.cut_off(1)
+        (self.new / "models/stray.gguf.part").write_bytes(b"x")                      # not listed by the move, but a .part of ours is
+        (self.new / "models/gyro-s").mkdir(parents=True, exist_ok=True)
+        (self.new / "models/gyro-s/a.gguf.part").write_bytes(b"cut")
+        theirs = self.new / "models/own/mine.gguf"                                    # a file of the person's, not part of the move
+        theirs.parent.mkdir(parents=True)
+        theirs.write_bytes(b"mine")
+        st = mm.interrupted(self.old)
+        with self.copy_mode():
+            result = mm.leave(Path(st["from"]), Path(st["to"]), configs=[self.config])
+        self.assertGreaterEqual(result["restored"] + result["removed"], 1)
+        for rel, data in self.files.items():
+            self.assertEqual((self.old / rel).read_bytes(), data, rel)
+            self.assertFalse((self.new / rel).exists(), rel)
+        self.assertEqual(list(self.new.rglob("*.part")), [(self.new / "models/stray.gguf.part")])
+        self.assertTrue(theirs.exists())
+        self.assertIsNone(mm.interrupted(self.old))
+        self.assertFalse((self.new / mm.STATE_FILE).exists())
+        cfg = json.loads(self.config.read_text())
+        self.assertTrue(all(str(self.new) not in str(v) for v in cfg.values()))
+        self.assertIn(str(self.old / "models/gyro-s/a.gguf"), cfg["args"])
+
+    def test_leave_after_a_crash_removes_the_duplicate(self):
+        self.cut_off(1)
+        dup = self.new / "models/coder/c.gguf"                                       # copied and renamed, original not yet removed
+        dup.parent.mkdir(parents=True, exist_ok=True)
+        dup.write_bytes(self.files["models/coder/c.gguf"])
+        mm.leave(self.old, self.new)
+        self.assertFalse(dup.exists())
+        self.assertTrue((self.old / "models/coder/c.gguf").exists())
 
     def test_configs_are_rewritten_only_for_files_that_are_there(self):
         self.config.write_text(json.dumps({"args": ["--native", str(self.old / "models/gone.gguf")]}))
@@ -264,6 +335,52 @@ class CommandLineTests(MoveCase):
         self.assertEqual(lines[-1]["event"], "result")
         self.assertTrue(lines[-1]["done"])
         self.assertTrue((self.new / "models/coder/c.gguf").exists())
+
+    def run_cli(self, *argv):
+        from strata_cli import cli
+        from strata_control import discovery
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.copy_mode(), mock.patch.object(discovery, "data_dir", return_value=(self.old, "settings")):
+            code = cli.main(["models", "move", *argv])
+        return code, out.getvalue()
+
+    def test_status_resume_and_leave(self):
+        code, text = self.run_cli("--status", "--output", "json")
+        self.assertEqual((code, json.loads(text)["interrupted"]), (0, None))
+        self.assertEqual(self.run_cli("--resume", "--output", "json")[0], 5)
+        self.cut_off(1)
+        code, text = self.run_cli("--status", "--output", "json")
+        self.assertEqual(json.loads(text)["interrupted"]["to"], str(self.new))
+        self.assertIn("--resume", self.run_cli("--status")[1])
+        code, text = self.run_cli("--leave", "--install-dir", str(self.install), "--output", "json")
+        self.assertEqual(code, 0, text)
+        self.assertTrue((self.old / "models/coder/c.gguf").exists())
+        self.cut_off(1)
+        code, text = self.run_cli("--resume", "--install-dir", str(self.install), "--output", "jsonl")
+        self.assertEqual(code, 0, text)
+        self.assertTrue([json.loads(l) for l in text.splitlines() if l.startswith("{")][-1]["done"])
+        self.assertTrue((self.new / "models/coder/c.gguf").exists())
+        self.assertFalse((self.old / "models/coder/c.gguf").exists())
+
+    def test_launch_says_it_in_one_line(self):
+        from strata_cli.launch import cmd
+        from strata_control import discovery
+        import contextlib
+        import io
+        self.cut_off(1)
+        with mock.patch.object(discovery, "data_dir", return_value=(self.old, "settings")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cmd._interrupted_move_notice()
+            self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+            self.assertIn("models move --resume", out.getvalue())
+            mm.leave(self.old, self.new)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cmd._interrupted_move_notice()
+            self.assertEqual(out.getvalue(), "")
 
     def test_the_cancel_file_stops_the_run(self):
         from strata_cli import cli
