@@ -943,7 +943,10 @@ print(r.choices[0].message.content)
   conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
   prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
   started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
-  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  error (503 before an answer, an error event in a stream). When the flagged window was one that reads the prompt's
+  last few tokens (the part after the last turn boundary, read through the verify windows, `--short-read`), the retry
+  reads its whole prompt through the batched path instead (#3465: a reporter's prompts failed in that tail every time and
+  passed with `--short-read 0`); the engine prints a line saying so. With replicas, the server forgets what that replica held.
   `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
   answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
   3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
