@@ -234,6 +234,79 @@ class Folders(Base):
         self.assertEqual(plan["issues"], ["incomplete_or_invalid_shard_set"])
 
 
+class Launcher(Base):
+    """`strata launch --model-path` and the TUI's "use my own files" (strata_cli/launch/runner.py, screens.py)."""
+
+    def runner(self, **kw):
+        from strata_cli.launch import settings as S
+        from strata_cli.launch.catalog import Catalog
+        from strata_cli.launch.runner import Runner
+        from tests.terminal.launch_support import HW_12
+        return Runner(S.LaunchSettings(**kw), catalog=Catalog(hardware=HW_12))
+
+    def test_a_folder_above_the_model_is_resolved_to_the_model_folder(self):
+        data = self.base / "Strata-data"
+        self.gsq(data / "models" / "q2_0", Q2, "Q2_0")
+        r = self.runner(model_path=str(data))
+        r.resolve_own_files()
+        self.assertEqual((r.s.family, r.s.model), ("qwen", "Q2_0"))
+        self.assertEqual(Path(r.s.model_path), data / "models" / "q2_0")
+        argv = r.setup_args()
+        self.assertEqual(Path(argv[argv.index("--gguf-dir") + 1]), data / "models" / "q2_0")
+
+    def test_a_named_model_in_a_folder_of_several_sizes_is_never_refused_here(self):
+        folder = self.gsq(self.base / "many", Q2, "Q2_0")
+        self.gsq(folder, IQ3XXS, "IQ3_XXS")
+        r = self.runner(model_path=str(folder), family="qwen", model="IQ3_XXS")
+        r.resolve_own_files()
+        self.assertEqual(Path(r.s.model_path), folder)               # setup picks the IQ3_XXS files by name, as in 0.1.45
+        self.assertEqual((r.s.family, r.s.model), ("qwen", "IQ3_XXS"))
+
+    def test_a_named_model_is_found_in_the_folder_that_holds_it(self):
+        repo = self.base / "repo"
+        self.gsq(repo / "Q2_0", Q2, "Q2_0")
+        self.gsq(repo / "IQ3_XXS", IQ3XXS, "IQ3_XXS")
+        r = self.runner(model_path=str(repo), family="qwen", model="IQ3_XXS")
+        r.resolve_own_files()
+        self.assertEqual(Path(r.s.model_path), repo / "IQ3_XXS")
+
+    def test_two_models_and_none_named_says_which_in_plain_words(self):
+        from strata_cli.launch.runner import LaunchError
+        repo = self.base / "repo"
+        self.gsq(repo / "Q2_0", Q2, "Q2_0")
+        self.gsq(repo / "IQ3_XXS", IQ3XXS, "IQ3_XXS")
+        r = self.runner(model_path=str(repo))
+        with self.assertRaises(LaunchError) as ctx:
+            r.resolve_own_files()
+        text = str(ctx.exception)
+        self.assertIn("more than one model", text)
+        self.assertIn("holds 2 models", text)
+
+    def test_a_linked_model_file_keeps_its_name(self):
+        snap = Links.make_links(self)
+        r = self.runner(model_path=str(snap / Q2[0]))
+        r.resolve_own_files()
+        self.assertEqual((r.s.family, r.s.model), ("qwen", "Q2_0"))
+        self.assertEqual(Path(r.s.model_path).name, Q2[0])           # not the blob's hash name
+
+
+class Words(unittest.TestCase):
+    def test_a_file_problem_names_the_file_and_says_why(self):
+        self.assertEqual(models.plain_issue("model-00002-of-00002.gguf: GGUF metadata is truncated"),
+                         "model-00002-of-00002.gguf: the file is cut short (a download or copy that did not finish)")
+        self.assertIn("shorter than its own header", models.plain_issue("a.gguf: GGUF tensor payload is shorter than its directory requires"))
+        self.assertIn("old format (version 2)", models.plain_issue("a.gguf: Strata metadata preflight requires GGUF v3"))
+        self.assertEqual(models.plain_issue("incomplete_or_invalid_shard_set"), "some parts of the model are missing")
+
+    def test_the_plan_carries_the_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / Q2[0]
+            f.write_bytes(gguf_bytes(["Q2_0"])[:60])
+            plan = models.plan_import(str(f))
+        self.assertTrue(plan["plain_issues"])
+        self.assertTrue(any(x.startswith(Q2[0] + ":") or x.startswith(Q2[1] + ":") for x in plan["plain_issues"]), plan["plain_issues"])
+
+
 class Table(unittest.TestCase):
     def test_every_size_setup_installs_is_in_the_table(self):
         """Setup can install it from --gguf-dir, so the checker in front of it must know it too (0.2.0 knew 7 of 10)."""

@@ -597,12 +597,9 @@ def _import_problem(plan: dict) -> str:
         issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
     words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
     text = f"These files cannot be used as they are: {words}."
-    holds = plan.get("folder_holds") or []
+    holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
-        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
-        other = [h["file"] for h in holds if not h.get("model")]
-        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
-            ". Point at the .gguf file of the one you want."
+        text += " " + holds
     return text
 
 
