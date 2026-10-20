@@ -301,5 +301,87 @@ class QuietStep(Base):
 
 
 
+class StoredTuning(Base):
+    """Finding 6: a run by flags (no saved preset) reuses the tuning result stored for the same model, choices and computer."""
+
+    IDENT = {"hardware": {"hard": {"gpus": ["RTX 5070"], "cpu": "test", "logical": 16, "ram_gib": 64}, "soft": {}},
+             "engine": {"backend": "cuda"}, "model": {"sha256_shard1": "abc"}}
+
+    def setUp(self):
+        super().setUp()
+        from strata_control import presets
+        self.presets = presets
+        self.cfg_path = self.base / "launch.json"
+        self.cfg = {"args": ["--native", "x/model-00001-of-00002.gguf", "--max-context", "32768", "--kv", "int8"], "model_name": "qwen"}
+        self.cfg_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.ident = json.loads(json.dumps(self.IDENT))
+        p = mock.patch.object(presets, "current_identity", lambda cfg, **kw: self.ident)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def store(self):
+        return self.presets.create({"settings": {"args": {}, "env": {}, "per_request": {}}, "outcome": "improved"},
+                                   choices=self.presets.choices_from_config(self.cfg), identity=self.ident, name="Q2 32K - Full speed")
+
+    def runner_for_tune(self, retune=False):
+        r = self.runner(family="qwen", model="Q2_0", tune="quick")
+        r.retune = retune
+        r.config_path = self.cfg_path
+        return r
+
+    def run_tune(self, r):
+        seen = []
+        r.emit_cb = lambda ev: seen.append(ev.text)
+        with mock.patch.object(Runner, "_spawn", side_effect=RuntimeError("the tuner started")) as spawn:
+            try:
+                r.tune()
+                started = False
+            except RuntimeError:
+                started = True
+        return seen, started
+
+    def test_nothing_stored_means_it_is_measured(self):
+        seen, started = self.run_tune(self.runner_for_tune())
+        self.assertTrue(started)
+
+    def test_a_stored_result_is_used_and_said(self):
+        saved = self.store()
+        r = self.runner_for_tune()
+        seen, started = self.run_tune(r)
+        self.assertFalse(started)
+        text = seen[-1]
+        self.assertIn("already tuned for this computer", text)
+        self.assertIn("Q2 32K - Full speed", text)
+        self.assertIn("--retune", text)
+        self.assertEqual(r.s.tuned_preset, saved["id"])
+        self.assertTrue(r.s.is_tuned)
+
+    def test_retune_measures_again(self):
+        self.store()
+        seen, started = self.run_tune(self.runner_for_tune(retune=True))
+        self.assertTrue(started)
+
+    def test_another_context_is_another_result(self):
+        self.store()
+        self.cfg["args"][3] = "65536"
+        self.cfg_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        seen, started = self.run_tune(self.runner_for_tune())
+        self.assertTrue(started)
+
+    def test_a_changed_graphics_card_is_measured_again(self):
+        self.store()
+        self.ident["hardware"]["hard"]["gpus"] = ["RTX 4090"]
+        seen, started = self.run_tune(self.runner_for_tune())
+        self.assertTrue(started)
+
+    def test_the_flag_asks_for_a_new_measurement_and_implies_quick(self):
+        code, out, err = run_cli(["launch", "--plan", "--output", "json", "--model", "q2_0", "--retune"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["plan"]["settings"]["tune"], "quick")
+        code, out, err = run_cli(["launch", "--help"])
+        self.assertIn("--retune", out)
+
+
+
 if __name__ == "__main__":
     unittest.main()
