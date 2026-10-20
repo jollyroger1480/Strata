@@ -15,6 +15,7 @@
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
 #   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
+#   GPU_ROLES     a role for each card, e.g. 1=main,0=helper (main, helper or off; cards you do not name are off; not together with GPU / GPUS)
 #   TUNE          quick | thorough | skip   (done once; RETUNE=1 tunes again)
 #   PORT          port inside the container (default 8080)
 #   API_KEY / API_KEY_FILE   the key clients must send. The server listens on every address inside the container, and Strata does
@@ -201,6 +202,13 @@ case "$gpus" in ""|all|ALL) ;; *)
     fi
   done ;;
 esac
+# GPU_ROLES=1=main,0=helper: a role for each card (main, helper or off; cards you do not name are off). `launch --gpu-roles` writes them into the
+# run settings at every start, so nothing saved has to be dropped.
+roles=$(printf '%s' "${GPU_ROLES:-}" | tr -d ' ')
+if [ -n "$roles" ]; then
+  case "$gpus" in ""|all|ALL) ;; *) die "Set GPU_ROLES or GPU / GPUS, not both." 2 ;; esac
+  set -- "$@" --gpu-roles "$roles"; have=1
+fi
 [ -n "${STRATA_SET:-}" ] && { for kv in $STRATA_SET; do set -- "$@" --set "$kv"; done; have=1; }
 [ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }
 

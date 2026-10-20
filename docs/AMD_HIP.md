@@ -46,7 +46,7 @@ the kernel's amdgpu driver (no ROCm install needed):
   no hipBLASLt kernels) the same role falls to a rocBLAS table, `tools/hip/<arch>-rocblas-<version>.txt`, which the
   engine picks for its own rocBLAS build when setup points it at the directory ([RDNA2](#rdna2-gfx1030)).
 - **Several cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
-  `./setup.sh --backend hip --gpus 1,0` splits the model's layers across them, the first one the main card (numbers
+  `./setup.sh --backend hip --gpus 1,0` splits the model's layers across them, the faster card goes last and is the Main card (`--gpu-roles 1=main,0=helper` says it yourself; docs/MULTI_GPU.md) (numbers
   as setup lists them; `--gpus all` = every supported card, the most VRAM first). Every chosen card must be one of the
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts

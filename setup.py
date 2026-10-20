@@ -1616,7 +1616,7 @@ def start_gpus(text):
 
 def choose_gpus(a, found) -> list:
     """Which cards this install uses: --gpus / --gpu, or asked when two or more can share the model (the two best
-    together recommended), else the supported card with the most VRAM.  Returns their numbers, the main one first."""
+    together recommended), else the supported card with the most VRAM.  Returns their numbers, in the engine order, the Main card last when roles are chosen."""
     if a.gpus:
         sel = parse_gpus(a.gpus, found)
         check_gpus(sel, found, yes=a.yes, named=str(a.gpus).strip().lower() != "all")
