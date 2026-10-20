@@ -6,6 +6,7 @@ import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { sizeGb } from '../lib/format';
 import { useNative } from '../lib/native';
 import { NativeDeleteDialog } from './NativeDelete';
+import { ModelsFolderCard } from './ModelsFolderDialog';
 import { nativeShortName } from '../lib/native-names';
 export function SettingsStorage() {
     const state = useStore(s => s);
@@ -77,7 +78,9 @@ export function SettingsStorage() {
             setPending(false);
         }
     }
+    const downloading = !!native?.jobs.some(j => j.state === 'running' && j.kind !== 'models-move') || !!library?.downloads.active || !!state.imageModels?.variants.some(v => v.state === 'downloading');
     return <>
+    {native?.available && native.downloadDirectory ? <ModelsFolderCard blocked={downloading}/> : null}
     <section className="storage-directory" aria-labelledby="storage-directory-title">
       <div className="storage-directory__heading"><span><Icon name="folder" size={18}/><strong id="storage-directory-title">{tr("Model directory")}</strong></span><Btn size="sm" disabled={!currentDirectory || directoryPending || pending} onClick={() => { setDirectory(currentDirectory); setEditing(!editing); setDirectoryError(''); setNotice(''); }}>{tr(editing ? 'Cancel' : 'Change directory')}</Btn></div>
       <p className="small muted">{tr("Your models are saved here. Use an existing folder to reuse supported downloads.")}</p>
