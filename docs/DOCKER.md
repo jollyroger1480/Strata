@@ -134,6 +134,9 @@ variable; the model and tuning stay in `/data`. Anything else: `docker exec stra
 What is in the volume `/data`: `Strata-data/` (model files, the prepared pack), `state/` (presets, tuning, the key), `install/`
 (run settings and logs), `home/`. The engine and the Terminal are in the image, so updating the image never touches your files.
 
+To keep it all on a big disk, mount a folder there instead of the named volume: `-v /mnt/big/strata:/data` (the folder must be writable by the
+container's user). Nothing large is written anywhere else in the container.
+
 ### Files you already have
 
 Mount the folder with the model's GGUF files read-only and name it: `-v /srv/gguf/IQ3_XXS:/models:ro -e MODEL_PATH=/models
