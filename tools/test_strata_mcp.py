@@ -663,6 +663,16 @@ class Helpers(unittest.TestCase):
         r = s.recommend({"ram_gb": 64, "gpus": [{**gpu[0], "vram_gb": 12.0}], "cpu": {"avx2": True}})
         self.assertEqual(r["context"], 32768)
 
+    def test_a_pick_that_reads_from_the_ssd_says_so(self):
+        # #3425: 32 GB RAM + 16 GB VRAM is the 48 GB tier; about 11 GB of IQ3_XXS would come from the SSD
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        r = s.recommend({"ram_gb": 31.9, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertTrue(any("read from the SSD" in n for n in r["notes"]), r["notes"])
+        roomy = s.recommend({"ram_gb": 64, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertFalse(any("read from the SSD" in n for n in roomy["notes"]), roomy["notes"])
+
 
 class PhysicalCores(unittest.TestCase):
     """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""

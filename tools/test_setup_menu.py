@@ -153,7 +153,7 @@ class UnslothDefaultEnv(unittest.TestCase):
 class EnginePlaceholders(unittest.TestCase):
     def test_every_engine_minimum_is_this_release(self):
         self.assertEqual(setup.NVFP4_ENGINE, (0, 1, 44))
-        self.assertEqual(setup.MIN_ENGINE, (0, 1, 45))
+        self.assertEqual(setup.MIN_ENGINE, (0, 1, 46))
         for m in ("UD-Q5_K_XL", "UD-Q6_K_XL", "NVFP4", "NVFP4-NVIDIA"):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
         # No minimum may name an engine newer than this tree (a placeholder for a release that does not exist yet would make setup

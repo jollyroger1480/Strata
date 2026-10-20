@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import re
 import shutil
 import subprocess
@@ -382,6 +383,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _hash_settled(path: Path, digest: str) -> str | None:
+    """The file's SHA-256, read again once when the first read fails or differs: a file that was just unpacked or is
+    being scanned by a virus checker can read short or locked for a moment, and a failure must not be kept (#3488)."""
+    actual = None
+    for attempt in range(2):
+        try:
+            actual = _sha256(path)
+        except OSError:
+            actual = None
+        if actual == digest:
+            break
+        if attempt == 0:
+            time.sleep(0.5)
+    return actual
+
+
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
     the entrypoint is hashed (sizes are always checked)."""
@@ -401,8 +418,11 @@ def verify(component: EngineComponent, *, full: bool = False) -> None:
             raise IntegrityProblem(f"{rel} resolves outside the component folder")
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
-        if (full or rel == component.entrypoint) and _sha256(target) != digest:
-            raise IntegrityProblem(f"{rel} does not match its recorded SHA-256")
+        if full or rel == component.entrypoint:
+            actual = _hash_settled(target, digest)
+            if actual != digest:
+                raise IntegrityProblem(f"{rel} does not match its recorded SHA-256 (expected {digest[:12]}, "
+                                       f"found {actual[:12] if actual else 'unreadable'})")
     if os.name != "nt" and not os.access(component.exe, os.X_OK):
         raise IntegrityProblem(f"{component.entrypoint} is not executable")
 
@@ -485,9 +505,79 @@ WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x19
 _WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
+def gfx_from_name(name: str) -> str:
+    """The AMD architecture a card's marketing name implies ("" when the name says nothing): the fallback when the PCI device id is
+    not in the table. Only names Strata knows a gfx for; an integrated Radeon with no supported build still maps (it then simply
+    fits no package)."""
+    text = re.sub(r"\s+", " ", str(name or "")).upper()
+    if "AMD" not in text and "RADEON" not in text and "RYZEN" not in text:
+        return ""
+    if re.search(r"\b(?:8060S|8050S)\b", text) or "RYZEN AI MAX" in text:
+        return "gfx1151"
+    if re.search(r"\bR9700\b|\bR97\d\d\b|\bAI PRO R97", text) or re.search(r"\bRX 9070\b", text):
+        return "gfx1201"
+    if re.search(r"\bRX 906\d\b|\bR96\d\d\b|\bAI PRO R96", text):
+        return "gfx1200"
+    found = re.search(r"\b(?:RX |W)(7[5-9]\d\d)\b", text)
+    if found:
+        series = int(found.group(1)) // 100
+        return {79: "gfx1100", 78: "gfx1101", 77: "gfx1101", 76: "gfx1102", 75: "gfx1102"}[series]
+    if re.search(r"\b(?:780M|760M|740M)\b", text):
+        return "gfx1103"
+    if re.search(r"\b(?:880M|890M)\b", text):
+        return "gfx1150"
+    if re.search(r"\b860M\b", text):
+        return "gfx1152"
+    found = re.search(r"\bRX (6\d{3})\b", text)
+    if found:
+        number = int(found.group(1))
+        if number >= 6800:
+            return "gfx1030"
+        if number in (6700, 6750) or "6700 XT" in text:
+            return "gfx1031"
+        if 6600 <= number < 6700:
+            return "gfx1032"
+        if number in (6500, 6400):
+            return "gfx1034"
+    return ""
+
+
+def _windows_adapters_cim() -> list[dict]:
+    """Second source when the registry key lists nothing: PowerShell's Win32_VideoController (PNPDeviceID has VEN_/DEV_). It can fail for
+    a limited account, so every failure is an empty answer."""
+    if os.name != "nt":
+        return []
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if not shell:
+        return []
+    try:
+        done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                               "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
+                              capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in done.stdout.splitlines():
+        match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", line, re.I)
+        if not match:
+            continue
+        parts = line.split("|")
+        ram = int(parts[2]) if len(parts) > 2 and parts[2].strip().isdigit() else 0
+        found.append({"vendor": match.group(1).lower(), "device": int(match.group(2), 16),
+                      "name": parts[1].strip() if len(parts) > 1 else "",
+                      "vram_gb": (ram / 2 ** 30) if ram > 0 else 0.0})
+    return found
+
+
 def windows_display_adapters() -> list[dict]:
-    """The display adapters Windows has a driver for (the display-class registry key, readable without admin and without running
-    anything): {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name", "vram_gb"}. Empty off Windows or when it cannot be read."""
+    """The display adapters Windows has a driver for: the display-class registry key (readable without admin and without running
+    anything), then Win32_VideoController when the key lists nothing: {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name",
+    "vram_gb"}. Empty off Windows or when neither can be read."""
+    return _windows_display_adapters_registry() or _windows_adapters_cim()
+
+
+def _windows_display_adapters_registry() -> list[dict]:
     found: list[dict] = []
     try:
         import winreg
@@ -534,6 +624,11 @@ def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
             continue
         device = adapter.get("device")
         arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
+        if not arch and device not in WIN_AMD_IGPU_IDS:
+            guess = gfx_from_name(adapter.get("name", ""))              # a card whose id is not in the table: its name says
+            if guess in ("gfx1103", "gfx1150", "gfx1152"):               # (those are integrated Radeons)
+                continue
+            arch = guess
         if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
             continue                                                    # an integrated Radeon (512 MB of carve-out)
         cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})

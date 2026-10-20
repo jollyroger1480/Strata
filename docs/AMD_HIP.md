@@ -145,7 +145,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
 - **Detection:** setup reads the display adapters Windows lists (their PCI ids; the VRAM size from the display
   driver's registry entry). An integrated Radeon is listed as not supported, except the Ryzen AI Max "Strix Halo" (Radeon 8060S / 8050S / 8040S, gfx1151: [STRIX_HALO.md](STRIX_HALO.md)); a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is named as what it is and not supported (on Linux the 780M / 760M has an opt-in build: [RADEON_780M.md](RADEON_780M.md)).
 - **Engine (0.2.0 and later):** the installers and `strata update` use the engine packages in [Ready-made packages](#ready-made-packages-020); the zip described next is the START-HERE route of 0.1.x.
-- **Engine (START-HERE, 0.1.x):** the ready-made `strata-windows-x64-hip.zip` from the release (built by `tools\hip\build_windows.bat`
+- **Engine (START-HERE, 0.1.x):** the ready-made engine package for your card, fetched from the signed update feed (releases from 0.2 carry no flat `strata-windows-x64-hip.zip`; that zip is what `build_windows.bat` makes for a self-build) (built by `tools\hip\build_windows.bat`
   for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201, gfx1030 and, from 0.1.40, gfx1151 (Strix Halo, unvalidated on Windows)) goes into `engine\`. It carries the ROCm libraries the
   engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
   amd_comgr and the Microsoft C++ runtime; ROCm 10.2.0a20260930 from AMD's TheRock builds, licenses in
@@ -575,6 +575,17 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     Q2_0 fused experts x1.28 / x1.19, both x1.73 / x1.79. IQ3_XXS 32 GB, 5 pairs (only the attention is new): 4K 1,369 -> 1,436 (the base starts in a 1,170 or a
     1,370 mode), 20K 1,576 -> 1,997 (x1.27). The identity gate with both switched off (STRATA_HIP_WMMA=0, STRATA_PF_FUSED=0): 10 of 10 prompts and the
     4K / 20K residual dumps identical on both packs.
+  - **`STRATA_PF_GEMM` / `STRATA_PF_PAD` are gfx11 only** (0.1.46): their product is `strata_pf_gemm_f16_ld`,
+    built into the gfx11 matrix-core block of `wmma_gemm.cu`, so an RDNA4 card runs neither. Until 0.1.46 the padded
+    half was worse than inert: `STRATA_PF_PAD=1 STRATA_PF_GEMM=1` let the two K 6144 producers write row stride 6,208
+    into a GEMM that only the gfx11 kernel takes, and `Gemm::native` ended the engine (`prefill gemm: a padded X (ldx
+    6208, K 6144) needs STRATA_PF_PAD's path`, exit code 1 - under `serve/` an engine restart loop per request).
+    Measured on an RX 9070 (gfx1201, 16 GB, system ROCm 7.2.4, kernel 7.2.11, 31 GiB RAM, Coder IQ1_M): 3 of 3 starts
+    exited that way at `--vram-reserve-mib` 700 and 1,536, so it was not the VRAM guard. Now the producer asks
+    `strata_pf_padded_gemm_available()` and does not pad where no kernel reads the stride (one line at the first prompt),
+    and `Gemm::native` copies a padded X's rows unpadded and runs the ordinary paths instead of exiting - checked with
+    the gate forced off on that card: 4K prompt answers byte-identical to the unpadded run, no exit. `STRATA_PF_GEMM=1`
+    alone is inert there too (4K 1,247 against 1,243 tok/s, 8K 1,330 against 1,321, medians of 3 starts, i.e. noise).
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Pictures:** the card's reader (`strata-vision-hip`) is measured on an R9700 (gfx1201): 57 ms for a 260-token picture and 0.40 s for a

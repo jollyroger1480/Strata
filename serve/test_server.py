@@ -1772,6 +1772,71 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 
+    def test_igpu_is_never_the_last_stage(self):
+        """Strix Halo (gfx1151, BIOS carve-out up to 96 GB) beside an R9700 (gfx1201, 32 GB): the #1576 memory guard used to keep the
+        iGPU LAST (head, draft layer, verify).  Built-in graphics goes first, the cards with memory of their own follow."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "backend": "hip", "args": []}
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        speeds = {0: 80 * 2900.0, 1: 128 * 2350.0}
+        self.assertEqual(ordered_gpus(cfg, speeds, {0: 65536, 1: 32768}, arch), [0, 1])           # carve-out 64 GB > 32 GB: still first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, {0: 65536, 1: 32768}, arch), [0, 1])   # given R9700 first: iGPU moves first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, None, arch), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "gpu_order": "as_given"}, speeds, None, arch), [1, 0])   # the person's order stays
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "layer_split": "24"}, speeds, None, arch), [1, 0])
+        # two cards of their own plus the iGPU: iGPU first, then the two by speed (faster last)
+        three = {"gpu": [1, 0, 2], "backend": "hip", "args": []}
+        arch3 = {0: "gfx1151", 1: "gfx1201", 2: "gfx1100"}
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 20.0}, None, arch3), [0, 2, 1])
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 30.0}, None, arch3), [0, 1, 2])   # equal cards keep their order
+        # no integrated chip, or only integrated chips: the old rule
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 1.0, 1: 2.0}, None, {0: "gfx1201", 1: "gfx1201"}), [0, 1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 2.0, 1: 1.0}, None, {0: "gfx1151", 1: "gfx1151"}), [1, 0])
+
+    def test_igpu_split_warning(self):
+        from serve.server import igpu_split_warning
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        line = igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, arch)
+        self.assertIn("GPU 0 is built-in graphics", line)
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1]}, arch))              # one card
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0]}, arch))
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1, 2]}, {1: "gfx1201", 2: "gfx1201"}))
+        self.assertIsNone(igpu_split_warning({"backend": "cuda", "gpu": [0, 1]}, arch))          # NVIDIA: not this rule
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, {0: "gfx1151", 1: "gfx1103"}))   # only integrated chips
+
+    def test_kfd_archs_and_engine_nice(self):
+        import tempfile
+        from serve.server import engine_nice, hip_gpu_archs
+        with tempfile.TemporaryDirectory() as d:
+            for n, simd, ver in ((0, 0, 0), (1, 80, 110501), (2, 128, 120001)):
+                os.makedirs(os.path.join(d, str(n)))
+                with open(os.path.join(d, str(n), "properties"), "w") as f:
+                    f.write(f"simd_count {simd}\nmax_engine_clk_fcompute 2000\ngfx_target_version {ver}\n")
+            self.assertEqual(hip_gpu_archs(root=d), {0: "gfx1151", 1: "gfx1201"})
+        self.assertIsNone(hip_gpu_archs(root="/nonexistent/kfd"))
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        self.assertEqual(engine_nice({}, arch, "linux"), 5)                            # built-in Radeon on the PC
+        self.assertEqual(engine_nice({}, {0: "gfx1201"}, "linux"), 0)                  # cards only: unchanged
+        self.assertEqual(engine_nice({}, arch, "win32"), 0)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "0"}, arch, "linux"), 0)   # the off switch
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "9"}, {0: "gfx1201"}, "linux"), 9)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "x"}, arch, "linux"), 0)
+
+    def test_picture_reader_not_on_the_igpu(self):
+        """The picture reader runs on the first visible card; with a split that starts on the iGPU it must use a card of its own."""
+        from serve.server import vision_env
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        cfg = {"backend": "hip", "gpu": [0, 1], "vision": {"exe": "v"}}
+        env = {"HIP_VISIBLE_DEVICES": "0,1", "PATH": "x"}
+        self.assertEqual(vision_env(cfg, env, arch)["HIP_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["HIP_VISIBLE_DEVICES"], "0,1")                            # the engine's own environment is not touched
+        self.assertEqual(vision_env({**cfg, "vision": {"exe": "v", "cuda_device": 0}}, env, arch)["HIP_VISIBLE_DEVICES"], "0")   # asked: kept
+        for e in ({"HIP_VISIBLE_DEVICES": "1"}, {"HIP_VISIBLE_DEVICES": "0"}, {}):
+            self.assertIs(vision_env(cfg, e, arch), e)                                 # one card: unchanged
+        two = {"HIP_VISIBLE_DEVICES": "0,1"}
+        self.assertIs(vision_env(cfg, two, {0: "gfx1201", 1: "gfx1201"}), two)         # no integrated chip
+        self.assertIs(vision_env(cfg, two, {0: "gfx1151", 1: "gfx1103"}), two)         # nothing with memory of its own
+
     def test_kfd_scores(self):
         """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
         import tempfile

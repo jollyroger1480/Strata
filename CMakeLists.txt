@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.46.2 LANGUAGES CXX)
+project(strata VERSION 0.1.46.3 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -992,6 +992,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(iq_multi_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(iq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
+  # the Gyro trellis decode kernels (TQ2_T / TQK6 / TQK7) on synthetic blocks: decode-once vs per-column bitwise, output
+  # checksums to compare two builds byte for byte, --bench for timings (GPU, no model)
+  add_executable(tq_pascal_bench src/kernels/tq_pascal_bench.cpp)
+  target_include_directories(tq_pascal_bench PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(tq_pascal_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME tq_pascal_bench COMMAND tq_pascal_bench)
   set_tests_properties(iq_multi_parity PROPERTIES ENVIRONMENT "STRATA_KQ_SPLIT=1")   # the Q4_K / Q5_K / Q8_0 Split path against the old kernels
   # the same Split path on the other routes it can meet: the generic multi kernels (no V2K) and the fused gate/up + SwiGLU kernel, and the sub-16-row
   # gate/up route switched off (a K-quant row has 160 dots, not the 80 the sub-16 rows assume: STRATA_KQ_SPLIT=1 must stay bitwise on all of them)
@@ -1407,6 +1413,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
   add_test(NAME arch_defaults_test COMMAND arch_defaults_test)
+  add_executable(uma_cache_test src/core/uma_cache_test.cpp)
+  target_include_directories(uma_cache_test PRIVATE include)
+  add_test(NAME uma_cache_test COMMAND uma_cache_test)
   add_executable(suffix_drafter_test src/spec/suffix_drafter_test.cpp)
   target_link_libraries(suffix_drafter_test PRIVATE strata_spec)
   add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)
@@ -2115,6 +2124,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # where the workers are placed (one per physical core by default) and --pool-cores (real pools, no model)
+  add_executable(pool_cores_test src/kernels/cpu/pool_cores_test.cpp)
+  target_link_libraries(pool_cores_test PRIVATE strata_kernels_cpu)
+  add_test(NAME pool_cores_test COMMAND pool_cores_test)
   # the default CPU expert worker count on mock CPUs (8c/16t, 16c/32t, 64c/128t, 2-socket 128c/256t, ...)
   add_executable(pool_plan_test src/kernels/cpu/pool_plan_test.cpp)
   target_include_directories(pool_plan_test PRIVATE include)

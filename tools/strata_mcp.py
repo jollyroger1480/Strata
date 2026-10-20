@@ -1151,6 +1151,15 @@ class Strata:
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
                                                           "RAM)"}
         ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
+        # #3425: the tiers count RAM + VRAM together, but the desktop keeps about 10 GB of the RAM and the card keeps ~6 GB for
+        # its dense weights, so a PC at the floor of its tier reads part of the experts from the SSD at every answer.  Said
+        # plainly beside the pick (the same arithmetic as the app's "This computer" card); the pick itself stays the owner's tier.
+        arena = float(models[model].get("arena_gb") or 0)
+        spill = arena - max(0.0, tvram - 6.0) - max(0.0, ram - 10.0)
+        if arena and spill >= 4.0:
+            notes.append(f"about {spill:.0f} GB of {model} would be read from the SSD while answering (this PC's RAM leaves about 10 GB "
+                         "for the system and the card holds the rest): expect a few tokens per second on a SATA or USB drive, more "
+                         "on a fast NVMe. A smaller size fits better; it is a recommendation, every size stays a choice")
         if vram < 11:
             notes.append("less than 12 GB of VRAM: it runs, but slowly (most experts stay on the CPU)")
         if hw.get("cpu", {}).get("avx2") is False:      # #623: a warning, not a stop (setup compiles for it)
