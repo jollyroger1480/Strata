@@ -1883,6 +1883,61 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
     // codebook staging above is paid once for several chunks (the launch shrinks the grid to match); every other
     // launch has one chunk per block and this is the single pass it always was
     constexpr bool kRowLoop = kTqType<TG> && STAGE_GRID;
+    if constexpr (kRowLoop) {
+        // cc 6.0 trellis gate/up: the group's entries (GRP_NC at a time) are copied once to shared memory by the block, and the
+        // block's row chunks all apply them from there: the apply reads each entry's q8_1 block with five 4-byte loads per
+        // lane, which from global memory is what an extra entry costs on this card.  The same words, the same operations
+        // in the same order (row_dot_multi), so the same sums.
+        if (xb <= 80) {
+            __shared__ uint32_t s_x[GRP_NC * 80 * 9];
+            const block_q8_1* xs = reinterpret_cast<const block_q8_1*>(s_x);
+            for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+                const uint8_t* gp = (const uint8_t*) grp_ptr[g];
+                const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                for (int e = e0; e < e1; e += GRP_NC) {
+                    const int n = min(GRP_NC, e1 - e);
+                    __syncthreads();
+                    for (int i = 0; i < n; ++i) {
+                        const uint32_t* src = reinterpret_cast<const uint32_t*>(xq + (size_t) ent_tok[e + i] * xb);
+                        for (int j = threadIdx.x; j < xb * 9; j += 256) s_x[i * xb * 9 + j] = src[j];
+                    }
+                    __syncthreads();
+                    for (int rc = blockIdx.x; rc * GU_ROWS < 2 * L.n_ff; rc += gridDim.x) {
+                        const int row = rc * GU_ROWS + warp;
+                        if (row >= 2 * L.n_ff) continue;
+                        const bool is_up = row >= L.n_ff;
+                        const int r = is_up ? row - (int) L.n_ff : row;
+                        const size_t w_off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
+                        float* dst = is_up ? up : gate;
+                        const uint8_t* wr = gp + w_off;
+                        const float sc = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
+                        if (n == 1) {
+                            const int off1[1] = { 0 };
+                            float s1[1];
+                            row_dot_multi<TG, 1, true, STAGE_GRID>(wr, xs, off1, 1, nb, lane, s1, s_grid);
+                            if (lane == 0) dst[(size_t) e * L.n_ff + r] = s1[0] * sc;
+                        } else if (n == 2) {
+                            const int off2[2] = { 0, xb };
+                            float s2[2];
+                            row_dot_multi<TG, 2, true, STAGE_GRID>(wr, xs, off2, 2, nb, lane, s2, s_grid);
+                            if (lane < 2) dst[(size_t) (e + lane) * L.n_ff + r] = s2[lane] * sc;
+                        } else if (n == 3) {
+                            const int off3[3] = { 0, xb, 2 * xb };
+                            float s3[3];
+                            row_dot_multi<TG, 3, true, STAGE_GRID>(wr, xs, off3, 3, nb, lane, s3, s_grid);
+                            if (lane < 3) dst[(size_t) (e + lane) * L.n_ff + r] = s3[lane] * sc;
+                        } else {
+                            const int off4[4] = { 0, xb, 2 * xb, 3 * xb };
+                            float s4[4];
+                            row_dot_multi<TG, 4, true, STAGE_GRID>(wr, xs, off4, 4, nb, lane, s4, s_grid);
+                            if (lane < 4) dst[(size_t) (e + lane) * L.n_ff + r] = s4[lane] * sc;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
     for (int rc = blockIdx.x; ; rc += gridDim.x) {
     const int row = rc * GU_ROWS + warp;             // 0 .. 2*n_ff
     if (row >= 2 * L.n_ff) break;
