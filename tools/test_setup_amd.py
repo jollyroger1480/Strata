@@ -80,6 +80,41 @@ class KfdDetection(unittest.TestCase):
         self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
 
 
+class Rx6000Detection(KfdDetection):
+    """0.2.2: the RX 6000 engine package (gfx1030 / gfx1031). Setup names the cards, says the package is built and not tested on a real
+    RX 6000 card, and says it for these two architectures only."""
+
+    def test_rx6000_cards_by_gfx_target_version(self):
+        fake_sysfs(self.root, [
+            (100300, 80, 128, "AMD Radeon RX 6900 XT", 16 << 30),     # gfx1030
+            (100301, 40, 129, None, 12 << 30),                        # gfx1031 (RX 6700 XT), no product name
+            (100302, 28, 130, None, 8 << 30),                         # gfx1032 (RX 6600): not in the package
+        ])
+        g = setup.amd_gpus(str(self.root))
+        self.assertEqual([x["arch"] for x in g], ["gfx1030", "gfx1031", "gfx1032"])
+        self.assertEqual(g[1]["name"], setup.AMD_NAMES["gfx1031"])
+        self.assertEqual([setup.is_rdna2(x) for x in g], [True, True, False])
+        self.assertIsNone(setup.amd_problem(g[0]))
+        self.assertIsNone(setup.amd_problem(g[1]))
+
+    def test_the_note_is_for_gfx103x_only(self):
+        for arch in ("gfx1030", "gfx1031", "gfx1030:sramecc-:xnack-"):
+            lines = setup.rdna2_notes({"arch": arch})
+            self.assertEqual(len(lines), 1, arch)
+            self.assertIn("built, not tested on a real RX 6000 card", lines[0])
+            self.assertIn(arch.split(":")[0], lines[0])
+        for arch in ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1151", "gfx1032", "gfx103", "gfx10300", "", None):
+            self.assertEqual(setup.rdna2_notes({"arch": arch}), [], arch)
+        self.assertEqual(setup.rdna2_notes(None), [])
+        self.assertFalse(setup.is_rdna2({"arch": "gfx1030x"}))
+
+    def test_windows_ids_and_names(self):
+        for device, arch in ((0x73BF, "gfx1030"), (0x73AF, "gfx1030"), (0x73A5, "gfx1030"), (0x73DF, "gfx1031")):
+            self.assertEqual(setup.win_amd_arch(device, ""), arch)
+        self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
+        self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")      # an RX 7000 card is not RDNA2
+
+
 class GpuLists(unittest.TestCase):
     """--gpus with AMD cards: every chosen card must be supported; the first is the main one."""
     AMD = [{"index": 0, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "arch": "gfx1201"},

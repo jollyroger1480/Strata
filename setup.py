@@ -3060,6 +3060,27 @@ def is_strix_halo(g) -> bool:
     return isinstance(g, dict) and gfx_arch_is(g.get("arch"), STRIX_HALO_ARCH)
 
 
+RDNA2_ARCHS = ("gfx1030", "gfx1031")        # RX 6800 / 6900 / 6950 series and RX 6700 XT: the cards of the ready-made RX 6000 engine package
+
+
+def is_rdna2(g) -> bool:
+    """A discrete RX 6000 card the ready-made RX 6000 engine package covers (gfx1030 / gfx1031); never an RX 7000 / 9000 or an APU."""
+    return isinstance(g, dict) and any(gfx_arch_is(g.get("arch"), a) for a in RDNA2_ARCHS)
+
+
+RDNA2_PACKAGE_NOTE = ("RX 6000 series (RDNA2, {arch}): Strata has a ready-made engine package for these cards, built, not tested on a real "
+                      "RX 6000 card. It runs plain kernels (this chip has no matrix cores, so the RX 7000 / RX 9000 prompt paths stay off) "
+                      "and plain hipBLAS (no hipBLASLt tuning table for it). If something goes wrong, open an issue with the end of "
+                      "strata-<model>.log: docs/AMD_HIP.md, \"RDNA2\".")
+
+
+def rdna2_notes(gpu) -> list[str]:
+    """What setup tells the owner of an RX 6000 card (gfx1030 / gfx1031); nothing for any other card."""
+    if not is_rdna2(gpu):
+        return []
+    return ["  " + RDNA2_PACKAGE_NOTE.format(arch=str(gpu.get("arch")).split(":")[0])]
+
+
 def is_uma_apu(g) -> bool:
     """A unified-memory AMD APU whose "VRAM" is a BIOS carve-out plus shared system memory: Strix Halo (gfx1151), and
     the opt-in gfx1150 (Strix Point) / gfx1103 (Phoenix / Hawk Point) iGPUs.  Everything else is a discrete card."""
@@ -6720,6 +6741,9 @@ def control_engine_step(gpu, vision):
         found = EC.resolve(full=False)
         eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local"}
         ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
+        if found.backend == "hip" and is_rdna2(gpu) and any(a in RDNA2_ARCHS for a in found.hip_archs):
+            for line in rdna2_notes(gpu):                       # the RX 6000 package: built, not tested on a real card
+                say(line)
     except EC.EngineMissing as e:
         plain = getattr(e, "plain_notice", None) or getattr(e, "driver_notice", None)
         if os.environ.get("STRATA_NEED_ENGINE") == "1" and os.environ.get("STRATA_ALLOW_NO_ENGINE") != "1":
@@ -7667,6 +7691,8 @@ def main() -> int:
         if gpu.get("uma"):
             for line in igpu_notes(gpu, ram_gb()):
                 (warn if line.startswith("!") else say)(line.lstrip("!"))
+        for line in rdna2_notes(gpu):
+            say(line)
     else:
         if not found:
             fail("no NVIDIA GPU found (nvidia-smi did not answer)",
