@@ -41,7 +41,8 @@ tag if you want updates only when you decide. The examples below use these image
 
 Each command runs Strata in the background, keeps your files in the volume `strata-data`, and listens only on this computer
 (`127.0.0.1:8080`). Replace `MODEL` and the key. The first start downloads the model (tens of GB): watch it with
-`docker logs -f strata`.
+`docker logs -f strata`. Already have the model's GGUF files? Add `-e MODEL_PATH=/models -v /your/folder:/models:ro` and nothing is
+downloaded for the model itself ([Files you already have](#files-you-already-have)).
 
 **NVIDIA**
 
@@ -144,7 +145,7 @@ Mount the folder with the model's GGUF files read-only and name it: `-v /srv/ggu
 - The folder has to be mounted: a `MODEL_PATH` that is not in the container, or a folder with no `.gguf` files, stops the start at
   once with a message, and nothing is downloaded.
 - Read-only (`:ro`) is fine. The pack (about 40 GB for IQ3_XXS) and the draft layer (about 6 GB, fetched once) are written to the
-  volume, so it needs that room.
+  volume, so it needs that room. With pictures on (the default) the picture reader (0.9 GB) is fetched too; `VISION=off` skips it.
 - Links to the files work when the links' targets are mounted too, and `MODEL` is set (without `MODEL`, Strata identifies the files itself
   and does not follow links).
 - Without `MODEL_PATH`, files you put into the volume by hand (`/data/Strata-data/models/<model folder>/`) are found as well, if they have the
