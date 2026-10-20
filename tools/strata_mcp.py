@@ -929,6 +929,11 @@ class Strata:
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
         hw["gpus"] = nv + amd
+        try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
+            from strata_control import gpu_roles
+            gpu_roles.add_speeds(hw["gpus"])
+        except Exception:                               # noqa: BLE001 - unknown speed: the card with the most memory is Main
+            pass
         self._engine_code(hw)
         self._engine_vendor(hw)
         if WIN:
