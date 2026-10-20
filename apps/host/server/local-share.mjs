@@ -2,6 +2,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import { apiPath } from './api-paths.mjs';
+import { listenProblem } from './ports.mjs';
 /** Sharing without a key is allowed (owner decision, 0.2.2): the person is told once, in plain words, and the app keeps offering to make a key. */
 export const NO_KEY_WARNING = 'No API key is set, so any device on this network can use your model. Create an API key to protect it.';
 export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
@@ -18,7 +19,7 @@ export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0
       catch { if (!res.headersSent) res.writeHead(500); res.end('Request failed'); }
     });
     try { await new Promise((resolve,reject) => { listener.once('error',reject); listener.listen(port,host,resolve); }); }
-    catch(e) { listener.close(); listener=null; throw e; }
+    catch(e) { listener.close(); listener=null; throw new Error(listenProblem(e, port, host)); }
     active=true; changed(); return state();
   }
   async function stop() {
