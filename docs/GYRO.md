@@ -38,8 +38,8 @@ APR port, and the released 0.1.45 stops at v4. A ready-made engine that is older
 (setup), or the app says the model needs a newer engine and offers Update engine.
 
 **Supported:** NVIDIA (CUDA, Linux and Windows) and AMD (HIP, experimental: the authors validated gfx1151; we ran
-gfx1201 with identical output to rc2). **Intel Arc** (SYCL, Linux, built from source) runs both files: see [Intel Arc](#intel-arc-sycl). **Not supported:** Apple Metal: the engine there has no
-trellis kernels and refuses the file at load with the reason.
+gfx1201 with identical output to rc2). **Intel Arc** (SYCL, Linux, built from source) runs both files: see [Intel Arc](#intel-arc-sycl). **Apple Silicon Macs** (Metal) run both files from
+0.2.2: see [On a Mac](#on-a-mac).
 
 **Pictures.** Gyro reads pictures with the original model's picture reader file (the same one every Qwen3.8-Flash-Next
 model uses; setup downloads it with the model). The reader opens only the vocabulary and the header of the Gyro file, so
@@ -325,9 +325,8 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 
 - **Not in this port** (rc2 has them; see the list at the end of this page): the prompt helper on a second GPU for a Gyro
   pack. Setup of two cards still runs the layer split and the decode peer; the prompt peer says it is not used for a
-  Hadamard-folded pack and the prompt stays on the first card. Gyro-L and Apple Metal are not supported.
-- **Source builds:** the SYCL tree has the trellis kernels (Intel Arc, above); the Metal
-  engine builds and refuses the file at load (`native_expert_supported`).
+  Hadamard-folded pack and the prompt stays on the first card. Gyro-L is not supported.
+- **Source builds:** the SYCL tree has the trellis kernels (Intel Arc, above), and so has the Metal engine (On a Mac, below).
 
 - **Not measured yet:** token parity against llama.cpp.
 - **Benchmark mode only:** `strata --tokens-file ... --max-new N` decodes N tokens past the end of the answer;
@@ -337,3 +336,10 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 - **Gyro-M:** 29.9 GiB of experts do not all fit a 32 GB card next to the KV cache; `auto` streams the rest.
 - **Not validated end to end yet** (Strata runs them and logs a warning): an AMD GPU other than gfx1151, and
   prompt processing on a peer GPU over P2P.
+
+## On a Mac
+
+Apple Silicon Macs run Gyro-S and Gyro-M from 0.2.2 (Metal kernels in `metal/kernels`, the same published files, the same
+Hadamard-folded pack). What a Mac needs, the measured speeds on a 32 GB Mac mini and what was checked are in
+[MAC.md](MAC.md#gyro-s-and-gyro-m-agentionais-trellis-experts). Setup: `./setup.sh --family gyro --model Gyro-S` (the app and
+`strata launch` list it under Gyro models).

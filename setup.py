@@ -7313,8 +7313,8 @@ def mac_control_setup(a) -> int:
         fail(problems[0])
 
     step(2, "your choices")
-    app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") == "qwen"]
-    if a.family not in (None, "qwen"):
+    app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") in ("qwen", "gyro")]   # Gyro: one file, no repack
+    if a.family not in (None, "qwen", "gyro"):
         fail(f"the app on a Mac runs the Qwen3.8-Flash-Next sizes ({', '.join(app_sizes)}); {a.family} is not one of them",
              "choose Qwen3.8-Flash-Next")
     rec, notes = MF.recommend_model(ram)
@@ -7330,7 +7330,8 @@ def mac_control_setup(a) -> int:
     if ctx > MF.TESTED_CONTEXT:
         say(f"  context {ctx}: measured on the Mac up to {MF.TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
     ok(f"{model}, context {ctx}")
-    fam = FAMILIES["qwen"]
+    family = MF.MAC_MODELS[model].get("family", "qwen")
+    fam = FAMILIES[family]
     tag = fam["tag"] + model
     stream = MF.streams(model, ram)
 
@@ -7351,6 +7352,15 @@ def mac_control_setup(a) -> int:
         if vision != "none":
             warn("pictures are off for now: the picture reader comes with the engine (run setup again once it is installed)")
             vision = "none"
+    else:
+        if family == "gyro":                           # an engine from before the trellis kernels refuses the file when it loads
+            try:
+                has_tq = b"inputs are rotated on the GPU" in Path(found.exe).read_bytes()
+            except (OSError, AttributeError):
+                has_tq = True                          # cannot tell: not a reason to hold the install back
+            if not has_tq:
+                warn(f"the Metal engine component {found.version} has no kernels for Gyro's trellis experts yet: the model is "
+                     "downloaded and prepared, and it runs once the app or its update feed brings a newer engine")
     ok("engine: the engine component (looked up when the model loads)")
     ok("images: " + {"none": "off", "gpu": "on (read on the Mac's GPU)", "cpu": "on (read on the CPU)"}[vision])
 
@@ -7399,7 +7409,8 @@ def mac_control_setup(a) -> int:
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
-        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack)], env=env)
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack),
+             *fam.get("pack_args", [])], env=env)       # Gyro: --compat-bf16
     ok(f"model prepared: {pack}")
     use_mtp = MF.stream_mtp(stream, ram)
     mtp = (find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
@@ -7420,7 +7431,8 @@ def mac_control_setup(a) -> int:
 
     step(7, "writing the run settings")
     port = a.port or 8080
-    args = MF.engine_args(pack, files, rt, ctx, stream, ram, ROOT / "data" / "expert-profile.bin")
+    args = MF.engine_args(pack, [files[0], files[0]] if family == "gyro" else files, rt, ctx, stream, ram,
+                          ROOT / "data" / "expert-profile.bin")      # Gyro: one file, the model and its n-gram table
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}

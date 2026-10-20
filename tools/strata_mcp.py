@@ -1019,11 +1019,12 @@ class Strata:
         hw["nvidia_smi"] = False
         return hw
 
-    def _mac_sizes(self, models: dict) -> list:
-        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack). Unsloth's many-shard files need
-        metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not offer them yet."""
+    def _mac_sizes(self, models: dict, family: str = "qwen") -> list:
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack) and agentionai's Gyro files (one
+        file, no repack). Unsloth's many-shard files need metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not
+        offer them yet."""
         mf = self.mac()
-        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == "qwen" and m in models] if mf else []
+        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == family and m in models] if mf else []
 
     def _mac_verdict(self, model: str, ram: float) -> str:
         mf = self.mac()
@@ -1066,18 +1067,24 @@ class Strata:
         models, families, _ctx, _src = self.tables()
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
-        fd = families["qwen"]
-        sizes = []
-        for m in self._mac_sizes(models):
-            d = models[m]
-            tag = (fd.get("tag", "") + m).lower()
-            sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
-                          "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
-                          "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
-                          "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
-                          "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
-        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False,
-                 "images": any(x["images"] for x in sizes), "sizes": sizes}]
+        out = []
+        for family in ("qwen", "gyro"):                # Gyro after the regular sizes, as on a PC: never the default
+            fd = families.get(family)
+            if fd is None:
+                continue
+            sizes = []
+            for m in self._mac_sizes(models, family):
+                d = models[m]
+                tag = (fd.get("tag", "") + m).lower()
+                sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
+                              "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
+                              "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                              "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                              "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
+            if sizes:
+                out.append({"family": family, "title": fd["title"], "about": fd.get("about"), "experimental": False,
+                            "images": any(x["images"] for x in sizes), "sizes": sizes})
+        return out
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the

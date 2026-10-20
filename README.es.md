@@ -164,7 +164,7 @@ comprimido. Los tamaños pequeños son más rápidos. Los grandes son algo más 
 | **Gyro-S** | 27,6 GB | 58,5 GB | Para PC donde no cabe nada más. La calidad es menor que la de IQ2_XS. |
 | **Gyro-M** | 35 GB | 92,0 GB | Calidad parecida a IQ3_XXS con un 20 % menos de memoria de GPU. Escribe las respuestas un 17-21 % más despacio que Q2_0 en una tarjeta de 12 GB y en una R9700. |
 
-Gyro funciona en tarjetas NVIDIA y AMD (en AMD es experimental) y en tarjetas Intel Arc con Linux (probado en una Arc A750), no en el Mac. Detalles y mediciones:
+Gyro funciona en tarjetas NVIDIA y AMD (en AMD es experimental) en tarjetas Intel Arc con Linux (probado en una Arc A750) y, desde 0.2.2, en Mac con Apple Silicon (Gyro-S en un Mac mini de 32 GB: 9 tokens/s, con los expertos leídos del SSD). Detalles y mediciones:
 [docs/GYRO.md](docs/GYRO.md). Arráncalo con `strata launch --model gyro-s`.
 
 ### Los demás tamaños

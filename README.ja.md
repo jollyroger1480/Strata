@@ -158,7 +158,7 @@ AI ツールは [MCP サーバー](docs/MCP_SERVER.md)を通じて、Strata の�
 | **Gyro-S** | 27.6 GB | 58.5 GB | ほかのサイズが入らないPC向け。品質は IQ2_XS より下がります。 |
 | **Gyro-M** | 35 GB | 92.0 GB | 品質は IQ3_XXS 程度で、GPUメモリの使用量は約20%少なくなります。12 GBのカードと R9700 では、回答の書き出しが Q2_0 より17〜21%遅くなります。 |
 
-Gyro は NVIDIA と AMD のカード（AMD は実験的）、および Linux 上の Intel Arc カード（Arc A750 で確認）で動きます。Mac では動きません。詳細と測定結果は
+Gyro は NVIDIA と AMD のカード（AMD は実験的）、および Linux 上の Intel Arc カード（Arc A750 で確認）で動きます。0.2.2 からは Apple Silicon の Mac でも動きます（32 GB の Mac mini で Gyro-S は 9 トークン/秒、エキスパートは SSD から読み込み）。詳細と測定結果は
 [docs/GYRO.md](docs/GYRO.md) にあります。`strata launch --model gyro-s` で起動します。
 
 ### ほかのサイズ
