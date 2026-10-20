@@ -525,7 +525,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     path has two busy queues, the compute stream and the stream that copies experts to the card (about 31,000 copies and
     event hand-offs per 4K prompt). The runtime opens its queues in the order the loader threads reach them, which changes
     every start; when both busy queues land on the same compute pipe of the card (the card has two for this process), every
-    hand-off waits for a queue switch. The engine now opens five queues (four at normal priority, one at the highest) one
+    hand-off waits for a queue switch. The engine now opens two queues at normal priority (more queues cost decode: five cost 2 to 3.6%) one
     after the other on the main thread before any other thread starts (`STRATA_HIP_QUEUE_PRIME=0` turns it off; any other
     value is a list of `n` / `h` letters for tests). gfx1200 and gfx1201 on Linux only; nothing else changes (the answers
     are identical). Not clocks, not memory placement (read speed over the expert cache was 637-640 GB/s in both kinds of
