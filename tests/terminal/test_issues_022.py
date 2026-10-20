@@ -97,6 +97,26 @@ class Issue3403MacBuildTools(unittest.TestCase):
             self.assertIn("S.ensure_build_tools()", inspect.getsource(fn), fn.__name__)
 
 
+class Issue2971WebToolRowFitsPhones(unittest.TestCase):
+    """A tool row widened the whole page on a phone (752 px page at a 412 px viewport, measured in Chrome). The three rules
+    that keep it inside the viewport; a long tool name is cut with an ellipsis instead of pushing the page."""
+
+    def test_the_rules_are_in_the_stylesheet(self):
+        import re
+        css = (Path(__file__).resolve().parents[2] / "serve" / "web" / "app.css").read_text(encoding="utf-8")
+
+        def rule(selector):
+            m = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+            self.assertIsNotNone(m, selector)
+            return m.group(1)
+
+        self.assertIn("min-width: 0", rule(".view"))
+        self.assertIn("overflow: hidden", rule(".tool-call > summary"))
+        name = rule(".tool-call__name")
+        for part in ("min-width: 0", "overflow: hidden", "text-overflow: ellipsis"):
+            self.assertIn(part, name)
+
+
 class Issue3188BenchStartsItsOwnServer(unittest.TestCase):
     """tools/strata_bench.py named `port` in the start-a-server branch without ever setting it."""
 
