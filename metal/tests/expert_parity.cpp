@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
     bool bench = false, sweep = false, had_test = false, decode_check = false;
     double share = 0.0;
     std::string gguf_path, had_pack;
-    int real_layer = 0;
+    int real_layer = 0, experts_first = 0;
     uint64_t seed = 1;
     bool cfg_gu_set = false, cfg_dn_set = false;
     for (int i = 1; i < argc; ++i) {
@@ -241,6 +241,7 @@ int main(int argc, char** argv) {
         else if (a == "--dn-prep") g_dn_prep = true;
         else if (a == "--gguf") gguf_path = nx();
         else if (a == "--layer") real_layer = std::atoi(nx());
+        else if (a == "--experts-first") experts_first = std::atoi(nx());   // only experts 0..N-1 of the layer are in the file (a sparse copy)
         else if (a == "--had-pack") had_pack = nx();
         else if (a == "--had-test") had_test = true;
         else if (a == "--decode-check") decode_check = true;
@@ -470,14 +471,15 @@ int main(int argc, char** argv) {
 
     if (!bench) {
         // ---------------- parity ----------------
-        const int NE = 64;
+        const int NE = tg_ && experts_first ? std::max(experts_first, 2 * TOPK) : 64;
         mtl::Buffer W = cx.alloc(L.blob * NE);
         std::vector<int> pick;
         for (int e = 0; e < NE; ++e) {
             uint8_t* b = W.as<uint8_t>() + e * L.blob;
             if (tg_) {   // real experts of the file: expert `ex` of the layer's three tensors
                 int ex;
-                do ex = (int)(rng.next() % 512); while (std::find(pick.begin(), pick.end(), ex) != pick.end());
+                if (experts_first) ex = e % experts_first;   // (a sparse copy holds only the first experts: reused when NE is larger)
+                else do ex = (int)(rng.next() % 512); while (std::find(pick.begin(), pick.end(), ex) != pick.end());
                 pick.push_back(ex);
                 std::memcpy(b, (const uint8_t*)gf.map + tg_->offset + (size_t)ex * L.gu_row * N_FF, L.gu_row * N_FF);
                 std::memcpy(b + L.up_off, (const uint8_t*)gf.map + tu_->offset + (size_t)ex * L.gu_row * N_FF, L.gu_row * N_FF);
