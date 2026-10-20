@@ -842,7 +842,8 @@ class Runner:
             backend = None
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
                                    context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
-                                   log=cat.root / f"strata-{tag}.log", backend=backend)
+                                   log=cat.root / f"strata-{tag}.log", backend=backend,
+                                   vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices)
         if cfg is None:
             raise LaunchError("The installer cannot set up this graphics card yet, and the files Strata would need to write the settings itself are not all there: "
                               + "; ".join(problems) + ".",
