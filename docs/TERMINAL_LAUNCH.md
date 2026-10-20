@@ -38,7 +38,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 8. **Advanced** (optional): every engine setting with default, tuned value and your value; edit, reset, add a setting by name (checked against the engine's own list; a warning, not a refusal);
    the exact command (it includes the context, memory format and picture choice you made above; it has its own scroll area: Tab, then the arrows) and the matching `strata launch` flags.
 9. **Access**: this computer only (127.0.0.1), your network (LAN address, key), Cloudflare quick tunnel (needs `cloudflared`), Tailscale (needs it installed and connected); port; API key
-   (made for you beyond this computer: the server will not start on a network without one).
+   (optional, recommended beyond this computer: Strata makes one for you, and one keypress (`t`) turns it off. Without a key the server still starts and warns that anyone who can reach the port can use the model and its tools; `--no-api-key` does the same without the screens, and on a Cloudflare tunnel the warning is stronger. This computer only never needs a key).
 10. **Save as preset** and launch. Then downloads (with progress), engine start, and the monitor. In a small window the summary shrinks so the three choices stay on screen,
     and the key line says what Enter will do. No web page opens by itself; only `--open` opens one.
 

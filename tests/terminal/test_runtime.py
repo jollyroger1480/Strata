@@ -845,6 +845,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(plan["effective"]["host"], "0.0.0.0")
         self.assertNotIn("first", json.dumps(plan))
 
+    def test_remote_bind_without_a_key_is_planned_not_refused(self):
+        # owner decision 2026-10-20: a key is recommended on a network, never required
+        from strata_cli.cli import _launch_plan
+        for key in (None, "none"):
+            cfg = json.loads(self.config.read_text())
+            cfg["host"] = "0.0.0.0"
+            cfg.pop("api_key", None)
+            if key:
+                cfg["api_key"] = key
+            self.config.write_text(json.dumps(cfg))
+            with mock.patch.dict(os.environ, {"STRATA_API_KEY": ""}):
+                plan, args = _launch_plan("local")
+            self.assertEqual(plan["effective"]["host"], "0.0.0.0")
+
     def test_lazy_model_is_verified_as_unloaded_without_generation(self):
         cfg = json.loads(self.config.read_text())
         cfg["lazy_load"] = True

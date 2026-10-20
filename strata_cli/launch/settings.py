@@ -92,6 +92,7 @@ class LaunchSettings:
     access: str = "local"
     port: int = DEFAULT_PORT
     api_key: str | None = None                 # never shown whole; stored only in the private preset file
+    no_key: bool = False                       # served beyond this computer without a key, on purpose (--no-api-key); a warning, never a refusal
     extra: dict[str, str] = field(default_factory=dict)    # Advanced: --set key=value (flags and STRATA_* variables)
     # filled in by the run, kept in the preset
     tuned_preset: str | None = None            # id of the tuning preset the tuner saved
@@ -153,6 +154,11 @@ def check_port(port: Any) -> Notice | None:
     return None
 
 
+NO_KEY_NETWORK = "No API key: anyone who can reach this port can use the model and its tools (they can read and change files on this computer)."
+NO_KEY_PUBLIC = ("No API key on a public address: anyone on the internet who finds it can use the model and its tools "
+                 "(they can read and change files on this computer).")
+
+
 def check_access(s: LaunchSettings) -> list[Notice]:
     out: list[Notice] = []
     if s.access not in ACCESS_KINDS:
@@ -164,8 +170,13 @@ def check_access(s: LaunchSettings) -> list[Notice]:
     if port:
         out.append(port)
     if s.access != "local" and not s.api_key:
-        out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
-                          "Add an API key (Strata makes one for you in the Access step)."))
+        if s.access == "cloudflare":
+            out.append(Notice("warn", NO_KEY_PUBLIC, "Leave --no-api-key out to get a key."))
+        elif s.no_key:
+            out.append(Notice("warn", NO_KEY_NETWORK, "Leave --no-api-key out to get a key."))
+        else:
+            out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
+                              "Add an API key (Strata makes one for you in the Access step)."))
     return out
 
 
