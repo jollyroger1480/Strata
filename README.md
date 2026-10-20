@@ -159,7 +159,7 @@ Smaller sizes are faster. Larger sizes are a bit smarter.
 | **Gyro-S** | 27.6 GB | 58.5 GB | For PCs that fit nothing else. Quality is lower than IQ2_XS. |
 | **Gyro-M** | 35 GB | 92.0 GB | About IQ3_XXS quality with about 20% less GPU memory. It writes answers 17-21% slower than Q2_0 on a 12 GB card and on an R9700. |
 
-Gyro runs on NVIDIA and AMD cards (AMD is experimental), not on Intel Arc or the Mac. Details and measurements:
+Gyro runs on NVIDIA and AMD cards (AMD is experimental) and on Intel Arc cards on Linux (tested on an Arc A750), not on the Mac. Details and measurements:
 [docs/GYRO.md](docs/GYRO.md). Start it with `strata launch --model gyro-s`.
 
 ### The other sizes

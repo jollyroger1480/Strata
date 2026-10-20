@@ -157,7 +157,7 @@ Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow doc
 | **Gyro-S** | 27.6 GB | 58.5 GB | 给其他尺寸都放不下的电脑。质量低于 IQ2_XS。 |
 | **Gyro-M** | 35 GB | 92.0 GB | 质量约相当于 IQ3_XXS，显存占用少约 20%。在 12 GB 显卡和 R9700 上，输出回答比 Q2_0 慢 17-21%。 |
 
-Gyro 可在 NVIDIA 和 AMD 显卡上运行（AMD 为实验性支持），不支持 Intel Arc 和 Mac。详情和测试数据：
+Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的 Intel Arc 显卡（已在 Arc A750 上测试）上运行，不支持 Mac。详情和测试数据：
 [docs/GYRO.md](docs/GYRO.md)。用 `strata launch --model gyro-s` 启动。
 
 ### 其他尺寸

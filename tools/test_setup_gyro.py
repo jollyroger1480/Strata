@@ -64,10 +64,10 @@ class GyroCatalog(unittest.TestCase):
         self.assertEqual((got["family"], got["model"]), ("gyro", "Gyro-S"))
         got = s.recommend(hardware(24.0, 16.0))                  # 40 GB in total: the owner's 40 GB tier, Swift 1.5's IQ2_XS
         self.assertEqual((got["family"], got["model"]), ("swift", "IQ2_XS"))
-        self.assertIn("Gyro-M", got["why"])                      # named as the other choice (NVIDIA and AMD)
+        self.assertIn("Gyro-M", got["why"])                      # named as the other choice (NVIDIA, AMD and Intel Arc)
         intel = hardware(24.0, 16.0)
         intel["gpus"] = [{**g, "vendor": "intel"} for g in intel["gpus"]]
-        self.assertNotIn("Gyro", s.recommend(intel)["why"])      # never Intel Arc
+        self.assertIn("Gyro-M", s.recommend(intel)["why"])       # the SYCL engine has the trellis kernels (0.2.2)
         self.assertIsNone(s.recommend(hardware(12.0, 8.0))["family"])
         self.assertIsNone(s.recommend(hardware(16.0, 11.0))["family"])   # 27 GB: below Gyro-S's 27.6 + room
 
