@@ -388,5 +388,22 @@ class Issue3302AdministratorAlias(unittest.TestCase):
             self.assertFalse(pf.is_unshared("x"))
 
 
+
+class Issue3488IntegrityRetry(unittest.TestCase):
+    """A hash that reads wrong once (file just unpacked, or held by a virus scanner) must not stick."""
+
+    def test_second_read_decides(self):
+        from unittest import mock
+        from strata_control import engine_component as ec
+        path = Path("x")
+        with mock.patch.object(ec, "_sha256", side_effect=["bad", "good"]) as sha, mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "good")
+            self.assertEqual(sha.call_count, 2)
+        with mock.patch.object(ec, "_sha256", side_effect=[PermissionError(), "good"]), mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "good")
+        with mock.patch.object(ec, "_sha256", return_value="bad"), mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "bad")      # still wrong after the retry: refuse
+
+
 if __name__ == "__main__":
     unittest.main()

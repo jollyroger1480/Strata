@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import re
 import shutil
 import subprocess
@@ -382,6 +383,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _hash_settled(path: Path, digest: str) -> str | None:
+    """The file's SHA-256, read again once when the first read fails or differs: a file that was just unpacked or is
+    being scanned by a virus checker can read short or locked for a moment, and a failure must not be kept (#3488)."""
+    actual = None
+    for attempt in range(2):
+        try:
+            actual = _sha256(path)
+        except OSError:
+            actual = None
+        if actual == digest:
+            break
+        if attempt == 0:
+            time.sleep(0.5)
+    return actual
+
+
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
     the entrypoint is hashed (sizes are always checked)."""
@@ -401,8 +418,11 @@ def verify(component: EngineComponent, *, full: bool = False) -> None:
             raise IntegrityProblem(f"{rel} resolves outside the component folder")
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
-        if (full or rel == component.entrypoint) and _sha256(target) != digest:
-            raise IntegrityProblem(f"{rel} does not match its recorded SHA-256")
+        if full or rel == component.entrypoint:
+            actual = _hash_settled(target, digest)
+            if actual != digest:
+                raise IntegrityProblem(f"{rel} does not match its recorded SHA-256 (expected {digest[:12]}, "
+                                       f"found {actual[:12] if actual else 'unreadable'})")
     if os.name != "nt" and not os.access(component.exe, os.X_OK):
         raise IntegrityProblem(f"{component.entrypoint} is not executable")
 
