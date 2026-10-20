@@ -32,6 +32,9 @@
 #include <string>
 #include <vector>
 
+#include "ggml-common-tq.h"
+const uint16_t* tq_lut_for_test() { return tq_lut_f16; }
+
 namespace {
 
 constexpr int N_EMBD = 2560, N_FF = 640, TOPK = 10;
@@ -216,7 +219,7 @@ double median(std::vector<double> v) {
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, ntok = 1, layers = 8, reps = 96;
     Cfg cgu{32, 2, 4}, cdn{8, 2, 4};
-    bool bench = false, sweep = false, had_test = false;
+    bool bench = false, sweep = false, had_test = false, decode_check = false;
     double share = 0.0;
     std::string gguf_path, had_pack;
     int real_layer = 0;
@@ -240,6 +243,7 @@ int main(int argc, char** argv) {
         else if (a == "--layer") real_layer = std::atoi(nx());
         else if (a == "--had-pack") had_pack = nx();
         else if (a == "--had-test") had_test = true;
+        else if (a == "--decode-check") decode_check = true;
         else if (a == "--seed") seed = std::strtoull(nx(), nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -283,6 +287,54 @@ int main(int argc, char** argv) {
         g_hsh = sgh ? &hsh : nullptr;
         g_had_h = !had_test;
         std::printf("Hadamard: block %d, signs for %s%s\n", strata::kernels::cpu::hadamard_spec().block, sgx ? "2560 " : "", sgh ? "640" : "(none)");
+    }
+    if (decode_check) {
+        // the decoder the Metal kernels and ref_quant share the meaning of, written a third time straight from the format's
+        // definition (ggml-common-tq.h): step t's state = 16 stream bits from bit (31 - t) * K, LSB first, circular modulo 32 K
+        // bits, masked to 15 bits (TQ2_T: qs[(t + 31) % 32] << 8 | qs[t]); x = state * 0x9e3779b1; points lut[x >> 21] and
+        // lut[(x >> 10) & 2047]; weights = fp16 values * d.  Compared bit for bit with ref::dequant on the real tensors.
+        extern const uint16_t* tq_lut_for_test();
+        long blocks = 0, bad = 0;
+        const gguf::Tensor* ts[3] = {tg_, tu_, td_};
+        if (!tg_) { std::fprintf(stderr, "--decode-check needs --gguf\n"); return 2; }
+        for (const gguf::Tensor* t : ts) {
+            const int ty = t->type, K = ty == ref::TQ2_T ? 8 : ty == ref::TQK6 ? 6 : 7, bb = ref::block_bytes(ty);
+            const uint8_t* base = (const uint8_t*)gf.map + t->offset;
+            const size_t nb = t->bytes / bb;
+            const size_t step = std::max<size_t>(1, nb / 200000);   // up to 200k blocks a tensor, spread over it
+            for (size_t i = 0; i < nb; i += step) {
+                const uint8_t* b = base + i * bb;
+                float want[128], got[128];
+                const float d = ref::f16_to_f32((uint16_t)(b[0] | (b[1] << 8)));
+                const uint8_t* qs = b + 2;
+                for (int st = 0; st < 32; ++st) {
+                    uint32_t state;
+                    if (K == 8) state = (((uint32_t)qs[(st + 31) % 32] << 8) | qs[st]) & 0x7fff;
+                    else {
+                        const int off = ((31 - st) * K) % (32 * K);
+                        uint32_t v = 0;
+                        for (int bit = 0; bit < 16; ++bit) {
+                            const int pos = (off + bit) % (32 * K);
+                            v |= (uint32_t)((qs[pos / 8] >> (pos % 8)) & 1) << bit;
+                        }
+                        state = v & 0x7fff;
+                    }
+                    const uint32_t x = state * 0x9e3779b1u;
+                    const uint16_t* lut = tq_lut_for_test();
+                    const uint32_t pa = x >> 21, pb = (x >> 10) & 2047u;
+                    want[4 * st] = ref::f16_to_f32(lut[2 * pa]) * d;
+                    want[4 * st + 1] = ref::f16_to_f32(lut[2 * pa + 1]) * d;
+                    want[4 * st + 2] = ref::f16_to_f32(lut[2 * pb]) * d;
+                    want[4 * st + 3] = ref::f16_to_f32(lut[2 * pb + 1]) * d;
+                }
+                ref::dequant(ty, b, got, 128);
+                bad += std::memcmp(want, got, sizeof want) != 0;
+                ++blocks;
+            }
+        }
+        std::printf("decode-check layer %d: %ld blocks of the real tensors, %ld differ from the format's definition  %s\n", real_layer,
+                    blocks, bad, bad == 0 ? "PASS" : "FAIL");
+        return bad == 0 ? 0 : 1;
     }
     if (had_test) {
         // the Metal rotation kernels against the CPU's (hadamard_rotate), bit for bit
