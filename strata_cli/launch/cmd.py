@@ -559,6 +559,11 @@ def run_launch(a: argparse.Namespace) -> int:
             return _tui(app.run_tui, None, catalog=catalog, feed=a.feed, open_page=bool(a.open))
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes)
+        try:
+            runner.check_own_files()                         # the person's own files: a wrong path is said now, and the files name the model
+        except LaunchError as e:
+            return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
         errors = [n for n in notes if n.level == "error"]
         if errors:
@@ -569,8 +574,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
         move_data = _move_data_choice(a, s, catalog, machine)
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes,
-                        move_data=move_data)
+        runner.s, runner.move_data = s, move_data
         if a.plan:
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]

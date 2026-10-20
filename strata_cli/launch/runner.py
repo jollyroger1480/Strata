@@ -331,6 +331,7 @@ class Runner:
         self.notices: list[str] = []
         self.tune_result: dict | None = None
         self.config_path: Path | None = None
+        self._own_checked = False
 
     # ---- small helpers
     def emit(self, stage: str, text: str, pct: float | None = None, level: str = "info", **data: Any) -> None:
@@ -625,8 +626,7 @@ class Runner:
 
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
-        if s.model_path:
-            self.resolve_own_files()
+        self.check_own_files()
         self.resolved_vision()
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
@@ -641,7 +641,8 @@ class Runner:
             adopted = self.adopt_prepared_files("no Mac model installer in this Terminal")
             if adopted is not None:
                 return adopted
-        self.emit("model", f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
+        self.emit("model", f"Preparing {title} from your model files…" if s.model_path else
+                  f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
         env = self._env()
         env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
@@ -695,7 +696,8 @@ class Runner:
             if adopted is not None:
                 return adopted
             raise LaunchError("The model could not be installed." + (f" {err}." if err else ""),
-                              hint or "Run it again: finished steps are skipped and a download continues where it stopped.", 6)
+                              hint or ("Run it again: finished steps are skipped." if s.model_path else
+                                       "Run it again: finished steps are skipped and a download continues where it stopped."), 6)
         path, _desc = self.installed_state()
         if path is None:
             raise LaunchError("Setup finished but no run config was written for this model.",
@@ -737,12 +739,22 @@ class Runner:
         self.emit("model", f"Used your prepared model files and wrote the run settings ({path.name}); this card is not one the built-in downloader sets up.", 100, level="warn")
         return path
 
+    def check_own_files(self) -> None:
+        """The person's own model files, looked at once: a path that is not there or holds no model is said in plain words first, and the
+        files are matched to the catalog model (resolve_own_files). Nothing else is done with a path that was already checked."""
+        if self.s.model_path and not self._own_checked:
+            self.resolve_own_files()
+            self._own_checked = True
+
     def resolve_own_files(self) -> None:
         """"Use model files I already have": the fingerprint table says which catalog model the files are, and which folder holds them (the
         person may have named the folder above it). When the person also named the model (--model), the files are never refused here: setup
         takes the files of that model out of the folder by name, as it always did (0.1.45), and says what is wrong when it cannot."""
         from strata_control import models
         s = self.s
+        problem = models.own_path_problem(s.model_path)
+        if problem:                                          # before the engine or setup are touched, with the path as typed
+            raise LaunchError(problem[0], problem[1], 2)
         given = bool(s.family and s.model)
         try:
             plan = models.plan_import(models.absolute(s.model_path))
@@ -760,7 +772,7 @@ class Runner:
         sel = plan.get("candidate_selection") or {}
         fam, model = sel.get("family"), sel.get("model")
         if not (fam and model) or plan.get("issues"):
-            issues = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
+            issues = models.problem_words(plan.get("issues") or []) or "they are not a model Strata knows"
             more = " " + next((m for m in plan.get("messages") or [] if "holds" in m), "")
             raise LaunchError(f"These files cannot be used as they are ({issues}).{more.rstrip()}",
                               "Choose the matching model in the list, or check that every shard is in the folder.", 5)
@@ -941,6 +953,7 @@ class Runner:
 
     def run(self, *, start: bool = True) -> Result:
         try:
+            self.check_own_files()                           # a wrong --model-path is said before the engine is downloaded
             self.ensure_engine()
             self.check_cancel()
             base = self.ensure_model()
