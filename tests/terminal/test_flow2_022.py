@@ -156,5 +156,61 @@ class LinkedShards(Base):
 
 
 
+class PlanWords(Base):
+    """Findings 1 and 7: --plan shows the real model, the picture setting, a copyable line, and what would be downloaded."""
+
+    def plan_text(self, *args):
+        code, out, err = run_cli(["launch", "--plan", *args])
+        self.assertEqual(code, 0, err or out)
+        return out
+
+    def test_own_files_show_the_model_they_are(self):
+        folder = self.files(self.base / "IQ3_XXS", IQ3XXS, "IQ3_XXS")
+        out = self.plan_text("--model-path", str(folder))
+        self.assertIn("Plan for 'IQ3_XXS", out)
+        self.assertNotIn("model default", out)
+        self.assertNotIn("None", out)
+        self.assertIn("Qwen3.8-Flash-Next IQ3_XXS", out)
+        self.assertIn(f"your files in {folder}", out)
+        self.assertRegex(out, r"pictures (on|off)")
+        self.assertIn("--model iq3_xxs", out.split("same as")[1])         # the copyable line names the model too
+        self.assertIn(f'--model-path "{folder}"', out.split("same as")[1])
+
+    def test_a_named_catalog_model_shows_its_size_and_the_download(self):
+        out = self.plan_text("--model", "q2_0")
+        self.assertIn("Qwen3.8-Flash-Next Q2_0, 66 GB", out)
+        self.assertRegex(out, r"download\s+About 7\d\.\d GB to download: the model \(66\.4 GB\), the draft layer \(5\.2 GB\)")
+        self.assertIn("The engine for your graphics card is downloaded first", out)
+
+    def test_nothing_is_downloaded_when_everything_is_here(self):
+        folder = self.files(self.base / "IQ3_XXS", IQ3XXS, "IQ3_XXS")
+        data = self.base / "Strata" 
+        (data / "models" / "x").mkdir(parents=True)
+        (data / "mtp" / "rt").mkdir(parents=True)
+        (data / "mtp" / "rt" / "experts.bin").write_bytes(b"x")
+        (data / "models" / "mmproj-Qwen3.8-Flash-Next-BF16.gguf").write_bytes(b"x")
+        # the files sit under <data>/models/<tag>: the draft layer and the picture reader are found beside them
+        moved = data / "models" / "iq3_xxs"
+        folder.rename(moved)
+        out = self.plan_text("--model-path", str(moved))
+        self.assertIn("download  Nothing to download: your model files are used where they are.", out)
+
+    def test_own_files_with_no_draft_layer_say_what_is_fetched(self):
+        folder = self.files(self.base / "IQ3_XXS", IQ3XXS, "IQ3_XXS")
+        with mock.patch.object(Runner, "existing_data_dir", return_value=None),                 mock.patch.object(Catalog, "data_dir", return_value=self.base / "emptydata"):
+            out = self.plan_text("--model-path", str(folder), "--vision", "off")
+        self.assertIn("About 5.2 GB to download: the draft layer (5.2 GB). Your model files are used where they are.", out)
+
+    def test_json_plan_carries_the_numbers(self):
+        code, out, err = run_cli(["launch", "--plan", "--output", "json", "--model", "q2_0", "--mtp", "off", "--vision", "off"])
+        self.assertEqual(code, 0, err)
+        plan = json.loads(out)["plan"]
+        self.assertEqual(plan["model"]["title"], "Qwen3.8-Flash-Next Q2_0")
+        self.assertEqual(plan["model"]["model_gb"], 66.4)
+        self.assertEqual(plan["download"]["gb"], 66.4)
+        self.assertEqual([p["kind"] for p in plan["download"]["parts"]], ["weights"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

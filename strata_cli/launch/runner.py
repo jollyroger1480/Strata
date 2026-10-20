@@ -945,11 +945,79 @@ class Runner:
         return tunnel
 
     # ---- all of it
+    def row(self):
+        """The catalog row of the chosen model (None for a model the list does not carry)."""
+        s = self.s
+        return next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+
+    def download_plan(self) -> dict:
+        """What this launch would download, in numbers and words (nothing is changed): the model's missing files, and for a model that is
+        not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
+        from strata_control import engine_component
+        from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
+        s = self.s
+        st = self.model_state()
+        parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts]
+        fresh = any(p.kind == "weights" for p in st.parts) and not st.own_files
+        row = self.row()
+        helpers = s.family in ("qwen", "swift", "coder", "unsloth")
+        wants_pictures = s.vision not in (None, "off") and row is not None and bool(row.images)
+        have = {p["kind"] for p in parts}
+        if fresh and helpers:
+            if s.mtp != "off":
+                parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
+            if wants_pictures:
+                parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
+        elif st.own_files and helpers:
+            # the person's files come with no draft layer or picture reader: setup fetches them next to the prepared data, unless they are there
+            try:
+                data = Path(st.folder) if st.folder else (self.existing_data_dir() or self.catalog.data_dir())
+                if s.mtp != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
+                    parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
+                if wants_pictures and "mmproj" not in have and not list((data / "models").glob("mmproj*.gguf")):
+                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
+            except OSError:
+                pass
+        gb = round(sum(p["gb"] for p in parts), 1)
+        engine = True
+        try:
+            engine = bool(engine_component.status(Path(self.components_dir) if self.components_dir else None).get("usable"))
+        except Exception:                                    # noqa: BLE001 - the plan must not fail on this
+            pass
+        if gb < 0.05:
+            text = ("Nothing to download: your model files are used where they are." if st.own_files
+                    else "Nothing to download: the model is already on this computer.")
+        else:
+            names = [f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]
+            what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            text = f"About {gb:.1f} GB to download: {what}."
+            if st.on_disk_gb >= 1:
+                text += f" {st.on_disk_gb:.0f} GB of the model is already in its folder."
+            if st.own_files:
+                text += " Your model files are used where they are."
+        if not engine:
+            text += " The engine for your graphics card is downloaded first (from the update source; its size is shown when it starts)."
+        return {"gb": gb, "parts": parts, "engine_missing": not engine, "own_files": st.own_files, "text": text}
+
     def plan(self) -> dict:
         s = self.s
+        self.check_own_files()
         warns = [n.line() for n in (*S.check_access(s),)]
+        row = self.row()
+        try:
+            self.resolved_vision()
+        except Exception:                                    # noqa: BLE001
+            pass
+        try:
+            download = self.download_plan()
+        except Exception:                                    # noqa: BLE001 - a plan that cannot count the download still shows the rest
+            download = {"gb": None, "parts": [], "engine_missing": None, "own_files": bool(s.model_path),
+                        "text": "How much would be downloaded could not be worked out here."}
+        title = row.title if row is not None else (f"{s.family} {s.model}" if s.model else None)
+        model = {"title": title, "family": s.family, "model": s.model, "model_gb": row.download_gb if row is not None else None,
+                 "own_files": bool(s.model_path), "folder": s.model_path}
         return {"profile": self.profile, "settings": s.to_dict(with_key=False), "warnings": warns,
-                "flags": S.flags_text(s), "steps": list(STAGES)}
+                "flags": S.flags_text(s), "steps": list(STAGES), "model": model, "download": download}
 
     def run(self, *, start: bool = True) -> Result:
         try:
