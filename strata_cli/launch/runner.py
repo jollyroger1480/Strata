@@ -280,11 +280,12 @@ def launch_dir() -> Path:
 # ----------------------------------------------------------------------------------------------- the runner
 
 
-def download_text(dl: dict, already: bool) -> str:
-    """The step line for the model download. A model whose files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
+def download_text(dl: dict, already: bool, label: str | None = None) -> str:
+    """The step line for a download or a check. `label` is what is being fetched, in words (strata_control/progress_words.py). A model whose
+    files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
     if already:
-        return f"Model already downloaded ({dl['total_gb']:.1f} GB), checking the files"
-    return f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+        return f"The model files are already on this computer ({dl['total_gb']:.1f} GB); checking them"
+    return f"{label}: {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB" if label else f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
 
 
 class Runner:
@@ -511,6 +512,8 @@ class Runner:
             args += ["--data-dir", str(data)]
             if self.move_data and s.data_dir:             # only when the person said so: setup moves nothing otherwise
                 args.append("--move-data")
+            if s.data_dir:                                # a folder the person chose is remembered for the next start and for the app
+                args.append("--set-default-data-dir")
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
@@ -518,8 +521,9 @@ class Runner:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
-            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data"}
-            flags = ("--yes", "--no-start", "--move-data")
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
+                    "--set-default-data-dir"}
+            flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
             while i < len(args):
                 if args[i] in keep:
@@ -591,7 +595,7 @@ class Runner:
 
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
-        if s.model_path and not (s.family and s.model):
+        if s.model_path:
             self.resolve_own_files()
         self.resolved_vision()
         if not (s.family and s.model):
@@ -632,15 +636,17 @@ class Runner:
             if not line:
                 continue
             lines.append(line)
-            lines[:] = lines[-400:]
+            lines[:] = lines[-1500:]
             prog = cat.mcp.install_progress(lines)
             prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
-            dl = prog.get("download")
-            if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
-                if already is None:
+            dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
+            if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
+                if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
-                text = download_text(dl, already)
+                text = download_text(dl, bool(already) and phase == "download", label)
                 self.emit("model", text, float(dl["percent"]), step=prog.get("step"))
+            elif label:
+                self.emit("model", label, None, step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))
         code = p.wait()
@@ -702,20 +708,34 @@ class Runner:
         return path
 
     def resolve_own_files(self) -> None:
-        """"Use model files I already have": the fingerprint table says which catalog model the files are."""
+        """"Use model files I already have": the fingerprint table says which catalog model the files are, and which folder holds them (the
+        person may have named the folder above it). When the person also named the model (--model), the files are never refused here: setup
+        takes the files of that model out of the folder by name, as it always did (0.1.45), and says what is wrong when it cannot."""
         from strata_control import models
         s = self.s
+        given = bool(s.family and s.model)
         try:
-            plan = models.plan_import(str(Path(s.model_path).expanduser().resolve()))
+            plan = models.plan_import(models.absolute(s.model_path))
         except Exception as e:                               # noqa: BLE001
+            if given:
+                return
             raise LaunchError(f"These model files cannot be used: {e}.", "Pick the folder with every shard of one model, or a .gguf file of it.", 5) from None
+        if given:
+            hold = [h for h in plan.get("folder_holds") or [] if (h.get("family"), h.get("model")) == (s.family, s.model)]
+            if len(hold) == 1 and hold[0].get("folder"):
+                s.model_path = hold[0]["folder"]
+            elif not plan.get("issues"):
+                s.model_path = models.import_target(s.model_path, plan)
+            return
         sel = plan.get("candidate_selection") or {}
         fam, model = sel.get("family"), sel.get("model")
         if not (fam and model) or plan.get("issues"):
             issues = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
-            raise LaunchError(f"These files cannot be used as they are ({issues}).",
+            more = " " + next((m for m in plan.get("messages") or [] if "holds" in m), "")
+            raise LaunchError(f"These files cannot be used as they are ({issues}).{more.rstrip()}",
                               "Choose the matching model in the list, or check that every shard is in the folder.", 5)
         s.family, s.model = fam, model
+        s.model_path = models.import_target(s.model_path, plan)
         self.emit("model", f"These files are {fam} {model}.", None)
 
     # ---- 3. config and profile
@@ -925,30 +945,7 @@ class Runner:
         return out
 
 
-ISSUE_WORDS = {
-    "multiple_model_groups": "the folder holds more than one model",
-    "incomplete_or_invalid_shard_set": "some shards are missing",
-    "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
-    "unsupported_or_missing_architecture": "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)",
-    "unsupported_or_incomplete_tokenizer_metadata": "the file has no usable tokenizer",
-    "missing_or_unexpected_expert_quantization": "its quantization is not one Strata knows",
-}
-
-
-def plain_issue(code: str) -> str:
-    """One problem from the GGUF preview, in words (it may be `file.gguf: GGUF shard is not a nonempty regular file` and the like)."""
-    if code in ISSUE_WORDS:
-        return ISSUE_WORDS[code]
-    low = code.lower()
-    if "not a nonempty regular file" in low or "unreadable" in low:
-        return "a file is empty, unreadable or not a regular file"
-    if "does not begin with a gguf header" in low or "header version" in low:
-        return "a file is not a GGUF model file"
-    if "unsupported_architecture" in low:
-        return "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"
-    if "symlink" in low:
-        return "a file is a shortcut (symbolic link); point at the real file"
-    return code.replace("_", " ")
+from strata_control.models import ISSUE_WORDS, plain_issue   # noqa: E402,F401  (one wording for the app, the Terminal and `models import`)
 
 
 def _read_json(path: Path) -> dict | None:

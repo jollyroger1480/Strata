@@ -407,11 +407,13 @@ class SetupArgs(unittest.TestCase):
                      ["--gpu", "1"]):
             self.assertIn(pair[0], a)
             self.assertEqual(a[a.index(pair[0]) + 1], pair[1])
+        self.assertIn("--set-default-data-dir", a)             # a folder the person chose is the remembered one (the app and the next start use it)
 
     def test_a_mac_gets_only_the_options_its_setup_knows(self):
         with mock.patch.object(sys, "platform", "darwin"):
             a = self.runner(data_dir="/d", gpus=[0])
-        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d"])
+        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d",
+                             "--set-default-data-dir"])
 
 
 class AdoptRules(unittest.TestCase):

@@ -262,7 +262,7 @@ class ModelStep(Base):
             with mock.patch("strata_control.models.plan_import", return_value=plan) as pi:
                 await typed(pilot, "/data/models/IQ3_XXS")
                 await press(pilot, "enter")
-            self.assertEqual(ctx.settings.model_path, str(Path("/data/models/IQ3_XXS")))
+            self.assertEqual(ctx.settings.model_path, os.path.abspath("/data/models/IQ3_XXS"))
             self.assertEqual((ctx.settings.family, ctx.settings.model), ("qwen", "IQ3_XXS"))
             self.assertIn("These files are qwen IQ3_XXS (2 file(s), 44 GB)", text_of(app))
             await press(pilot, "enter")
@@ -278,7 +278,7 @@ class ModelStep(Base):
                 await typed(pilot, "/x")
                 await press(pilot, "enter")
             t = flat(app)
-            self.assertIn("some shards are missing", t)
+            self.assertIn("some parts of the model are missing", t)
             self.assertIn("pick a model from the list", t)
             self.assertIsNone(ctx.settings.model_path)
         self.run_app(case)

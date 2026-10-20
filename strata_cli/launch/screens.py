@@ -495,14 +495,14 @@ class ModelScreen(Base):
         from strata_cli.launch.runner import plain_issue
         from strata_control import models
         try:
-            plan = models.plan_import(str(Path(path).expanduser().resolve()))
+            plan = models.plan_import(models.absolute(path))
         except Exception as e:                               # noqa: BLE001
             self.say(f"These files cannot be used: {e}. Pick the folder with every shard of one model, or a .gguf file of it.", True)
             return
         sel = plan.get("candidate_selection") or {}
         if sel.get("family") and sel.get("model") and not plan.get("issues"):
             s = self.ctx.settings
-            s.model_path, s.family, s.model = str(Path(path).expanduser()), sel["family"], sel["model"]
+            s.model_path, s.family, s.model = models.import_target(path, plan), sel["family"], sel["model"]
             self.ctx.picked_in_list = False
             self.close_field("own")
             gb = plan.get("total_bytes", 0) / 1e9
@@ -511,7 +511,9 @@ class ModelScreen(Base):
             self.paint()
         else:
             why = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
-            self.say(f"These files cannot be used as they are ({why}). Check that every shard is in the folder, or pick a model from the list.", True)
+            holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
+            self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
+                     "Check that every shard is in the folder, or pick a model from the list.", True)
 
     def action_back(self) -> None:
         if self.input_open():
