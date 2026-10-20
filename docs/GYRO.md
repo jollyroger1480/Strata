@@ -280,3 +280,10 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 - **Gyro-M:** 29.9 GiB of experts do not all fit a 32 GB card next to the KV cache; `auto` streams the rest.
 - **Not validated end to end yet** (Strata runs them and logs a warning): an AMD GPU other than gfx1151, and
   prompt processing on a peer GPU over P2P.
+
+## On a Mac
+
+Apple Silicon Macs run Gyro-S and Gyro-M from 0.2.2 (Metal kernels in `metal/kernels`, the same published files, the same
+Hadamard-folded pack). What a Mac needs, the measured speeds on a 32 GB Mac mini and what was checked are in
+[MAC.md](MAC.md#gyro-s-and-gyro-m-agentionais-trellis-experts). Setup: `./setup.sh --family gyro --model Gyro-S` (the app and
+`strata launch` list it under Gyro models).
