@@ -944,7 +944,7 @@ class DraftLayerAndCancel(unittest.TestCase):
             shard.write_bytes(b"x" * 20_000_000)
             job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
             prog = M.combined_progress(M.install_progress(lines), job)
-        self.assertEqual(prog["download"]["file"], "Speed-up layer")
+        self.assertEqual(prog["download"]["file"], "Draft layer")
         self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
         self.assertEqual(prog["parts"][0]["state"], "done")
         self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)
