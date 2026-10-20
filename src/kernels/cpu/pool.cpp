@@ -533,12 +533,20 @@ bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
 }
 
 #if defined(__linux__)
+// Where the NUMA topology is read from: /sys. STRATA_TEST_SYSFS_ROOT=<dir> reads <dir>/devices/system/{node,cpu} instead,
+// so a test can give the pool a made-up two-node machine (pool_tasks_test); nobody sets it for real.
+std::string sysfs_root() {
+    const char* e = std::getenv("STRATA_TEST_SYSFS_ROOT");
+    return e != nullptr && *e != '\0' ? std::string(e) : std::string("/sys");
+}
+
 // The NUMA node of a logical CPU (sysfs), or -1.
 int cpu_numa_node(int cpu) {
     if (cpu < 0) return -1;
-    char path[96];
+    const std::string root = sysfs_root();
+    char path[512];
     for (int node = 0; node < 64; ++node) {
-        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/node%d", cpu, node);
+        std::snprintf(path, sizeof path, "%s/devices/system/cpu/cpu%d/node%d", root.c_str(), cpu, node);
         if (access(path, F_OK) == 0) return node;
     }
     return -1;
@@ -549,7 +557,7 @@ int cpu_numa_node(int cpu) {
 // (numa_pool.hpp); Windows: GetNumaHighestNodeNumber; any other system, or a sandbox that hides the folder: 1.
 int numa_node_count() {
 #if defined(__linux__)
-    return (std::max)(1, numa_cpu_node_count_at("/sys/devices/system/node"));
+    return (std::max)(1, numa_cpu_node_count_at(sysfs_root() + "/devices/system/node"));
 #elif defined(_WIN32)
     ULONG highest = 0;
     return GetNumaHighestNodeNumber(&highest) ? (int) highest + 1 : 1;

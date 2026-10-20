@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -286,6 +289,82 @@ int main(int argc, char** argv) {
         const auto& plan = cpu::active_numa_split();
         std::printf("pool tasks: nothing set: split %s%s\n", plan.on ? "on" : "off", plan.why.empty() ? "" : (": " + plan.why).c_str());
         if (!plan.on && !plan.why.empty()) { std::fprintf(stderr, "an automatic split that did not run left a refusal reason\n"); return 1; }
+    }
+    {   // 0.2.2: a made-up two-node machine (STRATA_TEST_SYSFS_ROOT): the pool's own node lookup, the automatic split, its log lines
+        const std::vector<int> cores = cpu::detect_cpu_topology(true, cpu::PoolAffinity::All).worker_cores;
+        const int host = cpu::detect_cpu_topology(true, cpu::PoolAffinity::All).host_core;
+        if (cores.size() < 4 || host < 0) {
+            std::printf("pool tasks: fake two-node machine SKIPPED (needs 4 worker cores and a host core)\n");
+        } else {
+            namespace fs = std::filesystem;
+            const fs::path root = fs::temp_directory_path() / ("strata_pool_fake_sysfs_" + std::to_string((long long) std::time(nullptr)));
+            // node k of worker core i: the workers alternate between the nodes, the host core is on node 0
+            auto build = [&](int n_nodes) {
+                fs::remove_all(root);
+                fs::create_directories(root / "devices/system/node");
+                std::vector<std::string> list((size_t) n_nodes);
+                auto put = [&](int cpu, int node) {
+                    fs::create_directories(root / "devices/system/cpu" / ("cpu" + std::to_string(cpu)) / ("node" + std::to_string(node)));
+                    list[(size_t) node] += (list[(size_t) node].empty() ? "" : ",") + std::to_string(cpu);
+                };
+                put(host, 0);
+                for (size_t i = 0; i < cores.size(); ++i) put(cores[i], (int) (i % (size_t) n_nodes));
+                for (int k = 0; k < n_nodes; ++k) {
+                    fs::create_directories(root / "devices/system/node" / ("node" + std::to_string(k)));
+                    std::ofstream(root / "devices/system/node" / ("node" + std::to_string(k)) / "cpulist") << list[(size_t) k] << "\n";
+                }
+            };
+            put_env("STRATA_TEST_SYSFS_ROOT", root.string().c_str());
+            unset_env("STRATA_NUMA_SPLIT");
+            unset_env("STRATA_NUMA_POOL");
+            const int workers = (int) std::min<size_t>(cores.size(), 8) & ~1;   // even: the nodes get the same count
+
+            build(2);   // two nodes, nothing set: the split runs by itself
+            {
+                cpu::ExpertPool pool(workers, true, true);
+                const auto& plan = cpu::active_numa_split();
+                const bool ok = plan.on && !plan.test && plan.nodes[0] == 0 && plan.nodes[1] == 1 && pool.numa_slices() == 2 &&
+                                !plan.cores[0].empty() && !plan.cores[1].empty();
+                std::printf("pool tasks: fake two nodes, nothing set: split %s (%zu + %zu cores)\n", plan.on ? "on" : "off",
+                            plan.cores[0].size(), plan.cores[1].size());
+                if (!ok) { std::fprintf(stderr, "the automatic split did not run on a two-node machine\n"); return 1; }
+            }
+            put_env("STRATA_NUMA_POOL", "0");   // the off switch
+            {
+                cpu::ExpertPool pool(workers, true, true);
+                if (cpu::active_numa_split().on || pool.numa_slices() != 0) { std::fprintf(stderr, "STRATA_NUMA_POOL=0 did not switch the automatic split off\n"); return 1; }
+            }
+            unset_env("STRATA_NUMA_POOL");
+            put_env("STRATA_EXCHANGE_ROTATE", "1");   // the split cannot run: the pool stays as it was, with no half-made plan
+            {
+                cpu::ExpertPool pool(workers, true, true);
+                if (cpu::active_numa_split().on || pool.numa_slices() != 0 || !cpu::active_numa_split().why.empty()) {
+                    std::fprintf(stderr, "an automatic split that cannot run left a plan or a reason behind\n");
+                    return 1;
+                }
+            }
+            unset_env("STRATA_EXCHANGE_ROTATE");
+            for (int nodes : {1, 3}) {   // one node: the pool before the split; three: not supported, the pool as it was
+                build(nodes);
+                cpu::ExpertPool pool(workers, true, true);
+                if (cpu::active_numa_split().on || pool.numa_slices() != 0) { std::fprintf(stderr, "split on a %d-node machine\n", nodes); return 1; }
+            }
+            {   // the default worker count and cores of a one-node machine do not depend on the split code at all
+                build(1);
+                cpu::ExpertPool a(0, true, true);
+                const std::vector<int> a_cores = a.worker_cores();
+                const int a_workers = a.workers();
+                unset_env("STRATA_TEST_SYSFS_ROOT");
+                cpu::ExpertPool b(0, true, true);
+                if (a_workers != b.workers() || a_cores != b.worker_cores()) {
+                    std::fprintf(stderr, "a one-node fake machine changed the pool's workers or cores\n");
+                    return 1;
+                }
+                std::printf("pool tasks: one node: %d workers and the same cores as with no topology override\n", a_workers);
+            }
+            unset_env("STRATA_TEST_SYSFS_ROOT");
+            fs::remove_all(root);
+        }
     }
 #endif
     std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode (%d with modes 0-4 "
