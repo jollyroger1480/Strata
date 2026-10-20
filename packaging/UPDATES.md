@@ -63,7 +63,7 @@ For a GitHub release the assets are flat: pack with `--url-prefix ""` and upload
 
 ### What an engine update does
 
-download (resume, progress) -> SHA-256 of the archive = the feed's -> unpack into `components/.updates/staging/` (names and links checked,
+download (resume, progress) -> SHA-256 of the archive = the feed's -> unpack into `components/.s/<4 hex>/` (short on purpose: Windows paths are limited to 259 characters unless long paths are on; files are written through extended-length paths) (names and links checked,
 total size limited to the feed's `installed_bytes`) -> the manifest is the one the feed names (`manifest_sha256`) and says what the feed says
 -> the manifest's own signature verifies -> every file's hash -> fits this PC -> **test-start from the staging folder through the real start
 path** (isolated owner runtime and profile, `component:strata-engine`, an installed model, one-token probe, stop) -> only then rename
