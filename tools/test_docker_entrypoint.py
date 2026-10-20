@@ -79,11 +79,13 @@ class Entrypoint(unittest.TestCase):
         return next(line for line in log.splitlines() if line.startswith("launch --no-tui"))
 
     def test_settings_become_flags_and_sigterm_stops_cleanly(self):
+        (self.tmp / "models").mkdir()
+        (self.tmp / "models" / "m-00001-of-00002.gguf").write_text("x")
         p = self.start(MODEL="IQ3_XXS", CONTEXT="64k", PARALLEL="2", VISION="yes", TUNE="quick", GPUS="0,1", PORT="8123", PRESET="office",
-                       API_KEY="a-long-enough-key-123456", MODEL_PATH="/models", STRATA_SET="prefill=65536 STRATA_PIN_BY_NEED=1")
+                       API_KEY="a-long-enough-key-123456", MODEL_PATH=str(self.tmp / "models"), STRATA_SET="prefill=65536 STRATA_PIN_BY_NEED=1")
         log = self.wait_for("--show-key")
         line = self.launch_line(log)
-        for want in ("--access lan", "--port 8123", "--model IQ3_XXS", "--model-path /models", "--context 64k", "--parallel 2",
+        for want in ("--access lan", "--port 8123", "--model IQ3_XXS", "--model-path " + str(self.tmp / "models"), "--context 64k", "--parallel 2",
                      "--vision on", "--gpu 0,1", "--tune quick", "--set prefill=65536", "--set STRATA_PIN_BY_NEED=1",
                      "--save-preset office", "--api-key-env STRATA_LAUNCH_KEY"):
             self.assertIn(want, line)
@@ -235,6 +237,23 @@ class Entrypoint(unittest.TestCase):
         p = self.start(STUB_BACKEND="cuda", STRATA_DEV_DIR=str(dev), MODEL="Q2_0")
         self.wait_for("launch --no-tui")
         self.stop(p)
+
+    def test_model_path_that_is_not_there_or_empty_ends_the_start_in_plain_words(self):
+        missing = self.tmp / "nothing-mounted"
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(missing)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("is not in the container", r.stderr)
+        self.assertIn("-v /srv/gguf/IQ3_XXS:", r.stderr)
+        empty = self.tmp / "empty"
+        (empty / "IQ3_XXS").mkdir(parents=True)
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(empty)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("holds no .gguf files", r.stderr)
+        (empty / "IQ3_XXS" / "a-00001-of-00002.gguf").write_text("x")
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(empty)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Set MODEL_PATH=" + str(empty / "IQ3_XXS"), r.stderr)
+        self.assertNotIn("launch --no-tui", self.log.read_text() if self.log.exists() else "")
 
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,
