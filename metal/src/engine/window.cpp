@@ -521,8 +521,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             };
             upload(N, hsx_);
             upload(NFF, hsh_);
-            std::fprintf(stderr, "strata metal: Hadamard-folded experts (block %d): the gate/up and down inputs are rotated on the GPU
-",
+            std::fprintf(stderr, "strata metal: Hadamard-folded experts (block %d): the gate/up and down inputs are rotated on the GPU\n",
                          had_block_);
         }
     }

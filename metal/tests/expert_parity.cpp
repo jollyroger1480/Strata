@@ -365,6 +365,9 @@ int main(int argc, char** argv) {
         K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;
+        if (std::getenv("PIPE_INFO"))
+            std::printf("pipelines: gu %s max threads %d tg mem %d | dn %s max threads %d tg mem %d\n", K.gu.name.c_str(), K.gu.max_threads,
+                        K.gu.static_tg_mem, K.dn.name.c_str(), K.dn.max_threads, K.dn.static_tg_mem);
         return K;
     };
     auto args_for = [&](const Kernels& K, int nt, int n_expert) {
