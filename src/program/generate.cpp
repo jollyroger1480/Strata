@@ -518,6 +518,8 @@ struct Options {
     bool pool_measure = false;
     /// --host-core first|last|sibling (STRATA_HOST_CORE): the host thread's core (see HostCore in pool.hpp)
     std::string host_core;
+    /// --pool-cores LIST (STRATA_POOL_CORES; experimental, off by default): the logical processors the pool's workers are pinned to
+    std::string pool_cores;
     /// --aux-cpus off|auto|LIST (STRATA_AUX_CPUS): where the non-pool, non-host threads run (strata/platform/aux_cpus.hpp)
     std::string aux_cpus;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
@@ -1015,6 +1017,13 @@ void usage() {
                  "                       result.  Not on hybrid CPUs.  sibling: the first core's other hardware thread\n"
                  "                       (SMT), so the interrupts keep the first logical processor and the workers keep\n"
                  "                       every core; hybrid CPUs too, first without SMT (STRATA_HOST_CORE sets it too).\n"
+                 "  --pool-cores LIST    Experimental, off by default: pin the CPU workers to exactly these logical\n"
+                 "                       processors (0,2,4,6 or 2-14:2; the numbers Task Manager and lscpu show).  The\n"
+                 "                       default is one worker per physical core, which the start-up line names.  Two\n"
+                 "                       entries on one core, or the host's own, are kept with a warning; processors the\n"
+                 "                       process may not use are left out.  The worker count is the list's length unless\n"
+                 "                       --pool-workers says otherwise.  Moves threads only, never a result.\n"
+                 "                       STRATA_POOL_CORES sets it too.\n"
                  "  --aux-cpus SET       Where the threads that are neither pool workers nor the host thread run (the\n"
                  "                       adaptive tier's job thread, the prefill helpers, the CUDA driver's threads, ...):\n"
                  "                       off (the default: wherever they were created), auto (the SMT siblings of the host's\n"
@@ -1641,6 +1650,7 @@ private:
         // the job's memcpys stay off the host's core and the pool's: by default the spare SMT sibling of the last
         // two-thread core (Windows); STRATA_ADAPT_JOB_CPU=<logical cpu>, or -1 for no pinning.  Without either, --aux-cpus
         // (off by default) puts the thread on the spare CPUs; an explicit STRATA_ADAPT_JOB_CPU is the user's word over it.
+        strata::platform::name_this_thread("strata-adapt-job");
         const char* c = std::getenv("STRATA_ADAPT_JOB_CPU");
         const int cpu = c != nullptr ? std::atoi(c) : smt_spare_cpu();
         if (cpu >= 0) (void) strata::kernels::cpu::pin_current_thread(cpu);
@@ -1806,6 +1816,7 @@ private:
 #endif
     }
     void loop(size_t k) {
+        strata::platform::name_this_thread("strata-ckpt", (int) k);
         spread_current_thread();
         uint64_t seen = 0;
         std::unique_lock<std::mutex> lk(mu_);
@@ -2469,6 +2480,7 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
+        else if (a == "--pool-cores") o.pool_cores = next("--pool-cores");
         else if (a == "--aux-cpus") {
             o.aux_cpus = next("--aux-cpus");
             std::string aerr;
@@ -2817,6 +2829,18 @@ int main(int argc, char** argv) {
             if (const char* e = std::getenv("STRATA_HOST_CORE")) hc = e;
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
         if (hc == "sibling") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Sibling);
+    }
+    {   // --pool-cores / STRATA_POOL_CORES (experimental, off by default), before the pool is built.  A list that cannot be read is
+        // said and left out: the pool keeps its default placement (recommend, never force).
+        std::string pc = o.pool_cores;
+        if (pc.empty())
+            if (const char* e = std::getenv("STRATA_POOL_CORES")) pc = e;
+        if (!pc.empty()) {
+            std::vector<int> cpus;
+            std::string perr;
+            if (strata::kernels::cpu::parse_pool_cores(pc, cpus, perr)) strata::kernels::cpu::set_pool_cores(cpus);
+            else std::fprintf(stderr, "strata generate: --pool-cores: %s; the pool uses its default placement\n", perr.c_str());
+        }
     }
     {   // --aux-cpus / STRATA_AUX_CPUS: read the CPUs this process may use now, before any thread is pinned; the plan
         // follows once the pool exists (it needs the workers' CPUs)
@@ -5846,6 +5870,8 @@ int main(int argc, char** argv) {
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last      ? "last"
                      : strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Sibling ? "sibling"
                                                                                                              : "first");
+        // the same facts in plain words, and whether each worker has a physical core of its own
+        std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
         // --aux-cpus: the plan, now the workers' CPUs are known; the threads that exist already (the CUDA driver's) move
         // now when it is on, the ones created later pin themselves (strata/platform/aux_cpus.hpp)
         const size_t nw = std::min<size_t>((size_t) pool.workers(), wc.size());
@@ -10692,6 +10718,7 @@ int main(int argc, char** argv) {
         std::deque<std::string>& in_lines = in_shared->lines;
         bool& in_eof = in_shared->eof;
         std::thread([st = in_shared] {
+            strata::platform::name_this_thread("strata-stdin");
             strata::aux_cpus::pin_current_thread();
             // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
             // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
@@ -10884,6 +10911,7 @@ int main(int argc, char** argv) {
             const int io_limit = wio ? std::atoi(wio) : limit * 10;
             if (limit > 0)
                 std::thread([limit, io_limit] {
+                    strata::platform::name_this_thread("strata-watchdog");
                     strata::aux_cpus::pin_current_thread();
                     strata::core::Progress& p = strata::core::progress();
                     uint64_t last = p.beats.load(), ticks_at = p.ticks.load();
@@ -14195,7 +14223,7 @@ int main(int argc, char** argv) {
                     if (!drive.d.usage.empty() && o.adapt_every > 0 && (rounds % o.adapt_every) == 0 && pending.empty() &&
                         !exch_wait) {
                         pl_adapt_done = false;
-                        pl_adapt_thr = std::thread([&] { strata::aux_cpus::pin_current_thread(); pl_adapt_ok = adapt(); pl_adapt_done = true; });
+                        pl_adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); pl_adapt_ok = adapt(); pl_adapt_done = true; });
                     }
                     return true;
                 };
@@ -14862,7 +14890,7 @@ int main(int argc, char** argv) {
                 bool adapt_ok = true;
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
                 if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
-                    adapt_thr = std::thread([&] { strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
+                    adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
@@ -16240,7 +16268,7 @@ int main(int argc, char** argv) {
             std::thread adapt_thr;
             bool adapt_ok = true;
             if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
-                adapt_thr = std::thread([&] { strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
+                adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
             if (!ver.commit(a + 1, err)) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
