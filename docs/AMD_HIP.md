@@ -63,19 +63,19 @@ the kernel's amdgpu driver (no ROCm install needed):
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
-## Ready-made packages (0.2.0)
+## Ready-made packages (0.2.1)
 
-The 0.2.0-beta release carries one AMD engine package per card family. The Terminal one-liner and `strata update` pick the package whose
+The 0.2.1 release carries one AMD engine package per card family. The Terminal one-liner and `strata update` pick the package whose
 GPU code covers the card; the full installers carry one package each. Any app installer also works: install it, press **Update engine**
 in Settings (or run `strata update`) and the matching package downloads.
 
 | Package (variant) | OS | GPU code inside | ROCm | Installer |
 | --- | --- | --- | --- | --- |
-| `rx9070` | Windows | gfx1200, gfx1201 | 10.2.0a20260930 (TheRock) | `Strata-0.2.0-beta-windows-hip.exe` |
-| `rdna3` | Windows | gfx1100, gfx1101, gfx1102, gfx1151 | 10.2.0a20260930 | `Strata-0.2.0-beta-windows-hip-rdna3.exe` |
-| `rx9070` | Linux | gfx1200, gfx1201 | 7.10.0a20251120 (`gfx120X-all` wheels) | `Strata-0.2.0-beta-linux-amd-rx9070.AppImage` |
-| `rx7900` | Linux | gfx1100, gfx1101, gfx1102 | 7.10.0a20251120 (`gfx110X-dgpu` wheels) | `Strata-0.2.0-beta-linux-amd-rx7900.AppImage` |
-| `halo` | Linux | gfx1151 | 7.14.1 (TheRock) | `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` |
+| `rx9070` | Windows | gfx1200, gfx1201 | 10.2.0a20260930 (TheRock) | `Strata-0.2.1-windows-hip.exe` |
+| `rdna3` | Windows | gfx1100, gfx1101, gfx1102, gfx1151 | 10.2.0a20260930 | `Strata-0.2.1-windows-hip-rdna3.exe` |
+| `rx9070` | Linux | gfx1200, gfx1201 | 7.10.0a20251120 (`gfx120X-all` wheels) | `Strata-0.2.1-linux-amd-rx9070.AppImage` |
+| `rx7900` | Linux | gfx1100, gfx1101, gfx1102 | 7.10.0a20251120 (`gfx110X-dgpu` wheels) | `Strata-0.2.1-linux-amd-rx7900.AppImage` |
+| `halo` | Linux | gfx1151 | 7.14.1 (TheRock) | `Strata-0.2.1-linux-amd-strixhalo.AppImage` |
 
 `rdna3` and `halo` were added to the release after the first upload (feed sequence 101). Why the split: on Windows one ROCm 10.2 library
 set holds the kernels of every listed architecture, so RX 7000 and Strix Halo share a package. The Linux 7.10 wheels hold one chip family
