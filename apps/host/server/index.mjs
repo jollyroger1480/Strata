@@ -269,7 +269,7 @@ function setupState() {
     flowVersion: 2,
     completedAt: s.setup.completedAt,
     history: s.setup.history ?? [],
-    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
+    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR, modelsDirNotice: store.MODELS_DIR_NOTICE },
   };
 }
 
