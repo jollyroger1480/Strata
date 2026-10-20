@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -69,24 +70,45 @@ class Result:
     final_text: str = ""                   # what to tell the person when serving is False
 
 
-NO_ENGINE_NEXT = ("Get the engine that matches this computer's graphics card (from whoever sent you Strata, or with `strata update --feed <address>`), "
-                  "then run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
+NO_ENGINE_NEXT = ("Update Strata (`strata update`) and run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
 
 STAGES = ("engine", "model", "config", "tune", "start", "access")
 
-NO_ENGINE_STEP = ("run `strata update --feed <address>` with the update source you were given, or ask whoever sent you Strata for the engine "
-                  "that matches this computer's graphics card, then run `strata launch` again")
+NO_ENGINE_STEP = ("run `strata update` to get the newest engines and start again; if this stays, your graphics card is not one Strata supports yet, "
+                  "and the model files stay on this computer for when it is")
+
+#: no graphics card Strata can use at all (an Intel UHD/Iris only, an AMD APU-only laptop, a virtual machine, Windows on ARM)
+NO_GPU_PREFIX = "no graphics card that Strata can use was found"
+NO_GPU_STEP = ("Strata needs an NVIDIA or AMD graphics card, an Intel Arc card or an Apple Silicon Mac, and there is no CPU-only engine for this "
+                "computer. Run Strata on a computer that has one; the model files stay here")
+
+
+def no_gpu_words(names: list[str] | None = None) -> str:
+    """The plain reason when nothing Strata can run on is in this computer, naming what is there when it is known."""
+    names = [n for n in (names or []) if n]
+    if names:
+        return f"{NO_GPU_PREFIX}; this computer has {', '.join(names[:3])}"
+    return NO_GPU_PREFIX
+
+
+def _step_for(reason: str) -> str:
+    return NO_GPU_STEP if reason.startswith(NO_GPU_PREFIX) else NO_ENGINE_STEP
 
 
 def no_engine_warning(reason: str) -> str:
     """The plain warning shown before a model is downloaded on a computer with no engine to run it."""
     reason = reason.strip().rstrip(".")
+    if reason.startswith(NO_GPU_PREFIX):
+        return (f"Strata can't run on this computer: {reason}. The model will download, but it will not run here "
+                f"(next step: {NO_GPU_STEP}).")
     return (f"Strata couldn't find an engine for this computer ({reason}). The model will download, but it may not run until you install "
             f"the right engine (next step: {NO_ENGINE_STEP}).")
 
 
 def no_engine_final(reason: str, name: str = "") -> str:
     reason = reason.strip().rstrip(".")
+    if reason.startswith(NO_GPU_PREFIX):
+        return f"The model is ready, but Strata can't start it on this computer: {reason}. Next step: {NO_GPU_STEP}."
     return (f"The model is ready, but Strata can't start it yet: it couldn't find an engine for this computer ({reason}). "
             f"Next step: {NO_ENGINE_STEP}. The model files stay on this computer.")
 
@@ -258,7 +280,7 @@ def write_private(path: Path, data: dict) -> None:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -458,6 +480,14 @@ class Runner:
                     note = str(res.get("note") or "").strip()
         if not note:
             note = str(report.get("notice") or "").strip()
+        if "backend" in report and report["backend"] is None:                    # not even a graphics card Strata knows: say that, not "the feed has nothing"
+            names = []
+            try:
+                from strata_control import engine_component as ec
+                names = [a.get("name", "") for a in ec.windows_display_adapters()] if os.name == "nt" else []
+            except Exception:                                # noqa: BLE001 - the names are a nicety
+                pass
+            return no_gpu_words(names)
         if not note or note.startswith("No engine for this PC was found"):
             note = "There is no engine for this computer's graphics card in the update source."
         return note

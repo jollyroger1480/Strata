@@ -1979,10 +1979,15 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
     if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
         return None
     as_json = bool(getattr(a, "json", False) or getattr(a, "output", None) in ("json", "jsonl"))
+    in_use = private_files.is_sharing_violation(error)
     if getattr(a, "_access_retried", False):
-        return _error(f"{private_files.ACCESS_MESSAGE} (details: {error})", 5, as_json)
+        message = private_files.IN_USE_MESSAGE if in_use else private_files.ACCESS_MESSAGE
+        return _error(f"{message} (details: {error})", 5, as_json)
     a._access_retried = True
-    private_files.repair_known_roots()
+    if in_use:
+        time.sleep(1.5)                                  # a scanner or a sync tool lets go of the file in a moment; repairing would not help
+    else:
+        private_files.repair_known_roots()
     return _run(a)
 
 

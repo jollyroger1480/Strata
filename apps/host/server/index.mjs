@@ -72,6 +72,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
+import { findFreePort, listenProblem } from './ports.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -269,7 +270,7 @@ function setupState() {
     flowVersion: 2,
     completedAt: s.setup.completedAt,
     history: s.setup.history ?? [],
-    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
+    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR, modelsDirNotice: store.MODELS_DIR_NOTICE },
   };
 }
 
@@ -909,8 +910,10 @@ const tasks = createTaskService({
 const taskTimer = setInterval(() => tasks.tick(), 15000);
 taskTimer.unref();
 
-const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
-const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
+// The share and tunnel listeners take a free port (the next ones above the host's own) instead of a fixed PORT+1 / PORT+2 that Docker, WSL or Hyper-V may hold or reserve.
+const sharePort = await findFreePort(Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), '0.0.0.0', { skip: [PORT] });
+const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: sharePort, changed: () => serving.setSharing(localShare.state()) });
+const tunnelPort = await findFreePort(Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2), '127.0.0.1', { skip: [PORT, sharePort] });
 const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, host: '127.0.0.1', port: tunnelPort });
 const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare'), componentDirectory: join(componentsDirectory(), 'cloudflared') });
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure, connectorInfo: connector.connector, findRunning: findRunningConnector });
@@ -2162,6 +2165,12 @@ async function staticFile(req, res, path) {
 
 /* ------------------------------------------------------------------ start --- */
 
+server.on('error', error => {
+  if (server.listening) { console.error(`[strata] ${error.message}`); return; }
+  // a taken or Windows-reserved port: one plain sentence instead of a stack trace
+  console.error(`[strata] ${listenProblem(error, PORT, HOST)}`);
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.

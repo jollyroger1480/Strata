@@ -59,21 +59,37 @@ function read() {
 
 let state = read();
 const DEFAULT_MODELS_DIRECTORY=defaultModelDirectory();
-function initialModelsDirectory() {
- if(state.modelsDir)return state.modelsDir;
- const legacy=realpathSync(join(HOME,'models'));
- // Keep an existing library in place. A new install uses Documents/Strata/Models.
+/**
+ * The model folder for a new install: the saved one, an existing library inside STRATA_HOME, else Documents/Strata/Models. A Documents folder
+ * that cannot be made (Controlled folder access, a disconnected share, an offline OneDrive known folder) must not stop the host from starting:
+ * the models go to STRATA_HOME/models instead, and `notice` says so in plain words.
+ */
+export function pickModelsDirectory({ saved, home, preferred, fixedByEnv = false }) {
+ if (saved) return { directory: saved, notice: '' };
+ const fallback = join(home, 'models');
+ let legacy = fallback;
+ try { legacy = realpathSync(fallback); } catch { /* the folder is made at start; keep the plain path */ }
  function hasWeights(folder,depth=0){try{return readdirSync(folder,{withFileTypes:true}).some(entry=>entry.isFile()&&/\.gguf(?:\.part|\.partial)?$/i.test(entry.name)||entry.isDirectory()&&depth<4&&hasWeights(join(folder,entry.name),depth+1));}catch{return false;}}
- if(!process.env.STRATA_MODELS_DIR&&hasWeights(legacy))return legacy;
- const directory=DEFAULT_MODELS_DIRECTORY;
- mkdirSync(directory,{recursive:true});
- return realpathSync(directory);
+ // Keep an existing library in place. A new install uses Documents/Strata/Models.
+ if (!fixedByEnv && hasWeights(legacy)) return { directory: legacy, notice: '' };
+ try {
+  mkdirSync(preferred, { recursive: true });
+  accessSync(preferred, constants.R_OK | constants.W_OK | constants.X_OK);
+  return { directory: realpathSync(preferred), notice: '' };
+ } catch (error) {
+  return { directory: legacy, notice: `Strata could not use ${preferred} for models (${error.code ?? error.message}), so models go to ${legacy}. You can pick another folder in Settings.` };
+ }
 }
-export let MODELS_DIR = initialModelsDirectory();
+const MODELS_PICK = pickModelsDirectory({ saved: state.modelsDir, home: HOME, preferred: DEFAULT_MODELS_DIRECTORY, fixedByEnv: !!process.env.STRATA_MODELS_DIR });
+/** Plain words for the person when the usual model folder could not be used (empty otherwise). */
+export const MODELS_DIR_NOTICE = MODELS_PICK.notice;
+if (MODELS_DIR_NOTICE) console.warn(`[strata] ${MODELS_DIR_NOTICE}`);
+export let MODELS_DIR = MODELS_PICK.directory;
 
 /** Native setup writes weights to data_dir/models. Keep its data root one level up. */
 export function nativeDataDirectory(input) {
  if(!input||process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY))return input;
+ if(MODELS_DIR_NOTICE)return input;
  const root=realpathSync(DEFAULT_MODELS_DIRECTORY);
  if(resolve(input)!==resolve(DEFAULT_MODELS_DIRECTORY)&&realpathSync(input)!==root)return input;
  const data=dirname(root);

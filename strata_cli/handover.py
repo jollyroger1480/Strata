@@ -28,7 +28,7 @@ def running_from_checkout() -> bool:
     """True when this Terminal runs from a git checkout (the source route) rather than an installed bundle."""
     return (Path(__file__).resolve().parents[1] / ".git").exists()
 _FOLDER = re.compile(r"^[\w.+-]+$")
-_VERSION = re.compile(r"^[0-9]+(\.[0-9]+){1,3}$")
+_VERSION = re.compile(r"^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z][0-9A-Za-z.]*)?$")     # 0.2.2, or a pre-release such as 0.2.2-rc1
 
 
 def components_dir(environ=None) -> Path:
@@ -45,8 +45,18 @@ def components_dir(environ=None) -> Path:
 def version_key(text) -> tuple[int, ...] | None:
     if not isinstance(text, str) or not _VERSION.fullmatch(text.strip()):
         return None
-    parts = [int(p) for p in text.strip().split(".")]
-    return tuple(parts + [0] * (4 - len(parts)))
+    base, dash, _pre = text.strip().partition("-")
+    parts = [int(p) for p in base.split(".")]
+    # a pre-release sorts below the same number without the suffix (0.2.2-rc1 < 0.2.2); two pre-releases of one number compare by name
+    return tuple(parts + [0] * (4 - len(parts))) + ((0, _pre_rank(_pre)) if dash else (1, ()))
+
+
+def _pre_rank(pre: str) -> tuple:
+    """alpha < beta < rc < anything else, then the number inside ("rc2" > "rc1")."""
+    order = {"alpha": 0, "a": 0, "beta": 1, "b": 1, "rc": 2}
+    m = re.match(r"([A-Za-z]*)\.?([0-9]*)", pre)
+    word, number = (m.group(1).lower(), int(m.group(2) or 0)) if m else ("", 0)
+    return (order.get(word, 3), number)
 
 
 def _read_json(path: Path):
@@ -93,8 +103,12 @@ def find_target(running: str, environ=None, root: Path | None = None):
     if version is None:
         version = pointer.get("version")
     have, want = version_key(running), version_key(version)
-    if want is None or have is None or want <= have:
-        return None, None, None                          # never an older or equal Control; an unreadable version is ignored
+    if have is None:
+        return None, None, None                          # this Control has no readable version (a development tree): nothing to compare
+    if want is None:
+        return (None, None, f"its version ({version!r}) cannot be read") if version else (None, None, None)
+    if want <= have:
+        return None, None, None                          # never an older or equal Control
     if not (bundled_python(folder).is_file() and (folder / "strata.py").is_file() and (folder / "strata_control").is_dir()):
         return None, version, f"{folder} is missing its interpreter or entry point"
     return folder, version, None

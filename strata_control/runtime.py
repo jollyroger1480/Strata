@@ -38,7 +38,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, paths, private_files, procs, profiles, readiness, winproc
+from strata_control import owner_transport, paths, posix_owner, private_files, procs, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
@@ -56,7 +56,7 @@ def _is_private(details: os.stat_result, path: Path) -> bool:
             return private_files.is_unshared(path)
         except OSError:
             return False
-    return details.st_uid == os.getuid() and not stat.S_IMODE(details.st_mode) & 0o077
+    return not posix_owner.owner_only_wrong(path, details)
 
 
 def _lock_file(descriptor: int, *, exclusive: bool) -> bool:
