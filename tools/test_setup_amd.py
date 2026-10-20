@@ -146,6 +146,16 @@ class GpuLists(unittest.TestCase):
         self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", [apu, r9700])], [1, 0])
         self.assertEqual([g["index"] for g in setup.amd_parse_gpus("0,1", [apu, r9700, r9070])], [0, 1])
 
+    def test_an_unused_apu_with_a_big_carve_out_is_said(self):
+        apu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 96.0, "arch": "gfx1151", "uma": True, "dedicated_gb": 64.0}
+        r9700 = {"index": 1, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "arch": "gfx1201"}
+        out = setup.unused_apu_notes([r9700], [apu, r9700], 62.0)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("!") and "64 GB" in out[0] and "62 GB" in out[0])
+        self.assertEqual(setup.unused_apu_notes([apu, r9700], [apu, r9700], 62.0), [])            # in the run: not "unused"
+        self.assertEqual(setup.unused_apu_notes([r9700], [dict(apu, dedicated_gb=2.0), r9700], 120.0), [])   # a small carve-out: nothing to say
+        self.assertEqual(setup.unused_apu_notes([r9700], [r9700], 120.0), [])
+
     def test_refusals(self):
         for text in ("1,2", "1,7", "1", "1,1", "x,y"):
             with self.assertRaises(SystemExit, msg=text):

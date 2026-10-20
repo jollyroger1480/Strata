@@ -3625,6 +3625,19 @@ def igpu_notes(gpu, ram) -> list[str]:
     return []
 
 
+def unused_apu_notes(chosen, amd, ram) -> list[str]:
+    """A Strix Halo / APU that is NOT in the run but sits beside the card that is (a Radeon AI PRO R9700 and the 8060S): its BIOS carve-out is memory
+    the OS does not have, and it is the RAM the experts live in.  Nothing is changed: a "!" line says what is lost and what to set."""
+    out = []
+    used = {g["index"] for g in chosen}
+    for g in amd:
+        if g.get("uma") and g["index"] not in used and g.get("dedicated_gb", 0.0) > 16:
+            out.append(f"!the BIOS gives {g['dedicated_gb']:.0f} GB of your memory to {g['name']}, which this run does not use: the OS has "
+                       f"{ram:.0f} GB left for the experts and the desktop, and the engine can run out of RAM. A small carve-out (512 MB - 2 GB, "
+                       "'UMA Frame Buffer Size' in the BIOS) gives it back; the GPU reaches the shared memory anyway")
+    return out
+
+
 def strix_halo_notes(gpu, ram) -> list[str]:
     """What setup tells a Strix Halo owner (a leading "!" = a warning): the unified memory, the build, the guide, and the
     memory settings that give the GPU room.  Nothing is changed or refused: recommend, never force."""
@@ -8086,6 +8099,8 @@ def main() -> int:
         if gpu.get("uma"):
             for line in igpu_notes(gpu, ram_gb()):
                 (warn if line.startswith("!") else say)(line.lstrip("!"))
+        for line in unused_apu_notes(chosen, amd, ram_gb()):
+            (warn if line.startswith("!") else say)(line.lstrip("!"))
         for line in rdna2_notes(gpu):
             say(line)
     else:
