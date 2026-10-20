@@ -292,6 +292,13 @@ int main(int argc, char** argv) {
     }
     for (int gu : {144, 145})
         for (int dt : {144, 146}) check_grouped(gu, dt, 2560, 640, s, rng);
+    // other geometries: a longer hidden row (the staged gate/up falls back from its 80-block activation buffer), a shorter
+    // expert row (the 8-lane down rows need n_ff 640)
+    for (int gu : {144, 145}) {
+        check_grouped(gu, 146, 5120, 640, s, rng);
+        check_grouped(gu, 144, 2560, 512, s, rng);
+        check_grouped(gu, 146, 2048, 256, s, rng);
+    }
     if (do_bench) bench(s, rng);
     std::printf("tq_pascal_bench: %d failures\n", g_fail);
     cudaStreamDestroy(s);
