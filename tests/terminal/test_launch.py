@@ -580,6 +580,8 @@ class AdoptRules(unittest.TestCase):
             cfg = derive_config(split_base, S.LaunchSettings(), bool_flags=tune_knobs.BOOL_FLAGS)
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertEqual(base["gpu"], 0)                                   # the installed config itself is never changed
+            aged = derive_config({**base, "backend": "hip", "hip_ordinal": 1}, S.LaunchSettings(), bool_flags=tune_knobs.BOOL_FLAGS, gpus=[0])
+            self.assertNotIn("hip_ordinal", aged)                              # a card named now is not overruled by an old config's ordinal
             # which cards: named ones win (one card too: --gpu 1 on a box that has them), else the fit rule on a box with several cards
             two = catalog(HW_2X16)
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[1, 0]), two), [1, 0])
@@ -595,6 +597,34 @@ class AdoptRules(unittest.TestCase):
             out = r.build_config(installed)
             self.assertEqual(json.loads(out.read_text())["gpu"], 1)
             self.assertEqual(json.loads(installed.read_text())["gpu"], 0)
+
+    def test_a_card_the_installed_model_was_set_to_is_not_replaced_by_the_automatic_pick(self):
+        """Two equal cards: the fit rule recommends card 0, so a person's earlier choice (setup --gpu 1, the app's card pick: "gpus_asked")
+        must survive a `strata launch` that names no cards - in its order, with "gpu_order": "as_given" too."""
+        import json
+        from tests.terminal.launch_support import HW_2X16
+        from strata_cli.launch.runner import cards_for_launch, installed_cards
+        with Home() as h:
+            two = catalog(HW_2X16)
+            plain = S.LaunchSettings(family="qwen", model="IQ3_XXS")
+            chosen = {"exe": "component:strata-engine", "args": ["--max-context", "32768"], "gpu": 1, "gpus_asked": True, "port": 8080}
+            self.assertEqual(installed_cards(chosen), [1])
+            self.assertEqual(installed_cards({**chosen, "gpu": [1, 0], "gpu_order": "as_given"}), [1, 0])
+            self.assertEqual(installed_cards({**chosen, "gpu": "1,0"}), [1, 0])
+            self.assertIsNone(installed_cards({**chosen, "gpus_asked": False}))               # never asked: setup's default, not a choice
+            self.assertIsNone(installed_cards({"gpu": 1}))
+            self.assertIsNone(cards_for_launch(plain, two, base=chosen))                      # the installed choice stays
+            self.assertEqual(cards_for_launch(plain, two, base={**chosen, "gpus_asked": False}), [0])    # no choice recorded: the fit rule
+            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[0]), two, base=chosen), [0])   # --gpu 0 wins
+            if True:
+                installed = h.base / "strata-iq3_xxs.json"
+                for gpu, extra in ((1, {}), ([1, 0], {"gpu_order": "as_given", "layer_split": "auto"})):
+                    base = {**chosen, "gpu": gpu, **extra}
+                    installed.write_text(json.dumps(base))
+                    r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", name="keep"), catalog=two)
+                    cfg = json.loads(r.build_config(installed).read_text())
+                    self.assertEqual(cfg["gpu"], gpu)
+                    self.assertEqual(cfg.get("gpu_order"), extra.get("gpu_order"))
 
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:

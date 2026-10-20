@@ -544,6 +544,14 @@ class CardsScreen(Base):
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
         return float(r.memory_gb) if r is not None and r.memory_gb else 44.0
 
+    def installed(self) -> list[int] | None:
+        """The cards the installed model was set to by a person's choice (kept unless this launch names others)."""
+        from strata_cli.launch.runner import installed_cards
+        try:
+            return installed_cards(self.ctx.base_config())
+        except Exception:                                    # noqa: BLE001
+            return None
+
     def choices(self) -> dict:
         from strata_control import gpu_fit
         return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus, self.ctx.computer.engine_vendor)
@@ -553,10 +561,11 @@ class CardsScreen(Base):
         items = []
         sel = 0
         cur = self.ctx.settings.gpus
+        inst = self.installed()
         for i, o in enumerate(self.res["options"]):
-            label = o["label"] + ("   (recommended)" if o["recommended"] else "")
+            label = o["label"] + ("   (recommended)" if o["recommended"] else "") + ("   (as installed)" if inst and sorted(o["cards"]) == sorted(inst) else "")
             items.append(Item([label, Cell(o["words"], WARN if o["verdict"] in ("spills", "tight") else "")], key=o["cards"]))
-            if cur is None and o["recommended"] or (cur is not None and o["cards"] == list(cur)):
+            if cur is None and (inst is None and o["recommended"] or inst is not None and sorted(o["cards"]) == sorted(inst))                     or (cur is not None and o["cards"] == list(cur)):
                 sel = i
         wide = max((len(str(i.cells[0])) for i in items), default=40)
         self.query_one(Menu).columns = [("", max(40, min(wide + 3, 70))), ("", 0)]
@@ -587,7 +596,9 @@ class CardsScreen(Base):
     def commit(self) -> None:
         cur = self.menu().current
         rec = next((o["cards"] for o in self.res["options"] if o["recommended"]), None)
-        self.ctx.settings.gpus = None if cur.key == rec else list(cur.key)         # the recommended choice stays "let Strata choose" (the same rule in setup)
+        inst = self.installed()
+        keep = rec if inst is None else inst                 # "let Strata choose" = the recommendation, or the cards the installed model was set to
+        self.ctx.settings.gpus = None if keep is not None and sorted(cur.key) == sorted(keep) else list(cur.key)         # the recommended choice stays "let Strata choose" (the same rule in setup)
 
 
 # ------------------------------------------------------------------------------------------------ 3 folder
