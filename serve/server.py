@@ -7995,6 +7995,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
+        for line in card_roles_lines(cfg):             # the card roles: said first; every card Off stops here, before anything touches a card
+            print(line, flush=True)
         if cfg.get("vision"):
             elastic = cfg["vision"].get("elastic") is True and cfg.get("vram_elastic") is True
             print("the vision encoder starts with the first picture (elastic) ..." if elastic else
@@ -8015,8 +8017,6 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
-        for line in card_roles_lines(cfg):
-            print(line, flush=True)
         note = card_note(cfg, env)
         if note:
             print(note, flush=True)
