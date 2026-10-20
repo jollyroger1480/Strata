@@ -12,14 +12,14 @@ is anybody's default.
 | **Download** (the n-gram table is inside the file) | **58.5 GB** | **92.0 GB** |
 | **Memory it needs** (VRAM + RAM together) | **27.6 GB** | **35 GB** |
 | Experts (trellis) | TQK6 gate/up, TQK7 down | TQ2_T |
-| In plain words | the smallest option, for PCs with little memory; lower quality than the 2-3-bit sizes | about IQ3_XXS quality with about 20% less GPU memory; decodes about 20% slower than Q2_0 on 12 GB cards |
+| In plain words | the smallest option, for PCs with little memory; lower quality than the 2-3-bit sizes | about IQ3_XXS quality with about 20% less GPU memory; decodes about 16% slower than Q2_0 on a 12 GB RTX 3060 (23% slower before engine 0.2.2) |
 
 About half of each file is the n-gram (PLE) table: it stays on the SSD and is read row by row for every token, so keep
 the file on a fast local drive. The memory figure is what the weights take once loaded.
 
 Not defaults, by measurement (our evaluation, 2026-10): against Q2_0 at the same GPU bytes Gyro-M halves the KL
 divergence (0.159 against 0.312 on 128 chunks) and is level with IQ3_XXS (0.157), but decodes 17-21% slower on a 12 GB
-card (RTX 3060) and an R9700, and its reasoning set scored lower than Q2_0's (49/60 against 57/60). Gyro-S is 13% worse
+card (RTX 3060, measured before engine 0.2.2: 16% since) and an R9700, and its reasoning set scored lower than Q2_0's (49/60 against 57/60). Gyro-S is 13% worse
 in KL than IQ2_XS (0.268 against 0.236) with 24% fewer bytes. So: pick Gyro-S where nothing bigger fits, Gyro-M when
 the 20% memory saving over IQ3_XXS matters. Setup and the MCP server mention them only where the other sizes do not
 fit the PC; they warn, never refuse. Gyro-L (agentionai's 50 GiB file, 2026-10-12) is not supported: it uses another
@@ -117,6 +117,31 @@ short of one cache slot and the engine stops with that sentence. It starts with 
 **Memory.** Gyro-S needs about 27.6 GB of VRAM and RAM together; the n-gram table (28 GB) stays on the SSD, so on an Arc setup does not
 put `--ple-io ram` in the config for Gyro (it does for the other packs on an i915 card). One run used about 24 GB of RAM for the
 expert arena. Keep the file on a fast SSD.
+
+## Decode speed on NVIDIA (engine 0.2.2)
+
+The trellis decode kernels read the codebook (2048 two-byte entries, 8 random lookups for every 16 weights) from the global
+table. On an RTX 3060 that made the gate/up and down kernels wait on the L1 cache, not on memory: 18 L1 sectors for every
+lookup request, the card's L1 at 64% busy while the DRAM was 27% busy. The kernels now keep the 4 KB codebook in shared memory
+(`STRATA_IQ_STAGE_GRID=0` reads it in place again) and take four rows per warp, 32 rows per thread block, so the copy is shared
+and no lane idles in the 160-dot gate/up rows or the 40-dot down rows. The sums are added in the same order as before, so the
+answers are bit for bit the old ones: the identity gate (10 prompts, 4096 and 20000 token prompts) is identical on Gyro-S,
+Gyro-M, Q2_0 and IQ3_XXS, and the Q2_0 and IQ3_XXS kernels did not change.
+
+RTX 3060 12 GB, Core Ultra 7, Ubuntu, CUDA 13.4, default flags (MTP draft 4, auto cache), 5 interleaved pairs of whole engine
+starts, medians of the story, code and facts prompts (200 tokens each), engine 0.2.1 against 0.2.2. Gyro files of the first
+release; the pinned revision is checked in the next block.
+
+| | decode before, tok/s | after | gain | pairs faster | 4K / 20K prompt |
+| --- | ---: | ---: | ---: | --- | --- |
+| Gyro-S | 53.6 | 62.8 | +17.2% | 4 of 5 (8-9 of 10 requests per prompt) | unchanged (1.008, 1.000) |
+| Gyro-M | 50.6 | 56.1 | +10.9% | 5 of 5 | unchanged (1.013, 0.997) |
+| Q2_0 (not changed) | 66.9 | 66.1 | 0.99 (noise) | 2 of 5 | unchanged |
+
+Against Q2_0 on the same card, before: Gyro-S 53.8 against 65.7 tok/s (18% slower), Gyro-M 51.7 against 67.6 (24% slower).
+After: Gyro-S about 6% slower, Gyro-M about 16% slower. What is left of Gyro-M's gap is mostly its dense weights: in a
+decode profile its Q8_0 matrix-vector kernels take 26% of the GPU time, and they read as many bytes as the card's memory
+delivers. The trellis kernels themselves are limited by the shared-memory bank conflicts of the random codebook lookups now. Prompt speed is not changed by this: Gyro prompts stay 8% (Gyro-S) and 11-19% (Gyro-M) slower than Q2_0's.
 
 ## Credit and licenses
 
