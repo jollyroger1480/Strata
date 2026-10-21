@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.46.3 LANGUAGES CXX)
+project(strata VERSION 0.1.47 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -1425,6 +1425,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(draft_policy_test src/spec/draft_policy_test.cpp)
   target_link_libraries(draft_policy_test PRIVATE strata_spec)
   add_test(NAME draft_policy_test COMMAND draft_policy_test)
+  add_executable(spec_start_test src/spec/spec_start_test.cpp)
+  target_include_directories(spec_start_test PRIVATE include)
+  add_test(NAME spec_start_test COMMAND spec_start_test)
 endif()
 if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(message_boundary_test src/program/message_boundary_test.cpp)

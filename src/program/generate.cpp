@@ -84,6 +84,7 @@
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
+#include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
@@ -2234,7 +2235,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 // it is the fast one).  Streams are destroyed again; the runtime keeps the queues.
 //   Two queues are enough (R9700, "nn": 0 slow of 32 fresh starts, unprimed 10 of 32); five (nnnnh) fixed the starts too but cost
 //   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
-//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn"; "0": off; any other string is a spec
+//   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn" (not when GPU_MAX_HW_QUEUES is 1 or 2, #3480); "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
 static void prime_hw_queues() {
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
@@ -2251,6 +2252,16 @@ static void prime_hw_queues() {
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) {
             (void) cudaGetLastError();
+            return;
+        }
+        // #3480: with the runtime capped to two hardware queues (GPU_MAX_HW_QUEUES=1 or 2, the user's own setting) the two
+        // primed queues are all of them: the high-priority draft stream and the side stream share them and a 4K prompt
+        // reads 39% slower (RX 9060 XT, 681-753 against 1188-1238 tok/s).  Not primed then; a spec in
+        // STRATA_HIP_QUEUE_PRIME still is.
+        const char* cap = std::getenv("GPU_MAX_HW_QUEUES");
+        if (cap != nullptr && std::atoi(cap) >= 1 && std::atoi(cap) <= 2) {
+            std::fprintf(stderr, "strata generate: GPU queues not primed: GPU_MAX_HW_QUEUES=%s leaves none for the draft stream "
+                                 "(STRATA_HIP_QUEUE_PRIME=nn primes them anyway)\n", cap);
             return;
         }
         spec = "nn";
@@ -9216,6 +9227,10 @@ int main(int argc, char** argv) {
         bool live_ok = false;
         // #879: a window met non-finite logits: the next request drops every cached state first and reads from token 0
         bool nan_flush = false;
+        // #3465: the non-finite logits came in a window that reads the PROMPT's tail (the last few tokens, read through
+        // the verify windows after the batched part).  The retry reads that tail batched (--short-read 0 for one request):
+        // a reporter's prompts failed there every time and passed with --short-read 0.
+        bool nf_prompt_windows = false, short_read_off_once = false;
         std::vector<ConvCheckpoint> checks;
         // STRATA_CKPT_POOL: the dropped checkpoints' storage, reused.  STRATA_SLOT_CKPT_MOVE turns it on too: a moved
         // checkpoint frees nothing at the next prune, so every save would fault in fresh pages (17 -> 40-60 ms)
@@ -9502,6 +9517,7 @@ int main(int argc, char** argv) {
             std::fflush(stderr);
             nf_hit = true;
             nan_flush = true;
+            if (std::strcmp(what, "prompt") == 0) nf_prompt_windows = true;
             return true;
         };
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
@@ -12380,6 +12396,10 @@ int main(int argc, char** argv) {
             // conversation and every idle batch slot go, and this prompt is read from token 0 (resume == 0 below)
             if (nan_flush) {
                 nan_flush = false;
+                if (nf_prompt_windows) {
+                    nf_prompt_windows = false;
+                    short_read_off_once = o.short_read > 0;
+                }
                 const size_t n_checks = checks.size();
                 live_ok = false;
                 checks.clear();
@@ -12888,6 +12908,12 @@ int main(int argc, char** argv) {
             // STRATA_CKPT_REREAD compares a restored checkpoint with a batched re-read, so it keeps every read batched.
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
             int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
+            if (short_read_off_once) {   // #3465: the request after non-finite logits in a prompt window
+                short_read_off_once = false;
+                req_short_read = 0;
+                std::fprintf(stderr, "strata serve: after non-finite logits in a prompt window (#3465): this request reads its "
+                                     "whole prompt through the batched path, none of it through the verify windows\n");
+            }
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
@@ -15509,7 +15535,7 @@ int main(int argc, char** argv) {
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.
     int64_t pos_start = 0;
-    int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
+    int64_t spec_pos = strata::spec::kSpecNotStarted;   // plan v0.3 P6: where the speculative loop starts (0 is a real position: a 1-token prompt on a native pack)
     strata::prefill::Prefill prefill;
     // #1595: not by default when the cache holds every expert (nothing to take)
     strata::prefill::Prefill::arm_cpu_share(!multi_gpu && !o.no_pool,
@@ -15899,7 +15925,7 @@ int main(int argc, char** argv) {
     // round emits (accepted drafts + 1) tokens.  `commit` keeps the state of the tokens that were emitted.
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
-    if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
+    if (strata::spec::spec_loop_runs(spec_pos, (int64_t) produced.size(), o.max_new, ended)) {
         auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
             std::ifstream in(path);
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -16200,8 +16226,32 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        // STRATA_SPEC_WATCH=<seconds> (diagnostics, off by default): the serve watchdog for this loop.  A run whose verify
+        // windows and prompt chunks stop beating for that long prints the stage it is in and the stall report, then ends.
+        if (const char* sw = std::getenv("STRATA_SPEC_WATCH"); sw != nullptr && std::atoi(sw) > 0) {
+            const int limit = std::atoi(sw);
+            strata::core::progress().busy.store(true);
+            std::thread([limit] {
+                strata::core::Progress& pr = strata::core::progress();
+                uint64_t last = pr.beats.load(), ticks_at = pr.ticks.load();
+                auto since = std::chrono::steady_clock::now();
+                for (;;) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    const auto now = std::chrono::steady_clock::now();
+                    const uint64_t b = pr.beats.load();
+                    if (b != last) { last = b; ticks_at = pr.ticks.load(); since = now; continue; }
+                    if (now - since < std::chrono::seconds(limit)) continue;
+                    std::fprintf(stderr, "strata generate: no progress for %d s (%s)\n", limit, stage_text().c_str());
+                    stall_report(stderr, pr.ticks.load() - ticks_at);
+                    strata::core::release_gpu_waits(stderr);
+                    std::fflush(stderr);
+                    std::abort();
+                }
+            }).detach();
+        }
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
+            strata::core::progress_at("spec loop: choosing the window", (int64_t) produced.size());
             int T = S_mtp;
             if (use_mtp && o.spec_min_p > 0.0) {
                 T = 1;
@@ -16313,6 +16363,7 @@ int main(int argc, char** argv) {
             bool adapt_ok = true;
             if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
                 adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
+            strata::core::progress_at("spec loop: commit", (int64_t) T);
             if (!ver.commit(a + 1, err)) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
