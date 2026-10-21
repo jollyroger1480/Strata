@@ -126,22 +126,21 @@ lookup request, the card's L1 at 64% busy while the DRAM was 27% busy. The kerne
 (`STRATA_IQ_STAGE_GRID=0` reads it in place again) and take four rows per warp, 32 rows per thread block, so the copy is shared
 and no lane idles in the 160-dot gate/up rows or the 40-dot down rows. The sums are added in the same order as before, so the
 answers are bit for bit the old ones: the identity gate (10 prompts, 4096 and 20000 token prompts) is identical on Gyro-S,
-Gyro-M, Q2_0 and IQ3_XXS, and the Q2_0 and IQ3_XXS kernels did not change.
+Gyro-M, Q2_0 and IQ3_XXS, and the Q2_0 and IQ3_XXS kernels did not change. A Tesla P100 (compute capability 6.0) runs its own variant of the same idea, STRATA_TQ_STAGE (Gyro-S +30% there, 5 pairs).
 
 RTX 3060 12 GB, Core Ultra 7, Ubuntu, CUDA 13.4, default flags (MTP draft 4, auto cache), 5 interleaved pairs of whole engine
-starts, medians of the story, code and facts prompts (200 tokens each), engine 0.2.1 against 0.2.2. Gyro files of the first
-release; the pinned revision is checked in the next block.
+starts, medians of the story, code and facts prompts (200 tokens each), the pinned Gyro files, engine 0.2.1 against 0.2.2.
 
 | | decode before, tok/s | after | gain | pairs faster | 4K / 20K prompt |
 | --- | ---: | ---: | ---: | --- | --- |
-| Gyro-S | 53.6 | 62.8 | +17.2% | 4 of 5 (8-9 of 10 requests per prompt) | unchanged (1.008, 1.000) |
-| Gyro-M | 50.6 | 56.1 | +10.9% | 5 of 5 | unchanged (1.013, 0.997) |
-| Q2_0 (not changed) | 66.9 | 66.1 | 0.99 (noise) | 2 of 5 | unchanged |
+| Gyro-S | 54.3 | 62.5 | +15.2% | 5 of 5 (10 of 10 requests per prompt) | unchanged (0.996, 1.000) |
+| Gyro-M | 50.2 | 54.8 | +9.1% | 5 of 5 (10 of 10) | unchanged (1.004, 0.999) |
+| Q2_0 (not changed) | 66.4 | 67.1 | 1.010 (noise) | 3 of 5 | unchanged (1.003, 0.999) |
 
-Against Q2_0 on the same card, before: Gyro-S 53.8 against 65.7 tok/s (18% slower), Gyro-M 51.7 against 67.6 (24% slower).
-After: Gyro-S about 6% slower, Gyro-M about 16% slower. What is left of Gyro-M's gap is mostly its dense weights: in a
+Against Q2_0 on the same card, before: Gyro-S 54.2 against 64.4 tok/s (16% slower), Gyro-M 50.5 against 65.6 (23% slower).
+After: Gyro-S 61.1 against 65.5 (7% slower), Gyro-M 54.1 against 64.5 (16% slower). What is left of Gyro-M's gap is mostly its dense weights: in a
 decode profile its Q8_0 matrix-vector kernels take 26% of the GPU time, and they read as many bytes as the card's memory
-delivers. The trellis kernels themselves are limited by the shared-memory bank conflicts of the random codebook lookups now. Prompt speed is not changed by this: Gyro prompts stay 8% (Gyro-S) and 11-19% (Gyro-M) slower than Q2_0's.
+delivers. The trellis kernels themselves are limited by the shared-memory bank conflicts of the random codebook lookups now. Prompt speed is not changed by this: Gyro prompts stay 7-8% (Gyro-S) and 8-9% (Gyro-M) slower than Q2_0's.
 
 ## Credit and licenses
 
