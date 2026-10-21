@@ -85,8 +85,9 @@ line under the table.
 | **Mac** (Apple Silicon, macOS 15 or newer) | built in | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
 
 **If you are unsure:** for NVIDIA, take `cuda13` if your driver is version 580 or newer, otherwise `cuda12`. `cuda12` is
-for older cards and older drivers. The `hip` and `amd` files are for AMD cards. Other AMD cards (RX 6000) have no
-ready-made app yet: see [AMD cards](docs/AMD_HIP.md).
+for older cards and older drivers. The `hip` and `amd` files are for AMD cards. RX 6000 cards have no installer of
+their own: install `hip-rdna3` (Windows) or `amd-rx7900` (Linux), and on a PC with an RX 6000 card it fetches the RX 6000 engine by itself
+(also `strata update`). That engine is built but not yet tested on a real RX 6000 card: see [AMD cards](docs/AMD_HIP.md).
 
 Then:
 
