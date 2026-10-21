@@ -83,7 +83,7 @@ FALLBACK_MODELS = {
                "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
                "vision": True},
     "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
-                        "about 20% slower than Q2_0 on 12 GB cards",
+                        "about 16-21% slower than Q2_0 on 12 GB cards",
                "engine": (0, 1, 45, 1),
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "vision": True},
