@@ -162,7 +162,7 @@ comprimido. Los tamaños pequeños son más rápidos. Los grandes son algo más 
 | Tamaño | Memoria que necesita (RAM + VRAM) | Descarga | Qué es |
 | --- | ---: | ---: | --- |
 | **Gyro-S** | 27,6 GB | 58,5 GB | Para PC donde no cabe nada más. La calidad es menor que la de IQ2_XS. |
-| **Gyro-M** | 35 GB | 92,0 GB | Calidad parecida a IQ3_XXS con un 20 % menos de memoria de GPU. Escribe las respuestas un 17-21 % más despacio que Q2_0 en una tarjeta de 12 GB y en una R9700. |
+| **Gyro-M** | 35 GB | 92,0 GB | Calidad parecida a IQ3_XXS con un 20 % menos de memoria de GPU. Escribe las respuestas un 16 % más despacio que Q2_0 en una RTX 3060 de 12 GB y un 21 % más despacio en una R9700. |
 
 Gyro funciona en tarjetas NVIDIA y AMD (en AMD es experimental) en tarjetas Intel Arc con Linux (probado en una Arc A750) y, desde 0.2.2, en Mac con Apple Silicon (Gyro-S en un Mac mini de 32 GB: 9 tokens/s, con los expertos leídos del SSD). Detalles y mediciones:
 [docs/GYRO.md](docs/GYRO.md). Arráncalo con `strata launch --model gyro-s`.
@@ -172,7 +172,7 @@ Gyro funciona en tarjetas NVIDIA y AMD (en AMD es experimental) en tarjetas Inte
 | Tu memoria (RAM + VRAM) | Elige | Notas |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**, o el **[Coder](docs/MODELS.md#coder)** para código | El Coder necesita 32 GB de RAM y conserva la mitad de los expertos, así que es más flojo fuera del código |
-| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 GB), o **Gyro-M** (35 GB) | Swift piensa menos tiempo antes de responder. Gyro-M se acerca a la calidad de IQ3_XXS, pero escribe las respuestas un 17-21 % más despacio que Q2_0 |
+| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 GB), o **Gyro-M** (35 GB) | Swift piensa menos tiempo antes de responder. Gyro-M se acerca a la calidad de IQ3_XXS, pero escribe las respuestas un 16-21 % más despacio que Q2_0 |
 | **48 GB** | **IQ3_XXS** (47,0 GB) | Más lento, mejor |
 | **64 GB** | **IQ3_S** (54,8 GB), el original o Swift 1.5 | El más lento, el mejor. Iguala al modelo completo en las pruebas publicadas |
 | **96 GB o más** | **UD-IQ4_XS** de Unsloth (unos 72 GB de RAM) hasta **Q8_0** (unos 136 GB), de 4 a 8 bits | Más cerca del modelo completo. Con menos RAM, Strata lee una parte desde el SSD, que es mucho más lento |

@@ -155,7 +155,7 @@ Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow doc
 | 尺寸 | 所需内存（RAM + VRAM） | 下载大小 | 说明 |
 | --- | ---: | ---: | --- |
 | **Gyro-S** | 27.6 GB | 58.5 GB | 给其他尺寸都放不下的电脑。质量低于 IQ2_XS。 |
-| **Gyro-M** | 35 GB | 92.0 GB | 质量约相当于 IQ3_XXS，显存占用少约 20%。在 12 GB 显卡和 R9700 上，输出回答比 Q2_0 慢 17-21%。 |
+| **Gyro-M** | 35 GB | 92.0 GB | 质量约相当于 IQ3_XXS，显存占用少约 20%。输出回答比 Q2_0 慢，12 GB 的 RTX 3060 上慢 16%，R9700 上慢 21%。 |
 
 Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的 Intel Arc 显卡（已在 Arc A750 上测试）上运行，自 0.2.2 起也可在 Apple Silicon 的 Mac 上运行（32 GB 的 Mac mini 上 Gyro-S 为 9 token/秒，专家权重从 SSD 读取）。详情和测试数据：
 [docs/GYRO.md](docs/GYRO.md)。用 `strata launch --model gyro-s` 启动。
@@ -165,7 +165,7 @@ Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的
 | 你的内存（RAM + VRAM） | 选择 | 备注 |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**，写代码可选 **[Coder](docs/MODELS.md#coder)** | Coder 需要 32 GB 内存，只保留一半的专家，所以代码以外的能力较弱 |
-| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB），或 **Gyro-M**（35 GB） | Swift 回答前思考的时间更短。Gyro-M 的质量接近 IQ3_XXS，但输出回答比 Q2_0 慢 17-21% |
+| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB），或 **Gyro-M**（35 GB） | Swift 回答前思考的时间更短。Gyro-M 的质量接近 IQ3_XXS，但输出回答比 Q2_0 慢 16-21% |
 | **48 GB** | **IQ3_XXS**（47.0 GB） | 更慢，更好 |
 | **64 GB** | **IQ3_S**（54.8 GB），原版或 Swift 1.5 | 最慢，最好：在公开测试中与完整模型持平 |
 | **96 GB 及以上** | Unsloth 的 **UD-IQ4_XS**（约 72 GB 内存）到 **Q8_0**（约 136 GB），4 到 8 位 | 更接近完整模型。内存不足时，Strata 会从固态硬盘读取一部分，速度会慢很多 |
