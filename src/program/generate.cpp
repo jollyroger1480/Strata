@@ -84,6 +84,7 @@
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
+#include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
@@ -15534,7 +15535,7 @@ int main(int argc, char** argv) {
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.
     int64_t pos_start = 0;
-    int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
+    int64_t spec_pos = strata::spec::kSpecNotStarted;   // plan v0.3 P6: where the speculative loop starts (0 is a real position: a 1-token prompt on a native pack)
     strata::prefill::Prefill prefill;
     // #1595: not by default when the cache holds every expert (nothing to take)
     strata::prefill::Prefill::arm_cpu_share(!multi_gpu && !o.no_pool,
@@ -15924,7 +15925,7 @@ int main(int argc, char** argv) {
     // round emits (accepted drafts + 1) tokens.  `commit` keeps the state of the tokens that were emitted.
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
-    if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
+    if (strata::spec::spec_loop_runs(spec_pos, (int64_t) produced.size(), o.max_new, ended)) {
         auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
             std::ifstream in(path);
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -16225,8 +16226,32 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        // STRATA_SPEC_WATCH=<seconds> (diagnostics, off by default): the serve watchdog for this loop.  A run whose verify
+        // windows and prompt chunks stop beating for that long prints the stage it is in and the stall report, then ends.
+        if (const char* sw = std::getenv("STRATA_SPEC_WATCH"); sw != nullptr && std::atoi(sw) > 0) {
+            const int limit = std::atoi(sw);
+            strata::core::progress().busy.store(true);
+            std::thread([limit] {
+                strata::core::Progress& pr = strata::core::progress();
+                uint64_t last = pr.beats.load(), ticks_at = pr.ticks.load();
+                auto since = std::chrono::steady_clock::now();
+                for (;;) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    const auto now = std::chrono::steady_clock::now();
+                    const uint64_t b = pr.beats.load();
+                    if (b != last) { last = b; ticks_at = pr.ticks.load(); since = now; continue; }
+                    if (now - since < std::chrono::seconds(limit)) continue;
+                    std::fprintf(stderr, "strata generate: no progress for %d s (%s)\n", limit, stage_text().c_str());
+                    stall_report(stderr, pr.ticks.load() - ticks_at);
+                    strata::core::release_gpu_waits(stderr);
+                    std::fflush(stderr);
+                    std::abort();
+                }
+            }).detach();
+        }
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
+            strata::core::progress_at("spec loop: choosing the window", (int64_t) produced.size());
             int T = S_mtp;
             if (use_mtp && o.spec_min_p > 0.0) {
                 T = 1;
@@ -16338,6 +16363,7 @@ int main(int argc, char** argv) {
             bool adapt_ok = true;
             if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
                 adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
+            strata::core::progress_at("spec loop: commit", (int64_t) T);
             if (!ver.commit(a + 1, err)) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
