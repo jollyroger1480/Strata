@@ -3441,6 +3441,10 @@ def mem_have(model: str, ram: float, vram: float = 0.0) -> float:
 # (35 GB) as the other choice.  Below 40 GB the older rules stand (Gyro-S, or the Coder for code).  The Mac has its own
 # rules (strata_control/mac_fit.py).  tools/strata_mcp.py's recommend() holds the same floors (the app and `strata launch`).
 MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))
+# #3425 (owner's rule): the tiers count RAM + VRAM less this much, which Windows and the system keep for themselves.  A PC
+# with a 16 GB card and 32 GB of RAM used to land in the 48 GB tier and then read ~11 GB of it from the SSD on every answer.
+# tools/strata_mcp.py has the same constant; the Mac (strata_control/mac_fit.py) keeps its own macOS share and does not use it.
+TIER_SYSTEM_RESERVE_GB = 5.0
 
 
 def tier_pick(ram: float, vram: float = 0.0):
@@ -3448,7 +3452,7 @@ def tier_pick(ram: float, vram: float = 0.0):
     Gyro-S, or the Coder).  With less RAM than the size's own figure the low-RAM mode starts by itself and the model is
     slower.  A recommendation: every size stays a choice."""
     for floor, fam, m in MEMORY_TIERS:
-        if ram + vram >= floor:
+        if ram + vram - TIER_SYSTEM_RESERVE_GB >= floor:
             return fam, m
     return None
 

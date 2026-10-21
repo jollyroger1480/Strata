@@ -14,7 +14,7 @@ makers' compressions). It also runs a smaller model, [Qwen3.6-35B-A3B](#qwen36-3
 
 The tiers count RAM and VRAM (the graphics card's memory) together, the same as the [README](../README.md#the-other-sizes).
 `strata launch`, setup and the install tool of the MCP server pre-select by them; the desktop app does from 0.2.1. Every
-other size stays a choice. A PC with a card of 12 GB and 32 GB of RAM is in the 40 GB tier (32 + 12 = 44).
+other size stays a choice. Strata leaves 5 GB for Windows and the system, so the sum is RAM + VRAM minus 5 GB: a PC with a card of 12 GB and 32 GB of RAM is in the 40 GB tier (32 + 12 - 5 = 39), and a PC with a 16 GB card and 32 GB of RAM is too, not in the 48 GB tier (#3425).
 
 | Your memory (RAM + VRAM) | Pre-selected | Notes |
 | --- | --- | --- |

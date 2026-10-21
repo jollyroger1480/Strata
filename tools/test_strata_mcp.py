@@ -664,14 +664,33 @@ class Helpers(unittest.TestCase):
         self.assertEqual(r["context"], 32768)
 
     def test_a_pick_that_reads_from_the_ssd_says_so(self):
-        # #3425: 32 GB RAM + 16 GB VRAM is the 48 GB tier; about 11 GB of IQ3_XXS would come from the SSD
+        # #3425: 36 GB RAM + 16 GB VRAM - 5 GB is the 48 GB tier; about 8 GB of IQ3_XXS would come from the SSD
         s = M.Strata(HERE.parent)
         gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
-        r = s.recommend({"ram_gb": 31.9, "gpus": gpu, "cpu": {"avx2": True}})
+        r = s.recommend({"ram_gb": 36.0, "gpus": gpu, "cpu": {"avx2": True}})
         self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
         self.assertTrue(any("read from the SSD" in n for n in r["notes"]), r["notes"])
         roomy = s.recommend({"ram_gb": 64, "gpus": gpu, "cpu": {"avx2": True}})
         self.assertFalse(any("read from the SSD" in n for n in roomy["notes"]), roomy["notes"])
+
+    def test_3425_the_tiers_leave_5_gb_for_windows(self):
+        # the reporter: RTX 5080 (16 GB) + 32 GB of RAM used to sum to 48 GB and get IQ3_XXS; now the 40 GB tier
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        self.assertEqual(M.TIER_SYSTEM_RESERVE_GB, 5.0)
+        r = s.recommend({"ram_gb": 31.9, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("swift", "IQ2_XS"))
+        # boundary: 43 GB of RAM + VRAM is the lowest 40 GB tier PC, 51 GB the lowest 48 GB tier PC
+        def pick(ram, vram):
+            g = [{**gpu[0], "vram_gb": vram}]
+            r = s.recommend({"ram_gb": ram, "gpus": g, "cpu": {"avx2": True}})
+            return r["family"], r["model"]
+        self.assertEqual(pick(30.0, 13.0), ("swift", "IQ2_XS"))
+        self.assertNotEqual(pick(30.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(38.0, 13.0), ("qwen", "IQ3_XXS"))
+        self.assertEqual(pick(38.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(54.0, 13.0), ("qwen", "IQ3_S"))
+        self.assertEqual(pick(54.0, 12.9), ("qwen", "IQ3_XXS"))
 
 
 class PhysicalCores(unittest.TestCase):

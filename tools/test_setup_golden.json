@@ -739,11 +739,11 @@
   "config": {
    "args": [
     "--pack",
-    "<T>/data/packs/iq3_s",
+    "<T>/data/packs/iq3_xxs",
     "--native",
-    "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--ple-gguf",
-    "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--expert-profile",
     "<T>/data/expert-profile.bin",
     "--expert-cache",
@@ -779,16 +779,16 @@
    "lib_dirs": [
     "<cuda>"
    ],
-   "log": "<T>/strata-iq3_s.log",
-   "model_name": "qwen3.8-flash-next-iq3_s",
+   "log": "<T>/strata-iq3_xxs.log",
+   "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
     "exe": "<T>/engine/strata-vision.exe",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
-    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "threads": 6
    }
   }

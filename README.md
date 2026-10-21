@@ -164,6 +164,8 @@ Gyro runs on NVIDIA and AMD cards (AMD is experimental) on Intel Arc cards on Li
 
 ### The other sizes
 
+The tiers count your RAM plus your VRAM, less 5 GB that Windows and the system keep for themselves. Every other size stays a choice.
+
 | Your memory (RAM + VRAM) | Take | Notes |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**, or the **[Coder](docs/MODELS.md#coder)** for code | The Coder needs 32 GB of RAM and keeps half of the experts, so it is weaker outside code |
