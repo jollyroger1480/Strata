@@ -3459,7 +3459,7 @@ def tier_note(ram: float, vram: float = 0.0, gyro: bool = True) -> str:
     if not gyro or pick != ("swift", "IQ2_XS"):
         return ""
     return ("this PC's RAM + VRAM is in the 40 GB tier: Swift 1.5's IQ2_XS is the pick; Gyro-M (35 GB) is the other choice, "
-            "close to IQ3_XXS in quality but 17-21% slower at writing answers than Q2_0")
+            "close to IQ3_XXS in quality but 16-21% slower at writing answers than Q2_0")
 
 
 def recommended_size(family: str, names: list, ram: float, vram: float = 0.0) -> str:

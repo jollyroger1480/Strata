@@ -18,7 +18,7 @@ About half of each file is the n-gram (PLE) table: it stays on the SSD and is re
 the file on a fast local drive. The memory figure is what the weights take once loaded.
 
 Not defaults, by measurement (our evaluation, 2026-10): against Q2_0 at the same GPU bytes Gyro-M halves the KL
-divergence (0.159 against 0.312 on 128 chunks) and is level with IQ3_XXS (0.157), but decodes 17-21% slower on a 12 GB
+divergence (0.159 against 0.312 on 128 chunks) and is level with IQ3_XXS (0.157), but decodes 16-21% slower on a 12 GB
 card (RTX 3060, measured before engine 0.2.2: 16% since) and an R9700, and its reasoning set scored lower than Q2_0's (49/60 against 57/60). Gyro-S is 13% worse
 in KL than IQ2_XS (0.268 against 0.236) with 24% fewer bytes. So: pick Gyro-S where nothing bigger fits, Gyro-M when
 the 20% memory saving over IQ3_XXS matters. Setup and the MCP server mention them only where the other sizes do not
