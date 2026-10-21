@@ -12,7 +12,7 @@ is anybody's default.
 | **Download** (the n-gram table is inside the file) | **58.5 GB** | **92.0 GB** |
 | **Memory it needs** (VRAM + RAM together) | **27.6 GB** | **35 GB** |
 | Experts (trellis) | TQK6 gate/up, TQK7 down | TQ2_T |
-| In plain words | the smallest option, for PCs with little memory; lower quality than the 2-3-bit sizes | about IQ3_XXS quality with about 20% less GPU memory; decodes about 16% slower than Q2_0 on a 12 GB RTX 3060 (23% slower before engine 0.2.2) |
+| In plain words | the smallest option, for PCs with little memory; lower quality than the 2-3-bit sizes | about IQ3_XXS quality with about 20% less GPU memory; decodes about 16% slower than Q2_0 on a 12 GB RTX 3060 (24% slower before engine 0.2.2) |
 
 About half of each file is the n-gram (PLE) table: it stays on the SSD and is read row by row for every token, so keep
 the file on a fast local drive. The memory figure is what the weights take once loaded.
