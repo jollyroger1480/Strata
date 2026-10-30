@@ -94,4 +94,31 @@ void gdn_beta_gate(float* beta, int64_t h_v, void* stream);
 void gdn_out_norm(const float* o, const float* z, const float* ssm_norm, float* y, int64_t h_v, int64_t S,
                   float eps, void* stream);
 
+/// qwen35 closing norm: `y = rms_norm(o, eps) * ssm_norm * silu(z)`, with `silu(z) = z * sigmoid(z)`.
+///
+/// Same RMS as `gdn_out_norm` (mean of squares, plus eps). The qwen4exp artifact keeps the sigmoid form.
+/// Device pointers. `ssm_norm` is S floats, broadcast across heads.
+void gdn_out_norm_silu(const float* o, const float* z, const float* ssm_norm, float* y, int64_t h_v, int64_t S,
+                       float eps, void* stream);
+
+/// Same as `gdn_out_norm_silu`, but value-heads are contiguous ranges on `devices[0 .. n_dev)`.
+///
+/// Host pointers in and out. Heads do not couple, so each device norms only its own rows and the slices
+/// are written back in head order. One device is the same result as `gdn_out_norm_silu` on that device.
+void gdn_out_norm_silu_split(const float* o, const float* z, const float* ssm_norm, float* y, int64_t h_v,
+                             int64_t S, float eps, const int* devices, int n_dev);
+
+/// `gdn_step` for a packed head slice whose first head is global index `head_base`.
+///
+/// q and k stay the full (h_k, S) tables. The head pairing is `(local_h + head_base) % h_k`, which is the
+/// global head. `head_base == 0` is `gdn_step`. State, v, gate, beta, and o are the slice, with `s.h_v` heads.
+void gdn_step_at(float* state, const float* q, const float* k, const float* v, const float* gate,
+                 const float* beta, float* o, const GdnShapes& s, int64_t head_base, void* stream);
+
+/// Host-pointer `gdn_step` with value-heads split across `devices`. State is updated in place.
+///
+/// Each device owns a contiguous head range of `state`, `v`, `gate`, `beta`, and `o`, and the full q and k.
+void gdn_step_split(float* state, const float* q, const float* k, const float* v, const float* gate,
+                    const float* beta, float* o, const GdnShapes& s, const int* devices, int n_dev);
+
 }  // namespace strata::kernels
