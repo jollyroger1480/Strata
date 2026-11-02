@@ -1,3 +1,4 @@
+#if !defined(STRATA_HIP_GFX803) && !defined(STRATA_HIP_GFX900)   // QSA: the GLM indexer path - pre-dp4a/dot4 builds exclude it (permlane)
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/core/sm75_series.hpp"
@@ -1267,3 +1268,5 @@ void qsa_decode_attn_merge_only(const int32_t* steps, int64_t cap, const QsaShap
 }
 
 }  // namespace strata::kernels
+
+#endif  // !STRATA_HIP_GFX803
