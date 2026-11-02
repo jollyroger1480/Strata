@@ -102,6 +102,13 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+option(STRATA_HIP_GFX803 "gfx803 (Polaris, wave64, no dp4a): dp4a byte-mad emulation, experimental" OFF)
+if(STRATA_HIP_GFX803)
+  if(NOT STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_HIP_GFX803 requires STRATA_ENABLE_HIP")
+  endif()
+  add_compile_definitions(STRATA_HIP_GFX803=1)
+endif()
 # llama.cpp's MMQ prompt kernels are no longer in the tree (0.2.16): every CUDA and HIP build compiles Strata's own prompt kernels (strata_pf_own)
 # and the FP16 path.  MMQ comparison builds come from the v0.2.15 tag.
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
