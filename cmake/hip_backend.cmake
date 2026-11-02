@@ -12,7 +12,7 @@ endif()
 # same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental.
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1032 gfx1034 gfx1150 gfx1151 gfx1152)   # gfx1103: Radeon 780M iGPU, opt-in, WMMA kernels like gfx1100; gfx1152: Krackan, Radeon 860M / 840M (#1625), builds with the portable kernels, no card report yet
+set(_strata_hip_unvalidated gfx900 gfx803 gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1032 gfx1034 gfx1150 gfx1151 gfx1152)   # gfx1103: Radeon 780M iGPU, opt-in, WMMA kernels like gfx1100; gfx1152: Krackan, Radeon 860M / 840M (#1625), builds with the portable kernels, no card report yet
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
@@ -99,6 +99,12 @@ target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA
 option(STRATA_GFX1012_PORTABLE_DOT "Use the portable signed-byte dot control on gfx1012" OFF)
 if(STRATA_GFX1012_PORTABLE_DOT)
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_GFX1012_PORTABLE_DOT=1)
+endif()
+if(STRATA_HIP_GFX803)
+  target_compile_definitions(strata_hip_runtime INTERFACE STRATA_HIP_GFX803=1)
+endif()
+if("gfx900" IN_LIST STRATA_HIP_ARCH_LIST)
+  target_compile_definitions(strata_hip_runtime INTERFACE STRATA_HIP_GFX900=1)
 endif()
 # #313: the RDNA3 WMMA GEMM's intrinsics only compile for gfx11 targets and the host pass does not define
 # __gfx11xx__, so the build supplies the macro for gfx11 configs (the kernels also gate on the device at runtime)

@@ -20,8 +20,8 @@
 #pragma once
 
 #include <cstdint>
-#if defined(STRATA_HIP_GFX906)
-#include <cuda_runtime.h>   // gfx906: the compat layer (__forceinline__, __nanosleep, __dp4a)
+#if defined(STRATA_HIP_GFX906) || defined(STRATA_HIP_GFX803)
+#include <cuda_runtime.h>   // gfx906/gfx803: the compat layer (__forceinline__, __nanosleep, __dp4a)
 #endif
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
@@ -38,6 +38,24 @@ __device__ __forceinline__ int strata_dp4a(const int a, const int b, const int c
     return r;
 }
 #define STRATA_DP4A(a, b, c) strata_dp4a((a), (b), (c))
+#elif defined(__HIPCC__) && defined(STRATA_HIP_GFX803)
+// gfx803 (GCN4): no v_dot4 instruction - dp4a as four sign-extended byte products on
+// v_mad_i32_i24 (GCN3+), int32 wraparound accumulation: bitwise __dp4a's.
+__device__ __forceinline__ int dp4a_gfx803(const int a, const int b, const int c) {
+    // pure C++: clang lowers the sign-extended byte products to GCN4 ops (lshr/bfe + mul + add).
+    // v_mad_i32_i24 exists in the GCN4 ISA but ROCm 10's gfx803 integrated assembler rejects all
+    // VOP mnemonics (even through llvm-mc the target parses, so the asm pipeline is gutted, not
+    // the backend) - and inline asm fails through hipcc for EVERY target incl. gfx1030/gfx906.
+    int r = c;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const int ab = (int8_t) ((a >> (8 * i)) & 0xFF);
+        const int bb = (int8_t) ((b >> (8 * i)) & 0xFF);
+        r += ab * bb;
+    }
+    return r;
+}
+#define STRATA_DP4A(a, b, c) dp4a_gfx803((a), (b), (c))
 #else
 #define STRATA_DP4A(a, b, c) __dp4a((a), (b), (c))
 #endif

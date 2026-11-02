@@ -91,6 +91,13 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+option(STRATA_HIP_GFX803 "gfx803 (Polaris, wave64, no dp4a): dp4a byte-mad emulation, experimental" OFF)
+if(STRATA_HIP_GFX803)
+  if(NOT STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_HIP_GFX803 requires STRATA_ENABLE_HIP")
+  endif()
+  add_compile_definitions(STRATA_HIP_GFX803=1)
+endif()
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
