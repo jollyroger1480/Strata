@@ -91,6 +91,13 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+option(STRATA_HIP_GFX803 "gfx803 (Polaris, wave64, no dp4a): dp4a byte-mad emulation, experimental" OFF)
+if(STRATA_HIP_GFX803)
+  if(NOT STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_HIP_GFX803 requires STRATA_ENABLE_HIP")
+  endif()
+  add_compile_definitions(STRATA_HIP_GFX803=1)
+endif()
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # The rows one verify / batch window holds (include/strata/kernels/window_limits.hpp): 8, the 0.2.7 window, or 16 (four pipelined
 # groups of 16 slots = 64 slots on a four-card split, docs/BATCHING.md).  Only the CUDA and HIP engines are built from

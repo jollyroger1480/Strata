@@ -232,16 +232,22 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
                 ck(cudaStreamSynchronize(s), "il");
                 ck(cudaMemcpy(b.data(), yil, ybytes, cudaMemcpyDeviceToHost), "read il");
                 long long diff = 0, nonfinite = 0;
+                double maxabs = 0, maxrel = 0;   // magnitude of the disagreement, not just its count
                 for (std::size_t i = 0; i < a.size(); ++i) {
-                    float fa;
+                    float fa, fb;
                     std::memcpy(&fa, &a[i], 4);
+                    std::memcpy(&fb, &b[i], 4);
                     if (!std::isfinite(fa)) ++nonfinite;
                     if (a[i] != b[i]) ++diff;
+                    const double d = std::fabs((double) fa - (double) fb);
+                    if (d > maxabs) maxabs = d;
+                    const double m = std::max(std::fabs((double) fa), 1e-30);
+                    if (d / m > maxrel) maxrel = d / m;
                 }
                 if (diff != 0 || nonfinite != 0) {
                     ++bad;
-                    std::printf("FAIL %-26s T=%d rows=%d pf=%d: %lld bits differ, %lld non-finite of %zu\n", c.name, T, r, pf, diff,
-                                nonfinite, a.size());
+                    std::printf("FAIL %-26s T=%d rows=%d pf=%d: %lld bits differ, %lld non-finite of %zu (maxabs %.3g maxrel %.3g)\n",
+                                c.name, T, r, pf, diff, nonfinite, a.size(), maxabs, maxrel);
                 }
             }
             native_mmvq_il_pf(-1);
