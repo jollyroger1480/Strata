@@ -271,6 +271,9 @@ struct Engine {
     float* ggate2 = nullptr;       // draft gates, 2*kHv
     int* dmeta1 = nullptr;         // col1 position
     int* hmeta1 = nullptr;
+    int* dmeta_v = nullptr;        // verify: [posA, posA+1] contiguous for the 2-column attention
+    int* hmeta_v = nullptr;
+    float* ainv = nullptr;         // GQA-shared attention: 1/sum per (column, head), 8 * kHeads
     const uint8_t* emb_host = nullptr;
     size_t emb_stride = 0;
     int emb_type = 14;   // GGUF quant of token_embd (14=Q6_K, 13=Q5_K, 12=Q4_K)
@@ -449,7 +452,8 @@ __global__ void __launch_bounds__(256) gqa_head_kernel(const float* __restrict__
 __global__ void __launch_bounds__(256) gqa_score_chunk_kernel(const float* __restrict__ q,
                                                               const float* __restrict__ kc,
                                                               float* __restrict__ scores,
-                                                              const int* __restrict__ meta, int B, float scale) {
+                                                              const int* __restrict__ meta, int B, float scale,
+                                                              int tok_per_block) {
     constexpr int TILE = 32;
     constexpr int GQA = kHeads / kKv;
     constexpr int HD = kHd;
@@ -464,7 +468,11 @@ __global__ void __launch_bounds__(256) gqa_score_chunk_kernel(const float* __res
     int maxpos = spos[0];
 #pragma unroll
     for (int i = 1; i < 8; ++i) if (spos[i] > maxpos) maxpos = spos[i];
-    const int n_tok = maxpos + 1;
+    // blockIdx.y owns tokens [tb, tb + tok_per_block): grid.y = 1 with tok_per_block >= n_tok is the
+    // original one-block-per-KV-head kernel. Every token's dot is computed the same way either way.
+    const int tb = (int) blockIdx.y * tok_per_block;
+    const int n_tok = min(maxpos + 1, tb + tok_per_block);
+    if (tb >= n_tok) return;
     const int c = warp;
     const int pos = (c < B) ? spos[c] : -1;
     float qreg[GQA][HD / 32];
@@ -477,7 +485,7 @@ __global__ void __launch_bounds__(256) gqa_score_chunk_kernel(const float* __res
             for (int di = 0; di < HD / 32; ++di) qreg[qh][di] = qq[lane + di * 32];
         }
     }
-    for (int t0 = 0; t0 < n_tok; t0 += TILE) {
+    for (int t0 = tb; t0 < n_tok; t0 += TILE) {
         const int tn = min(TILE, n_tok - t0);
         for (int i = tid; i < tn * HD; i += 256) {
             const int t = i / HD;
@@ -556,6 +564,211 @@ __global__ void __launch_bounds__(256) gqa_from_scores_kernel(const float* __res
         __syncthreads();
     }
     o[(size_t) h * hd + tid] = acc * inv;
+}
+
+// ---- GQA-shared attention (default; QWYTHOS_GQA=old restores gqa_head_kernel / gqa_from_scores_kernel) ----
+// gqa_head_kernel runs one block per QUERY head (16 blocks on an 80-CU card) and reads each KV head's fp32
+// K and V once per query head that shares it. Long-context decode is bound by those reads. These three
+// kernels read every K and V row once for all 4 query heads of the group (and every column of the call),
+// and spread the work over many more blocks. They do not reorder any floating-point sum:
+//   scores: the same lane-strided dot and xor tree per (head, token)            -> the same score bits
+//   stats:  gqa_head_kernel's softmax block, unchanged                          -> the same exps and 1/sum
+//   V:      one thread per (column, head, d) runs the same ascending-token chain -> the same output bits
+// so the output is bitwise-equal to the old kernels by construction.
+constexpr int kGqa = kHeads / kKv;
+constexpr int kFaTok = 256;  // tokens per score block
+
+// grid (kKv, ceil(kMaxCtx / kFaTok)), 256 threads. Scores land at ((c * kHeads + h) * g_dctx + t).
+template <int NC>
+__global__ void __launch_bounds__(256) fa_scores_kernel(const float* __restrict__ q, int q_stride,
+                                                        const float* __restrict__ kc, float* __restrict__ scores,
+                                                        const int* __restrict__ meta, float scale) {
+    const int kv = (int) blockIdx.x;
+    const int tb = (int) blockIdx.y * kFaTok;
+    int pos[NC];
+    int maxpos = -1;
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        pos[c] = meta[c];
+        maxpos = max(maxpos, pos[c]);
+    }
+    // whole block exits together (no barrier below), so the graph-captured grid can be sized for kMaxCtx
+    if (tb > maxpos) return;
+    const int te = min(tb + kFaTok, maxpos + 1);
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    float qreg[NC][kGqa][kHd / 32];
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+#pragma unroll
+        for (int qh = 0; qh < kGqa; ++qh)
+#pragma unroll
+            for (int di = 0; di < kHd / 32; ++di)
+                qreg[c][qh][di] = q[(size_t) c * q_stride + (size_t) (kv * kGqa + qh) * kHd + lane + di * 32];
+    for (int t = tb + warp; t < te; t += 8) {
+        const float* kk = kc + ((size_t) t * kKv + kv) * kHd;
+        float kr[kHd / 32];
+#pragma unroll
+        for (int di = 0; di < kHd / 32; ++di) kr[di] = kk[lane + di * 32];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            if (t > pos[c]) continue;
+#pragma unroll
+            for (int qh = 0; qh < kGqa; ++qh) {
+                float dot = 0.0f;
+#pragma unroll
+                for (int di = 0; di < kHd / 32; ++di) dot += qreg[c][qh][di] * kr[di];
+#pragma unroll
+                for (int off = 16; off > 0; off >>= 1) dot += __shfl_xor_sync(0xffffffff, dot, off);
+                if (lane == 0) scores[((size_t) c * kHeads + kv * kGqa + qh) * g_dctx + t] = dot * scale;
+            }
+        }
+    }
+}
+
+// grid (kHeads, nc), 256 threads: gqa_head_kernel's softmax over one column's scores, in place
+// (scores become exp(s - max)), and 1/sum to inv[c * kHeads + h].
+__global__ void __launch_bounds__(256) fa_stats_kernel(float* __restrict__ scores, float* __restrict__ inv,
+                                                       const int* __restrict__ meta) {
+    __shared__ float red[8];
+    const int h = (int) blockIdx.x, c = (int) blockIdx.y;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int n_tok = meta[c] + 1;
+    float* sc = scores + ((size_t) c * kHeads + h) * g_dctx;
+    float m = -1e30f;
+    for (int t = tid; t < n_tok; t += 256) m = fmaxf(m, sc[t]);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, off));
+    if (lane == 0) red[warp] = m;
+    __syncthreads();
+    const float gmax = fmaxf(fmaxf(fmaxf(red[0], red[1]), fmaxf(red[2], red[3])),
+                             fmaxf(fmaxf(red[4], red[5]), fmaxf(red[6], red[7])));
+    float s = 0.0f;
+    for (int t = tid; t < n_tok; t += 256) {
+        const float e = expf(sc[t] - gmax);
+        sc[t] = e;
+        s += e;
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) s += __shfl_xor_sync(0xffffffff, s, off);
+    __syncthreads();  // every lane has read red[] (gmax) before it is reused
+    if (lane == 0) red[warp] = s;
+    __syncthreads();
+    const float gsum = red[0] + red[1] + red[2] + red[3] + red[4] + red[5] + red[6] + red[7];
+    if (tid == 0) inv[c * kHeads + h] = 1.0f / gsum;
+}
+
+// grid (kKv, kHd / DS), NCMAX * kGqa * DS threads. Thread (c, qh, j) owns output d = blockIdx.y * DS + j of
+// head kv * kGqa + qh in column c. A tile of TT V rows (DS wide) and the matching exps sit in LDS; the next
+// tile's loads are in flight while this one is summed. The chain is acc += p[t] * V[t][d], t ascending.
+template <int NCMAX, int DS, int TT>
+__global__ void __launch_bounds__(NCMAX * kGqa * DS) fa_v_kernel(const float* __restrict__ scores,
+                                                                 const float* __restrict__ inv,
+                                                                 const float* __restrict__ vc, float* __restrict__ out,
+                                                                 int out_stride, const int* __restrict__ meta, int nc) {
+    constexpr int NT = NCMAX * kGqa * DS;
+    constexpr int NR = NCMAX * kGqa;          // probability rows
+    constexpr int NV = TT * DS / NT;          // V floats per thread per tile
+    constexpr int NP = NR * TT / NT;          // probability floats per thread per tile
+    static_assert(NV * NT == TT * DS && NP * NT == NR * TT, "tile shape");
+    __shared__ float Vs[TT][DS];
+    __shared__ float Ps[NR][TT + 1];          // +1: rows of one wave land on different banks
+    __shared__ int sn[NCMAX];
+    const int kv = (int) blockIdx.x;
+    const int d0 = (int) blockIdx.y * DS;
+    const int tid = (int) threadIdx.x;
+    const int j = tid % DS;
+    const int r = tid / DS;                   // c * kGqa + qh
+    const int c = r / kGqa, qh = r % kGqa;
+    if (tid < NCMAX) sn[tid] = (tid < nc) ? meta[tid] + 1 : 0;
+    __syncthreads();
+    int maxn = 0;
+#pragma unroll
+    for (int i = 0; i < NCMAX; ++i) maxn = max(maxn, sn[i]);
+    const int my_n = sn[c];
+    float vr[NV], pr[NP];
+    auto load = [&](int t0) {
+#pragma unroll
+        for (int k = 0; k < NV; ++k) {
+            const int i = k * NT + tid;
+            const int t = i / DS, jj = i % DS;
+            vr[k] = (t0 + t < maxn) ? vc[((size_t) (t0 + t) * kKv + kv) * kHd + d0 + jj] : 0.0f;
+        }
+#pragma unroll
+        for (int k = 0; k < NP; ++k) {
+            const int i = k * NT + tid;
+            const int rr = i / TT, t = i % TT;
+            const int cc = rr / kGqa;
+            pr[k] = (t0 + t < sn[cc])
+                        ? scores[((size_t) cc * kHeads + kv * kGqa + rr % kGqa) * g_dctx + t0 + t] : 0.0f;
+        }
+    };
+    float acc = 0.0f;
+    if (maxn > 0) load(0);
+    for (int t0 = 0; t0 < maxn; t0 += TT) {
+#pragma unroll
+        for (int k = 0; k < NV; ++k) {
+            const int i = k * NT + tid;
+            Vs[i / DS][i % DS] = vr[k];
+        }
+#pragma unroll
+        for (int k = 0; k < NP; ++k) {
+            const int i = k * NT + tid;
+            Ps[i / TT][i % TT] = pr[k];
+        }
+        __syncthreads();
+        if (t0 + TT < maxn) load(t0 + TT);
+        const int lim = min(TT, my_n - t0);
+        for (int t = 0; t < lim; ++t) acc += Ps[r][t] * Vs[t][j];
+        __syncthreads();
+    }
+    if (c < nc) out[(size_t) c * out_stride + (size_t) (kv * kGqa + qh) * kHd + d0 + j] = acc * inv[c * kHeads + kv * kGqa + qh];
+}
+
+// QWYTHOS_GQA=old: the per-query-head kernels (gqa_head_kernel, gqa_score_chunk + gqa_from_scores).
+static bool gqa_shared_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("QWYTHOS_GQA");
+        return !(v && std::strcmp(v, "old") == 0);
+    }();
+    return on;
+}
+
+// V-kernel slice width (outputs per thread group). 8 gives the most blocks; 16/32 re-read fewer exps.
+static int gqa_ds() {
+    static const int ds = [] {
+        const char* v = std::getenv("QWYTHOS_GQA_DS");
+        const int n = v ? std::atoi(v) : 8;
+        return (n == 8 || n == 16 || n == 32) ? n : 8;
+    }();
+    return ds;
+}
+
+template <int NC>
+static void fa_v_launch(const float* scores, const float* inv, const float* vc, float* out, int out_stride,
+                        const int* meta, int nc, cudaStream_t s) {
+    constexpr int TT = 128;
+    switch (gqa_ds()) {
+    case 32:
+        fa_v_kernel<NC, 32, TT><<<dim3(kKv, kHd / 32), NC * kGqa * 32, 0, s>>>(scores, inv, vc, out, out_stride, meta, nc);
+        break;
+    case 16:
+        fa_v_kernel<NC, 16, TT><<<dim3(kKv, kHd / 16), NC * kGqa * 16, 0, s>>>(scores, inv, vc, out, out_stride, meta, nc);
+        break;
+    default:
+        fa_v_kernel<NC, 8, TT><<<dim3(kKv, kHd / 8), NC * kGqa * 8, 0, s>>>(scores, inv, vc, out, out_stride, meta, nc);
+        break;
+    }
+}
+
+// Attention for NC (1 or 2) columns whose positions are meta[0..NC-1]; KV for every column is already stored.
+// q and out are column-strided by kEmb. scores needs NC * kHeads * kMaxCtx floats.
+template <int NC>
+static void gqa_shared(const float* q, const float* kc, const float* vc, float* out, float* scores, float* inv,
+                       const int* meta, cudaStream_t s) {
+    fa_scores_kernel<NC><<<dim3(kKv, (kMaxCtx + kFaTok - 1) / kFaTok), 256, 0, s>>>(q, kEmb, kc, scores, meta,
+                                                                                    kAttnScale);
+    fa_stats_kernel<<<dim3(kHeads, NC), 256, 0, s>>>(scores, inv, meta);
+    fa_v_launch<NC>(scores, inv, vc, out, kEmb, meta, NC, s);
 }
 
 struct Q81Row {
@@ -1212,8 +1425,11 @@ void forward_attn(Engine& e, Layer& L) {
     constexpr int kv_n = kKv * kHd;
     store_kv2_kernel<<<(2 * kv_n + 255) / 256, 256, 0, e.sp>>>(L.kcache, L.vcache, k_v, v_v, e.dmeta, kv_n);
     ck_launch("store_kv2");
-    gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(
-        e.o, L.kcache, L.vcache, e.up, e.ascores, kHeads, kKv, kHd, e.dmeta, kAttnScale);
+    if (gqa_shared_on())
+        gqa_shared<1>(e.o, L.kcache, L.vcache, e.up, e.ascores, e.ainv, e.dmeta, e.sp);
+    else
+        gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(
+            e.o, L.kcache, L.vcache, e.up, e.ascores, kHeads, kKv, kHd, e.dmeta, kAttnScale);
     ck_launch("gqa_head");
     sig_mul_quant_kernel<<<kEmb / 256, 256, 0, e.sp>>>(e.up, e.z, static_cast<Q81Row*>(e.scratch_up8), kEmb);
     ck_launch("sig_mul_quant");
@@ -1359,8 +1575,15 @@ int draft_predict(Engine& e, int next_tok, int pos, const float* h_prev, const f
     constexpr int kv_n = kKv * kHd;
     store_kv2_kernel<<<(2 * kv_n + 255) / 256, 256, 0, e.sp>>>(D.kcache, D.vcache, k_v, v_v, e.dmeta, kv_n);
     ck_launch("draft store_kv");
-    gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(e.o, D.kcache, D.vcache, e.up, e.ascores, kHeads, kKv, kHd, e.dmeta,
-                                              kAttnScale);
+    // Cache-fill call: only the D-layer KV slot is kept; the rest of the body was computed and dropped.
+    // The next draft call rebuilds d_x from eh_proj. QWYTHOS_DRAFT_FULL=1 runs the whole body as before.
+    static const bool draft_full = std::getenv("QWYTHOS_DRAFT_FULL") != nullptr;
+    if (!with_head && !draft_full) return -1;
+    if (gqa_shared_on())
+        gqa_shared<1>(e.o, D.kcache, D.vcache, e.up, e.ascores, e.ainv, e.dmeta, e.sp);
+    else
+        gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(e.o, D.kcache, D.vcache, e.up, e.ascores, kHeads, kKv, kHd,
+                                                  e.dmeta, kAttnScale);
     ck_launch("draft gqa");
     sig_mul_quant_kernel<<<kEmb / 256, 256, 0, e.sp>>>(e.up, e.z, static_cast<Q81Row*>(e.scratch_up8_2), kEmb);
     ck_launch("draft sig_mul");
@@ -1431,6 +1654,12 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
     e.hmeta1[0] = posA + 1;
     CK(cudaMemcpyAsync(e.dmeta, e.hmeta, sizeof(int), cudaMemcpyHostToDevice, e.sp));
     CK(cudaMemcpyAsync(e.dmeta1, e.hmeta1, sizeof(int), cudaMemcpyHostToDevice, e.sp));
+    const bool gqa_sh = gqa_shared_on();
+    if (gqa_sh) {
+        e.hmeta_v[0] = posA;
+        e.hmeta_v[1] = posA + 1;
+        CK(cudaMemcpyAsync(e.dmeta_v, e.hmeta_v, 2 * sizeof(int), cudaMemcpyHostToDevice, e.sp));
+    }
 
     const int vmax = e.vstop >= 0 ? e.vstop : kLayers;
     for (int il = 0; il < vmax; ++il) {
@@ -1546,6 +1775,7 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
                 store_kv2_kernel<<<(2 * kv_n + 255) / 256, 256, 0, e.sp>>>(L.kcache, L.vcache, k_v, v_v, meta_c,
                                                                            kv_n);
                 ck_launch("verify store_kv");
+                if (gqa_sh) continue;  // both columns attend together below, once both KV slots are stored
                 gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(e.o2 + (size_t) c * kEmb, L.kcache, L.vcache,
                                                           e.up2 + (size_t) c * kEmb, e.ascores, kHeads, kKv, kHd,
                                                           meta_c, kAttnScale);
@@ -1554,6 +1784,16 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
                                                                    e.z2 + (size_t) c * kEmb,
                                                                    reinterpret_cast<Q81Row*>((char*) e.scratch_up8_2 + c * q8e),
                                                                    kEmb);
+                ck_launch("verify sig_mul");
+            }
+            if (gqa_sh) {
+                // column 0 reads tokens <= posA (meta), so column 1's slot at posA + 1 is invisible to it
+                gqa_shared<2>(e.o2, L.kcache, L.vcache, e.up2, e.ascores_b, e.ainv, e.dmeta_v, e.sp);
+                ck_launch("verify gqa2");
+                for (int c = 0; c < 2; ++c)
+                    sig_mul_quant_kernel<<<kEmb / 256, 256, 0, e.sp>>>(
+                        e.up2 + (size_t) c * kEmb, e.z2 + (size_t) c * kEmb,
+                        reinterpret_cast<Q81Row*>((char*) e.scratch_up8_2 + c * q8e), kEmb);
                 ck_launch("verify sig_mul");
             }
             mm_q2(2, L.wo.type, L.wo.a, e.scratch_up8_2, e.qkvz_o2, L.wo.n_in, L.wo.n_out, e.sp);
@@ -1938,6 +2178,9 @@ void alloc_primary(Engine& e) {
     CK(cudaMalloc(&e.logits, (size_t) kVocab * 4));
     CK(cudaMalloc(&e.ascores, (size_t) kHeads * kMaxCtx * 4));
     CK(cudaMalloc(&e.ascores_b, (size_t) 8 * kHeads * kMaxCtx * 4));
+    CK(cudaMalloc(&e.ainv, (size_t) 8 * kHeads * 4));
+    CK(cudaMalloc(&e.dmeta_v, 2 * sizeof(int)));
+    CK(cudaMallocHost(&e.hmeta_v, 2 * sizeof(int)));
     CK(cudaMalloc(&e.dpos, sizeof(int) * kHeads));
     CK(cudaMalloc(&e.dmeta, sizeof(int)));
     CK(cudaMallocHost(&e.hrow, (size_t) kEmb * 4));
@@ -2411,7 +2654,19 @@ static void serve_ingest_kernels(Engine& e, int B) {
             }
             }
             static const bool attn_old = std::getenv("QWYTHOS_ATTNOLD") != nullptr;
-            if (attn_old || B <= 1) {
+            if (gqa_shared_on() && !attn_old) {
+                // K: score chunk tiled over tokens (blockIdx.y), V: one read of each row for 8 columns x 4 heads
+                constexpr int tpb = 256;
+                for (int c0 = 0; c0 < B; c0 += 8) {
+                    const int nq = std::min(8, B - c0);
+                    gqa_score_chunk_kernel<<<dim3(kKv, (kMaxCtx + tpb - 1) / tpb), 256, 0, e.sp>>>(
+                        e.ob + (size_t) c0 * kEmb, L.kcache, e.ascores_b, e.dmeta_b + c0, nq, kAttnScale, tpb);
+                    ck_launch("bp gqa score");
+                    fa_stats_kernel<<<dim3(kHeads, nq), 256, 0, e.sp>>>(e.ascores_b, e.ainv, e.dmeta_b + c0);
+                    fa_v_launch<8>(e.ascores_b, e.ainv, L.vcache, e.upb + (size_t) c0 * kEmb, kEmb, e.dmeta_b + c0,
+                                   nq, e.sp);
+                }
+            } else if (attn_old || B <= 1) {
                 for (int c = 0; c < B; ++c)
                     gqa_head_kernel<<<kHeads, 256, 0, e.sp>>>(e.ob + (size_t) c * kEmb, L.kcache, L.vcache,
                                                               e.upb + (size_t) c * kEmb, e.ascores, kHeads, kKv,
@@ -2420,7 +2675,8 @@ static void serve_ingest_kernels(Engine& e, int B) {
                 for (int c0 = 0; c0 < B; c0 += 8) {
                     const int nq = std::min(8, B - c0);
                     gqa_score_chunk_kernel<<<kKv, 256, 0, e.sp>>>(e.ob + (size_t) c0 * kEmb, L.kcache,
-                                                                  e.ascores_b, e.dmeta_b + c0, nq, kAttnScale);
+                                                                  e.ascores_b, e.dmeta_b + c0, nq, kAttnScale,
+                                                                  kMaxCtx);
                     ck_launch("bp gqa score");
                     for (int c = 0; c < nq; ++c)
                         gqa_from_scores_kernel<<<kHeads, 256, 0, e.sp>>>(
@@ -2623,6 +2879,20 @@ static void serve_loop(Engine& e) {
             primed = false;
             first_tok = -1;
             std::printf("{\"ok\":true,\"op\":\"reset\"}\n");
+            std::fflush(stdout);
+            continue;
+        }
+        // Bench-only: {"op":"skip","n":N} moves pos past N cache slots without filling them, so decode can be
+        // timed at long context without a long ingest. Off unless QWYTHOS_ALLOW_SKIP is set; the output is junk.
+        if (line.find("\"op\":\"skip\"") != std::string::npos) {
+            static const bool allow_skip = std::getenv("QWYTHOS_ALLOW_SKIP") != nullptr;
+            const long long n = num_in("n");
+            if (!allow_skip || n < 0 || pos + n + 1024 >= (long long) kMaxCtx) {
+                std::printf("{\"error\":\"skip refused\"}\n");
+            } else {
+                pos += (int) n;
+                std::printf("{\"ok\":true,\"op\":\"skip\",\"pos\":%d}\n", pos);
+            }
             std::fflush(stdout);
             continue;
         }
