@@ -40,7 +40,7 @@ struct Q80Block {
 static_assert(sizeof(Q81Block) == 36 && sizeof(Q80Block) == 34);
 
 __device__ __forceinline__ float warp_sum(float x) {
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 #define MK_DPP(val, c) __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(val), c, 0xf, 0xf, false))
     x += MK_DPP(x, 0x161);
     x += MK_DPP(x, 0x162);
@@ -56,7 +56,7 @@ __device__ __forceinline__ float warp_sum(float x) {
 #endif
 }
 __device__ __forceinline__ float warp_max(float x) {
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 #define MK_DPP(val, c) __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(val), c, 0xf, 0xf, false))
     x = fmaxf(x, MK_DPP(x, 0x161));
     x = fmaxf(x, MK_DPP(x, 0x162));
@@ -348,7 +348,7 @@ __device__ __forceinline__ void step_body(StepShared& sh, int head, const float*
     }
 }
 
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 
 __device__ __forceinline__ bool wave0() { return threadIdx.x < WARP; }
 __device__ __forceinline__ unsigned one0() { return threadIdx.x == 0 ? 1u : 0u; }
@@ -571,7 +571,7 @@ unsigned* mk_counters_alloc() {
 }
 
 int mk_gdn_grid(int n_tok) {
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
     int dev = 0;
     cudaGetDevice(&dev);
     const int d = (dev >= 0 && dev < 64) ? dev : 0;
@@ -583,7 +583,7 @@ int mk_gdn_grid(int n_tok) {
 }
 
 void mk_gdn_dense(const MkGdnArgs& a, int n_tok, void* stream) {
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
     if (n_tok < 1 || n_tok > 8 || a.counters == nullptr) {
         std::fprintf(stderr, "mk_gdn_dense: invalid arguments\n");
         std::exit(1);

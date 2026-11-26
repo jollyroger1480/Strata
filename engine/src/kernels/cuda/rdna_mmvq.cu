@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 #include "strata/kernels/hip_unsloth_wmma.hpp"
 #include "strata/kernels/hip_unsloth_dp4a.hpp"
 #endif
@@ -33,7 +33,7 @@ bool rdna_kq_mmvq2(int type, const void* w, const void* xq, float* y, int n_in, 
                    const void* w2, float* y2, int n_out2);
 bool rdna_q80_wmma_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 namespace {
 
 struct Q81 {
