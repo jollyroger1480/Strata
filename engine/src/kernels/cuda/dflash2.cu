@@ -51,7 +51,7 @@ __device__ __forceinline__ float df2_wave_max(float v) {
 
 template <int O>
 __device__ __forceinline__ int df2_xmov_i32(int v) {
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
     if constexpr (O == 16) return __builtin_amdgcn_permlanex16(v, v, 0x76543210u, 0xfedcba98u, false, false);
     else return __builtin_amdgcn_update_dpp(0, v, 0x160 + O, 0xf, 0xf, false);
 #else

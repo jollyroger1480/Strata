@@ -23,7 +23,7 @@ void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* s
                         unsigned long long* sb = nullptr, int si = 0);
 void rdna_gr_init();
 
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_HIP_GFX803)
 namespace {
 
 constexpr int N = 2560, HC = 4, D = N * HC, LR = 320, PR = LR + HC;
