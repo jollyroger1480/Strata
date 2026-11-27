@@ -101,6 +101,7 @@ size_t row_bytes(int type, int n_in) {
     if (type == 12) return (size_t) (n_in / 256) * 144;
     if (type == 11) return (size_t) (n_in / 256) * 110;
     if (type == 23) return (size_t) (n_in / 256) * 136;
+    if (type == 16) return (size_t) (n_in / 256) * 66;
     return 0;
 }
 
@@ -950,6 +951,7 @@ void mm_q(int type, const void* w, const void* xq, float* y, int n_in, int n_out
     else if (type == 8) strata::kernels::native_q8_0_mmvq(w, xq, y, n_in, n_out, 1, st);
     else if (type == 11) strata::kernels::native_q3_k_mmvq(w, xq, y, n_in, n_out, 1, st);
     else if (type == 23) strata::kernels::native_iq4_xs_mmvq(w, xq, y, n_in, n_out, 1, st);
+    else if (type == 16) strata::kernels::native_mmvq(16, w, xq, y, n_in, n_out, 1, st);
     else {
         std::fprintf(stderr, "bad gemv type %d\n", type);
         std::exit(1);
@@ -1122,7 +1124,7 @@ void upload_mat(Engine& e, Mat& m, const Tensor& t) {
     m.type = t.type;
     m.n_in = t.n_in;
     m.n_out = t.n_out;
-    if (t.type != 14 && t.type != 13 && t.type != 12 && t.type != 8 && t.type != 11 && t.type != 23) {
+    if (t.type != 14 && t.type != 13 && t.type != 12 && t.type != 8 && t.type != 11 && t.type != 23 && t.type != 16) {
         std::fprintf(stderr, "upload_mat type %d\n", t.type);
         std::exit(1);
     }
@@ -1491,6 +1493,7 @@ void mm_q2(int nc, int type, const void* w, const void* xq8, float* y, int n_in,
     else if (type == 8) strata::kernels::native_q8_0_mmvq(w, xq8, y, n_in, n_out, nc, st);
     else if (type == 11) strata::kernels::native_q3_k_mmvq(w, xq8, y, n_in, n_out, nc, st);
     else if (type == 23) strata::kernels::native_iq4_xs_mmvq(w, xq8, y, n_in, n_out, nc, st);
+    else if (type == 16) strata::kernels::native_mmvq(16, w, xq8, y, n_in, n_out, nc, st);
     else {
         std::fprintf(stderr, "bad gemv2 type %d in %d out %d\n", type, n_in, n_out);
         std::exit(1);

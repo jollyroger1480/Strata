@@ -113,6 +113,9 @@ if(STRATA_GFX1012_PORTABLE_DOT)
 endif()
 if(STRATA_HIP_GFX803)
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_HIP_GFX803=1)
+  # Polaris runs on the HIP 5.7 runtime (ROCm >= 7 ROCR refuses gfx803), which
+  # rejects COV5/COV6 code objects: emit COV4 unconditionally for this target.
+  target_compile_options(strata_hip_runtime INTERFACE "$<$<COMPILE_LANGUAGE:HIP>:-mcode-object-version=4>")
 endif()
 if("gfx900" IN_LIST STRATA_HIP_ARCH_LIST)
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_HIP_GFX900=1)
