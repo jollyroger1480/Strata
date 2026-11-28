@@ -120,9 +120,14 @@ size_t row_bytes(int type, int n_in) {
 }
 
 // Token-embedding block dequant: block format is the GGUF's token_embd type
-// (Q6_K 210 B/256, Q5_K 176 B/256, Q4_K 144 B/256).
+// (Q8_0 34 B/32, Q6_K 210 B/256, Q5_K 176 B/256, Q4_K 144 B/256).
 static inline void emb_dequant_block(int type, const uint8_t* src, size_t b, float* dst) {
-    if (type == 13) strata::dequantize_q5_K(src + b * 176, dst + b * 256);
+    if (type == 8) {
+        // Q8_0: 34 bytes per 32 values -> 272 bytes per 256-value block, 8 sub-blocks
+        for (int qb = 0; qb < 8; ++qb)
+            strata::dequantize_q8_0(src + b * 272 + qb * 34, dst + b * 256 + qb * 32);
+    }
+    else if (type == 13) strata::dequantize_q5_K(src + b * 176, dst + b * 256);
     else if (type == 12) strata::dequantize_q4_K(src + b * 144, dst + b * 256);
     else if (type == 11) strata::dequantize_q3_K(src + b * 110, dst + b * 256);
     else if (type == 23) strata::dequantize_iq4_xs(src + b * 136, dst + b * 256);
@@ -2299,7 +2304,7 @@ void load_model(Engine& e, const strata::GgufFile& file) {
     CK(cudaMalloc(&e.conv_snap, (size_t) e.n_visits * 3 * kQkv * 4));
 
     Tensor emb = take(file, "token_embd.weight");
-    if ((emb.type != 14 && emb.type != 13 && emb.type != 12 && emb.type != 11 && emb.type != 23) || emb.n_in != kEmb || emb.n_out != kVocab) {
+    if ((emb.type != 14 && emb.type != 13 && emb.type != 12 && emb.type != 11 && emb.type != 23 && emb.type != 8) || emb.n_in != kEmb || emb.n_out != kVocab) {
         std::fprintf(stderr, "unexpected embedding\n");
         std::exit(1);
     }
