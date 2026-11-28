@@ -1,6 +1,9 @@
 // Qwythos-9B-v2 trunk decode on the HIP build.
 // 24 gated-delta layers and 8 full-attention layers, then the Q6_K LM head.
 // Block 32 (MTP) is not run. Default is the largest GPU only. --split is optional.
+// Loop Transformer: a GGUF-carried middle block ([qwen35.core_start, qwen35.core_end))
+// can run num_passes times with shared weights (QWYTHOS_LOOP_PASSES dials it at startup);
+// every visit keeps its own state.  Loop off = the plain 32-layer trunk, bit-identical.
 #include "strata/artifact/dequant.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gdn.hpp"
@@ -51,6 +54,17 @@ static const int kMaxCtx = [] {
     }
     return 65536;
 }();
+// Loop Transformer (GLM-5.4 / Inkling 2 Mini): the middle block [core_start, core_end) runs
+// num_passes times with the same weights; every visit keeps its own GDN/conv/KV state, so a
+// repeat pass attends over what it itself wrote (llama.cpp-style per-visit caches).  Config
+// comes from GGUF keys qwen35.core_start / qwen35.core_end / qwen35.num_passes (num_passes =
+// the trained maximum); QWYTHOS_LOOP_PASSES dials passes 1..num_passes at startup (varloop).
+// Absent keys = loop off, and the visit list collapses to the plain 32-layer trunk.
+constexpr int kVisitsMax = kLayers + 3 * kLayers;  // passes <= 4, core_len <= kLayers
+static int g_loop_start = 0;        // first looped layer (0 = off)
+static int g_loop_end = 0;          // one past the last looped layer
+static int g_loop_passes = 1;       // active passes this run
+static int g_loop_max_passes = 1;   // trained maximum (GGUF num_passes)
 // device-side mirror: two attention kernels index score rows by it; the host
 // pushes the QWYTHOS_MAXCTX value once before the first launch.
 __device__ int g_dctx = 65536;
@@ -281,6 +295,11 @@ struct Engine {
     int max_tail = 0;
     Mat out_w, out_n;
     Layer layers[kLayers];
+    // Loop Transformer visit list: visits[iv] shares the physical layer's weights (Mats are
+    // pointer copies); state slots are the physical ones for iv < kLayers and fresh buffers
+    // for repeat passes.  Loop off => identity mapping, byte-identical to layers[].
+    Layer visits[kVisitsMax];
+    int n_visits = kLayers;
     strata::kernels::RopeScaling rope;
 };
 
@@ -1444,10 +1463,10 @@ void forward_attn(Engine& e, Layer& L) {
 }
 
 void launch_token_gpu(Engine& e) {
-    const int nmax = e.vstop >= 0 ? e.vstop : kLayers;
-    for (int il = 0; il < nmax; ++il) {
-        if (e.layers[il].recr) forward_gdn(e, e.layers[il]);
-        else forward_attn(e, e.layers[il]);
+    const int nmax = e.vstop >= 0 ? std::min(e.vstop, e.n_visits) : e.n_visits;
+    for (int iv = 0; iv < nmax; ++iv) {
+        if (e.visits[iv].recr) forward_gdn(e, e.visits[iv]);
+        else forward_attn(e, e.visits[iv]);
     }
     project(e, e.x, e.out_n, &e.out_w, &e.logits, 1);
     // the MTP draft consumes the FINAL-NORMED hidden (llama.cpp res->t_h_nextn = norm(h, output_norm))
@@ -1664,9 +1683,9 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
         CK(cudaMemcpyAsync(e.dmeta_v, e.hmeta_v, 2 * sizeof(int), cudaMemcpyHostToDevice, e.sp));
     }
 
-    const int vmax = e.vstop >= 0 ? e.vstop : kLayers;
+    const int vmax = e.vstop >= 0 ? std::min(e.vstop, e.n_visits) : e.n_visits;
     for (int il = 0; il < vmax; ++il) {
-        Layer& L = e.layers[il];
+        Layer& L = e.visits[il];
         if (L.recr) {
             for (int c = 0; c < 2; ++c)
                 rms_quant_apply_kernel<<<16, 256, 0, e.sp>>>(e.x2 + (size_t) c * kEmb, (const float*) L.attn_norm.a,
@@ -1703,6 +1722,7 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
                                                           (uint8_t*) e.scratch_up8_2 + c * q8e, kHk, kHv, e.sp);
                 if (c == 0) {
                     // snapshot the state after col0's step: col1's step must be undoable on rejection
+                    // (per visit: a looped layer's two passes snapshot into their own slots)
                     CK(cudaMemcpyAsync(e.gdn_snap + (size_t) il * (kS * kHv * kS), L.gdn_state,
                                        (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice, e.sp));
                     CK(cudaMemcpyAsync(e.conv_snap + (size_t) il * (3 * kQkv), L.conv_state,
@@ -2109,10 +2129,6 @@ void alloc_primary(Engine& e) {
     CK(cudaMalloc(&e.scratch_up8_2, (size_t) 2 * kEmb / 32 * 36));
     CK(cudaMalloc(&e.scratch_dn8_2, (size_t) 2 * kFF / 32 * 36));
     CK(cudaMalloc(&e.logits2, (size_t) 2 * kVocab * 4));
-    CK(cudaMalloc(&e.gdn_snap, (size_t) kLayers * kS * kHv * kS * 4));
-    CK(cudaMalloc(&e.gdn_pre, (size_t) kLayers * kS * kHv * kS * 4));
-    CK(cudaMalloc(&e.conv_pre, (size_t) kLayers * 3 * kQkv * 4));
-    CK(cudaMalloc(&e.conv_snap, (size_t) kLayers * 3 * kQkv * 4));
     CK(cudaMalloc(&e.h_save, (size_t) 2 * kEmb * 4));
     CK(cudaMalloc(&e.h_partials2, (size_t) 2 * (kEmb / 4) * 4));
     {   // one-time: attention kernels take their score stride from the device mirror
@@ -2246,6 +2262,42 @@ void load_model(Engine& e, const strata::GgufFile& file) {
     if (!g_serve_mode) std::printf("yarn factor %.3f base %.3g orig %.0f eps %.3g\n",
                 e.rope.factor, e.rope.freq_base, e.rope.orig_ctx, e.eps);
 
+    // Loop Transformer config (optional GGUF keys; QWYTHOS_LOOP_PASSES dials 1..num_passes).
+    // num_passes is the trained maximum — a varloop checkpoint may run fewer passes, never more.
+    g_loop_start = (int) meta_num(file, "qwen35.core_start", 0, false);
+    g_loop_end = (int) meta_num(file, "qwen35.core_end", 0, false);
+    g_loop_max_passes = (int) meta_num(file, "qwen35.num_passes", 1, false);
+    if (g_loop_start > 0 || g_loop_end > 0) {
+        if (g_loop_start < 1 || g_loop_end <= g_loop_start || g_loop_end > kLayers) {
+            std::fprintf(stderr, "bad loop core [%d, %d) for %d layers\n", g_loop_start, g_loop_end, kLayers);
+            std::exit(1);
+        }
+        if (g_loop_max_passes < 1 || g_loop_max_passes > 4) {
+            std::fprintf(stderr, "bad num_passes %d (1..4)\n", g_loop_max_passes);
+            std::exit(1);
+        }
+        g_loop_passes = g_loop_max_passes;
+        if (const char* s = std::getenv("QWYTHOS_LOOP_PASSES")) {
+            const int v = std::atoi(s);
+            if (v < 1 || v > g_loop_max_passes) {
+                std::fprintf(stderr, "QWYTHOS_LOOP_PASSES %d outside 1..%d\n", v, g_loop_max_passes);
+                std::exit(1);
+            }
+            g_loop_passes = v;
+        }
+        e.n_visits = kLayers + (g_loop_end - g_loop_start) * (g_loop_passes - 1);
+    } else {
+        if (std::getenv("QWYTHOS_LOOP_PASSES"))
+            std::fprintf(stderr, "QWYTHOS_LOOP_PASSES ignored: GGUF has no loop keys\n");
+        e.n_visits = kLayers;
+    }
+    // rollback/CMPV snapshot slots are indexed by visit, so they are sized here where the
+    // visit count is known (alloc_primary runs before the file is read).
+    CK(cudaMalloc(&e.gdn_snap, (size_t) e.n_visits * kS * kHv * kS * 4));
+    CK(cudaMalloc(&e.gdn_pre, (size_t) e.n_visits * kS * kHv * kS * 4));
+    CK(cudaMalloc(&e.conv_pre, (size_t) e.n_visits * 3 * kQkv * 4));
+    CK(cudaMalloc(&e.conv_snap, (size_t) e.n_visits * 3 * kQkv * 4));
+
     Tensor emb = take(file, "token_embd.weight");
     if ((emb.type != 14 && emb.type != 13 && emb.type != 12 && emb.type != 11 && emb.type != 23) || emb.n_in != kEmb || emb.n_out != kVocab) {
         std::fprintf(stderr, "unexpected embedding\n");
@@ -2333,6 +2385,49 @@ void load_model(Engine& e, const strata::GgufFile& file) {
         }
         if ((il % 8) == 7) if (!g_serve_mode) std::printf("uploaded through layer %d\n", il);
         std::fflush(stdout);
+    }
+    // Loop Transformer visit schedule: [0..core_start) once, the core block num_passes times,
+    // [core_end..kLayers) once.  Every visit struct-copies its physical layer, so the Mats
+    // share the device weights; the first occurrence keeps the physical layer's state buffers,
+    // which makes a loop-off run launch on the exact pointers it always did.  Repeat passes
+    // get fresh zeroed state (Inkling semantics: each visit keeps its own KV / GDN-conv state).
+    {
+        bool seen[kLayers] = {};
+        size_t extra_bytes = 0;
+        int iv = 0;
+        auto push = [&](int il) {
+            Layer& V = e.visits[iv++];
+            V = e.layers[il];
+            if (seen[il]) {
+                if (V.recr) {
+                    V.conv_state = upload_f32(e.primary, nullptr, (size_t) 3 * kQkv);
+                    CK(cudaMemset(V.conv_state, 0, (size_t) 3 * kQkv * 4));
+                    V.gdn_state = upload_f32(e.primary, nullptr, (size_t) kS * kHv * kS);
+                    CK(cudaMemset(V.gdn_state, 0, (size_t) kS * kHv * kS * 4));
+                    extra_bytes += ((size_t) 3 * kQkv + (size_t) kS * kHv * kS) * 4;
+                } else {
+                    const size_t cache = (size_t) kMaxCtx * kKv * kHd;
+                    V.kcache = upload_f32(e.primary, nullptr, cache);
+                    V.vcache = upload_f32(e.primary, nullptr, cache);
+                    CK(cudaMemset(V.kcache, 0, cache * 4));
+                    CK(cudaMemset(V.vcache, 0, cache * 4));
+                    extra_bytes += 2 * cache * 4;
+                }
+            }
+            seen[il] = true;
+        };
+        for (int il = 0; il < g_loop_start; ++il) push(il);
+        for (int p = 0; p < g_loop_passes; ++p)
+            for (int il = g_loop_start; il < g_loop_end; ++il) push(il);
+        for (int il = g_loop_end; il < kLayers; ++il) push(il);
+        if (iv != e.n_visits) {
+            std::fprintf(stderr, "visit schedule built %d, expected %d\n", iv, e.n_visits);
+            std::exit(1);
+        }
+        if (g_loop_end > g_loop_start && !g_serve_mode)
+            std::printf("loop core [%d, %d) passes %d/%d visits %d extra state %.0f MB\n",
+                        g_loop_start, g_loop_end, g_loop_passes, g_loop_max_passes, e.n_visits,
+                        (double) extra_bytes / 1048576.0);
     }
     // blk.32: the MTP draft layer (attention type) plus the nextn glue
     char name[96];
@@ -2461,8 +2556,8 @@ static void serve_ingest_kernels(Engine& e, int B) {
     }
     ck_launch("bp row_sum");
     // positions arrive in dmeta_b (caller fills it before replay); kernels read their column's slot
-    for (int il = 0; il < kLayers; ++il) {
-        Layer& L = e.layers[il];
+    for (int il = 0; il < e.n_visits; ++il) {
+        Layer& L = e.visits[il];
         if (L.recr) {
             tr_sync();
             auto trT0 = tr_clock();
@@ -2791,14 +2886,14 @@ static void topk_out(const float* logits, int n, int k, int emit_id) {
 
 static void serve_reset_state(Engine& e) {
     CK(cudaSetDevice(e.primary));
-    for (int il = 0; il < kLayers; ++il) {
-        if (e.layers[il].recr) {
-            CK(cudaMemset(e.layers[il].gdn_state, 0, (size_t) kS * kHv * kS * 4));
-            CK(cudaMemset(e.layers[il].conv_state, 0, (size_t) 3 * kQkv * 4));
+    for (int il = 0; il < e.n_visits; ++il) {
+        if (e.visits[il].recr) {
+            CK(cudaMemset(e.visits[il].gdn_state, 0, (size_t) kS * kHv * kS * 4));
+            CK(cudaMemset(e.visits[il].conv_state, 0, (size_t) 3 * kQkv * 4));
         }
-        if (!e.layers[il].recr) {  // only attention layers carry a KV cache
-            CK(cudaMemset(e.layers[il].kcache, 0, (size_t) kMaxCtx * kKv * kHd * 4));
-            CK(cudaMemset(e.layers[il].vcache, 0, (size_t) kMaxCtx * kKv * kHd * 4));
+        if (!e.visits[il].recr) {  // only attention layers carry a KV cache
+            CK(cudaMemset(e.visits[il].kcache, 0, (size_t) kMaxCtx * kKv * kHd * 4));
+            CK(cudaMemset(e.visits[il].vcache, 0, (size_t) kMaxCtx * kKv * kHd * 4));
         }
     }
     CK(cudaMemset(e.kcache32, 0, (size_t) kMaxCtx * kKv * kHd * 4));
@@ -2834,10 +2929,10 @@ static void capture_batch_graph(Engine& e) {
     CK(cudaGraphInstantiate(&e.batch_graph, g, 0ull));
     CK(cudaGraphDestroy(g));
     // the capture itself mutated device state with zero tokens: reset what it touched
-    for (int il = 0; il < kLayers; ++il) {
-        if (e.layers[il].recr) {
-            CK(cudaMemset(e.layers[il].gdn_state, 0, (size_t) kS * kHv * kS * 4));
-            CK(cudaMemset(e.layers[il].conv_state, 0, (size_t) 3 * kQkv * 4));
+    for (int il = 0; il < e.n_visits; ++il) {
+        if (e.visits[il].recr) {
+            CK(cudaMemset(e.visits[il].gdn_state, 0, (size_t) kS * kHv * kS * 4));
+            CK(cudaMemset(e.visits[il].conv_state, 0, (size_t) 3 * kQkv * 4));
         }
     }
     if (!e.split) { /* KV slots re-written by real tokens before read; nothing to reset */ }
@@ -3062,12 +3157,12 @@ static void serve_loop(Engine& e) {
                         pos += 2;
                     }
                 } else {
-                    for (int il = 0; il < kLayers; ++il) {
-                        if (e.layers[il].recr) {
-                            CK(cudaMemcpyAsync(e.layers[il].gdn_state,
+                    for (int il = 0; il < e.n_visits; ++il) {
+                        if (e.visits[il].recr) {
+                            CK(cudaMemcpyAsync(e.visits[il].gdn_state,
                                                e.gdn_snap + (size_t) il * (kS * kHv * kS),
                                                (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice, e.sp));
-                            CK(cudaMemcpyAsync(e.layers[il].conv_state,
+                            CK(cudaMemcpyAsync(e.visits[il].conv_state,
                                                e.conv_snap + (size_t) il * (3 * kQkv), (size_t) 3 * kQkv * 4,
                                                cudaMemcpyDeviceToDevice, e.sp));
                         }
@@ -3235,11 +3330,11 @@ int main(int argc, char** argv) {
             if (const char* vn = std::getenv("QWYTHOS_CMPV_N")) e.vstop = std::atoi(vn);
             // one-shot diagnostic: verify [cur @ pos, junk @ pos+1] vs a true single pass for cur,
             // from the same pre-verify state.  Prints logits argmax + max hidden diff.
-            for (int il = 0; il < kLayers; ++il) {
-                if (e.layers[il].recr) {
-                    CK(cudaMemcpy(e.gdn_pre + (size_t) il * (kS * kHv * kS), e.layers[il].gdn_state,
+            for (int il = 0; il < e.n_visits; ++il) {
+                if (e.visits[il].recr) {
+                    CK(cudaMemcpy(e.gdn_pre + (size_t) il * (kS * kHv * kS), e.visits[il].gdn_state,
                                   (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
-                    CK(cudaMemcpy(e.conv_pre + (size_t) il * (3 * kQkv), e.layers[il].conv_state,
+                    CK(cudaMemcpy(e.conv_pre + (size_t) il * (3 * kQkv), e.visits[il].conv_state,
                                   (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
                 }
             }
@@ -3248,11 +3343,11 @@ int main(int argc, char** argv) {
             for (int i = 0; i < kVocab; ++i) lv[i] = e.hlogits2[i];
             CK(cudaMemcpy(hv.data(), e.x2, (size_t) kEmb * 4, cudaMemcpyDeviceToHost));
             // roll ALL state back to pre-verify, then the true single pass
-            for (int il = 0; il < kLayers; ++il) {
-                if (e.layers[il].recr) {
-                    CK(cudaMemcpy(e.layers[il].gdn_state, e.gdn_pre + (size_t) il * (kS * kHv * kS),
+            for (int il = 0; il < e.n_visits; ++il) {
+                if (e.visits[il].recr) {
+                    CK(cudaMemcpy(e.visits[il].gdn_state, e.gdn_pre + (size_t) il * (kS * kHv * kS),
                                   (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
-                    CK(cudaMemcpy(e.layers[il].conv_state, e.conv_pre + (size_t) il * (3 * kQkv),
+                    CK(cudaMemcpy(e.visits[il].conv_state, e.conv_pre + (size_t) il * (3 * kQkv),
                                   (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
                 }
             }
@@ -3282,12 +3377,12 @@ int main(int argc, char** argv) {
             std::printf("CMPV: verify c0 %d   single %d   (cur %d pos %d)\n", c0v, id_single, cur, pos);
             // ---- layer-0 step-by-step (non-tautological): single FIRST from the true embedding,
             // then verify-style on x2 col0, dumping stage values around the blown index 3994 ----
-            Layer& L0 = e.layers[0];
+            Layer& L0 = e.visits[0];
             const int probe = 3994;
             float vA = 0;
             // the single pass above advanced the layer-0 state: restore it so A starts where B will
-            CK(cudaMemcpy(e.layers[0].gdn_state, e.gdn_pre, (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
-            CK(cudaMemcpy(e.layers[0].conv_state, e.conv_pre, (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
+            CK(cudaMemcpy(e.visits[0].gdn_state, e.gdn_pre, (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
+            CK(cudaMemcpy(e.visits[0].conv_state, e.conv_pre, (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
             // variant A: single-path layer 0, seeded from the embedding
             {
                 const uint8_t* srcb = e.emb_host + (size_t) cur * e.emb_stride;
@@ -3335,8 +3430,8 @@ int main(int argc, char** argv) {
             float xAf = 0;
             CK(cudaMemcpy(&xAf, e.x + probe, 4, cudaMemcpyDeviceToHost));
             // variant B: verify-style layer 0 col0 on x2 (reseeded from the embedding)
-            CK(cudaMemcpy(e.layers[0].gdn_state, e.gdn_pre, (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
-            CK(cudaMemcpy(e.layers[0].conv_state, e.conv_pre, (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
+            CK(cudaMemcpy(e.visits[0].gdn_state, e.gdn_pre, (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice));
+            CK(cudaMemcpy(e.visits[0].conv_state, e.conv_pre, (size_t) 3 * kQkv * 4, cudaMemcpyDeviceToDevice));
             CK(cudaMemcpyAsync(e.x2, e.emb_row, (size_t) kEmb * 4, cudaMemcpyHostToDevice, e.sp));
             row_sum_partials_kernel<<<kEmb / 4, 1, 0, e.sp>>>(e.x2, e.partials2, kEmb);
             rms_quant_apply_kernel<<<16, 256, 0, e.sp>>>(e.x2, (const float*) L0.attn_norm.a, e.partials2,
@@ -3495,11 +3590,11 @@ int main(int argc, char** argv) {
                 h_part = e.h_partials2 + kEmb / 4;
             } else {
                 // rejected: roll the GDN states back to after column 0; col0's hidden/logits are valid
-                for (int il = 0; il < kLayers; ++il) {
-                    if (e.layers[il].recr) {
-                        CK(cudaMemcpyAsync(e.layers[il].gdn_state, e.gdn_snap + (size_t) il * (kS * kHv * kS),
+                for (int il = 0; il < e.n_visits; ++il) {
+                    if (e.visits[il].recr) {
+                        CK(cudaMemcpyAsync(e.visits[il].gdn_state, e.gdn_snap + (size_t) il * (kS * kHv * kS),
                                            (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice, e.sp));
-                        CK(cudaMemcpyAsync(e.layers[il].conv_state,
+                        CK(cudaMemcpyAsync(e.visits[il].conv_state,
                                            e.conv_snap + (size_t) il * (3 * kQkv), (size_t) 3 * kQkv * 4,
                                            cudaMemcpyDeviceToDevice, e.sp));
                     }
