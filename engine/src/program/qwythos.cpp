@@ -267,6 +267,13 @@ struct Engine {
     int vstop = -1;                // CMPV diagnostic: layer limit for verify/single paths
     float* conv_pre = nullptr;
     float* conv_snap = nullptr;    // 24 * 3*kQkv
+    // varloop early-exit: residual-stream delta across the core block's first pass
+    float varloop_margin = 0.0f;   // 0 = off; QWYTHOS_VARLOOP_MARGIN
+    int var_skips = 0;             // diagnostic: tokens whose pass 2 was skipped
+    int var_skipped = 0;           // 1 when the last verify skipped the extra passes
+    float* var_entry = nullptr;    // residual stream before the core block (kEmb)
+    float2* var_dparts = nullptr;  // delta_norm partials (64 float2)
+    float2* var_dh = nullptr;      // pinned host copy
     float* h_save = nullptr;       // trunk hidden(s) for the draft: [h_pos, h_pos1]
     // batched prefill (serve): B=8 columns, same layout as the 2-col verify
     float* xb = nullptr;           // B*kEmb residual rows
@@ -1467,11 +1474,60 @@ void forward_attn(Engine& e, Layer& L) {
     ffn(e, L);
 }
 
+// Varloop early-exit: relative residual-stream change across the core block's first
+// pass.  Below the margin the second pass would add almost nothing, so it is skipped
+// (per token, decode + verify col0 rule; prefill always runs full passes).
+__global__ void delta_norm_kernel(const float* a, const float* b, float2* out, int n) {
+    __shared__ float2 sh[256];
+    const int tid = threadIdx.x;
+    float d2 = 0.f, b2 = 0.f;
+    for (int i = blockIdx.x * blockDim.x + tid; i < n; i += gridDim.x * blockDim.x) {
+        const float d = a[i] - b[i];
+        d2 += d * d;
+        b2 += b[i] * b[i];
+    }
+    sh[tid].x = d2;
+    sh[tid].y = b2;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sh[tid].x += sh[tid + s].x;
+            sh[tid].y += sh[tid + s].y;
+        }
+        __syncthreads();
+    }
+    if (tid == 0) out[blockIdx.x] = sh[0];
+}
+
 void launch_token_gpu(Engine& e) {
     const int nmax = e.vstop >= 0 ? std::min(e.vstop, e.n_visits) : e.n_visits;
-    for (int iv = 0; iv < nmax; ++iv) {
+    const bool vl = e.varloop_margin > 0.0f && g_loop_passes > 1 && e.vstop < 0 && e.n_visits > kLayers;
+    const int core_len = g_loop_end - g_loop_start;
+    const int p1_end = g_loop_start + core_len;      // visits [0, p1_end) = prefix + pass 1
+    const int skip_to = g_loop_start + core_len * g_loop_passes;  // suffix start
+    int iv = 0;
+    while (iv < nmax) {
+        if (vl && iv == g_loop_start)
+            CK(cudaMemcpyAsync(e.var_entry, e.x, (size_t) kEmb * 4, cudaMemcpyDeviceToDevice, e.sp));
         if (e.visits[iv].recr) forward_gdn(e, e.visits[iv]);
         else forward_attn(e, e.visits[iv]);
+        iv++;
+        if (vl && iv == p1_end) {
+            delta_norm_kernel<<<64, 256, 0, e.sp>>>(e.x, e.var_entry, e.var_dparts, kEmb);
+            CK(cudaMemcpyAsync(e.var_dh, e.var_dparts, sizeof(float2) * 64, cudaMemcpyDeviceToHost, e.sp));
+            CK(cudaStreamSynchronize(e.sp));
+            float d2 = 0.f, b2 = 0.f;
+            for (int k = 0; k < 64; ++k) {
+                d2 += e.var_dh[k].x;
+                b2 += e.var_dh[k].y;
+            }
+            const float rel = std::sqrt(d2) / (std::sqrt(b2) + 1e-6f);
+            e.var_skips += (rel < e.varloop_margin);
+            if (rel < e.varloop_margin) {
+                iv = skip_to;  // jump straight to the suffix visits
+                continue;
+            }
+        }
     }
     project(e, e.x, e.out_n, &e.out_w, &e.logits, 1);
     // the MTP draft consumes the FINAL-NORMED hidden (llama.cpp res->t_h_nextn = norm(h, output_norm))
@@ -1689,8 +1745,31 @@ void launch_token_verify(Engine& e, int tokA, int tokB, int posA) {
     }
 
     const int vmax = e.vstop >= 0 ? std::min(e.vstop, e.n_visits) : e.n_visits;
+    const int core_len_v = g_loop_end - g_loop_start;
+    const int p1_end_v = g_loop_start + core_len_v;
+    const int skip_to_v = g_loop_start + core_len_v * g_loop_passes;
+    const bool vl_v = e.varloop_margin > 0.0f && g_loop_passes > 1 && e.vstop < 0 && e.n_visits > kLayers;
+    e.var_skipped = 0;
     for (int il = 0; il < vmax; ++il) {
         Layer& L = e.visits[il];
+        if (vl_v && il == g_loop_start)
+            CK(cudaMemcpyAsync(e.var_entry, e.x2, (size_t) kEmb * 4, cudaMemcpyDeviceToDevice, e.sp));
+        if (vl_v && il == p1_end_v) {
+            delta_norm_kernel<<<64, 256, 0, e.sp>>>(e.x2, e.var_entry, e.var_dparts, kEmb);
+            CK(cudaMemcpyAsync(e.var_dh, e.var_dparts, sizeof(float2) * 64, cudaMemcpyDeviceToHost, e.sp));
+            CK(cudaStreamSynchronize(e.sp));
+            float d2 = 0.f, b2 = 0.f;
+            for (int k = 0; k < 64; ++k) {
+                d2 += e.var_dh[k].x;
+                b2 += e.var_dh[k].y;
+            }
+            const float rel = std::sqrt(d2) / (std::sqrt(b2) + 1e-6f);
+            if (rel < e.varloop_margin) {
+                e.var_skipped = 1;
+                il = skip_to_v - 1;  // the for-loop's ++il lands on the suffix start
+                continue;
+            }
+        }
         if (L.recr) {
             for (int c = 0; c < 2; ++c)
                 rms_quant_apply_kernel<<<16, 256, 0, e.sp>>>(e.x2 + (size_t) c * kEmb, (const float*) L.attn_norm.a,
@@ -2136,6 +2215,9 @@ void alloc_primary(Engine& e) {
     CK(cudaMalloc(&e.logits2, (size_t) 2 * kVocab * 4));
     CK(cudaMalloc(&e.h_save, (size_t) 2 * kEmb * 4));
     CK(cudaMalloc(&e.h_partials2, (size_t) 2 * (kEmb / 4) * 4));
+    CK(cudaMalloc(&e.var_entry, (size_t) kEmb * 4));
+    CK(cudaMalloc(&e.var_dparts, 64 * sizeof(float2)));
+    CK(cudaMallocHost(&e.var_dh, 64 * sizeof(float2)));
     {   // one-time: attention kernels take their score stride from the device mirror
         int hctx = kMaxCtx;
         CK(hipMemcpyToSymbol(g_dctx, &hctx, sizeof(int)));
@@ -2295,6 +2377,18 @@ void load_model(Engine& e, const strata::GgufFile& file) {
         if (std::getenv("QWYTHOS_LOOP_PASSES"))
             std::fprintf(stderr, "QWYTHOS_LOOP_PASSES ignored: GGUF has no loop keys\n");
         e.n_visits = kLayers;
+    }
+    // varloop early-exit margin: relative residual delta below which the extra
+    // core passes are skipped for that token.  Off unless the env is set; needs
+    // a loop with passes >= 2 to have anything to skip.
+    if (const char* vm = std::getenv("QWYTHOS_VARLOOP_MARGIN")) {
+        e.varloop_margin = (float) std::atof(vm);
+        if (e.varloop_margin > 0.0f && g_loop_passes < 2) {
+            std::fprintf(stderr, "QWYTHOS_VARLOOP_MARGIN ignored: no extra passes to skip\n");
+            e.varloop_margin = 0.0f;
+        }
+        if (!g_serve_mode && e.varloop_margin > 0.0f)
+            std::printf("varloop early-exit margin %.3f\n", e.varloop_margin);
     }
     // rollback/CMPV snapshot slots are indexed by visit, so they are sized here where the
     // visit count is known (alloc_primary runs before the file is read).
@@ -3163,6 +3257,9 @@ static void serve_loop(Engine& e) {
                     }
                 } else {
                     for (int il = 0; il < e.n_visits; ++il) {
+                        if (e.var_skipped && il >= g_loop_start + (g_loop_end - g_loop_start)
+                            && il < g_loop_start + (g_loop_end - g_loop_start) * g_loop_passes)
+                            continue;  // skipped pass never ran: its snapshot slot is stale
                         if (e.visits[il].recr) {
                             CK(cudaMemcpyAsync(e.visits[il].gdn_state,
                                                e.gdn_snap + (size_t) il * (kS * kHv * kS),
@@ -3596,6 +3693,9 @@ int main(int argc, char** argv) {
             } else {
                 // rejected: roll the GDN states back to after column 0; col0's hidden/logits are valid
                 for (int il = 0; il < e.n_visits; ++il) {
+                    if (e.var_skipped && il >= g_loop_start + (g_loop_end - g_loop_start)
+                        && il < g_loop_start + (g_loop_end - g_loop_start) * g_loop_passes)
+                        continue;  // skipped pass never ran: its snapshot slot is stale
                     if (e.visits[il].recr) {
                         CK(cudaMemcpyAsync(e.visits[il].gdn_state, e.gdn_snap + (size_t) il * (kS * kHv * kS),
                                            (size_t) kS * kHv * kS * 4, cudaMemcpyDeviceToDevice, e.sp));
